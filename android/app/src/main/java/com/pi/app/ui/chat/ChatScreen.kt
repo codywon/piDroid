@@ -3,21 +3,16 @@ package com.pi.app.ui.chat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -27,16 +22,24 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.pi.app.data.model.ChatItem
-import com.pi.app.data.model.MessageRole
+import com.pi.app.data.model.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
     sessionTitle: String,
+    currentProject: String,
+    projects: List<ProjectInfo>,
+    selectedModel: ModelInfo,
+    thinkingLevel: ThinkingLevel,
+    tokenStats: TokenStats,
     messages: List<ChatItem>,
     isAgentBusy: Boolean,
     onBack: () -> Unit,
+    onProjectSwitch: (ProjectInfo) -> Unit,
+    onOpenModelSheet: () -> Unit,
+    onOpenCapabilities: () -> Unit,
+    onCompactContext: () -> Unit,
     onSendMessage: (String) -> Unit,
     onApproveTool: (approved: Boolean) -> Unit,
     onSpeakSummary: (String) -> Unit,
@@ -47,15 +50,15 @@ fun ChatScreen(
 ) {
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    var showHudDialog by remember { mutableStateOf(false) }
+    var showProjectDropdown by remember { mutableStateOf(false) }
 
-    // 当有新消息或内容更新时自动滚动到底部
     LaunchedEffect(messages.size, messages.lastOrNull()?.content) {
         if (messages.isNotEmpty()) {
             listState.animateScrollToItem(messages.size - 1)
         }
     }
 
-    // 当语音转写产生最终文字时，自动填入或可发送
     LaunchedEffect(voicePartialText) {
         if (voicePartialText.isNotBlank()) {
             inputText = voicePartialText
@@ -67,12 +70,43 @@ fun ChatScreen(
             TopAppBar(
                 title = {
                     Column {
-                        Text(
-                            text = sessionTitle,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
+                        // 顶部项目快速切换下拉菜单
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.pointerInput(Unit) {
+                                detectTapGestures { showProjectDropdown = true }
+                            }
+                        ) {
+                            Text(
+                                text = currentProject.ifBlank { "默认项目" },
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
+                            )
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+
+                            DropdownMenu(
+                                expanded = showProjectDropdown,
+                                onDismissRequest = { showProjectDropdown = false }
+                            ) {
+                                Text(
+                                    "快速切换工作区项目",
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                                projects.forEach { proj ->
+                                    DropdownMenuItem(
+                                        text = { Text(proj.name) },
+                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                                        onClick = {
+                                            showProjectDropdown = false
+                                            onProjectSwitch(proj)
+                                        }
+                                    )
+                                }
+                            }
+                        }
                         Text(
                             text = if (isAgentBusy) "⚡ 正在执行任务..." else "就绪",
                             style = MaterialTheme.typography.bodySmall,
@@ -84,22 +118,32 @@ fun ChatScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "返回")
                     }
+                },
+                actions = {
+                    // 能力与扩展中心 (Skills, MCP, Providers)
+                    IconButton(onClick = onOpenCapabilities) {
+                        Icon(Icons.Default.AutoFixHigh, contentDescription = "扩展中心")
+                    }
                 }
             )
         },
         bottomBar = {
-            Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
-                // 录音状态浮窗提示
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surface)
+                    .navigationBarsPadding()
+            ) {
+                // 1. 录音状态浮窗
                 AnimatedVisibility(visible = isVoiceRecording) {
                     Surface(
                         color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
@@ -111,17 +155,61 @@ fun ChatScreen(
                     }
                 }
 
-                // 底部输入区（单手优化：左侧打字，右侧悬浮语音大按键）
+                // 2. 继承自 pi-web 的“高能胶囊控制条”（Power Capsule Bar）
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 12.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 模型快速切换胶囊
+                    SuggestionChip(
+                        onClick = onOpenModelSheet,
+                        label = { Text(selectedModel.name.take(16), style = MaterialTheme.typography.labelSmall) },
+                        icon = { Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                    )
+
+                    // 思考深度胶囊
+                    SuggestionChip(
+                        onClick = onOpenModelSheet,
+                        label = { Text(thinkingLevel.label.take(6), style = MaterialTheme.typography.labelSmall) },
+                        icon = { Icon(Icons.Default.Psychology, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                    )
+
+                    // 一键压缩上下文胶囊
+                    SuggestionChip(
+                        onClick = onCompactContext,
+                        label = { Text("压缩上下文", style = MaterialTheme.typography.labelSmall) },
+                        icon = { Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                    )
+
+                    // Token 与缓存命中率 HUD 胶囊
+                    SuggestionChip(
+                        onClick = { showHudDialog = true },
+                        label = {
+                            Text(
+                                text = "${tokenStats.contextTokens / 1000}k/${tokenStats.maxContextWindow / 1000}k (命中率 ${String.format("%.0f", tokenStats.cacheHitRate)}%)",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (tokenStats.contextUsagePercent > 0.8f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                        },
+                        icon = { Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                    )
+                }
+
+                // 3. 底部输入区（单手优化：左侧打字，右侧悬浮语音大按键）
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
-                        placeholder = { Text("交代任务或打字指令...") },
+                        placeholder = { Text("输入或说话交代任务...") },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
                         shape = RoundedCornerShape(24.dp)
@@ -142,7 +230,6 @@ fun ChatScreen(
                             Icon(Icons.Default.Send, contentDescription = "发送", tint = Color.White)
                         }
                     } else {
-                        // 语音悬浮按钮：支持按住说话或点击说话
                         IconButton(
                             onClick = {},
                             modifier = Modifier
@@ -161,11 +248,7 @@ fun ChatScreen(
                                     )
                                 }
                         ) {
-                            Icon(
-                                Icons.Default.Mic,
-                                contentDescription = "按住说话",
-                                tint = Color.White
-                            )
+                            Icon(Icons.Default.Mic, contentDescription = "按住说话", tint = Color.White)
                         }
                     }
                 }
@@ -188,6 +271,14 @@ fun ChatScreen(
                 )
             }
         }
+    }
+
+    if (showHudDialog) {
+        TokenStatsHudDialog(
+            stats = tokenStats,
+            onCompactClick = onCompactContext,
+            onDismiss = { showHudDialog = false }
+        )
     }
 }
 
@@ -222,7 +313,6 @@ fun ChatMessageCard(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
-                    // 1. 折叠思维链思考过程
                     if (!message.thinking.isNullOrBlank()) {
                         Surface(
                             color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
@@ -264,13 +354,8 @@ fun ChatMessageCard(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    // 2. 正文输出
-                    Text(
-                        text = message.content,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                    Text(text = message.content, style = MaterialTheme.typography.bodyMedium)
 
-                    // 3. 选配式语音播报按钮（默认静音，用户点击后才朗读提取的摘要）
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
@@ -289,7 +374,6 @@ fun ChatMessageCard(
             }
         }
         MessageRole.TOOL -> {
-            // 工具执行与高危命令审批卡片
             val tool = message.toolCall
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -328,7 +412,6 @@ fun ChatMessageCard(
                         }
                     }
 
-                    // 如果需要用户审批确认
                     if (tool?.requiresApproval == true && !tool.isApproved) {
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
