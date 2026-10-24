@@ -1,8 +1,12 @@
-# Pi-App (PiDroid) 移动掌控中心
+# piDroid 📱
 
-基于 [agegr/pi-web](https://github.com/agegr/pi-web) 深度扩展的安卓端智能体协同系统。
+[![Build & Release piDroid APK](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml)
+[![Latest Release](https://img.shields.io/github/v/release/codywon/piDroid?color=blue&label=Latest%20Release)](https://github.com/codywon/piDroid/releases)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-让你在离开电脑时，通过手机即可**完全掌控 PC 上的 Pi 任务**，享受单手便捷语音输入、按需语音播报、锁屏异步任务常驻与关键命令触觉审批体验！
+基于 [agegr/pi-web](https://github.com/agegr/pi-web) 深度扩展的安卓端智能体移动掌控系统。
+
+让你在离开电脑时，通过安卓手机**完全掌控 PC 上的 Pi 任务**，享受单手便捷语音输入、按需语音播报、锁屏异步任务常驻与关键命令触觉审批体验！已内置全局签名 Key，支持无缝平滑覆盖升级！
 
 ---
 
