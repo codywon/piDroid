@@ -21,6 +21,8 @@ import com.pi.app.data.model.SkillInfo
 fun CapabilitiesCenterScreen(
     skills: List<SkillInfo>,
     mcpServers: List<McpServerInfo>,
+    isIgnoringBattery: Boolean = true,
+    onRequestIgnoreBattery: () -> Unit = {},
     onToggleSkill: (String, Boolean) -> Unit,
     onClose: () -> Unit
 ) {
@@ -53,7 +55,10 @@ fun CapabilitiesCenterScreen(
             when (selectedTab) {
                 0 -> SkillsTab(skills = skills, onToggleSkill = onToggleSkill)
                 1 -> McpTab(mcpServers = mcpServers)
-                2 -> PreferencesTab()
+                2 -> PreferencesTab(
+                    isIgnoringBattery = isIgnoringBattery,
+                    onRequestIgnoreBattery = onRequestIgnoreBattery
+                )
             }
         }
     }
@@ -171,11 +176,49 @@ fun McpTab(mcpServers: List<McpServerInfo>) {
 }
 
 @Composable
-fun PreferencesTab() {
+fun PreferencesTab(
+    isIgnoringBattery: Boolean = true,
+    onRequestIgnoreBattery: () -> Unit = {}
+) {
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // 参考 Termius / MQTT 助手：电池优化白名单引导
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(12.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+        ) {
+            Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("系统保活与后台长连接 (Termius 级别守护)", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "防止手机息屏或切换后台时，系统掐断与 PC 之间的长连接 SSE 通信。已自动启用前台服务与唤醒锁 (WakeLock)。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isIgnoringBattery) "● 已加入免电池优化白名单" else "⚠️ 未加入白名单 (息屏可能断连)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (isIgnoringBattery) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (!isIgnoringBattery) {
+                        Button(
+                            onClick = onRequestIgnoreBattery,
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                        ) {
+                            Text("一键加入白名单", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+        }
         Card(
             modifier = Modifier.fillMaxWidth(),
             shape = RoundedCornerShape(12.dp),

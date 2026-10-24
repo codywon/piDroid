@@ -17,6 +17,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.pi.app.data.model.*
 import com.pi.app.data.storage.AppPreferences
+import com.pi.app.keepalive.KeepAliveManager
+import com.pi.app.keepalive.PiForegroundService
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
 import com.pi.app.notification.PiHapticsAndNotify
@@ -26,11 +28,16 @@ import com.pi.app.ui.chat.ModelAndThinkingSheet
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
 import com.pi.app.ui.settings.ServerConfigDialog
+import com.pi.app.ui.updater.UpdateDialog
+import com.pi.app.updater.ApkInstaller
+import com.pi.app.updater.UpdateChecker
+import com.pi.app.updater.UpdateInfo
 import com.pi.app.voice.SmartTtsManager
 import com.pi.app.voice.VoiceInputManager
 import com.pi.app.voice.VoiceInputState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -40,6 +47,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var voiceInputManager: VoiceInputManager
     private lateinit var smartTtsManager: SmartTtsManager
     private lateinit var hapticsAndNotify: PiHapticsAndNotify
+
+    // 参考 Termius / MQTT 助手：保活与应用内更新引擎
+    private lateinit var keepAliveManager: KeepAliveManager
+    private lateinit var updateChecker: UpdateChecker
+    private lateinit var apkInstaller: ApkInstaller
 
     private var sseJob: Job? = null
 
@@ -61,6 +73,10 @@ class MainActivity : ComponentActivity() {
         voiceInputManager = VoiceInputManager(this)
         smartTtsManager = SmartTtsManager(this)
         hapticsAndNotify = PiHapticsAndNotify(this)
+
+        keepAliveManager = KeepAliveManager(this)
+        updateChecker = UpdateChecker(currentVersion = "1.2.0")
+        apkInstaller = ApkInstaller(this)
 
         checkAndRequestPermissions()
 
@@ -97,11 +113,16 @@ class MainActivity : ComponentActivity() {
         var showCapabilities by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
 
+        // 应用内更新状态
+        var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+        var isDownloadingUpdate by remember { mutableStateOf(false) }
+        var downloadProgress by remember { mutableFloatStateOf(0f) }
+        var downloadedApkFile by remember { mutableStateOf<File?>(null) }
+
         var currentSession by remember { mutableStateOf<Session?>(null) }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         var isLoadingSessions by remember { mutableStateOf(false) }
 
-        // 高阶配置：模型、思考级别、项目、Token 监控、Skills、MCP
         var availableModels by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
         var selectedModel by remember {
             mutableStateOf(ModelInfo("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic", 200000, true))
@@ -113,14 +134,21 @@ class MainActivity : ComponentActivity() {
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
-        // 聊天状态
         val messages = remember { mutableStateListOf<ChatItem>() }
         var isAgentBusy by remember { mutableStateOf(false) }
 
-        // 语音状态
         val voiceState by voiceInputManager.state.collectAsState()
         var isRecording by remember { mutableStateOf(false) }
         var partialVoiceText by remember { mutableStateOf("") }
+
+        // 启动时自动检查更新 (参考 Termius)
+        LaunchedEffect(Unit) {
+            updateChecker.checkForUpdates().onSuccess { info ->
+                if (info.hasNewVersion) {
+                    updateInfo = info
+                }
+            }
+        }
 
         LaunchedEffect(voiceState) {
             when (val state = voiceState) {
@@ -178,9 +206,15 @@ class MainActivity : ComponentActivity() {
             sseJob?.cancel()
             sseJob = lifecycleScope.launch {
                 isAgentBusy = true
-                hapticsAndNotify.updateTaskNotification("Pi 任务执行中", "正在监听 Agent 事件...")
 
-                // 刷新 Token 统计
+                // 参考 Termius / MQTT 助手：启动唤醒锁与前台服务保活！
+                keepAliveManager.acquireWakeLock()
+                PiForegroundService.start(
+                    this@MainActivity,
+                    title = "piDroid · 任务运行中",
+                    content = "项目: $currentProject | 正在执行代码长任务..."
+                )
+
                 apiClient.getSessionStats(sessionId).onSuccess { tokenStats = it }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
@@ -237,6 +271,10 @@ class MainActivity : ComponentActivity() {
                         }
                         "turn_completed" -> {
                             isAgentBusy = false
+                            // 任务完成：释放唤醒锁省电，触发触觉震动两次
+                            keepAliveManager.releaseWakeLock()
+                            PiForegroundService.stop(this@MainActivity)
+
                             hapticsAndNotify.vibrateTaskCompleted()
                             hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
 
@@ -244,7 +282,6 @@ class MainActivity : ComponentActivity() {
                             if (last != null && last.isStreaming) {
                                 messages[messages.size - 1] = last.copy(isStreaming = false)
                             }
-                            // 重新拉取最新的 Token 状态
                             apiClient.getSessionStats(sessionId).onSuccess { tokenStats = it }
                         }
                     }
@@ -282,6 +319,8 @@ class MainActivity : ComponentActivity() {
                 CapabilitiesCenterScreen(
                     skills = skills,
                     mcpServers = mcpServers,
+                    isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
+                    onRequestIgnoreBattery = { keepAliveManager.requestIgnoreBatteryOptimizations() },
                     onToggleSkill = { name, enabled ->
                         lifecycleScope.launch {
                             apiClient.toggleSkill(name, enabled)
@@ -304,6 +343,8 @@ class MainActivity : ComponentActivity() {
                     onBack = {
                         sseJob?.cancel()
                         currentSession = null
+                        keepAliveManager.releaseWakeLock()
+                        PiForegroundService.stop(this@MainActivity)
                         hapticsAndNotify.clearNotification()
                     },
                     onProjectSwitch = { proj ->
@@ -399,6 +440,37 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 应用内更新弹窗 (参考 Termius / MQTT 助手)
+        updateInfo?.let { info ->
+            UpdateDialog(
+                updateInfo = info,
+                isDownloading = isDownloadingUpdate,
+                downloadProgress = downloadProgress,
+                isDownloaded = downloadedApkFile != null,
+                onStartDownload = {
+                    isDownloadingUpdate = true
+                    lifecycleScope.launch {
+                        apkInstaller.downloadApk(
+                            downloadUrl = info.downloadUrl,
+                            fileName = "piDroid-${info.latestVersion}.apk",
+                            onProgress = { downloadProgress = it }
+                        ).onSuccess { file ->
+                            isDownloadingUpdate = false
+                            downloadedApkFile = file
+                            apkInstaller.installApk(file)
+                        }.onFailure { err ->
+                            isDownloadingUpdate = false
+                            Toast.makeText(this@MainActivity, "下载失败: ${err.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                onInstall = {
+                    downloadedApkFile?.let { apkInstaller.installApk(it) }
+                },
+                onDismiss = { updateInfo = null }
+            )
+        }
+
         if (showSettings) {
             ServerConfigDialog(
                 initialUrl = prefs.serverUrl,
@@ -418,6 +490,8 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         sseJob?.cancel()
+        keepAliveManager.releaseWakeLock()
+        PiForegroundService.stop(this)
         voiceInputManager.destroy()
         smartTtsManager.shutdown()
         hapticsAndNotify.clearNotification()
