@@ -1,0 +1,92 @@
+name: Build & Release piDroid APK
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: '发布版本号 (例如 v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle Cache
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant Execute Permission to gradlew
+        run: chmod +x android/gradlew
+
+      - name: Build Release APK with Global Keystore
+        working-directory: android
+        env:
+          KEYSTORE_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
+          KEY_ALIAS: pidroid
+          KEY_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
+        run: |
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Prepare APK Artifact
+        id: prepare_apk
+        run: |
+          VERSION="${{ github.ref_name }}"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VERSION="${{ github.event.inputs.version_tag }}"
+          fi
+          
+          # 寻找构建出的 release apk
+          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          TARGET_NAME="piDroid-${VERSION}.apk"
+          
+          cp "$APK_PATH" "$TARGET_NAME"
+          echo "apk_path=$TARGET_NAME" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Upload Artifact to GitHub Actions Run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prepare_apk.outputs.version }}
+          path: ${{ steps.prepare_apk.outputs.apk_path }}
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+        with:
+          tag_name: ${{ steps.prepare_apk.outputs.version }}
+          name: "piDroid ${{ steps.prepare_apk.outputs.version }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: ${{ steps.prepare_apk.outputs.apk_path }}
+          body: |
+            ### 📱 piDroid 发布版本 ${{ steps.prepare_apk.outputs.version }}
+
+            #### 🌟 核心特性：
+            - **无缝覆盖升级**：已注入全局统一签名 Key，升级安装无需卸载，配置数据零丢失；
+            - **安全配对与扫码直连**：配合 PC 端安全伴侣网关（Token 鉴权），扫码即可一键连接；
+            - **长任务后台监控**：支持后台常驻通知与马达触觉反馈；
+            - **单手便捷语音输入**：大拇指悬浮按键快速录音下发任务；
+            - **按需语音播报（默认静音）**：智能提纯 Markdown 结论进行摘要朗读。
+
+            #### 📦 下载安装：
+            直接下载下方附件中的 `${{ steps.prepare_apk.outputs.apk_path }}` 安装到安卓设备即可使用！
