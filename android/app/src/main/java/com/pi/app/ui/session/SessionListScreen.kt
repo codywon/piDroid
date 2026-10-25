@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -91,6 +92,9 @@ fun SessionListScreen(
     isGatewayOnline: Boolean = true,
     sessions: List<Session>,
     isLoading: Boolean,
+    pinnedSessionIds: Set<String> = emptySet(),
+    customTitles: Map<String, String> = emptyMap(),
+    onTogglePinSession: (String) -> Unit = {},
     onRefresh: () -> Unit,
     onSessionClick: (Session) -> Unit,
     onScanClick: () -> Unit,
@@ -149,7 +153,7 @@ fun SessionListScreen(
         (currentWorkspaceSessions.size - runningInWorkspace).coerceAtLeast(0)
     }
 
-    val filteredSessions = remember(currentWorkspaceSessions, statusFilter, searchQuery) {
+    val filteredSessions = remember(currentWorkspaceSessions, statusFilter, searchQuery, customTitles) {
         currentWorkspaceSessions.filter { s ->
             val matchesStatus = when (statusFilter) {
                 SessionStatusFilter.ALL -> true
@@ -157,8 +161,10 @@ fun SessionListScreen(
                 SessionStatusFilter.COMPLETED -> !s.active && !s.awaitingInput
             }
             val q = searchQuery.trim()
+            val cTitle = customTitles[s.id] ?: ""
             val matchesQuery = q.isEmpty() ||
                 s.displayTitle.contains(q, ignoreCase = true) ||
+                cTitle.contains(q, ignoreCase = true) ||
                 (s.firstMessage?.contains(q, ignoreCase = true) == true) ||
                 s.workspaceName.contains(q, ignoreCase = true)
             matchesStatus && matchesQuery
@@ -594,6 +600,9 @@ fun SessionListScreen(
                             )
                         }
                     } else {
+                        val (pinnedList, normalList) = remember(filteredSessions, pinnedSessionIds) {
+                            filteredSessions.partition { pinnedSessionIds.contains(it.id) }
+                        }
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -601,8 +610,54 @@ fun SessionListScreen(
                             contentPadding = PaddingValues(bottom = 84.dp, top = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(filteredSessions, key = { it.id }) { session ->
-                                SessionCard(session = session, onClick = { onSessionClick(session) })
+                            if (pinnedList.isNotEmpty()) {
+                                item(key = "section_pinned") {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.primary)
+                                        Text(
+                                            text = "置顶任务 (${pinnedList.size})",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = theme.primary
+                                        )
+                                    }
+                                }
+                                items(pinnedList, key = { "pin_${it.id}" }) { session ->
+                                    SessionCard(
+                                        session = session,
+                                        isPinned = true,
+                                        customTitle = customTitles[session.id],
+                                        onTogglePin = { onTogglePinSession(session.id) },
+                                        onClick = { onSessionClick(session) }
+                                    )
+                                }
+                                if (normalList.isNotEmpty()) {
+                                    item(key = "section_normal") {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "所有任务 (${normalList.size})",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = theme.textSecondary
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            items(if (pinnedList.isNotEmpty()) normalList else filteredSessions, key = { it.id }) { session ->
+                                SessionCard(
+                                    session = session,
+                                    isPinned = pinnedSessionIds.contains(session.id),
+                                    customTitle = customTitles[session.id],
+                                    onTogglePin = { onTogglePinSession(session.id) },
+                                    onClick = { onSessionClick(session) }
+                                )
                             }
                         }
                     }
@@ -662,10 +717,14 @@ private fun FilterPill(
  * - 正在运行 (`session.active`)：左侧动态旋转圆弧 `PiWebRunningSpinner` + 右侧绿色 `运行中` 徽章 + 翠绿高亮边框
  * - 等待输入 (`session.awaitingInput`)：左侧琥珀色脉冲圆点 + 右侧 `等待确认` 徽章
  * - 已完成 (`!session.active`)：左侧已完成打勾图标 (`CheckCircle`) + 消息条数统计 + 格式化时间
+ * - 支持置顶与自定义上下文取名展示
  */
 @Composable
 fun SessionCard(
     session: Session,
+    isPinned: Boolean = false,
+    customTitle: String? = null,
+    onTogglePin: () -> Unit = {},
     onClick: () -> Unit
 ) {
     val theme = LocalAppTheme.current
@@ -680,14 +739,17 @@ fun SessionCard(
 
     val isRunning = session.active
     val isAwaiting = session.awaitingInput
+    val titleText = customTitle ?: session.displayTitle
 
     val borderStroke = when {
+        isPinned -> BorderStroke(1.dp, theme.primary.copy(alpha = 0.55f))
         isAwaiting -> BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.55f))
         isRunning -> BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
         else -> BorderStroke(1.dp, theme.outline)
     }
 
     val cardBg = when {
+        isPinned -> theme.primary.copy(alpha = if (theme.isDark) 0.08f else 0.04f)
         isAwaiting -> Color(0xFFF59E0B).copy(alpha = if (theme.isDark) 0.07f else 0.04f)
         isRunning -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.06f else 0.03f)
         else -> theme.surfaceContainerLow
@@ -738,10 +800,27 @@ fun SessionCard(
                         }
                     }
 
+                    if (isPinned) {
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = theme.primary.copy(alpha = 0.16f),
+                            border = BorderStroke(0.5.dp, theme.primary.copy(alpha = 0.45f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(9.dp), tint = theme.primary)
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("置顶", fontSize = 9.sp, color = theme.primary, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
                     Text(
-                        text = session.displayTitle,
+                        text = titleText,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = if (isRunning || isAwaiting) FontWeight.Bold else FontWeight.SemiBold,
+                        fontWeight = if (isRunning || isAwaiting || isPinned) FontWeight.Bold else FontWeight.SemiBold,
                         color = theme.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -750,59 +829,71 @@ fun SessionCard(
 
                 Spacer(modifier = Modifier.width(8.dp))
 
-                // ── 右侧状态徽章或时间 (对标 pi-web SessionTree meta column) ──
-                when {
-                    isAwaiting -> {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color(0xFFF59E0B).copy(alpha = 0.16f),
-                            border = BorderStroke(0.5.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
-                        ) {
-                            Text(
-                                text = "等待确认",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = Color(0xFFD97706),
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                            )
-                        }
-                    }
-                    isRunning -> {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = Color(0xFF22C55E).copy(alpha = 0.15f),
-                            border = BorderStroke(0.5.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    // ── 右侧状态徽章或时间 (对标 pi-web SessionTree meta column) ──
+                    when {
+                        isAwaiting -> {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFFF59E0B).copy(alpha = 0.16f),
+                                border = BorderStroke(0.5.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
                             ) {
                                 Text(
-                                    text = "运行中",
+                                    text = "等待确认",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFFD97706),
                                     maxLines = 1,
                                     softWrap = false,
-                                    color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
+                        isRunning -> {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF22C55E).copy(alpha = 0.15f),
+                                border = BorderStroke(0.5.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        text = "运行中",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
+                                    )
+                                }
+                            }
+                        }
+                        else -> {
+                            Text(
+                                text = "已完成",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontSize = 10.5.sp,
+                                maxLines = 1,
+                                softWrap = false,
+                                color = theme.textMuted
+                            )
+                        }
                     }
-                    else -> {
-                        Text(
-                            text = "已完成",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 10.5.sp,
-                            maxLines = 1,
-                            softWrap = false,
-                            color = theme.textMuted
-                        )
-                    }
+
+                    // 置顶快捷操作图标
+                    Icon(
+                        imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                        contentDescription = if (isPinned) "取消置顶" else "置顶任务",
+                        tint = if (isPinned) theme.primary else theme.textMuted.copy(alpha = 0.55f),
+                        modifier = Modifier
+                            .size(15.dp)
+                            .clickable { onTogglePin() }
+                    )
                 }
             }
 

@@ -1,6 +1,7 @@
 package com.pi.app.ui.settings
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -59,9 +60,10 @@ fun GlobalSettingsScreen(
         modelId: String,
         modelName: String,
         contextWindow: Long,
+        maxTokens: Long,
         reasoning: Boolean,
         supportsVision: Boolean
-    ) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> },
     onDeleteModel: (providerName: String, modelId: String) -> Unit = { _, _ -> },
     onLoadModelsRawConfig: suspend () -> String? = { null },
     onSaveModelsRawConfig: (String) -> Unit = {},
@@ -86,6 +88,9 @@ fun GlobalSettingsScreen(
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     onTestHaptics: () -> Unit = {},
+    completionSoundEnabled: Boolean = true,
+    onToggleCompletionSound: (Boolean) -> Unit = {},
+    onTestCompletionSound: () -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -94,6 +99,8 @@ fun GlobalSettingsScreen(
     onDisconnect: () -> Unit,
     onClose: () -> Unit
 ) {
+    BackHandler { onClose() }
+
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -211,7 +218,7 @@ fun GlobalSettingsScreen(
                     },
                     onViewDetail = { skill ->
                         selectedSkillForDetail = skill
-                        isEditingSkillMd = false
+                        isEditingSkillMd = true
                         val fallbackMd = "# ${skill.name}\n\n${skill.description ?: "在此编写技能说明与系统指令..."}"
                         skillMarkdownContent = fallbackMd
                         skillEditBuffer = fallbackMd
@@ -249,6 +256,9 @@ fun GlobalSettingsScreen(
                     hapticsEnabled = hapticsEnabled,
                     onToggleHaptics = onToggleHaptics,
                     onTestHaptics = onTestHaptics,
+                    completionSoundEnabled = completionSoundEnabled,
+                    onToggleCompletionSound = onToggleCompletionSound,
+                    onTestCompletionSound = onTestCompletionSound,
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
@@ -350,27 +360,41 @@ fun GlobalSettingsScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (isEditingSkillMd) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
-                        border = BorderStroke(1.dp, if (isEditingSkillMd) theme.primary else theme.outline),
-                        modifier = Modifier.clickable { isEditingSkillMd = !isEditingSkillMd }
-                    ) {
-                        Text(
-                            text = if (isEditingSkillMd) "预览渲染" else "编辑源码 ✎",
-                            fontSize = 11.sp,
-                            color = if (isEditingSkillMd) theme.primary else theme.textSecondary,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (isEditingSkillMd) theme.primary else theme.outline),
+                            modifier = Modifier.clickable { isEditingSkillMd = true }
+                        ) {
+                            Text(
+                                text = "源码编辑 ✎",
+                                fontSize = 11.sp,
+                                fontWeight = if (isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isEditingSkillMd) theme.primary else theme.textSecondary,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (!isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (!isEditingSkillMd) theme.primary else theme.outline),
+                            modifier = Modifier.clickable { isEditingSkillMd = false }
+                        ) {
+                            Text(
+                                text = "效果预览",
+                                fontSize = 11.sp,
+                                fontWeight = if (!isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
+                                color = if (!isEditingSkillMd) theme.primary else theme.textSecondary,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
             },
             text = {
                 Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 440.dp)
-                        .verticalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (!skill.filePath.isNullOrBlank()) {
@@ -383,8 +407,9 @@ fun GlobalSettingsScreen(
                                 text = skill.filePath,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
                                 color = theme.textMuted,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                             )
                         }
                     }
@@ -396,23 +421,37 @@ fun GlobalSettingsScreen(
                             modifier = Modifier.padding(vertical = 12.dp)
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = theme.primary)
-                            Text("正在从网关加载 SKILL.md 源码...", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
+                            Text("正在从网关加载 SKILL.md 源码...", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, color = theme.textSecondary)
                         }
                     } else if (isEditingSkillMd) {
                         OutlinedTextField(
                             value = skillEditBuffer,
                             onValueChange = { skillEditBuffer = it },
-                            label = { Text("SKILL.md 指令源码", color = theme.textSecondary) },
+                            label = { Text("SKILL.md 正文与指令源码", fontSize = 11.sp, color = theme.textSecondary) },
                             textStyle = MaterialTheme.typography.bodySmall.copy(
                                 fontFamily = FontFamily.Monospace,
+                                fontSize = 11.5.sp,
                                 color = theme.textPrimary
                             ),
-                            minLines = 10,
-                            maxLines = 18,
-                            modifier = Modifier.fillMaxWidth()
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(320.dp),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = theme.primary,
+                                unfocusedBorderColor = theme.outline,
+                                focusedTextColor = theme.textPrimary,
+                                unfocusedTextColor = theme.textPrimary
+                            )
                         )
                     } else {
-                        MarkdownRenderer(content = skillMarkdownContent ?: skill.description ?: "暂无描述")
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 340.dp)
+                                .verticalScroll(rememberScrollState())
+                        ) {
+                            MarkdownRenderer(content = skillMarkdownContent?.ifBlank { skillEditBuffer } ?: skill.description ?: "暂无描述")
+                        }
                     }
                 }
             },
@@ -435,8 +474,8 @@ fun GlobalSettingsScreen(
             },
             dismissButton = {
                 if (isEditingSkillMd) {
-                    TextButton(onClick = { isEditingSkillMd = false }) {
-                        Text("取消编辑", color = theme.textMuted)
+                    TextButton(onClick = { selectedSkillForDetail = null }) {
+                        Text("取消", color = theme.textMuted)
                     }
                 }
             }
@@ -516,9 +555,10 @@ fun GlobalModelsTab(
         modelId: String,
         modelName: String,
         contextWindow: Long,
+        maxTokens: Long,
         reasoning: Boolean,
         supportsVision: Boolean
-    ) -> Unit = { _, _, _, _, _, _, _, _, _ -> },
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> },
     onDeleteModel: (providerName: String, modelId: String) -> Unit = { _, _ -> },
     onLoadModelsRawConfig: suspend () -> String? = { null },
     onSaveModelsRawConfig: (rawJson: String) -> Unit = {}
@@ -869,6 +909,7 @@ fun GlobalModelsTab(
         var modelId by remember(target) { mutableStateOf(target?.id ?: "") }
         var modelName by remember(target) { mutableStateOf(target?.name ?: "") }
         var contextWindowStr by remember(target) { mutableStateOf((target?.contextWindow ?: 200000L).toString()) }
+        var maxTokensStr by remember(target) { mutableStateOf((target?.maxTokens ?: 8192L).toString()) }
         var supportsReasoning by remember(target) { mutableStateOf(target?.supportsThinking ?: true) }
         var supportsVision by remember(target) { mutableStateOf(target?.hasVision ?: false) }
 
@@ -886,7 +927,7 @@ fun GlobalModelsTab(
                     text = if (target == null) "新增自定义模型 / 提供商" else "编辑模型: ${target.displayName}",
                     color = theme.textPrimary,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
+                    fontSize = 15.sp
                 )
             },
             text = {
@@ -900,26 +941,29 @@ fun GlobalModelsTab(
                     OutlinedTextField(
                         value = providerName,
                         onValueChange = { providerName = it },
-                        label = { Text("提供商标识 (如 codywon / deepseek)", color = theme.textSecondary) },
+                        label = { Text("提供商标识 (如 codywon / deepseek)", fontSize = 11.sp, color = theme.textSecondary) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = modelId,
                         onValueChange = { modelId = it },
-                        label = { Text("模型 ID (如 gpt-6.1-sol)", color = theme.textSecondary) },
+                        label = { Text("模型 ID (如 gpt-6.1-sol)", fontSize = 11.sp, color = theme.textSecondary) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = modelName,
                         onValueChange = { modelName = it },
-                        label = { Text("显示名称 (选填)", color = theme.textSecondary) },
+                        label = { Text("显示名称 (选填)", fontSize = 11.sp, color = theme.textSecondary) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
 
-                    Text("接口协议类型：", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary)
+                    Text("接口协议类型：", style = MaterialTheme.typography.labelSmall, fontSize = 11.sp, color = theme.textSecondary)
                     Row(
                         modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -934,7 +978,7 @@ fun GlobalModelsTab(
                             ) {
                                 Text(
                                     text = typeLabel,
-                                    fontSize = 11.sp,
+                                    fontSize = 10.5.sp,
                                     color = if (isSel) theme.primary else theme.textSecondary,
                                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                 )
@@ -945,31 +989,49 @@ fun GlobalModelsTab(
                     OutlinedTextField(
                         value = baseUrl,
                         onValueChange = { baseUrl = it },
-                        label = { Text("接口 Base URL (选填，如 https://api.xxx/v1)", color = theme.textSecondary) },
+                        label = { Text("接口 Base URL (选填，如 https://api.xxx/v1)", fontSize = 11.sp, color = theme.textSecondary) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
                     OutlinedTextField(
                         value = apiKey,
                         onValueChange = { apiKey = it },
-                        label = { Text("API Key 或环境变量名 (选填)", color = theme.textSecondary) },
+                        label = { Text("API Key 或环境变量名 (选填)", fontSize = 11.sp, color = theme.textSecondary) },
+                        textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = contextWindowStr,
-                        onValueChange = { contextWindowStr = it.filter { ch -> ch.isDigit() } },
-                        label = { Text("上下文窗口大小 (Tokens)", color = theme.textSecondary) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+
+                    // 对标 pi-web：同时支持配置输入上下文上限与最大输出 Token 窗口
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = contextWindowStr,
+                            onValueChange = { contextWindowStr = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("输入上下文 (Tokens)", fontSize = 11.sp, color = theme.textSecondary) },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        OutlinedTextField(
+                            value = maxTokensStr,
+                            onValueChange = { maxTokensStr = it.filter { ch -> ch.isDigit() } },
+                            label = { Text("最大输出 (Tokens)", fontSize = 11.sp, color = theme.textSecondary) },
+                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("支持 Thinking 深度推演", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
+                        Text("支持 Thinking 深度推演", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, color = theme.textPrimary)
                         Switch(checked = supportsReasoning, onCheckedChange = { supportsReasoning = it })
                     }
 
@@ -978,7 +1040,7 @@ fun GlobalModelsTab(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("支持 Vision 图像输入", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
+                        Text("支持 Vision 图像输入", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, color = theme.textPrimary)
                         Switch(checked = supportsVision, onCheckedChange = { supportsVision = it })
                     }
                 }
@@ -988,6 +1050,7 @@ fun GlobalModelsTab(
                     onClick = {
                         if (providerName.isNotBlank() && modelId.isNotBlank()) {
                             val ctxWin = contextWindowStr.toLongOrNull() ?: 200000L
+                            val maxTok = maxTokensStr.toLongOrNull() ?: 8192L
                             onSaveCustomModel(
                                 providerName.trim(),
                                 baseUrl.trim(),
@@ -996,6 +1059,7 @@ fun GlobalModelsTab(
                                 modelId.trim(),
                                 modelName.trim().ifBlank { modelId.trim() },
                                 ctxWin,
+                                maxTok,
                                 supportsReasoning,
                                 supportsVision
                             )
@@ -1909,6 +1973,9 @@ fun GlobalSystemSettingsTab(
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     onTestHaptics: () -> Unit = {},
+    completionSoundEnabled: Boolean = true,
+    onToggleCompletionSound: (Boolean) -> Unit = {},
+    onTestCompletionSound: () -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -2048,6 +2115,42 @@ fun GlobalSystemSettingsTab(
                             Switch(
                                 checked = hapticsEnabled,
                                 onCheckedChange = onToggleHaptics,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = theme.primary,
+                                    checkedTrackColor = theme.primary.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = theme.outline)
+
+                    // 对标 pi-web 任务完成提示音
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("任务完成提示音", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text("任务完成时播放提示音（对标 pi-web 提示音）", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = onTestCompletionSound,
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, theme.outline),
+                                modifier = Modifier.height(30.dp)
+                            ) {
+                                Text("测试音效", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                            }
+                            Switch(
+                                checked = completionSoundEnabled,
+                                onCheckedChange = onToggleCompletionSound,
                                 colors = SwitchDefaults.colors(
                                     checkedThumbColor = theme.primary,
                                     checkedTrackColor = theme.primary.copy(alpha = 0.3f)
@@ -2281,11 +2384,11 @@ fun GlobalSystemSettingsTab(
         }
 
         // ==========================================
-        // 关于与软件更新 (扁平化品牌 Logo + 作者 Powered by codywon & CC BY-NC 许可)
+        // 关于与升级 (扁平化品牌 Logo + 作者 Powered by codywon & CC BY-NC 许可)
         // ==========================================
         item {
             InfoTitle(
-                title = "关于与软件更新",
+                title = "关于与升级",
                 infoDescription = "查看版本信息、开发者署名与开源使用许可协议。",
                 style = MaterialTheme.typography.titleMedium
             )
@@ -2305,36 +2408,26 @@ fun GlobalSystemSettingsTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            PiDroidLogo(size = 38.dp)
+                            PiDroidLogo(size = 36.dp)
                             Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "piDroid",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = theme.textPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Surface(
-                                        color = theme.primary.copy(alpha = 0.15f),
-                                        shape = RoundedCornerShape(4.dp)
-                                    ) {
-                                        Text(
-                                            text = "v$currentVersion",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = theme.primary,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "piDroid",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Surface(
+                                color = theme.primary.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(4.dp)
+                            ) {
                                 Text(
-                                    text = "官方发行签名 · 支持平滑覆盖升级",
+                                    text = "v$currentVersion",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = theme.textMuted
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = theme.primary,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
                         }
@@ -2346,7 +2439,8 @@ fun GlobalSystemSettingsTab(
                                 containerColor = theme.primary,
                                 contentColor = Color.White
                             ),
-                            shape = RoundedCornerShape(8.dp)
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
                         ) {
                             if (isCheckingUpdate) {
                                 CircularProgressIndicator(

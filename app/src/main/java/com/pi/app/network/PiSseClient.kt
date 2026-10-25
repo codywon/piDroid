@@ -176,13 +176,87 @@ class PiSseClient(private val prefs: AppPreferences) {
                     )
                 }
 
+                "turn_start" -> {
+                    listOf(
+                        AgentSseEvent(
+                            type = "turn_start",
+                            isStreaming = true,
+                            phaseLabel = "正在等待模型..."
+                        )
+                    )
+                }
+
+                "turn_end" -> {
+                    // 单轮回合结束（如模型刚执行完一个命令即将进入下一轮对话），并非整个会话结束
+                    listOf(
+                        AgentSseEvent(
+                            type = "turn_end",
+                            isStreaming = true,
+                            phaseLabel = "正在等待模型..."
+                        )
+                    )
+                }
+
+                "auto_retry_start" -> {
+                    val attempt = obj.get("attempt")?.takeIf { !it.isJsonNull }?.asInt ?: 1
+                    val maxAttempts = obj.get("maxAttempts")?.takeIf { !it.isJsonNull }?.asInt ?: 3
+                    val delayMs = obj.get("delayMs")?.takeIf { !it.isJsonNull }?.asLong ?: 2000L
+                    val errMsg = obj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
+                    listOf(
+                        AgentSseEvent(
+                            type = "auto_retry_start",
+                            isStreaming = true,
+                            durationMs = delayMs,
+                            output = errMsg,
+                            phaseLabel = "正在自动重试 ($attempt/$maxAttempts)..."
+                        )
+                    )
+                }
+
+                "auto_retry_end" -> {
+                    val success = obj.get("success")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                    val attempt = obj.get("attempt")?.takeIf { !it.isJsonNull }?.asInt ?: 1
+                    val finalErr = obj.get("finalError")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
+                    listOf(
+                        AgentSseEvent(
+                            type = "auto_retry_end",
+                            done = !success,
+                            isStreaming = success,
+                            isError = !success,
+                            output = if (!success) (finalErr ?: "自动重试 ($attempt 次) 后仍失败，任务已终止") else null,
+                            phaseLabel = if (success) "重试成功，正在继续..." else null
+                        )
+                    )
+                }
+
+                "auto_compaction_start", "compaction_start" -> {
+                    listOf(
+                        AgentSseEvent(
+                            type = "auto_compaction_start",
+                            isStreaming = true,
+                            phaseLabel = "正在自动压缩上下文..."
+                        )
+                    )
+                }
+
+                "auto_compaction_end", "compaction_end" -> {
+                    listOf(
+                        AgentSseEvent(
+                            type = "auto_compaction_end",
+                            isStreaming = true,
+                            phaseLabel = "正在等待模型..."
+                        )
+                    )
+                }
+
                 "message_start" -> {
                     // pi-web 在流开始或重连时下发当前正在生成的 message 快照
                     val msgObj = obj.get("message")?.takeIf { it.isJsonObject }?.asJsonObject
                     if (msgObj != null && msgObj.get("role")?.asString == "assistant") {
                         parseAssistantMessageSnapshot(msgObj, isFinal = false)
                     } else {
-                        emptyList()
+                        listOf(AgentSseEvent(type = "message_start", isStreaming = true))
                     }
                 }
 
@@ -221,6 +295,15 @@ class PiSseClient(private val prefs: AppPreferences) {
                                     )
                                 )
                             }
+                            "toolcall_delta" -> {
+                                listOf(
+                                    AgentSseEvent(
+                                        type = "toolcall_delta",
+                                        isStreaming = true,
+                                        phaseLabel = "正在生成工具参数..."
+                                    )
+                                )
+                            }
                             "toolcall_end" -> {
                                 val tcObj = ame.get("toolCall")?.takeIf { it.isJsonObject }?.asJsonObject
                                 val tcId = tcObj?.get("id")?.takeIf { !it.isJsonNull }?.asString
@@ -250,18 +333,24 @@ class PiSseClient(private val prefs: AppPreferences) {
                     if (msgObj != null && msgObj.get("role")?.asString == "assistant") {
                         parseAssistantMessageSnapshot(msgObj, isFinal = true)
                     } else {
-                        emptyList()
+                        listOf(AgentSseEvent(type = "message_end_other", isStreaming = true))
                     }
                 }
 
                 "tool_execution_start" -> {
                     val tcId = obj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
                     val tName = obj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
+                    val argsElem = obj.get("args") ?: obj.get("arguments") ?: obj.get("input")
+                    val preview = extractPreview(argsElem)
+                    val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
                     listOf(
                         AgentSseEvent(
                             type = "tool_execution_start",
                             toolCallId = tcId,
                             toolName = tName,
+                            preview = preview,
+                            command = cmdStr,
+                            isStreaming = true,
                             phaseLabel = "正在执行 $tName..."
                         )
                     )
@@ -280,6 +369,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                             toolName = tName,
                             output = outText,
                             isError = isErr,
+                            isStreaming = true,
                             phaseLabel = "正在执行 $tName..."
                         )
                     )
@@ -288,18 +378,31 @@ class PiSseClient(private val prefs: AppPreferences) {
                 "tool_execution_end" -> {
                     val tcId = obj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
                     val tName = obj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
+                    val resObj = obj.get("result")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val outText = extractContentText(resObj?.get("content"))
+                    val isErr = obj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
+                        ?: resObj?.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
+                        ?: false
                     listOf(
                         AgentSseEvent(
                             type = "tool_execution_end",
                             toolCallId = tcId,
                             toolName = tName,
+                            output = outText,
+                            isError = isErr,
+                            isStreaming = false,
                             phaseLabel = "正在等待模型..."
                         )
                     )
                 }
 
-                "agent_end", "agent_settled", "prompt_done", "turn_completed", "done" -> {
-                    listOf(AgentSseEvent(type = "turn_completed", done = true))
+                "agent_end", "agent_settled", "prompt_done", "agent_idle" -> {
+                    listOf(AgentSseEvent(type = "agent_end", done = true, isStreaming = false))
+                }
+
+                "turn_completed", "done", "message_stop" -> {
+                    // 单条消息流结束，不代表整个多步会话结束
+                    listOf(AgentSseEvent(type = "message_stop", isStreaming = false))
                 }
 
                 else -> {
@@ -350,13 +453,20 @@ class PiSseClient(private val prefs: AppPreferences) {
             usageSummary = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
         }
 
+        val stopReason = msgObj.get("stopReason")?.takeIf { !it.isJsonNull }?.asString
+        val hasToolCalls = stopReason == "toolUse" || stopReason == "tool_calls" ||
+            (msgObj.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.any {
+                it.isJsonObject && it.asJsonObject.get("type")?.takeIf { !it.isJsonNull }?.asString == "toolCall"
+            } == true)
+
         if (isFinal) {
             events.add(
                 AgentSseEvent(
                     type = "message_end_sync",
                     modelName = modelName,
                     usageSummary = usageSummary,
-                    phaseLabel = "正在等待模型..."
+                    isStreaming = hasToolCalls,
+                    phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型..."
                 )
             )
         }

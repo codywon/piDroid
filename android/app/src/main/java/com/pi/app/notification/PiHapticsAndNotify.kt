@@ -4,6 +4,9 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
 import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.VibrationAttributes
 import android.os.VibrationEffect
@@ -82,6 +85,27 @@ class PiHapticsAndNotify(private val context: Context) {
     }
 
     /**
+     * 任务完成提示音：对标 pi-web 任务完成 ACK 提示音
+     */
+    fun playTaskCompletedSound(force: Boolean = false) {
+        if (!force && !prefs.completionSoundEnabled) return
+        try {
+            val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75)
+            toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                runCatching { toneGen.release() }
+            }, 260L)
+        } catch (_: Exception) {
+            try {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val ringtone = RingtoneManager.getRingtone(context, uri)
+                ringtone?.play()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
      * 需要审批危险命令触觉反馈：警示长震
      */
     fun vibrateApprovalRequired() {
@@ -116,7 +140,7 @@ class PiHapticsAndNotify(private val context: Context) {
     }
 
     /**
-     * 更新后台长任务通知
+     * 更新后台长任务通知（静默更新通知文本，震动与提示音统一由 vibrateTaskCompleted / playTaskCompletedSound 控制）
      */
     fun updateTaskNotification(title: String, content: String, isFinished: Boolean = false) {
         try {
@@ -124,7 +148,9 @@ class PiHapticsAndNotify(private val context: Context) {
                 .setSmallIcon(android.R.drawable.stat_notify_sync)
                 .setContentTitle(title)
                 .setContentText(content)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setSilent(true)
+                .setOnlyAlertOnce(true)
                 .setOngoing(!isFinished)
                 .setAutoCancel(isFinished)
 

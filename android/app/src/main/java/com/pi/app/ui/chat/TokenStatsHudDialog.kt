@@ -46,18 +46,22 @@ fun TokenStatsHudDialog(
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         InfoTitle(
                             title = "上下文容量",
                             infoDescription = "当前历史会话占用的 Token 数量以及模型所支持的最大上限。超过 80% 建议执行压缩。",
                             style = MaterialTheme.typography.labelMedium
                         )
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "${stats.contextTokens / 1000}k / ${stats.maxContextWindow / 1000}k (${String.format("%.1f", stats.contextUsagePercent * 100)}%)",
+                            text = "${TokenStats.formatTokenStandard(stats.contextTokens)} / ${TokenStats.formatTokenStandard(stats.maxContextWindow)} (${String.format(java.util.Locale.US, "%.1f%%", stats.contextUsagePercent * 100)})",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            softWrap = false,
                             color = when {
                                 stats.contextUsagePercent > 0.85f -> Color(0xFFCF222E)
                                 stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
@@ -92,7 +96,7 @@ fun TokenStatsHudDialog(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f, fill = false)) {
                             InfoTitle(
                                 title = "Prompt 缓存率",
                                 infoDescription = "基于 Anthropic/OpenAI 的前缀缓存机制：命中缓存的 Token 响应更快且费用减少高达 90%！",
@@ -100,17 +104,20 @@ fun TokenStatsHudDialog(
                             )
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "缓存命中: ${stats.cacheReadTokens} Tokens",
+                                text = "缓存命中: ${TokenStats.formatTokenStandard(stats.cacheReadTokens)} Tokens",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = Color(0xFF2EA043),
                                 fontFamily = FontFamily.Monospace
                             )
                         }
+                        Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "${String.format("%.1f", stats.cacheHitRate)}%",
+                            text = String.format(java.util.Locale.US, "%.1f%%", stats.cacheHitRate),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            softWrap = false,
                             color = Color(0xFF2EA043)
                         )
                     }
@@ -126,7 +133,13 @@ fun TokenStatsHudDialog(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Text("输入 (Prompt)", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
-                            Text("${stats.inputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = theme.textPrimary)
+                            Text(
+                                text = TokenStats.formatTokenStandard(stats.inputTokens),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textPrimary
+                            )
                         }
                     }
                     Surface(
@@ -137,7 +150,13 @@ fun TokenStatsHudDialog(
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
                             Text("输出 (Completion)", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
-                            Text("${stats.outputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = theme.textPrimary)
+                            Text(
+                                text = TokenStats.formatTokenStandard(stats.outputTokens),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textPrimary
+                            )
                         }
                     }
                 }

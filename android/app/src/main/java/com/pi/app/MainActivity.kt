@@ -35,6 +35,9 @@ import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateCheckResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
 
@@ -185,11 +188,21 @@ class MainActivity : ComponentActivity() {
 
         var persistentNotifyEnabled by remember { mutableStateOf(prefs.persistentNotifyEnabled) }
         var hapticsEnabled by remember { mutableStateOf(prefs.hapticsEnabled) }
+        var completionSoundEnabled by remember { mutableStateOf(prefs.completionSoundEnabled) }
+        var pinnedSessionIds by remember { mutableStateOf(prefs.getPinnedSessionIds()) }
+        var customTitles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
+        var isAutoRetrying by remember { mutableStateOf(false) }
+        var isToolExecuting by remember { mutableStateOf(false) }
+        var lastSseActivityAt by remember { mutableStateOf(0L) }
+        var taskStartedAt by remember { mutableStateOf(0L) }
+        var consecutiveIdlePolls by remember { mutableStateOf(0) }
+        var hasNotifiedCompletionForCurrentRun by remember { mutableStateOf(false) }
+        var completionSettleJob by remember { mutableStateOf<Job?>(null) }
         var isCompacting by remember { mutableStateOf(false) }
         var isGatewayOnline by remember { mutableStateOf(true) }
         var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
@@ -236,6 +249,8 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 apiClient.getSessions().onSuccess {
                     sessions = it
+                    pinnedSessionIds = prefs.getPinnedSessionIds()
+                    customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                     isGatewayOnline = true
                 }.onFailure {
                     isGatewayOnline = false
@@ -247,20 +262,114 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 声明 startListeningEvents 以便在 syncSessionSnapshot 检测到 PC 端新启动任务时自动重连 SSE
+        fun autoGenerateTitleForSession(sessionId: String) {
+            lifecycleScope.launch {
+                val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content
+                val titleCandidate = if (!firstUserMsg.isNullOrBlank()) {
+                    val clean = firstUserMsg.lines().firstOrNull { it.isNotBlank() }?.trim() ?: firstUserMsg.trim()
+                    clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
+                } else {
+                    "任务 " + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date())
+                }
+                if (titleCandidate.isNotBlank()) {
+                    prefs.saveSessionCustomTitle(sessionId, titleCandidate)
+                    customTitles = customTitles + (sessionId to titleCandidate)
+                    Toast.makeText(this@MainActivity, "已生成标题: $titleCandidate", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        // 声明 startListeningEvents 与同步回调
         var reattachSseCallback: ((String, Boolean) -> Unit)? = null
+        var syncSnapshotCallback: ((String) -> Unit)? = null
+
+        fun markAgentRunActive(phase: String? = null, clearPhaseIfNull: Boolean = false) {
+            completionSettleJob?.cancel()
+            completionSettleJob = null
+            val now = System.currentTimeMillis()
+            lastSseActivityAt = now
+            consecutiveIdlePolls = 0
+            if (!isAgentBusy) {
+                isAgentBusy = true
+                taskStartedAt = now
+                hasNotifiedCompletionForCurrentRun = false
+                keepAliveManager.acquireWakeLock()
+            }
+            if (phase != null) {
+                agentPhaseLabel = phase
+            } else if (clearPhaseIfNull) {
+                agentPhaseLabel = null
+            }
+            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+        }
+
+        fun completeAgentSessionRun(sessionId: String, syncSnapshot: Boolean = true) {
+            completionSettleJob?.cancel()
+            completionSettleJob = null
+            val shouldNotify = isAgentBusy && !hasNotifiedCompletionForCurrentRun
+            isAgentBusy = false
+            isAutoRetrying = false
+            isToolExecuting = false
+            agentPhaseLabel = null
+            consecutiveIdlePolls = 0
+            keepAliveManager.releaseWakeLock()
+            syncPersistentForegroundService(isBusy = false, project = currentProject)
+
+            if (shouldNotify) {
+                hasNotifiedCompletionForCurrentRun = true
+                if (prefs.hapticsEnabled) {
+                    hapticsAndNotify.vibrateTaskCompleted()
+                }
+                if (prefs.completionSoundEnabled) {
+                    hapticsAndNotify.playTaskCompletedSound()
+                }
+                hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
+            }
+
+            for (i in messages.indices) {
+                val item = messages[i]
+                if (item.isStreaming || item.toolCall?.isRunning == true) {
+                    messages[i] = item.copy(
+                        isStreaming = false,
+                        toolCall = item.toolCall?.copy(isRunning = false)
+                    )
+                }
+            }
+
+            if (syncSnapshot) {
+                syncSnapshotCallback?.invoke(sessionId)
+            }
+        }
+
+        fun scheduleAgentCompletionSettle(sessionId: String, delayMs: Long = 800L) {
+            completionSettleJob?.cancel()
+            completionSettleJob = lifecycleScope.launch {
+                kotlinx.coroutines.delay(delayMs)
+                if (isAutoRetrying || isToolExecuting) return@launch
+                val stillRunning = apiClient.getAgentRunningState(sessionId).getOrDefault(false)
+                if (stillRunning || isAutoRetrying || isToolExecuting) return@launch
+                completeAgentSessionRun(sessionId, syncSnapshot = true)
+            }
+        }
 
         // 增量无损同步会话快照：
         // 1) 保留本地正在流式接收 (isStreaming = true) 或正在执行的工具尾部项，绝不因磁盘尚未落盘而抹掉实时流式文本（彻底解决“挤牙膏”与闪烁问题）
         // 2) 当检测到 PC 端刚启动任务 (!isAgentBusy && isRunning) 时，立即自动挂载 SSE 实时流
-        // 3) 当检测到任务从运行态变为完成态 (isAgentBusy && !isRunning) 时，自动触发马达完成震动
-        suspend fun syncSessionSnapshot(sessionId: String, restoreModelMeta: Boolean = false) {
-            val isRunning = apiClient.getAgentRunningState(sessionId).getOrDefault(isAgentBusy)
+        // 3) 仅在整个会话彻底结束（排除单条工具命令执行间隙与自动重试等待期）时触发完成震动与提示音
+        suspend fun syncSessionSnapshot(
+            sessionId: String,
+            restoreModelMeta: Boolean = false,
+            allowCompletionTransition: Boolean = true
+        ) {
+            val runningResult = apiClient.getAgentRunningState(sessionId)
+            val serverRunning = runningResult.getOrDefault(isAgentBusy)
+            val effectiveRunning = serverRunning || (isAgentBusy && (!allowCompletionTransition || isAutoRetrying || isToolExecuting || consecutiveIdlePolls < 2))
+
             apiClient.getSessionDetail(sessionId).onSuccess { hist ->
                 isGatewayOnline = true
                 if (hist.messages.isNotEmpty()) {
                     val synced = hist.messages.mapIndexed { idx, item ->
-                        if (isRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
+                        if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
                             item.copy(isStreaming = true)
                         } else {
                             item
@@ -278,7 +387,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // 保存当前内存中尚未落盘的流式尾部消息（例如 SSE 正在推送 delta，但服务端 .jsonl 只在 message_end 才写入）
-                    val inFlightTail = if (isRunning && messages.isNotEmpty()) {
+                    val inFlightTail = if (effectiveRunning && messages.isNotEmpty()) {
                         val tail = messages.last()
                         val isInFlightItem = tail.isStreaming || (tail.role == MessageRole.TOOL && tail.toolCall?.isRunning == true)
                         if (isInFlightItem && messages.size > synced.size) tail else null
@@ -313,7 +422,7 @@ class MainActivity : ComponentActivity() {
                                         timestamp = localItem.timestamp,
                                         content = mergedContent,
                                         thinking = mergedThinking,
-                                        isStreaming = isRunning
+                                        isStreaming = effectiveRunning
                                     )
                                     if (!isSameChatContent(localItem, updated)) {
                                         messages[i] = updated
@@ -325,7 +434,7 @@ class MainActivity : ComponentActivity() {
                         }
                         else -> {
                             // messages.size > synced.size：说明本地有乐观发送的消息或正在流式输出的尾部消息
-                            if (isRunning && inFlightTail != null && messages.size == synced.size + 1) {
+                            if (effectiveRunning && inFlightTail != null && messages.size == synced.size + 1) {
                                 for (i in synced.indices) {
                                     val localItem = messages[i]
                                     val diskItem = synced[i]
@@ -334,7 +443,7 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                                 messages[synced.size] = inFlightTail
-                            } else if (!isRunning) {
+                            } else if (!effectiveRunning) {
                                 // 保持已存在索引的 id 稳定，仅截断多余尾部
                                 for (i in synced.indices) {
                                     val localItem = messages[i]
@@ -359,40 +468,43 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            if (isAgentBusy && !isRunning) {
-                isAgentBusy = false
-                agentPhaseLabel = null
-                keepAliveManager.releaseWakeLock()
-                syncPersistentForegroundService(isBusy = false, project = currentProject)
-
-                if (prefs.hapticsEnabled) {
-                    hapticsAndNotify.vibrateTaskCompleted()
+            if (serverRunning) {
+                consecutiveIdlePolls = 0
+                if (!isAgentBusy) {
+                    // PC 端或远端刚启动了任务：立即切换为运行态并重新挂载 SSE 实时流
+                    markAgentRunActive(phase = agentPhaseLabel ?: "正在同步实时输出...")
+                    reattachSseCallback?.invoke(sessionId, true)
                 }
-                hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
-
-                val last = messages.lastOrNull()
-                if (last != null && last.isStreaming) {
-                    messages[messages.size - 1] = last.copy(isStreaming = false)
+            } else if (isAgentBusy && allowCompletionTransition && runningResult.isSuccess) {
+                val now = System.currentTimeMillis()
+                val hasRunningToolCard = messages.any { it.role == MessageRole.TOOL && it.toolCall?.isRunning == true }
+                val isRecentlyStarted = (now - taskStartedAt) < 5_000L
+                val isSseRecentlyActive = sseConnectionState == SseConnectionState.CONNECTED && (now - lastSseActivityAt) < 6_000L
+                if (!isAutoRetrying && !isToolExecuting && !hasRunningToolCard && completionSettleJob?.isActive != true && !isRecentlyStarted && !isSseRecentlyActive) {
+                    consecutiveIdlePolls += 1
+                    if (consecutiveIdlePolls >= 2) {
+                        completeAgentSessionRun(sessionId, syncSnapshot = false)
+                    }
+                } else {
+                    consecutiveIdlePolls = 0
                 }
-            } else if (!isAgentBusy && isRunning) {
-                // PC 端或远端刚启动了任务：立即切换为运行态并重新挂载 SSE 实时流
-                isAgentBusy = true
-                if (agentPhaseLabel == null) agentPhaseLabel = "正在同步实时输出..."
-                keepAliveManager.acquireWakeLock()
-                syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
-                reattachSseCallback?.invoke(sessionId, true)
+            }
+        }
+
+        syncSnapshotCallback = { sid ->
+            lifecycleScope.launch {
+                syncSessionSnapshot(sid, restoreModelMeta = false, allowCompletionTransition = false)
             }
         }
 
         fun startListeningEvents(sessionId: String, initialBusy: Boolean = false) {
             sseJob?.cancel()
             sseJob = lifecycleScope.launch {
-                isAgentBusy = initialBusy
-                agentPhaseLabel = if (initialBusy) "正在等待模型..." else null
-
                 if (initialBusy) {
-                    keepAliveManager.acquireWakeLock()
-                    syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                    markAgentRunActive(phase = "正在等待模型...")
+                } else {
+                    isAgentBusy = false
+                    agentPhaseLabel = null
                 }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
@@ -411,30 +523,63 @@ class MainActivity : ComponentActivity() {
                         "connected" -> {
                             isGatewayOnline = true
                             if (event.isStreaming == true) {
-                                isAgentBusy = true
-                                if (agentPhaseLabel == null) agentPhaseLabel = "正在接收实时流..."
-                                keepAliveManager.acquireWakeLock()
-                                syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                                markAgentRunActive(phase = agentPhaseLabel ?: "正在接收实时流...")
                             }
                         }
                         "reconnected_sync" -> {
-                            syncSessionSnapshot(sessionId, restoreModelMeta = false)
+                            syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = true)
                         }
-                        "agent_start" -> {
-                            isAgentBusy = true
-                            agentPhaseLabel = event.phaseLabel ?: "正在等待模型..."
-                            keepAliveManager.acquireWakeLock()
-                            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                        "agent_start", "turn_start" -> {
+                            isAutoRetrying = false
+                            markAgentRunActive(phase = event.phaseLabel ?: "正在等待模型...")
+                        }
+                        "turn_end", "message_start", "message_end_other", "toolcall_delta" -> {
+                            markAgentRunActive(phase = event.phaseLabel)
+                        }
+                        "auto_retry_start" -> {
+                            isAutoRetrying = true
+                            isToolExecuting = false
+                            markAgentRunActive(phase = event.phaseLabel ?: "正在自动重试...")
+                        }
+                        "auto_retry_end" -> {
+                            isAutoRetrying = false
+                            if (event.done) {
+                                // 重试多次后最终终止，代表整个会话结束，触发震动与提示音
+                                isToolExecuting = false
+                                if (!event.output.isNullOrBlank()) {
+                                    val last = messages.lastOrNull()
+                                    if (last != null && last.role == MessageRole.AGENT) {
+                                        val errSuffix = "\n\n⚠️ ${event.output}"
+                                        if (!last.content.contains(event.output)) {
+                                            messages[messages.size - 1] = last.copy(
+                                                content = (last.content + errSuffix).trim(),
+                                                isStreaming = false
+                                            )
+                                        }
+                                    } else {
+                                        messages.add(
+                                            ChatItem(
+                                                role = MessageRole.AGENT,
+                                                content = "⚠️ ${event.output}",
+                                                modelName = selectedModel.displayName,
+                                                isStreaming = false
+                                            )
+                                        )
+                                    }
+                                }
+                                scheduleAgentCompletionSettle(sessionId, delayMs = 300L)
+                            } else {
+                                markAgentRunActive(phase = event.phaseLabel ?: "重试成功，正在继续...")
+                            }
+                        }
+                        "auto_compaction_start", "auto_compaction_end" -> {
+                            markAgentRunActive(phase = event.phaseLabel ?: "正在自动压缩上下文...")
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
                             val chunk = event.effectiveText
                             if (chunk.isNotEmpty()) {
-                                if (!isAgentBusy) {
-                                    isAgentBusy = true
-                                    keepAliveManager.acquireWakeLock()
-                                    syncPersistentForegroundService(isBusy = true, project = currentProject, phase = "正在生成回复...")
-                                }
-                                agentPhaseLabel = null
+                                isAutoRetrying = false
+                                markAgentRunActive(phase = null, clearPhaseIfNull = true)
                                 val last = messages.lastOrNull()
                                 if (last != null && last.role == MessageRole.AGENT) {
                                     val updated = last.copy(
@@ -457,6 +602,7 @@ class MainActivity : ComponentActivity() {
                         "text_replace" -> {
                             val fullText = event.effectiveText
                             if (fullText.isNotEmpty()) {
+                                lastSseActivityAt = System.currentTimeMillis()
                                 val last = messages.lastOrNull()
                                 if (last != null && last.role == MessageRole.AGENT) {
                                     messages[messages.size - 1] = last.copy(
@@ -469,8 +615,8 @@ class MainActivity : ComponentActivity() {
                         "thinking", "thinking_delta" -> {
                             val thinkChunk = event.thinking ?: event.effectiveText
                             if (thinkChunk.isNotEmpty()) {
-                                if (!isAgentBusy) isAgentBusy = true
-                                agentPhaseLabel = null
+                                isAutoRetrying = false
+                                markAgentRunActive(phase = null, clearPhaseIfNull = true)
                                 val last = messages.lastOrNull()
                                 if (last != null && last.role == MessageRole.AGENT && last.content.isEmpty()) {
                                     val updated = last.copy(
@@ -494,6 +640,7 @@ class MainActivity : ComponentActivity() {
                         "thinking_replace" -> {
                             val fullThink = event.thinking ?: ""
                             if (fullThink.isNotEmpty()) {
+                                lastSseActivityAt = System.currentTimeMillis()
                                 val lastIdx = messages.indexOfLast { it.role == MessageRole.AGENT && it.thinking != null }
                                 if (lastIdx >= 0) {
                                     val existing = messages[lastIdx]
@@ -502,9 +649,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "tool", "tool_call", "tool_use", "tool_start" -> {
-                            if (!isAgentBusy) isAgentBusy = true
+                            isAutoRetrying = false
+                            isToolExecuting = true
                             val toolName = event.effectiveToolName
-                            agentPhaseLabel = event.phaseLabel ?: "正在准备工具 $toolName..."
+                            markAgentRunActive(phase = event.phaseLabel ?: "正在准备工具 $toolName...")
                             val existingIdx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else -1
@@ -528,6 +676,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "tool_call_ready" -> {
+                            isAutoRetrying = false
+                            isToolExecuting = true
+                            markAgentRunActive(phase = event.phaseLabel)
                             val idx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else {
@@ -541,7 +692,8 @@ class MainActivity : ComponentActivity() {
                                         toolCallId = event.toolCallId?.takeIf { it.isNotBlank() } ?: existingTool.toolCallId,
                                         toolName = event.effectiveToolName,
                                         preview = event.preview?.takeIf { it.isNotBlank() } ?: existingTool.preview,
-                                        command = event.effectiveCommand?.takeIf { it.isNotBlank() } ?: existingTool.command
+                                        command = event.effectiveCommand?.takeIf { it.isNotBlank() } ?: existingTool.command,
+                                        isRunning = true
                                     )
                                 )
                             } else {
@@ -562,10 +714,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "tool_execution_start" -> {
-                            if (!isAgentBusy) isAgentBusy = true
+                            isAutoRetrying = false
+                            isToolExecuting = true
                             val toolName = event.effectiveToolName
-                            agentPhaseLabel = event.phaseLabel ?: "正在执行 $toolName..."
-                            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                            markAgentRunActive(phase = event.phaseLabel ?: "正在执行 $toolName...")
                             val idx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else {
@@ -601,6 +753,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "tool_result", "tool_output", "tool_end", "tool_execution_end" -> {
+                            val isEndOfTool = event.type == "tool_execution_end" || event.type == "tool_end"
                             val idx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else {
@@ -610,21 +763,30 @@ class MainActivity : ComponentActivity() {
                                 val existing = messages[idx]
                                 val existingTool = existing.toolCall
                                 if (existingTool != null) {
+                                    val newOutput = event.output ?: event.effectiveText.ifBlank { existingTool.output }
                                     messages[idx] = existing.copy(
                                         toolCall = existingTool.copy(
-                                            output = event.output ?: event.effectiveText.ifBlank { existingTool.output },
+                                            output = newOutput,
                                             durationMs = event.durationMs ?: existingTool.durationMs,
                                             isError = event.isError || existingTool.isError,
-                                            isRunning = event.isStreaming ?: false
+                                            isRunning = if (isEndOfTool) false else (event.isStreaming ?: true)
                                         )
                                     )
                                 }
                             }
-                            if (event.type == "tool_execution_end") {
-                                agentPhaseLabel = event.phaseLabel ?: "正在等待模型..."
-                            }
+                            // 单个命令执行完仅更新卡片状态并继续等待模型下一轮推理，绝不触发任务完成震动或提示音
+                            val anyOtherToolRunning = messages.any { it.role == MessageRole.TOOL && it.toolCall?.isRunning == true }
+                            isToolExecuting = !isEndOfTool || anyOtherToolRunning
+                            markAgentRunActive(
+                                phase = if (isEndOfTool) (event.phaseLabel ?: "正在等待模型...") else event.phaseLabel
+                            )
                         }
                         "message_end_sync" -> {
+                            lastSseActivityAt = System.currentTimeMillis()
+                            if (event.isStreaming == true) {
+                                isToolExecuting = true
+                                markAgentRunActive(phase = event.phaseLabel)
+                            }
                             val last = messages.lastOrNull()
                             if (last != null) {
                                 messages[messages.size - 1] = last.copy(
@@ -634,10 +796,18 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             lifecycleScope.launch {
-                                syncSessionSnapshot(sessionId, restoreModelMeta = false)
+                                syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = false)
+                            }
+                        }
+                        "message_stop" -> {
+                            lastSseActivityAt = System.currentTimeMillis()
+                            val last = messages.lastOrNull()
+                            if (last != null && last.isStreaming) {
+                                messages[messages.size - 1] = last.copy(isStreaming = false)
                             }
                         }
                         "approval_required" -> {
+                            lastSseActivityAt = System.currentTimeMillis()
                             if (prefs.hapticsEnabled) {
                                 hapticsAndNotify.vibrateApprovalRequired()
                             }
@@ -657,23 +827,12 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                         }
-                        "turn_completed", "done", "message_stop", "agent_idle" -> {
-                            val wasBusy = isAgentBusy
-                            isAgentBusy = false
-                            agentPhaseLabel = null
-                            keepAliveManager.releaseWakeLock()
-                            syncPersistentForegroundService(isBusy = false, project = currentProject)
-
-                            if (wasBusy && prefs.hapticsEnabled) {
-                                hapticsAndNotify.vibrateTaskCompleted()
+                        "agent_end" -> {
+                            // 仅当整个 Agent 会话执行链结束（且未处于自动重试等待期）时，经防抖确认后触发震动与提示音
+                            isToolExecuting = false
+                            if (!isAutoRetrying) {
+                                scheduleAgentCompletionSettle(sessionId, delayMs = 800L)
                             }
-                            hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
-
-                            val last = messages.lastOrNull()
-                            if (last != null && last.isStreaming) {
-                                messages[messages.size - 1] = last.copy(isStreaming = false)
-                            }
-                            syncSessionSnapshot(sessionId, restoreModelMeta = false)
                         }
                     }
                 }
@@ -686,17 +845,23 @@ class MainActivity : ComponentActivity() {
 
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
         fun openSessionWithHistory(session: Session) {
+            completionSettleJob?.cancel()
+            completionSettleJob = null
             currentSession = session
             currentProject = session.workspaceName
             messages.clear()
             queuedMessages.clear()
+            isAutoRetrying = false
+            isToolExecuting = false
+            consecutiveIdlePolls = 0
+            hasNotifiedCompletionForCurrentRun = !session.active
             isAgentBusy = session.active
             agentPhaseLabel = if (session.active) "正在等待模型..." else null
 
             startListeningEvents(session.id, session.active)
 
             lifecycleScope.launch {
-                syncSessionSnapshot(session.id, restoreModelMeta = true)
+                syncSessionSnapshot(session.id, restoreModelMeta = true, allowCompletionTransition = false)
             }
         }
 
@@ -718,7 +883,7 @@ class MainActivity : ComponentActivity() {
                 while (true) {
                     val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 2_500L
                     kotlinx.coroutines.delay(delayMs)
-                    syncSessionSnapshot(activeSession.id, restoreModelMeta = false)
+                    syncSessionSnapshot(activeSession.id, restoreModelMeta = false, allowCompletionTransition = true)
                 }
             }
         }
@@ -800,7 +965,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onSaveCustomModel = { providerName, baseUrl, apiKey, apiType, modelId, modelName, contextWindow, reasoning, supportsVision ->
+                    onSaveCustomModel = { providerName, baseUrl, apiKey, apiType, modelId, modelName, contextWindow, maxTokens, reasoning, supportsVision ->
                         // 立即在本地模型列表中乐观生效，同时同步至网关
                         val updatedModel = ModelInfo(
                             id = modelId,
@@ -808,7 +973,8 @@ class MainActivity : ComponentActivity() {
                             provider = providerName,
                             supportsVision = supportsVision,
                             supportsThinking = reasoning,
-                            contextWindow = contextWindow
+                            contextWindow = contextWindow,
+                            maxTokens = maxTokens
                         )
                         val existingIdx = dynamicCatalog.models.indexOfFirst { it.provider == providerName && it.id == modelId }
                         val updatedList = if (existingIdx >= 0) {
@@ -827,6 +993,7 @@ class MainActivity : ComponentActivity() {
                                 modelId = modelId,
                                 modelName = modelName,
                                 contextWindow = contextWindow,
+                                maxTokens = maxTokens,
                                 reasoning = reasoning,
                                 supportsVision = supportsVision
                             ).onSuccess {
@@ -1013,6 +1180,18 @@ class MainActivity : ComponentActivity() {
                         hapticsAndNotify.vibrateTaskCompleted()
                         Toast.makeText(this@MainActivity, "已触发任务完成双连震动测试", Toast.LENGTH_SHORT).show()
                     },
+                    completionSoundEnabled = completionSoundEnabled,
+                    onToggleCompletionSound = { enabled ->
+                        completionSoundEnabled = enabled
+                        prefs.completionSoundEnabled = enabled
+                        if (enabled) {
+                            hapticsAndNotify.playTaskCompletedSound(force = true)
+                        }
+                    },
+                    onTestCompletionSound = {
+                        hapticsAndNotify.playTaskCompletedSound(force = true)
+                        Toast.makeText(this@MainActivity, "已播放任务完成提示音", Toast.LENGTH_SHORT).show()
+                    },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
@@ -1034,8 +1213,11 @@ class MainActivity : ComponentActivity() {
             }
             currentSession != null -> {
                 // 工作台任务执行界面
+                val activeSessionId = currentSession?.id ?: ""
+                val activeCustomTitle = customTitles[activeSessionId] ?: prefs.getSessionCustomTitle(activeSessionId)
+                val isPinned = pinnedSessionIds.contains(activeSessionId)
                 ChatScreen(
-                    sessionTitle = currentSession?.displayTitle ?: "任务控制台",
+                    sessionTitle = activeCustomTitle ?: currentSession?.displayTitle ?: "任务控制台",
                     currentProject = currentProject,
                     selectedModel = selectedModel,
                     thinkingLevel = currentThinkingLevel,
@@ -1046,9 +1228,27 @@ class MainActivity : ComponentActivity() {
                     sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
                     isCompacting = isCompacting,
+                    isPinned = isPinned,
+                    onTogglePin = {
+                        val pinned = prefs.togglePinSession(activeSessionId)
+                        pinnedSessionIds = prefs.getPinnedSessionIds()
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (pinned) "已置顶任务" else "已取消置顶",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onAutoGenerateTitle = {
+                        autoGenerateTitleForSession(activeSessionId)
+                    },
                     onBack = {
+                        completionSettleJob?.cancel()
+                        completionSettleJob = null
                         sseJob?.cancel()
                         currentSession = null
+                        isAgentBusy = false
+                        isAutoRetrying = false
+                        isToolExecuting = false
                         agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
@@ -1058,7 +1258,7 @@ class MainActivity : ComponentActivity() {
                     onRefreshSession = {
                         currentSession?.let { sess ->
                             lifecycleScope.launch {
-                                syncSessionSnapshot(sess.id, restoreModelMeta = true)
+                                syncSessionSnapshot(sess.id, restoreModelMeta = true, allowCompletionTransition = false)
                                 Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -1079,7 +1279,12 @@ class MainActivity : ComponentActivity() {
                     onStopAgent = {
                         lifecycleScope.launch {
                             apiClient.stopAgent(currentSession!!.id).onSuccess {
+                                completionSettleJob?.cancel()
+                                completionSettleJob = null
+                                hasNotifiedCompletionForCurrentRun = true
                                 isAgentBusy = false
+                                isAutoRetrying = false
+                                isToolExecuting = false
                                 agentPhaseLabel = null
                                 keepAliveManager.releaseWakeLock()
                                 syncPersistentForegroundService(isBusy = false, project = currentProject)
@@ -1089,11 +1294,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onSendMessage = { prompt ->
                         val sid = currentSession!!.id
+                        if (messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
+                            val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
+                            val autoTitle = clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
+                            if (autoTitle.isNotBlank()) {
+                                prefs.saveSessionCustomTitle(sid, autoTitle)
+                                customTitles = customTitles + (sid to autoTitle)
+                            }
+                        }
                         messages.add(ChatItem(role = MessageRole.USER, content = prompt))
-                        isAgentBusy = true
-                        agentPhaseLabel = "正在等待模型..."
-                        keepAliveManager.acquireWakeLock()
-                        syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                        isAutoRetrying = false
+                        hasNotifiedCompletionForCurrentRun = false
+                        markAgentRunActive(phase = "正在等待模型...")
                         // 确保 SSE 已连接
                         if (sseConnectionState != SseConnectionState.CONNECTED) {
                             startListeningEvents(sid, initialBusy = true)
@@ -1169,6 +1381,17 @@ class MainActivity : ComponentActivity() {
                     isGatewayOnline = isGatewayOnline,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
+                    pinnedSessionIds = pinnedSessionIds,
+                    customTitles = customTitles,
+                    onTogglePinSession = { sid ->
+                        val pinned = prefs.togglePinSession(sid)
+                        pinnedSessionIds = prefs.getPinnedSessionIds()
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (pinned) "已置顶任务" else "已取消置顶",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
                     onRefresh = { loadSessions() },
                     onSessionClick = { session ->
                         openSessionWithHistory(session)

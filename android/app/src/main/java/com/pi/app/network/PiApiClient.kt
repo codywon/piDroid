@@ -791,21 +791,48 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getAgentRunningState(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(false)
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("Server URL is empty"))
         try {
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId/status").get().build()
+            val req = Request.Builder().url("$baseUrl/api/sessions").get().build()
             client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
-                    val isRunning = json.get("running")?.asBoolean ?: false
-                    Result.success(isRunning)
-                } else {
-                    Result.success(false)
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Failed to query session running state: ${response.code}"))
                 }
+                val body = response.body?.string() ?: "{}"
+                val jsonElement = JsonParser.parseString(body)
+                if (jsonElement.isJsonObject) {
+                    val obj = jsonElement.asJsonObject
+                    if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
+                        val runningIds = obj.getAsJsonArray("runningSessionIds")
+                            .mapNotNull { runCatching { it.asString }.getOrNull() }
+                            .toSet()
+                        if (runningIds.contains(sessionId)) {
+                            return@withContext Result.success(true)
+                        }
+                    }
+                    if (obj.has("sessions") && obj.get("sessions").isJsonArray) {
+                        val sessionsArr = obj.getAsJsonArray("sessions")
+                        for (el in sessionsArr) {
+                            if (el.isJsonObject) {
+                                val sObj = el.asJsonObject
+                                val id = sObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                if (id == sessionId) {
+                                    val active = sObj.get("active")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                    val isRunning = sObj.get("isRunning")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                    val isStreaming = sObj.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                    return@withContext Result.success(active || isRunning || isStreaming)
+                                }
+                            }
+                        }
+                    }
+                    if (obj.has("runningSessionIds")) {
+                        return@withContext Result.success(false)
+                    }
+                }
+                Result.failure(Exception("Unrecognized running state payload"))
             }
         } catch (e: Exception) {
-            Result.success(false)
+            Result.failure(e)
         }
     }
 

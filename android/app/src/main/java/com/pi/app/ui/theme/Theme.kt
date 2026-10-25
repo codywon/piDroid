@@ -1,12 +1,16 @@
 package com.pi.app.ui.theme
 
+import android.app.Activity
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 val LocalAppTheme = compositionLocalOf { AppTheme.LIGHT_PAPER }
 val LocalTextPrimary = compositionLocalOf { Color(0xFF1F2328) }
@@ -97,6 +101,17 @@ fun PiDroidTheme(
             outlineVariant = Color(0xFFE5EAF0),
             error = Color(0xFFCF222E)
         )
+    }
+
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as? Activity)?.window ?: return@SideEffect
+            val insetsController = WindowCompat.getInsetsController(window, view)
+            // 浅色主题下将状态栏与导航栏图标反色为黑色，深色主题下反色为白色
+            insetsController.isAppearanceLightStatusBars = !theme.isDark
+            insetsController.isAppearanceLightNavigationBars = !theme.isDark
+        }
     }
 
     CompositionLocalProvider(

@@ -34,6 +34,11 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_HAPTICS_ENABLED, true)
         set(value) = prefs.edit().putBoolean(KEY_HAPTICS_ENABLED, value).apply()
 
+    // 任务完成提示音开关：默认开启 (对标 pi-web)
+    var completionSoundEnabled: Boolean
+        get() = prefs.getBoolean(KEY_COMPLETION_SOUND_ENABLED, true)
+        set(value) = prefs.edit().putBoolean(KEY_COMPLETION_SOUND_ENABLED, value).apply()
+
     var defaultModelId: String
         get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
         set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
@@ -48,6 +53,36 @@ class AppPreferences(context: Context) {
 
     fun saveSkillAlias(skillName: String, alias: String) {
         prefs.edit().putString("alias_$skillName", alias).apply()
+    }
+
+    // 会话置顶管理
+    fun getPinnedSessionIds(): Set<String> {
+        return prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()
+    }
+
+    fun isSessionPinned(sessionId: String): Boolean {
+        return getPinnedSessionIds().contains(sessionId)
+    }
+
+    fun togglePinSession(sessionId: String): Boolean {
+        val current = getPinnedSessionIds().toMutableSet()
+        val willPin = !current.contains(sessionId)
+        if (willPin) {
+            current.add(sessionId)
+        } else {
+            current.remove(sessionId)
+        }
+        prefs.edit().putStringSet(KEY_PINNED_SESSIONS, current).apply()
+        return willPin
+    }
+
+    // 会话自定义与自动生成标题
+    fun getSessionCustomTitle(sessionId: String): String? {
+        return prefs.getString("session_title_$sessionId", null)
+    }
+
+    fun saveSessionCustomTitle(sessionId: String, title: String) {
+        prefs.edit().putString("session_title_$sessionId", title.trim()).apply()
     }
 
     val isConfigured: Boolean
@@ -75,7 +110,10 @@ class AppPreferences(context: Context) {
         private const val KEY_AUTO_SPEAK = "key_auto_speak"
         private const val KEY_PERSISTENT_NOTIFY = "key_persistent_notify"
         private const val KEY_HAPTICS_ENABLED = "key_haptics_enabled"
+        private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
+        private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"
     }
 }
+

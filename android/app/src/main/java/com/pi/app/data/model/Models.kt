@@ -106,6 +106,31 @@ data class TokenStats(
             if (cost >= 0.0001) parts.add(String.format(Locale.US, "$%.4f", cost))
             return if (parts.isEmpty()) null else parts.joinToString(" · ")
         }
+
+        fun formatTokenStandard(tokens: Long): String {
+            if (tokens <= 0L) return "0"
+            return when {
+                tokens >= 1_000_000_000_000_000L -> String.format(Locale.US, "%.1f PB", tokens / 1_000_000_000_000_000.0).replace(".0 PB", " PB")
+                tokens >= 1_000_000_000_000L -> String.format(Locale.US, "%.1f TB", tokens / 1_000_000_000_000.0).replace(".0 TB", " TB")
+                tokens >= 1_000_000_000L -> String.format(Locale.US, "%.1f B", tokens / 1_000_000_000.0).replace(".0 B", " B")
+                tokens >= 1_000_000L -> String.format(Locale.US, "%.1f M", tokens / 1_000_000.0).replace(".0 M", " M")
+                tokens >= 1_000L -> String.format(Locale.US, "%.1f K", tokens / 1000.0).replace(".0 K", " K")
+                else -> tokens.toString()
+            }
+        }
+
+        fun formatTokenCompact(tokens: Long): String {
+            if (tokens <= 0L) return "0"
+            return when {
+                tokens >= 1_000_000_000_000_000L -> String.format(Locale.US, "%.1fP", tokens / 1_000_000_000_000_000.0).replace(".0P", "P")
+                tokens >= 1_000_000_000_000L -> String.format(Locale.US, "%.1fT", tokens / 1_000_000_000_000.0).replace(".0T", "T")
+                tokens >= 1_000_000_000L -> String.format(Locale.US, "%.1fB", tokens / 1_000_000_000.0).replace(".0B", "B")
+                tokens >= 1_000_000L -> String.format(Locale.US, "%.1fM", tokens / 1_000_000.0).replace(".0M", "M")
+                tokens >= 10_000L -> "${tokens / 1000}K"
+                tokens >= 1_000L -> String.format(Locale.US, "%.1fK", tokens / 1000.0).replace(".0K", "K")
+                else -> tokens.toString()
+            }
+        }
     }
 }
 
