@@ -75,15 +75,20 @@ class MainActivity : ComponentActivity() {
         hapticsAndNotify = PiHapticsAndNotify(this)
 
         keepAliveManager = KeepAliveManager(this)
-        updateChecker = UpdateChecker(currentVersion = "1.2.0")
+        updateChecker = UpdateChecker(currentVersion = "1.3.0")
         apkInstaller = ApkInstaller(this)
 
         checkAndRequestPermissions()
 
         setContent {
-            MaterialTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    MainAppNav()
+            com.pi.app.ui.theme.TermiusColorScheme.let { scheme ->
+                MaterialTheme(colorScheme = scheme) {
+                    Surface(
+                        modifier = Modifier.fillMaxSize(),
+                        color = com.pi.app.ui.theme.TermiusBlack
+                    ) {
+                        MainAppNav()
+                    }
                 }
             }
         }
@@ -109,7 +114,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun MainAppNav() {
         var isScanning by remember { mutableStateOf(false) }
-        var showSettings by remember { mutableStateOf(!prefs.isConfigured) }
+        var showSettings by remember { mutableStateOf(false) } // 首次打开绝不弹窗打扰用户
         var showCapabilities by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
 
@@ -419,6 +424,7 @@ class MainActivity : ComponentActivity() {
                 SessionListScreen(
                     deviceName = prefs.deviceName,
                     serverUrl = prefs.serverUrl,
+                    isConfigured = prefs.isConfigured,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
                     onRefresh = { loadSessions() },

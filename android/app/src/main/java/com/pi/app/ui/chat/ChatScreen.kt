@@ -1,6 +1,7 @@
 package com.pi.app.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -23,6 +24,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pi.app.data.model.*
+import com.pi.app.ui.components.InfoTitle
+import com.pi.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -66,8 +69,13 @@ fun ChatScreen(
     }
 
     Scaffold(
+        containerColor = TermiusBlack,
         topBar = {
             TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = TermiusBlack,
+                    titleContentColor = TermiusTextPrimary
+                ),
                 title = {
                     Column {
                         // 顶部项目快速切换下拉菜单
@@ -81,24 +89,26 @@ fun ChatScreen(
                                 text = currentProject.ifBlank { "默认项目" },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
-                                maxLines = 1
+                                maxLines = 1,
+                                color = TermiusTextPrimary
                             )
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = TermiusTextSecondary)
 
                             DropdownMenu(
                                 expanded = showProjectDropdown,
-                                onDismissRequest = { showProjectDropdown = false }
+                                onDismissRequest = { showProjectDropdown = false },
+                                modifier = Modifier.background(TermiusSurface)
                             ) {
                                 Text(
-                                    "快速切换工作区项目",
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                                    "工作区",
+                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.outline
+                                    color = TermiusTextMuted
                                 )
                                 projects.forEach { proj ->
                                     DropdownMenuItem(
-                                        text = { Text(proj.name) },
-                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
+                                        text = { Text(proj.name, color = TermiusTextPrimary) },
+                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = TermiusBlue) },
                                         onClick = {
                                             showProjectDropdown = false
                                             onProjectSwitch(proj)
@@ -107,22 +117,29 @@ fun ChatScreen(
                                 }
                             }
                         }
-                        Text(
-                            text = if (isAgentBusy) "⚡ 正在执行任务..." else "就绪",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (isAgentBusy) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                modifier = Modifier.size(6.dp),
+                                shape = CircleShape,
+                                color = if (isAgentBusy) TermiusBlue else TermiusGreen
+                            ) {}
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (isAgentBusy) "正在执行..." else "就绪",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TermiusTextSecondary
+                            )
+                        }
                     }
                 },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = TermiusTextSecondary)
                     }
                 },
                 actions = {
-                    // 能力与扩展中心 (Skills, MCP, Providers)
                     IconButton(onClick = onOpenCapabilities) {
-                        Icon(Icons.Default.AutoFixHigh, contentDescription = "扩展中心")
+                        Icon(Icons.Default.AutoFixHigh, contentDescription = "扩展", tint = TermiusTextSecondary)
                     }
                 }
             )
@@ -131,31 +148,32 @@ fun ChatScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
+                    .background(TermiusBlack)
                     .navigationBarsPadding()
             ) {
                 // 1. 录音状态浮窗
                 AnimatedVisibility(visible = isVoiceRecording) {
                     Surface(
-                        color = MaterialTheme.colorScheme.primaryContainer,
+                        color = Color(0xFF1B3D23),
+                        border = BorderStroke(1.dp, TermiusGreen.copy(alpha = 0.5f)),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         shape = RoundedCornerShape(8.dp)
                     ) {
                         Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = TermiusGreen)
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (voicePartialText.isBlank()) "正在倾听语音指令..." else voicePartialText,
+                                text = if (voicePartialText.isBlank()) "正在倾听..." else voicePartialText,
                                 style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                color = TermiusTextPrimary
                             )
                         }
                     }
                 }
 
-                // 2. 继承自 pi-web 的“高能胶囊控制条”（Power Capsule Bar）
+                // 2. Termius 极客风格高能胶囊条
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -164,42 +182,81 @@ fun ChatScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // 模型快速切换胶囊
-                    SuggestionChip(
-                        onClick = onOpenModelSheet,
-                        label = { Text(selectedModel.name.take(16), style = MaterialTheme.typography.labelSmall) },
-                        icon = { Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    )
+                    // 模型
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = TermiusSurface,
+                        border = BorderStroke(1.dp, TermiusBorder),
+                        modifier = Modifier.clickable { onOpenModelSheet() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Tune, contentDescription = null, modifier = Modifier.size(13.dp), tint = TermiusBlue)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(selectedModel.name.take(14), style = MaterialTheme.typography.labelSmall, color = TermiusTextPrimary)
+                        }
+                    }
 
-                    // 思考深度胶囊
-                    SuggestionChip(
-                        onClick = onOpenModelSheet,
-                        label = { Text(thinkingLevel.label.take(6), style = MaterialTheme.typography.labelSmall) },
-                        icon = { Icon(Icons.Default.Psychology, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    )
+                    // 思考
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = TermiusSurface,
+                        border = BorderStroke(1.dp, TermiusBorder),
+                        modifier = Modifier.clickable { onOpenModelSheet() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Psychology, contentDescription = null, modifier = Modifier.size(13.dp), tint = TermiusBlue)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(thinkingLevel.label.take(4), style = MaterialTheme.typography.labelSmall, color = TermiusTextPrimary)
+                        }
+                    }
 
-                    // 一键压缩上下文胶囊
-                    SuggestionChip(
-                        onClick = onCompactContext,
-                        label = { Text("压缩上下文", style = MaterialTheme.typography.labelSmall) },
-                        icon = { Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    )
+                    // 压缩
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = TermiusSurface,
+                        border = BorderStroke(1.dp, TermiusBorder),
+                        modifier = Modifier.clickable { onCompactContext() }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(13.dp), tint = TermiusTextSecondary)
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("压缩", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary)
+                        }
+                    }
 
-                    // Token 与缓存命中率 HUD 胶囊
-                    SuggestionChip(
-                        onClick = { showHudDialog = true },
-                        label = {
+                    // Token 与缓存 HUD
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = TermiusSurface,
+                        border = BorderStroke(1.dp, TermiusBorder),
+                        modifier = Modifier.clickable { showHudDialog = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(13.dp), tint = TermiusGreen)
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "${tokenStats.contextTokens / 1000}k/${tokenStats.maxContextWindow / 1000}k (命中率 ${String.format("%.0f", tokenStats.cacheHitRate)}%)",
+                                text = "${tokenStats.contextTokens / 1000}k/${tokenStats.maxContextWindow / 1000}k (${String.format("%.0f", tokenStats.cacheHitRate)}%)",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (tokenStats.contextUsagePercent > 0.8f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                fontFamily = FontFamily.Monospace,
+                                color = if (tokenStats.contextUsagePercent > 0.8f) TermiusRed else TermiusGreen
                             )
-                        },
-                        icon = { Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                    )
+                        }
+                    }
                 }
 
-                // 3. 底部输入区（单手优化：左侧打字，右侧悬浮语音大按键）
+                // 3. 底部极客输入栏
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -209,10 +266,18 @@ fun ChatScreen(
                     OutlinedTextField(
                         value = inputText,
                         onValueChange = { inputText = it },
-                        placeholder = { Text("输入或说话交代任务...") },
+                        placeholder = { Text("输入指令...", color = TermiusTextMuted) },
                         modifier = Modifier.weight(1f),
                         maxLines = 4,
-                        shape = RoundedCornerShape(24.dp)
+                        shape = RoundedCornerShape(10.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = TermiusBlue,
+                            unfocusedBorderColor = TermiusBorder,
+                            focusedTextColor = TermiusTextPrimary,
+                            unfocusedTextColor = TermiusTextPrimary,
+                            focusedContainerColor = TermiusSurface,
+                            unfocusedContainerColor = TermiusSurface
+                        )
                     )
 
                     Spacer(modifier = Modifier.width(8.dp))
@@ -224,8 +289,8 @@ fun ChatScreen(
                                 inputText = ""
                             },
                             modifier = Modifier
-                                .size(48.dp)
-                                .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                .size(44.dp)
+                                .background(TermiusBlue, RoundedCornerShape(10.dp))
                         ) {
                             Icon(Icons.Default.Send, contentDescription = "发送", tint = Color.White)
                         }
@@ -233,10 +298,10 @@ fun ChatScreen(
                         IconButton(
                             onClick = {},
                             modifier = Modifier
-                                .size(48.dp)
+                                .size(44.dp)
                                 .background(
-                                    if (isVoiceRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                                    CircleShape
+                                    if (isVoiceRecording) TermiusRed else TermiusBlue,
+                                    RoundedCornerShape(10.dp)
                                 )
                                 .pointerInput(Unit) {
                                     detectTapGestures(
@@ -261,7 +326,7 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
                 .padding(horizontal = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             items(messages, key = { it.id }) { message ->
                 ChatMessageCard(
@@ -294,12 +359,13 @@ fun ChatMessageCard(
         MessageRole.USER -> {
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
-                    color = MaterialTheme.colorScheme.primary,
-                    shape = RoundedCornerShape(16.dp, 16.dp, 2.dp, 16.dp)
+                    color = Color(0xFF1F3556),
+                    shape = RoundedCornerShape(12.dp, 12.dp, 2.dp, 12.dp),
+                    border = BorderStroke(1.dp, TermiusBlue.copy(alpha = 0.4f))
                 ) {
                     Text(
                         text = message.content,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                        color = TermiusTextPrimary,
                         modifier = Modifier.padding(12.dp),
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -307,16 +373,18 @@ fun ChatMessageCard(
             }
         }
         MessageRole.AGENT -> {
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp, 16.dp, 16.dp, 2.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(12.dp, 12.dp, 12.dp, 2.dp),
+                color = TermiusSurface,
+                border = BorderStroke(1.dp, TermiusBorder)
             ) {
                 Column(modifier = Modifier.padding(14.dp)) {
                     if (!message.thinking.isNullOrBlank()) {
                         Surface(
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                            shape = RoundedCornerShape(8.dp),
+                            color = TermiusBlack,
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, TermiusBorder),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(8.dp)) {
@@ -325,19 +393,20 @@ fun ChatMessageCard(
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Text(
-                                        text = "Agent 思考过程",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.outline
+                                    InfoTitle(
+                                        title = "思考过程",
+                                        infoDescription = "大模型在输出前进行的内部推演和逻辑推理步骤。",
+                                        style = MaterialTheme.typography.labelSmall
                                     )
                                     IconButton(
                                         onClick = { isThinkingExpanded = !isThinkingExpanded },
-                                        modifier = Modifier.size(24.dp)
+                                        modifier = Modifier.size(20.dp)
                                     ) {
                                         Icon(
                                             if (isThinkingExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
                                             contentDescription = null,
-                                            modifier = Modifier.size(16.dp)
+                                            modifier = Modifier.size(16.dp),
+                                            tint = TermiusTextSecondary
                                         )
                                     }
                                 }
@@ -346,7 +415,8 @@ fun ChatMessageCard(
                                     Text(
                                         text = message.thinking,
                                         style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        fontFamily = FontFamily.Monospace,
+                                        color = TermiusTextSecondary
                                     )
                                 }
                             }
@@ -354,7 +424,7 @@ fun ChatMessageCard(
                         Spacer(modifier = Modifier.height(8.dp))
                     }
 
-                    Text(text = message.content, style = MaterialTheme.typography.bodyMedium)
+                    Text(text = message.content, style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -363,11 +433,11 @@ fun ChatMessageCard(
                     ) {
                         TextButton(
                             onClick = { onSpeakSummary(message.content) },
-                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
                         ) {
-                            Icon(Icons.Default.VolumeUp, contentDescription = "朗读", modifier = Modifier.size(16.dp))
+                            Icon(Icons.Default.VolumeUp, contentDescription = "朗读", modifier = Modifier.size(14.dp), tint = TermiusTextSecondary)
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("朗读摘要", style = MaterialTheme.typography.labelSmall)
+                            Text("朗读", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary)
                         }
                     }
                 }
@@ -375,36 +445,45 @@ fun ChatMessageCard(
         }
         MessageRole.TOOL -> {
             val tool = message.toolCall
-            Card(
+            Surface(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = if (tool?.requiresApproval == true && !tool.isApproved)
-                        MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f)
-                    else
-                        MaterialTheme.colorScheme.surface
-                ),
-                border = androidx.compose.foundation.BorderStroke(
+                shape = RoundedCornerShape(10.dp),
+                color = if (tool?.requiresApproval == true && !tool.isApproved)
+                    Color(0xFF381A1C)
+                else
+                    TermiusSurface,
+                border = BorderStroke(
                     1.dp,
-                    if (tool?.requiresApproval == true && !tool.isApproved) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outlineVariant
+                    if (tool?.requiresApproval == true && !tool.isApproved) TermiusRed else TermiusBorder
                 )
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text(
-                        text = "🛠️ 执行工具: ${tool?.toolName ?: "Command"}",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            text = "$",
+                            color = TermiusGreen,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = tool?.toolName ?: "Command",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = TermiusTextPrimary
+                        )
+                    }
                     if (!tool?.command.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Surface(
-                            color = Color(0xFF1E1E1E),
+                            color = TermiusBlack,
                             shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, TermiusBorder),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = "$ ${tool?.command}",
-                                color = Color(0xFF4CAF50),
+                                text = tool?.command,
+                                color = TermiusGreen,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontFamily = FontFamily.Monospace,
                                 modifier = Modifier.padding(8.dp)
@@ -414,26 +493,33 @@ fun ChatMessageCard(
 
                     if (tool?.requiresApproval == true && !tool.isApproved) {
                         Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "⚠️ 此操作需要您的确认授权",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = { onApproveTool(true) },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("批准执行")
-                            }
-                            OutlinedButton(onClick = { onApproveTool(false) }) {
-                                Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("拒绝")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "⚠️ 需要授权",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = TermiusRed,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = { onApproveTool(true) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = TermiusGreen),
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                                ) {
+                                    Text("批准", style = MaterialTheme.typography.labelSmall)
+                                }
+                                OutlinedButton(
+                                    onClick = { onApproveTool(false) },
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
+                                ) {
+                                    Text("拒绝", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary)
+                                }
                             }
                         }
                     }

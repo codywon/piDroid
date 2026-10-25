@@ -1,13 +1,10 @@
 package com.pi.app.ui.chat
 
-import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
-import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Savings
-import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -17,6 +14,8 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.pi.app.data.model.TokenStats
+import com.pi.app.ui.components.InfoTitle
+import com.pi.app.ui.theme.*
 
 @Composable
 fun TokenStatsHudDialog(
@@ -26,34 +25,42 @@ fun TokenStatsHudDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
+        containerColor = TermiusSurface,
+        titleContentColor = TermiusTextPrimary,
+        textContentColor = TermiusTextSecondary,
+        shape = RoundedCornerShape(14.dp),
         title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Speed, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Token 与上下文用量监控")
-            }
+            InfoTitle(
+                title = "Token 用量与监控",
+                infoDescription = "实时追踪大模型上下文窗口、Prompt 缓存复用率与累计花费。",
+                style = MaterialTheme.typography.titleMedium
+            )
         },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // 1. 上下文窗口进度条
+                // 1. 上下文进度条
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("上下文使用情况", style = MaterialTheme.typography.labelMedium)
+                        InfoTitle(
+                            title = "上下文容量",
+                            infoDescription = "当前历史会话占用的 Token 数量以及模型所支持的最大上限。超过 80% 建议执行压缩。",
+                            style = MaterialTheme.typography.labelMedium
+                        )
                         Text(
-                            text = "${stats.contextTokens} / ${stats.maxContextWindow} (${String.format("%.1f", stats.contextUsagePercent * 100)}%)",
+                            text = "${stats.contextTokens / 1000}k / ${stats.maxContextWindow / 1000}k (${String.format("%.1f", stats.contextUsagePercent * 100)}%)",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             color = when {
-                                stats.contextUsagePercent > 0.85f -> MaterialTheme.colorScheme.error
-                                stats.contextUsagePercent > 0.70f -> Color(0xFFFFA000)
-                                else -> MaterialTheme.colorScheme.primary
+                                stats.contextUsagePercent > 0.85f -> TermiusRed
+                                stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
+                                else -> TermiusBlue
                             }
                         )
                     }
@@ -61,21 +68,21 @@ fun TokenStatsHudDialog(
                         progress = { stats.contextUsagePercent },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(8.dp),
+                            .height(6.dp),
                         color = when {
-                            stats.contextUsagePercent > 0.85f -> MaterialTheme.colorScheme.error
-                            stats.contextUsagePercent > 0.70f -> Color(0xFFFFA000)
-                            else -> MaterialTheme.colorScheme.primary
+                            stats.contextUsagePercent > 0.85f -> TermiusRed
+                            stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
+                            else -> TermiusBlue
                         },
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        trackColor = TermiusSurfaceVariant
                     )
                 }
 
-                // 2. 缓存命中率大卡片 (直观呈现 Prompt Caching 优势)
+                // 2. 缓存命中率卡片 (Termius 纯深色质感)
                 Surface(
-                    color = Color(0xFF2E7D32).copy(alpha = 0.12f),
-                    shape = RoundedCornerShape(12.dp),
-                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF4CAF50).copy(alpha = 0.3f))
+                    color = Color(0xFF1B3D23),
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, TermiusGreen.copy(alpha = 0.3f))
                 ) {
                     Row(
                         modifier = Modifier
@@ -84,59 +91,69 @@ fun TokenStatsHudDialog(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Savings, contentDescription = null, tint = Color(0xFF2E7D32))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text("Token 缓存命中率", style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                Text("已读取缓存: ${stats.cacheReadTokens}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF2E7D32))
-                            }
+                        Column {
+                            InfoTitle(
+                                title = "Prompt 缓存率",
+                                infoDescription = "基于 Anthropic/OpenAI 的前缀缓存机制：命中缓存的 Token 响应更快且费用减少高达 90%！",
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "缓存命中: ${stats.cacheReadTokens} Tokens",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TermiusGreen,
+                                fontFamily = FontFamily.Monospace
+                            )
                         }
                         Text(
                             text = "${String.format("%.1f", stats.cacheHitRate)}%",
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.ExtraBold,
-                            color = Color(0xFF2E7D32)
+                            fontFamily = FontFamily.Monospace,
+                            color = TermiusGreen
                         )
                     }
                 }
 
-                // 3. 详细指标网格
+                // 3. 指标网格
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Surface(
                         modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(8.dp)
+                        color = TermiusSurfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, TermiusBorder)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text("输入 (Prompt)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                            Text("${stats.inputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text("输入 (Prompt)", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("${stats.inputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                     }
                     Surface(
                         modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        shape = RoundedCornerShape(8.dp)
+                        color = TermiusSurfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, TermiusBorder)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text("输出 (Completion)", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                            Text("${stats.outputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                            Text("输出 (Completion)", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("${stats.outputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
 
-                // 4. 成本估算
+                // 4. 预估成本
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("当前会话预估成本", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
+                    Text("当前会话成本", style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
                     Text(
                         "\$${String.format("%.4f", stats.cost)}",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        fontFamily = FontFamily.Monospace,
+                        color = TermiusTextPrimary
                     )
                 }
             }
@@ -147,16 +164,17 @@ fun TokenStatsHudDialog(
                     onCompactClick()
                     onDismiss()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                colors = ButtonDefaults.buttonColors(containerColor = TermiusBlue),
+                shape = RoundedCornerShape(8.dp)
             ) {
                 Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(16.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("一键压缩上下文")
+                Spacer(modifier = Modifier.width(6.dp))
+                Text("压缩上下文")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭")
+                Text("关闭", color = TermiusTextSecondary)
             }
         }
     )

@@ -21,12 +21,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
+import com.pi.app.ui.theme.TermiusBlack
+import com.pi.app.ui.theme.TermiusBlue
+import com.pi.app.ui.theme.TermiusBorder
+import com.pi.app.ui.theme.TermiusTextSecondary
 import java.util.concurrent.Executors
 
 @Composable
@@ -37,9 +40,8 @@ fun QrScannerScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isProcessing by remember { mutableStateOf(false) }
-    var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(TermiusBlack)) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -114,19 +116,23 @@ fun QrScannerScreen(
             }
         )
 
-        // 顶部控制与半透明扫描框引导
+        // 干净极简的取景 UI (去除所有冗长唠叨文字)
         Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.SpaceBetween
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "扫描 PC 终端二维码",
+                    text = "扫码配对",
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
@@ -136,33 +142,35 @@ fun QrScannerScreen(
                 }
             }
 
-            // 扫描框装饰
+            // 极简深色高质感扫描框
             Card(
-                modifier = Modifier.size(260.dp),
+                modifier = Modifier.size(240.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-                border = androidx.compose.foundation.BorderStroke(2.dp, Color(0xFF64B5F6))
+                border = androidx.compose.foundation.BorderStroke(2.dp, TermiusBlue)
             ) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Icon(
                         Icons.Default.QrCodeScanner,
                         contentDescription = null,
-                        tint = Color.White.copy(alpha = 0.5f),
-                        modifier = Modifier.size(64.dp)
+                        tint = TermiusBlue.copy(alpha = 0.4f),
+                        modifier = Modifier.size(48.dp)
                     )
                 }
             }
 
+            // 仅保留一行超简练引导，彻底去除多余啰嗦解释
             Surface(
-                color = Color.Black.copy(alpha = 0.7f),
-                shape = RoundedCornerShape(12.dp)
+                color = TermiusBlack.copy(alpha = 0.75f),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, TermiusBorder),
+                modifier = Modifier.navigationBarsPadding().padding(bottom = 16.dp)
             ) {
                 Text(
-                    text = "请扫描 PC 运行 `npm start` 终端打印出的专属配对码\n(包含公网隧道地址与安全访问 Token)",
-                    color = Color.White,
-                    style = MaterialTheme.typography.bodySmall,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(16.dp)
+                    text = "对准 PC 终端配对码",
+                    color = TermiusTextSecondary,
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
         }
