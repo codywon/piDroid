@@ -101,27 +101,7 @@ fun AppUpdateDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(theme.primary.copy(alpha = 0.15f))
-                            .border(1.dp, theme.primary.copy(alpha = 0.4f), CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = when (state) {
-                                is UpdateUiState.Downloading -> Icons.Default.Download
-                                is UpdateUiState.ReadyToInstall -> Icons.Default.SystemUpdate
-                                is UpdateUiState.PermissionRequired -> Icons.Default.Security
-                                is UpdateUiState.Error -> Icons.Default.ErrorOutline
-                                else -> Icons.Default.RocketLaunch
-                            },
-                            contentDescription = null,
-                            tint = theme.primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                    }
+                    com.pi.app.ui.components.PiDroidLogo(size = 44.dp)
 
                     Spacer(modifier = Modifier.width(14.dp))
 

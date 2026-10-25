@@ -5,32 +5,16 @@ import android.content.ClipboardManager
 import android.content.Context
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -44,6 +28,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.ui.theme.LocalAppTheme
@@ -74,12 +59,16 @@ import org.commonmark.node.StrongEmphasis
 import org.commonmark.node.Text as MdText
 import org.commonmark.node.ThematicBreak
 import org.commonmark.parser.Parser
+import java.util.Locale
 
 /**
- * 大模型友好型 CJK Markdown 规整引擎 (参考 Termius 架构)
+ * 大模型友好型 CJK Markdown 与多行块级公式规整引擎
  */
 object CjkMarkdownNormalizer {
     private val CODE_BLOCK_PATTERN = Regex("""(```[\s\S]*?```|`[^`\n]+`)""")
+    private val BLOCK_MATH_DOLLAR_REGEX = Regex("""\$\$\s*([\s\S]+?)\s*\$\$""")
+    private val BLOCK_MATH_BRACKET_REGEX = Regex("""\\\[\s*([\s\S]+?)\s*\\\]""")
+    private val INLINE_MATH_PAREN_REGEX = Regex("""\\\(\s*([^\n]+?)\s*\\\)""")
     private val PSEUDO_LIST_REGEX = Regex("""(?m)^([\t ]*)[•◦▪◆]\s+""")
     private val INNER_BOLD_WHITESPACE_ASTERISK = Regex("""\*\*[\t ]*([^*]+?)[\t ]*\*\*""")
     private val INNER_BOLD_WHITESPACE_UNDERSCORE = Regex("""__[\t ]*([^_]+?)[\t ]*__""")
@@ -90,9 +79,6 @@ object CjkMarkdownNormalizer {
     private val OPEN_BOLD_REGEX = Regex("""([\u4e00-\u9fa5\w])(\*\*)($OPEN_PUNC)""")
     private val CLOSE_BOLD_REGEX = Regex("""($CLOSE_PUNC)(\*\*)([\u4e00-\u9fa5\w])""")
 
-    // 智能表格换行修复：
-    // 大模型输出表格时常将多行粘连为单行，例如 "| 说明 | |:---|:---| | TCP | ... | | TCP | ..."
-    // 将两行相接处的 "| |" 或 "||" 替换为 "|\n|"
     private val TABLE_STICKY_ROW_REGEX = Regex("""\|\s*\|(?=\s*[:\w\-\./*\$#@~`\u4e00-\u9fa5])""")
     private val TABLE_SEPARATOR_REGEX = Regex("""(?<!\n)(\|[^\n|]+?\|\s*)(\|(?:[\s:]*-+[\s:]*\|)+)""")
 
@@ -124,7 +110,29 @@ object CjkMarkdownNormalizer {
     private fun fixSegment(text: String): String {
         var s = text
 
-        // 1. 自动修复大模型单行粘连表格（在表头、分隔线与数据行间安全插入换行）
+        // 0. 将独立块级公式 $$...$$ 与 \[...\] 转为 ```math 代码块以便渲染独立公式卡片
+        if (s.contains("$$")) {
+            s = BLOCK_MATH_DOLLAR_REGEX.replace(s) { m ->
+                val inner = m.groupValues[1].trim()
+                if (inner.contains("\n") || inner.length > 18) {
+                    "\n```math\n$inner\n```\n"
+                } else {
+                    "$$${inner}$$"
+                }
+            }
+        }
+        if (s.contains("\\[")) {
+            s = BLOCK_MATH_BRACKET_REGEX.replace(s) { m ->
+                "\n```math\n${m.groupValues[1].trim()}\n```\n"
+            }
+        }
+        if (s.contains("\\(")) {
+            s = INLINE_MATH_PAREN_REGEX.replace(s) { m ->
+                "$${m.groupValues[1].trim()}$"
+            }
+        }
+
+        // 1. 自动修复大模型单行粘连表格
         if (s.contains("|") && s.contains("-")) {
             s = TABLE_SEPARATOR_REGEX.replace(s) { "${it.groupValues[1]}\n${it.groupValues[2]}" }
             s = TABLE_STICKY_ROW_REGEX.replace(s, "|\n|")
@@ -148,8 +156,7 @@ object CjkMarkdownNormalizer {
 }
 
 /**
- * 现代标准 CommonMark AST 富文本与运维表格渲染器
- * 支持 GFM Tables 横向平滑滑动、代码高亮复制、CJK 标点粗体优化与 LaTeX
+ * 现代标准 CommonMark AST 富文本、公式、流程图、脑图、统计图表与表格渲染器
  */
 @Composable
 fun MarkdownRenderer(
@@ -205,7 +212,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                     style = TextStyle(
                         fontSize = fontSize,
                         fontWeight = FontWeight.Bold,
-                        color = if (isUser) Color.White else theme.textPrimary,
+                        color = theme.textPrimary,
                         letterSpacing = (-0.2).sp,
                         lineHeight = (fontSize.value * 1.35f).sp
                     )
@@ -221,19 +228,43 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
         }
 
         is Paragraph -> {
-            Text(
-                text = buildInlineAnnotatedString(node, isUser),
-                style = TextStyle(
-                    fontSize = 13.5.sp,
-                    color = if (isUser) Color.White else theme.textPrimary,
-                    lineHeight = 20.sp,
-                    letterSpacing = 0.1.sp
+            val annotated = buildInlineAnnotatedString(node, isUser)
+            val rawTrimmed = annotated.text.trim()
+            if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
+                MathFormulaBlockCard(formula = rawTrimmed.removeSurrounding("$$").trim())
+            } else {
+                Text(
+                    text = annotated,
+                    style = TextStyle(
+                        fontSize = 13.5.sp,
+                        color = theme.textPrimary,
+                        lineHeight = 20.sp,
+                        letterSpacing = 0.1.sp
+                    )
                 )
-            )
+            }
         }
 
         is FencedCodeBlock -> {
-            CodeBlockCard(code = node.literal.trimEnd(), language = node.info ?: "")
+            val lang = (node.info ?: "").trim().lowercase(Locale.ROOT)
+            val codeText = node.literal.trimEnd()
+            when {
+                lang in listOf("mermaid", "flowchart", "mindmap", "sequence") || isLikelyMermaidCode(codeText) -> {
+                    MermaidDiagramCard(code = codeText, language = lang.ifBlank { "mermaid" })
+                }
+                lang in listOf("math", "latex", "tex", "katex") -> {
+                    MathFormulaBlockCard(formula = codeText)
+                }
+                lang in listOf("chart", "pie", "bar", "echarts") -> {
+                    MermaidDiagramCard(code = codeText, language = "chart")
+                }
+                lang in listOf("diff", "patch") -> {
+                    DiffCodeBlockCard(code = codeText, language = lang)
+                }
+                else -> {
+                    CodeBlockCard(code = codeText, language = node.info ?: "")
+                }
+            }
         }
 
         is IndentedCodeBlock -> {
@@ -253,28 +284,75 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
         }
 
         is BlockQuote -> {
-            Surface(
-                shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
-                color = if (isUser) Color.White.copy(alpha = 0.1f) else theme.surfaceContainer.copy(alpha = 0.5f),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.Top
+            // 检测 GitHub Callouts: > [!NOTE], > [!TIP], > [!IMPORTANT], > [!WARNING], > [!CAUTION]
+            val firstParaText = extractFirstParagraphText(node)
+            val calloutMatch = CALLOUT_HEADER_REGEX.find(firstParaText)
+            if (calloutMatch != null) {
+                val calloutType = calloutMatch.groupValues[1].uppercase(Locale.ROOT)
+                val (accentColor, labelZh, iconVec) = when (calloutType) {
+                    "TIP" -> Triple(Color(0xFF16A34A), "提示 (Tip)", Icons.Default.Lightbulb)
+                    "IMPORTANT" -> Triple(Color(0xFF8B5CF6), "重要 (Important)", Icons.Default.PriorityHigh)
+                    "WARNING" -> Triple(Color(0xFFD97706), "警告 (Warning)", Icons.Default.Warning)
+                    "CAUTION" -> Triple(Color(0xFFDC2626), "危险 (Caution)", Icons.Default.ErrorOutline)
+                    else -> Triple(Color(0xFF2563EB), "说明 (Note)", Icons.Default.Info)
+                }
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = accentColor.copy(alpha = if (theme.isDark) 0.12f else 0.07f),
+                    border = BorderStroke(1.dp, accentColor.copy(alpha = 0.35f)),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .width(3.5.dp)
-                            .height(20.dp)
-                            .clip(RoundedCornerShape(2.dp))
-                            .background(theme.primary.copy(alpha = 0.8f))
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        var quoteChild = node.firstChild
-                        while (quoteChild != null) {
-                            RenderAstBlockNode(node = quoteChild, isUser = isUser)
-                            quoteChild = quoteChild.next
+                    Column(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Icon(iconVec, contentDescription = null, tint = accentColor, modifier = Modifier.size(15.dp))
+                            Text(
+                                text = labelZh,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = accentColor
+                            )
+                        }
+                        val bodyCleaned = firstParaText.replaceFirst(CALLOUT_HEADER_REGEX, "").trim()
+                        if (bodyCleaned.isNotBlank()) {
+                            Text(
+                                text = bodyCleaned,
+                                fontSize = 13.sp,
+                                color = theme.textPrimary,
+                                lineHeight = 19.sp
+                            )
+                        }
+                    }
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(topEnd = 8.dp, bottomEnd = 8.dp),
+                    color = theme.surfaceContainer.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.5.dp)
+                                .height(20.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(theme.primary.copy(alpha = 0.8f))
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            var quoteChild = node.firstChild
+                            while (quoteChild != null) {
+                                RenderAstBlockNode(node = quoteChild, isUser = isUser)
+                                quoteChild = quoteChild.next
+                            }
                         }
                     }
                 }
@@ -289,19 +367,34 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                 var item = node.firstChild
                 while (item != null) {
                     if (item is ListItem) {
+                        val firstPara = item.firstChild as? Paragraph
+                        val firstLiteral = (firstPara?.firstChild as? MdText)?.literal ?: ""
+                        val isTaskChecked = firstLiteral.startsWith("[x] ", ignoreCase = true)
+                        val isTaskUnchecked = firstLiteral.startsWith("[ ] ")
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 1.5.dp),
                             verticalAlignment = Alignment.Top
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(top = 7.5.dp, start = 4.dp, end = 9.dp)
-                                    .size(5.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isUser) Color.White else theme.primary)
-                            )
+                            if (isTaskChecked || isTaskUnchecked) {
+                                Icon(
+                                    imageVector = if (isTaskChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                    contentDescription = null,
+                                    tint = if (isTaskChecked) Color(0xFF16A34A) else theme.textMuted,
+                                    modifier = Modifier
+                                        .padding(top = 2.5.dp, start = 2.dp, end = 7.dp)
+                                        .size(15.dp)
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .padding(top = 7.5.dp, start = 4.dp, end = 9.dp)
+                                        .size(5.dp)
+                                        .clip(CircleShape)
+                                        .background(theme.primary)
+                                )
+                            }
                             Column(
                                 modifier = Modifier.weight(1f),
                                 verticalArrangement = Arrangement.spacedBy(3.dp)
@@ -340,7 +433,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = if (isUser) Color.White else theme.textSecondary
+                                    color = theme.textSecondary
                                 ),
                                 modifier = Modifier
                                     .widthIn(min = 20.dp)
@@ -364,6 +457,36 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
             }
         }
     }
+}
+
+private val CALLOUT_HEADER_REGEX = Regex("""^\s*\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*""", RegexOption.IGNORE_CASE)
+private val TASK_PREFIX_REGEX = Regex("""^\[[ xX]\]\s+""")
+
+private fun extractFirstParagraphText(blockQuote: BlockQuote): String {
+    val first = blockQuote.firstChild as? Paragraph ?: return ""
+    val sb = StringBuilder()
+    var c = first.firstChild
+    while (c != null) {
+        when (c) {
+            is MdText -> sb.append(c.literal)
+            is SoftLineBreak, is HardLineBreak -> sb.append("\n")
+        }
+        c = c.next
+    }
+    return sb.toString()
+}
+
+private fun isLikelyMermaidCode(code: String): Boolean {
+    val firstLine = code.lineSequence().firstOrNull { it.isNotBlank() }?.trim() ?: return false
+    return firstLine.startsWith("graph ") ||
+        firstLine.startsWith("flowchart ") ||
+        firstLine.startsWith("sequenceDiagram") ||
+        firstLine.startsWith("mindmap") ||
+        firstLine.startsWith("pie") ||
+        firstLine.startsWith("stateDiagram") ||
+        firstLine.startsWith("classDiagram") ||
+        firstLine.startsWith("erDiagram") ||
+        firstLine.startsWith("gantt")
 }
 
 private fun buildInlineAnnotatedString(parentNode: Node, isUser: Boolean): AnnotatedString {
@@ -405,10 +528,16 @@ private fun fixUnrenderedBoldInAnnotatedString(source: AnnotatedString): Annotat
 
 private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder, isUser: Boolean) {
     var child = parent.firstChild
+    var isFirstChild = true
     while (child != null) {
         when (child) {
             is MdText -> {
-                appendMdTextWithFallbacks(child.literal, builder, isUser)
+                val literal = if (isFirstChild && parent.parent is ListItem) {
+                    child.literal.replaceFirst(TASK_PREFIX_REGEX, "")
+                } else {
+                    child.literal
+                }
+                appendMdTextWithFallbacks(literal, builder, isUser)
             }
             is StrongEmphasis -> {
                 builder.pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
@@ -430,8 +559,8 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
-                        background = if (isUser) Color.White.copy(alpha = 0.2f) else Color(0x22888888),
-                        color = if (isUser) Color.White else Color(0xFFF43F5E)
+                        background = Color(0x22888888),
+                        color = if (isUser) Color(0xFF2563EB) else Color(0xFFF43F5E)
                     )
                 )
                 builder.append(" ${child.literal} ")
@@ -440,7 +569,7 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
             is Link -> {
                 builder.pushStyle(
                     SpanStyle(
-                        color = if (isUser) Color(0xFF93C5FD) else Color(0xFF3B82F6),
+                        color = Color(0xFF3B82F6),
                         fontWeight = FontWeight.Medium,
                         textDecoration = TextDecoration.Underline
                     )
@@ -452,6 +581,7 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
             is HardLineBreak -> builder.append("\n")
             else -> appendInlineChildren(child, builder, isUser)
         }
+        isFirstChild = false
         child = child.next
     }
 }
@@ -486,9 +616,697 @@ private fun appendMdTextWithFallbacks(
     }
 }
 
+// ==========================================
+// 独立块级数学公式卡片 ($$...$$ / ```math / ```latex)
+// ==========================================
+@Composable
+private fun MathFormulaBlockCard(formula: String) {
+    val theme = LocalAppTheme.current
+    val context = LocalContext.current
+    val rendered = remember(formula) {
+        buildAnnotatedString {
+            LatexMathParser.appendTextWithMath(formula, this, isUser = false)
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.28f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Surface(
+                        color = theme.primary.copy(alpha = 0.14f),
+                        shape = RoundedCornerShape(4.dp)
+                    ) {
+                        Text(
+                            text = "∑ 数学公式",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = theme.primary,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+                IconButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("formula", formula))
+                    },
+                    modifier = Modifier.size(20.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "复制公式",
+                        tint = theme.textMuted,
+                        modifier = Modifier.size(12.dp)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(6.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 4.dp, horizontal = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = rendered,
+                    style = TextStyle(
+                        fontSize = 15.sp,
+                        fontFamily = FontFamily.Serif,
+                        fontWeight = FontWeight.Medium,
+                        color = theme.textPrimary,
+                        lineHeight = 22.sp
+                    )
+                )
+            }
+        }
+    }
+}
+
+// ==========================================
+// 原生可视化图表渲染引擎：支持流程图 (Flowchart)、脑图 (Mindmap)、时序图 (Sequence)、统计图表 (Pie/Bar)
+// ==========================================
+@Composable
+private fun MermaidDiagramCard(code: String, language: String) {
+    val theme = LocalAppTheme.current
+    val context = LocalContext.current
+    var showRawSource by remember { mutableStateOf(false) }
+
+    val lines = remember(code) {
+        code.lines().map { it.trimEnd() }.filter { it.isNotBlank() && !it.trim().startsWith("%%") }
+    }
+    val headerLine = lines.firstOrNull()?.trim()?.lowercase(Locale.ROOT) ?: ""
+
+    val diagramTypeLabel = when {
+        headerLine.startsWith("mindmap") || language == "mindmap" -> "思维脑图 (Mindmap)"
+        headerLine.startsWith("sequencediagram") || language == "sequence" -> "交互时序图 (Sequence)"
+        headerLine.startsWith("pie") || language == "chart" || headerLine.startsWith("xychart") -> "数据统计图表 (Chart)"
+        else -> "架构流程图 (Flowchart)"
+    }
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(1.dp, theme.outline),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // 顶部工具栏：图表类型标识 + 视图/源码切换 + 复制
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(theme.surfaceContainer)
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Icon(
+                        imageVector = Icons.Default.AccountTree,
+                        contentDescription = null,
+                        tint = theme.primary,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Text(
+                        text = diagramTypeLabel,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = theme.textPrimary
+                    )
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = theme.primary.copy(alpha = 0.14f),
+                        modifier = Modifier.clickable { showRawSource = !showRawSource }
+                    ) {
+                        Text(
+                            text = if (showRawSource) "切换图形视图" else "查看源码",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = theme.primary,
+                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                        )
+                    }
+
+                    IconButton(
+                        onClick = {
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("diagram", code))
+                        },
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ContentCopy,
+                            contentDescription = "复制",
+                            tint = theme.textMuted,
+                            modifier = Modifier.size(12.dp)
+                        )
+                    }
+                }
+            }
+
+            if (showRawSource) {
+                Text(
+                    text = code,
+                    style = TextStyle(
+                        fontSize = 11.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = theme.textPrimary,
+                        lineHeight = 16.sp
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(10.dp)
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                    when {
+                        headerLine.startsWith("mindmap") || language == "mindmap" -> {
+                            RenderVisualMindmap(lines)
+                        }
+                        headerLine.startsWith("sequencediagram") || language == "sequence" -> {
+                            RenderVisualSequenceDiagram(lines)
+                        }
+                        headerLine.startsWith("pie") || language == "chart" || headerLine.startsWith("xychart") -> {
+                            RenderVisualChart(lines)
+                        }
+                        else -> {
+                            RenderVisualFlowchart(lines)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /**
- * CommonMark GFM 结构化运维表格卡片：
- * 预计算每一列内容宽度，确保表头与各行对齐，支持手机横向平滑滑动
+ * 1. 思维脑图 (Mindmap) 原生树形可视化组件
+ */
+@Composable
+private fun RenderVisualMindmap(lines: List<String>) {
+    val theme = LocalAppTheme.current
+    val branchColors = listOf(
+        Color(0xFF3B82F6),
+        Color(0xFF10B981),
+        Color(0xFFF59E0B),
+        Color(0xFFEC4899),
+        Color(0xFF06B6D4)
+    )
+
+    val contentLines = lines.dropWhile { it.trim().equals("mindmap", ignoreCase = true) }
+    if (contentLines.isEmpty()) return
+
+    val baseIndent = contentLines.minOfOrNull { line -> line.takeWhile { it == ' ' || it == '\t' }.length } ?: 0
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        var branchIdx = -1
+        contentLines.forEachIndexed { idx, rawLine ->
+            val indentSpaces = rawLine.takeWhile { it == ' ' || it == '\t' }.length - baseIndent
+            val level = (indentSpaces / 2).coerceAtLeast(0)
+            val cleanText = cleanMermaidNodeLabel(rawLine.trim())
+            if (level <= 1 && idx > 0) branchIdx++
+            val accent = branchColors[(branchIdx.coerceAtLeast(0)) % branchColors.size]
+
+            if (idx == 0 || level == 0) {
+                // 中心主题根节点
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.primary,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(Icons.Default.Hub, contentDescription = null, tint = Color.White, modifier = Modifier.size(15.dp))
+                        Text(
+                            text = cleanText,
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = ((level - 1) * 16).coerceAtMost(64).dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // 树枝引导线
+                    Box(
+                        modifier = Modifier
+                            .width(12.dp)
+                            .height(2.dp)
+                            .background(accent.copy(alpha = 0.7f))
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Surface(
+                        shape = RoundedCornerShape(7.dp),
+                        color = if (level == 1) accent.copy(alpha = 0.14f) else theme.surfaceContainer,
+                        border = BorderStroke(1.dp, if (level == 1) accent.copy(alpha = 0.45f) else theme.outline)
+                    ) {
+                        Text(
+                            text = cleanText,
+                            fontSize = if (level == 1) 12.5.sp else 11.5.sp,
+                            fontWeight = if (level == 1) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (level == 1) accent else theme.textPrimary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 2. 流程图 / 状态图 (Flowchart / Graph) 原生节点-有向边可视化组件
+ */
+private data class FlowEdgeItem(
+    val fromLabel: String,
+    val fromIsDecision: Boolean,
+    val edgeLabel: String?,
+    val toLabel: String,
+    val toIsDecision: Boolean
+)
+
+private val MERMAID_EDGE_REGEX = Regex("""^(.+?)\s*(?:-->|==>|-\.->|--\s*([^>-]+?)\s*-->|-->\|([^|]+)\|)\s*(.+)$""")
+
+@Composable
+private fun RenderVisualFlowchart(lines: List<String>) {
+    val theme = LocalAppTheme.current
+    val nodeLabels = remember(lines) { mutableMapOf<String, Pair<String, Boolean>>() }
+    val edges = remember(lines) {
+        val list = mutableListOf<FlowEdgeItem>()
+        val bodyLines = lines.filterNot {
+            val t = it.trim().lowercase(Locale.ROOT)
+            t.startsWith("graph ") || t.startsWith("flowchart ") || t.startsWith("statediagram") || t == "end"
+        }
+        for (line in bodyLines) {
+            val trimmed = line.trim().removeSuffix(";")
+            if (trimmed.startsWith("subgraph ")) continue
+            val m = MERMAID_EDGE_REGEX.find(trimmed)
+            if (m != null) {
+                val rawFrom = m.groupValues[1].trim()
+                val edgeText = m.groupValues[2].ifBlank { m.groupValues[3] }.trim().ifBlank { null }
+                val rawTo = m.groupValues[4].trim()
+                val (fromId, fromText, fromDec) = parseMermaidNodeToken(rawFrom, nodeLabels)
+                val (toId, toText, toDec) = parseMermaidNodeToken(rawTo, nodeLabels)
+                nodeLabels[fromId] = fromText to fromDec
+                nodeLabels[toId] = toText to toDec
+                list.add(FlowEdgeItem(fromText, fromDec, edgeText, toText, toDec))
+            }
+        }
+        list
+    }
+
+    if (edges.isEmpty()) {
+        // 回退展示结构化步骤卡片
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            lines.drop(1).forEach { step ->
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = theme.surfaceContainer,
+                    border = BorderStroke(0.8.dp, theme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = cleanMermaidNodeLabel(step.trim()),
+                        fontSize = 12.sp,
+                        color = theme.textPrimary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        edges.forEach { edge ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                // 起点节点
+                FlowNodeChip(
+                    label = edge.fromLabel,
+                    isDecision = edge.fromIsDecision,
+                    modifier = Modifier.weight(1f)
+                )
+
+                // 有向边与条件标签
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.widthIn(min = 42.dp, max = 96.dp)
+                ) {
+                    if (!edge.edgeLabel.isNullOrBlank()) {
+                        Surface(
+                            color = theme.primary.copy(alpha = 0.14f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = edge.edgeLabel,
+                                fontSize = 9.5.sp,
+                                color = theme.primary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "───▶",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.primary
+                    )
+                }
+
+                // 终点节点
+                FlowNodeChip(
+                    label = edge.toLabel,
+                    isDecision = edge.toIsDecision,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun FlowNodeChip(
+    label: String,
+    isDecision: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    val bgColor = if (isDecision) Color(0xFFF59E0B).copy(alpha = 0.14f) else theme.surfaceContainer
+    val borderColor = if (isDecision) Color(0xFFF59E0B).copy(alpha = 0.55f) else theme.primary.copy(alpha = 0.4f)
+    val textColor = if (isDecision) (if (theme.isDark) Color(0xFFFBBF24) else Color(0xFFB45309)) else theme.textPrimary
+
+    Surface(
+        shape = RoundedCornerShape(if (isDecision) 12.dp else 7.dp),
+        color = bgColor,
+        border = BorderStroke(1.dp, borderColor),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center
+        ) {
+            if (isDecision) {
+                Text("◆ ", fontSize = 10.sp, color = textColor)
+            }
+            Text(
+                text = label,
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = textColor,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * 3. 时序图 (SequenceDiagram) 原生可视化组件
+ */
+private val SEQ_ARROW_REGEX = Regex("""^([^-:]+?)\s*(->>|-->>|->|-->)\s*([^:]+?)\s*:\s*(.+)$""")
+
+@Composable
+private fun RenderVisualSequenceDiagram(lines: List<String>) {
+    val theme = LocalAppTheme.current
+    val steps = remember(lines) {
+        lines.drop(1).mapNotNull { line ->
+            val m = SEQ_ARROW_REGEX.find(line.trim())
+            if (m != null) {
+                Triple("${m.groupValues[1].trim()} ➔ ${m.groupValues[3].trim()}", m.groupValues[2].contains("--"), m.groupValues[4].trim())
+            } else null
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        steps.forEachIndexed { idx, (actors, isReply, msg) ->
+            Surface(
+                shape = RoundedCornerShape(7.dp),
+                color = if (isReply) theme.surfaceContainer else theme.primary.copy(alpha = 0.08f),
+                border = BorderStroke(0.8.dp, if (isReply) theme.outline else theme.primary.copy(alpha = 0.35f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = theme.primary.copy(alpha = 0.18f),
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text("${idx + 1}", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = theme.primary)
+                        }
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = actors,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isReply) theme.textSecondary else theme.primary
+                        )
+                        Text(
+                            text = msg,
+                            fontSize = 12.sp,
+                            color = theme.textPrimary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 4. 统计图表 (Pie / Bar Chart) 原生可视化组件
+ */
+private val PIE_ENTRY_REGEX = Regex("""^\s*"?([^":]+)"?\s*:\s*([0-9.]+)""")
+
+@Composable
+private fun RenderVisualChart(lines: List<String>) {
+    val theme = LocalAppTheme.current
+    val palette = listOf(
+        Color(0xFF3B82F6),
+        Color(0xFF10B981),
+        Color(0xFFF59E0B),
+        Color(0xFFEF4444),
+        Color(0xFF8B5CF6),
+        Color(0xFF06B6D4)
+    )
+
+    val title = lines.firstOrNull { it.trim().startsWith("title ", ignoreCase = true) }
+        ?.trim()?.removePrefix("title ")?.removePrefix("Title ")?.trim()
+
+    val entries = remember(lines) {
+        lines.mapNotNull { line ->
+            val m = PIE_ENTRY_REGEX.find(line)
+            if (m != null) {
+                val label = m.groupValues[1].trim()
+                val value = m.groupValues[2].toDoubleOrNull() ?: 0.0
+                if (value > 0) label to value else null
+            } else null
+        }
+    }
+
+    val total = entries.sumOf { it.second }.coerceAtLeast(0.0001)
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        if (!title.isNullOrBlank()) {
+            Text(title, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = theme.textPrimary)
+        }
+
+        if (entries.isNotEmpty()) {
+            // 顶部堆叠占比条
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(10.dp)
+                    .clip(RoundedCornerShape(5.dp))
+            ) {
+                entries.forEachIndexed { idx, (_, value) ->
+                    val weight = (value / total).toFloat().coerceAtLeast(0.02f)
+                    Box(
+                        modifier = Modifier
+                            .weight(weight)
+                            .fillMaxHeight()
+                            .background(palette[idx % palette.size])
+                    )
+                }
+            }
+
+            // 各项水平条形指标
+            entries.forEachIndexed { idx, (label, value) ->
+                val ratio = (value / total).toFloat().coerceIn(0f, 1f)
+                val pctStr = String.format(Locale.US, "%.1f%%", ratio * 100f)
+                val color = palette[idx % palette.size]
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Box(modifier = Modifier.size(8.dp).background(color, CircleShape))
+                            Text(label, fontSize = 12.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium)
+                        }
+                        Text(
+                            text = "$value ($pctStr)",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textSecondary
+                        )
+                    }
+                    LinearProgressIndicator(
+                        progress = { ratio },
+                        color = color,
+                        trackColor = theme.surfaceContainer,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(5.dp)
+                            .clip(RoundedCornerShape(3.dp))
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun parseMermaidNodeToken(
+    raw: String,
+    cache: Map<String, Pair<String, Boolean>>
+): Triple<String, String, Boolean> {
+    val trimmed = raw.trim()
+    val braceIdx = trimmed.indexOfFirst { it == '[' || it == '(' || it == '{' }
+    if (braceIdx > 0) {
+        val id = trimmed.substring(0, braceIdx).trim()
+        val rest = trimmed.substring(braceIdx).trim()
+        val isDecision = rest.startsWith("{")
+        val label = cleanMermaidNodeLabel(rest)
+        return Triple(id, label, isDecision)
+    }
+    val cached = cache[trimmed]
+    if (cached != null) {
+        return Triple(trimmed, cached.first, cached.second)
+    }
+    return Triple(trimmed, cleanMermaidNodeLabel(trimmed), false)
+}
+
+private fun cleanMermaidNodeLabel(raw: String): String {
+    return raw
+        .replace(Regex("""^[A-Za-z0-9_]+\s*(\(\(|\[\[|\[\(|\(\[|\[|\(|\{)"""), "")
+        .replace(Regex("""(\)\)|\]\]|\)\]|\]\)|\]|\)|\})$"""), "")
+        .removeSurrounding("\"")
+        .trim()
+        .ifBlank { raw.trim() }
+}
+
+/**
+ * Diff / Patch 语法着色卡片
+ */
+@Composable
+private fun DiffCodeBlockCard(code: String, language: String) {
+    val context = LocalContext.current
+    Card(
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF181825)),
+        border = BorderStroke(0.6.dp, Color(0xFF313244)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF11111B))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = language.uppercase(Locale.ROOT),
+                    style = TextStyle(fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFA6ADC8))
+                )
+                IconButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("diff", code))
+                    },
+                    modifier = Modifier.size(22.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.ContentCopy,
+                        contentDescription = "复制",
+                        tint = Color(0xFFA6ADC8),
+                        modifier = Modifier.size(13.dp)
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(8.dp),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                code.lines().forEach { line ->
+                    val (bgColor, txtColor) = when {
+                        line.startsWith("+") && !line.startsWith("+++") -> Color(0xFF22C55E).copy(alpha = 0.16f) to Color(0xFF86EFAC)
+                        line.startsWith("-") && !line.startsWith("---") -> Color(0xFFEF4444).copy(alpha = 0.16f) to Color(0xFFFCA5A5)
+                        line.startsWith("@@") -> Color(0xFF3B82F6).copy(alpha = 0.15f) to Color(0xFF93C5FD)
+                        else -> Color.Transparent to Color(0xFFCDD6F4)
+                    }
+                    Text(
+                        text = line,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.5.sp,
+                        color = txtColor,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(bgColor, RoundedCornerShape(3.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * CommonMark GFM 结构化运维表格卡片
  */
 @Composable
 private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
@@ -557,7 +1375,6 @@ private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
             .horizontalScroll(rememberScrollState())
     ) {
         Column(modifier = Modifier.padding(6.dp)) {
-            // 表头行
             if (headerCells.isNotEmpty()) {
                 Row(
                     modifier = Modifier
@@ -588,7 +1405,6 @@ private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
                 Spacer(modifier = Modifier.height(3.dp))
             }
 
-            // 数据行
             bodyRows.forEachIndexed { rIdx, rowCells ->
                 val rowBg = if (rIdx % 2 == 1) theme.surfaceContainer.copy(alpha = 0.35f) else Color.Transparent
                 Row(

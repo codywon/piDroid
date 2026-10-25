@@ -429,22 +429,8 @@ fun SessionListScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = theme.primary.copy(alpha = 0.12f),
-                                    modifier = Modifier.size(64.dp)
-                                ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Icon(
-                                            Icons.Default.Computer,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(32.dp),
-                                            tint = theme.primary
-                                        )
-                                    }
-                                }
                                 Text(
-                                    text = "连接您的 PC 伴侣网关",
+                                    text = "连接您 PC 上的网关",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     color = theme.textPrimary
@@ -778,6 +764,8 @@ fun SessionCard(
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color(0xFFD97706),
+                                maxLines = 1,
+                                softWrap = false,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
@@ -798,6 +786,8 @@ fun SessionCard(
                                     style = MaterialTheme.typography.labelSmall,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false,
                                     color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
                                 )
                             }
@@ -808,6 +798,8 @@ fun SessionCard(
                             text = "已完成",
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.5.sp,
+                            maxLines = 1,
+                            softWrap = false,
                             color = theme.textMuted
                         )
                     }
@@ -826,7 +818,7 @@ fun SessionCard(
                 )
             }
 
-            // 底部元信息行：工作区分支 / 消息数量 / 最近更新时间
+            // 底部元信息行：左侧自适应截断 (weight(1f)) + 右侧单行不折行时间 (softWrap = false, maxLines = 1)
             Spacer(modifier = Modifier.height(5.dp))
             Row(
                 modifier = Modifier
@@ -836,20 +828,27 @@ fun SessionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
+                    modifier = Modifier.weight(1f),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = session.workspaceName,
                         fontSize = 10.5.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = theme.textMuted
+                        color = theme.textMuted,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
                     if (session.messageCount > 0) {
                         Text(
-                            text = "· ${session.messageCount} 条消息",
+                            text = "· ${session.messageCount} 条",
                             fontSize = 10.5.sp,
-                            color = theme.textMuted
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            softWrap = false
                         )
                     }
                     if (!session.branch.isNullOrBlank()) {
@@ -857,18 +856,24 @@ fun SessionCard(
                             text = "· ⑂ ${session.branch}",
                             fontSize = 10.5.sp,
                             fontFamily = FontFamily.Monospace,
-                            color = theme.primary
+                            color = theme.primary,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }
 
                 if (dateStr.isNotBlank()) {
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = dateStr,
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.5.sp,
                         fontFamily = FontFamily.Monospace,
-                        color = theme.textMuted
+                        color = theme.textMuted,
+                        maxLines = 1,
+                        softWrap = false
                     )
                 }
             }

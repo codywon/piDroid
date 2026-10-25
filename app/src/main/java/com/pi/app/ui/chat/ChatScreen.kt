@@ -2,9 +2,13 @@ package com.pi.app.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.*
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -21,8 +25,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -32,8 +40,17 @@ import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.*
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.theme.*
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
+
+data class PromptTimelineEntry(
+    val orderNumber: Int,
+    val messageIndex: Int,
+    val id: String,
+    val content: String,
+    val timestamp: Long
+)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,7 +67,6 @@ fun ChatScreen(
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
     queuedMessages: List<QueuedMessage> = emptyList(),
     isCompacting: Boolean = false,
-    isSpeaking: Boolean = false,
     onBack: () -> Unit,
     onRefreshSession: () -> Unit = {},
     onProjectSwitch: (ProjectInfo) -> Unit = {},
@@ -62,33 +78,64 @@ fun ChatScreen(
     onSendSteer: (String) -> Unit,
     onSendFollowUp: (String) -> Unit,
     onClearQueue: () -> Unit,
-    onApproveTool: (approved: Boolean) -> Unit,
-    onToggleSpeakSummary: () -> Unit,
-    onStartVoiceInput: () -> Unit,
-    onStopVoiceInput: () -> Unit,
-    isVoiceRecording: Boolean,
-    voicePartialText: String
+    onApproveTool: (approved: Boolean) -> Unit
 ) {
     val theme = LocalAppTheme.current
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
+
+    // 提取所有用户提问节点，用于右侧 pi-web 风格提问时间轴导航
+    val userPrompts = remember(messages.size, messages.lastOrNull()?.id) {
+        var order = 0
+        messages.mapIndexedNotNull { index, item ->
+            if (item.role == MessageRole.USER) {
+                order++
+                PromptTimelineEntry(
+                    orderNumber = order,
+                    messageIndex = index,
+                    id = item.id,
+                    content = item.content.replace('\n', ' ').trim(),
+                    timestamp = item.timestamp
+                )
+            } else null
+        }
+    }
+
+    // 记录用户是否正在通过时间轴回看历史，避免流式输出强制拉回底部打断阅读
+    var userJumpedToHistory by remember(sessionTitle) { mutableStateOf(false) }
+
+    // 针对超长会话的分页按需加载窗口：默认首屏仅渲染最近 50 条记录，杜绝一次性全量加载导致的卡顿与闪屏
+    var visibleWindowCount by remember(sessionTitle) { mutableIntStateOf(50) }
+    var hasInitialScrolled by remember(sessionTitle) { mutableStateOf(false) }
+
+    val windowStartIndex = (messages.size - visibleWindowCount).coerceAtLeast(0)
+    val hasHiddenHistory = windowStartIndex > 0
+
+    // 监听软键盘 (IME) 弹出高度：当软键盘弹起时，自动将底部输入框与最新对话内容整体往上推，防止遮挡
+    val density = LocalDensity.current
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
+    val isImeVisible = imeBottomPx > 0
 
     LaunchedEffect(
         messages.size,
         messages.lastOrNull()?.content?.length,
         messages.lastOrNull()?.thinking?.length,
         isAgentBusy,
-        agentPhaseLabel
+        agentPhaseLabel,
+        isImeVisible
     ) {
-        if (messages.isNotEmpty()) {
-            listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0))
-        }
-    }
-
-    LaunchedEffect(voicePartialText) {
-        if (voicePartialText.isNotBlank()) {
-            inputText = voicePartialText
+        if (messages.isNotEmpty() && (!userJumpedToHistory || isImeVisible)) {
+            val visibleItemCount = (messages.size - windowStartIndex) + (if (hasHiddenHistory) 1 else 0)
+            val targetIdx = (visibleItemCount - 1).coerceAtLeast(0)
+            if (!hasInitialScrolled) {
+                // 首屏进入直接瞬间定位到底部，避免长列表逐条滚动造成的屏幕闪现
+                listState.scrollToItem(targetIdx)
+                hasInitialScrolled = true
+            } else {
+                listState.animateScrollToItem(targetIdx)
+            }
         }
     }
 
@@ -167,6 +214,7 @@ fun ChatScreen(
                     .fillMaxWidth()
                     .background(theme.background)
                     .navigationBarsPadding()
+                    .imePadding()
             ) {
                 // 1. 排队消息提示栏
                 if (queuedMessages.isNotEmpty()) {
@@ -217,44 +265,7 @@ fun ChatScreen(
                     }
                 }
 
-                // 2. 录音状态条
-                AnimatedVisibility(visible = isVoiceRecording) {
-                    Surface(
-                        color = Color(0xFF2EA043).copy(alpha = 0.15f),
-                        border = BorderStroke(1.dp, Color(0xFF2EA043).copy(alpha = 0.5f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 4.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color(0xFF2EA043))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = if (voicePartialText.isBlank()) "正在倾听...再次轻触麦克风即可提交" else voicePartialText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = theme.textPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                            Text(
-                                text = "完成提交",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = Color(0xFF2EA043),
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { onStopVoiceInput() }
-                            )
-                        }
-                    }
-                }
-
-                // 3. 核心输入框容器
+                // 2. 核心输入框容器
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = theme.surfaceContainerLow,
@@ -295,6 +306,7 @@ fun ChatScreen(
                                 IconButton(
                                     onClick = {
                                         if (inputText.isNotBlank()) {
+                                            userJumpedToHistory = false
                                             onSendMessage(inputText.trim())
                                             inputText = ""
                                         }
@@ -320,6 +332,7 @@ fun ChatScreen(
                                         shape = RoundedCornerShape(6.dp),
                                         color = if (inputText.isNotBlank()) theme.primary else theme.surfaceContainerHigh,
                                         modifier = Modifier.clickable(enabled = inputText.isNotBlank()) {
+                                            userJumpedToHistory = false
                                             onSendSteer(inputText.trim())
                                             inputText = ""
                                         }
@@ -338,6 +351,7 @@ fun ChatScreen(
                                         color = theme.surfaceContainerHigh,
                                         border = BorderStroke(1.dp, theme.outline),
                                         modifier = Modifier.clickable(enabled = inputText.isNotBlank()) {
+                                            userJumpedToHistory = false
                                             onSendFollowUp(inputText.trim())
                                             inputText = ""
                                         }
@@ -353,7 +367,7 @@ fun ChatScreen(
                             }
                         }
 
-                        // 4. 输入框底栏（模型+思考极简合并芯片，工具紧凑排列）
+                        // 3. 输入框底栏（模型+思考极简合并芯片 + 压缩/停止按钮）
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -379,7 +393,7 @@ fun ChatScreen(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "${selectedModel.displayName.take(16)} · ${thinkingLevel.value}",
+                                        text = "${selectedModel.displayName.take(18)} · ${thinkingLevel.value}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 11.sp,
@@ -397,25 +411,61 @@ fun ChatScreen(
 
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                if (userJumpedToHistory) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = theme.primary.copy(alpha = 0.14f),
+                                        border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.4f)),
+                                        modifier = Modifier.clickable {
+                                            userJumpedToHistory = false
+                                            coroutineScope.launch {
+                                                if (messages.isNotEmpty()) {
+                                                    val visibleItemCount = (messages.size - windowStartIndex) + (if (hasHiddenHistory) 1 else 0)
+                                                    listState.animateScrollToItem((visibleItemCount - 1).coerceAtLeast(0))
+                                                }
+                                            }
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(Icons.Default.ArrowDownward, contentDescription = null, modifier = Modifier.size(11.dp), tint = theme.primary)
+                                            Spacer(modifier = Modifier.width(2.dp))
+                                            Text("回到底部", style = MaterialTheme.typography.labelSmall, fontSize = 10.5.sp, color = theme.primary)
+                                        }
+                                    }
+                                }
+
                                 Surface(
                                     shape = RoundedCornerShape(6.dp),
                                     color = theme.surfaceContainer,
                                     border = BorderStroke(1.dp, theme.outline),
                                     modifier = Modifier.clickable { onCompactContext() }
                                 ) {
-                                    Box(modifier = Modifier.padding(5.dp)) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
                                         if (isCompacting) {
-                                            CircularProgressIndicator(modifier = Modifier.size(12.dp), strokeWidth = 1.5.dp, color = theme.primary)
+                                            CircularProgressIndicator(modifier = Modifier.size(11.dp), strokeWidth = 1.5.dp, color = theme.primary)
                                         } else {
                                             Icon(
                                                 Icons.Default.Compress,
                                                 contentDescription = "压缩上下文",
-                                                modifier = Modifier.size(13.dp),
+                                                modifier = Modifier.size(12.dp),
                                                 tint = theme.textSecondary
                                             )
                                         }
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "压缩",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontSize = 10.5.sp,
+                                            color = theme.textSecondary
+                                        )
                                     }
                                 }
 
@@ -426,7 +476,7 @@ fun ChatScreen(
                                         modifier = Modifier.clickable { onStopAgent() }
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
                                             verticalAlignment = Alignment.CenterVertically
                                         ) {
                                             Icon(
@@ -445,58 +495,38 @@ fun ChatScreen(
                                         }
                                     }
                                 }
-
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (isSpeaking) Color(0xFF2EA043).copy(alpha = 0.2f) else theme.surfaceContainer,
-                                    border = BorderStroke(1.dp, if (isSpeaking) Color(0xFF2EA043) else theme.outline),
-                                    modifier = Modifier.clickable { onToggleSpeakSummary() }
-                                ) {
-                                    Icon(
-                                        if (isSpeaking) Icons.Default.VolumeUp else Icons.Default.VolumeMute,
-                                        contentDescription = "朗读",
-                                        tint = if (isSpeaking) Color(0xFF2EA043) else theme.textSecondary,
-                                        modifier = Modifier.padding(5.dp).size(13.dp)
-                                    )
-                                }
-
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = if (isVoiceRecording) Color(0xFF2EA043) else theme.surfaceContainer,
-                                    modifier = Modifier.clickable {
-                                        if (isVoiceRecording) onStopVoiceInput() else onStartVoiceInput()
-                                    }
-                                ) {
-                                    Icon(
-                                        Icons.Default.Mic,
-                                        contentDescription = "语音输入",
-                                        tint = if (isVoiceRecording) Color.White else theme.textSecondary,
-                                        modifier = Modifier.padding(5.dp).size(13.dp)
-                                    )
-                                }
                             }
                         }
                     }
                 }
 
-                // 5. 微型 Monospace 状态栏
+                // 4. 微型 Monospace 单行紧凑状态栏 (ctx · in · out · cache，浅灰配色不换行)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 3.dp)
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
                         .clickable { showHudDialog = true },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     val percent = (tokenStats.contextUsagePercent * 100).toInt()
-                    val hitRate = String.format("%.1f", tokenStats.cacheHitRate)
+                    val hitRate = tokenStats.cacheHitRate.toInt()
+                    val ctxCompact = "${formatCompactTokenCount(tokenStats.contextTokens)}/${formatCompactTokenCount(tokenStats.maxContextWindow)}($percent%)"
+                    val inCompact = formatCompactTokenCount(tokenStats.inputTokens)
+                    val outCompact = formatCompactTokenCount(tokenStats.outputTokens)
                     Text(
-                        text = "Ctx: ${tokenStats.contextTokens / 1000}k/${tokenStats.maxContextWindow / 1000}k ($percent%) · In: ${tokenStats.inputTokens} · Out: ${tokenStats.outputTokens} · Cache: $hitRate%",
+                        text = "ctx $ctxCompact · in $inCompact · out $outCompact · cache $hitRate%",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 10.sp,
-                        color = if (tokenStats.contextUsagePercent > 0.85f) Color(0xFFCF222E) else theme.textMuted
+                        color = theme.textMuted,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
                     )
+
+                    Spacer(modifier = Modifier.width(6.dp))
 
                     Icon(
                         Icons.Default.Info,
@@ -508,40 +538,139 @@ fun ChatScreen(
             }
         }
     ) { paddingValues ->
-        LazyColumn(
-            state = listState,
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(horizontal = 12.dp),
-            contentPadding = PaddingValues(vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            itemsIndexed(messages, key = { _, it -> it.id }) { idx, item ->
-                val prevItem = messages.getOrNull(idx - 1)
-                val showModelHeader = item.role != MessageRole.USER &&
-                    !item.modelName.isNullOrBlank() &&
-                    (prevItem == null || prevItem.role == MessageRole.USER || prevItem.usageSummary != null)
-
-                ChatMessageItem(
-                    item = item,
-                    showModelHeader = showModelHeader,
-                    defaultModelName = selectedModel.displayName,
-                    onApproveTool = onApproveTool
-                )
-            }
-
-            // 对标 pi-web ChatWindow.tsx：当 Agent 正在运行或等待模型响应时，底部展示脉冲状态文字（如 "正在等待模型..."）
-            if (isAgentBusy || isCompacting) {
-                item(key = "pi_web_agent_phase_indicator") {
-                    PiWebPhaseIndicator(
-                        text = when {
-                            isCompacting -> "正在压缩上下文..."
-                            !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
-                            else -> "正在等待模型..."
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(start = 12.dp, end = if (userPrompts.isNotEmpty()) 26.dp else 12.dp),
+                contentPadding = PaddingValues(vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // 超长会话顶部按需分页加载栏
+                if (hasHiddenHistory) {
+                    item(key = "history_window_loader") {
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(
+                                    text = "已折叠更早的 $windowStartIndex 条记录",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = theme.textSecondary
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = theme.primary.copy(alpha = 0.12f),
+                                        border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.35f)),
+                                        modifier = Modifier.clickable {
+                                            userJumpedToHistory = true
+                                            visibleWindowCount += 50
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "↑ 加载前 50 条",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = theme.primary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = theme.surfaceContainer,
+                                        border = BorderStroke(0.8.dp, theme.outline),
+                                        modifier = Modifier.clickable {
+                                            userJumpedToHistory = true
+                                            visibleWindowCount = messages.size + 500
+                                        }
+                                    ) {
+                                        Text(
+                                            text = "展开全部",
+                                            fontSize = 11.sp,
+                                            color = theme.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
                         }
+                    }
+                }
+
+                val windowedSlice = if (windowStartIndex == 0) messages else messages.subList(windowStartIndex, messages.size)
+                itemsIndexed(windowedSlice, key = { _, it -> it.id }) { sliceIdx, item ->
+                    val globalIdx = windowStartIndex + sliceIdx
+                    val prevItem = messages.getOrNull(globalIdx - 1)
+                    val showModelHeader = item.role != MessageRole.USER &&
+                        !item.modelName.isNullOrBlank() &&
+                        (prevItem == null || prevItem.role == MessageRole.USER || prevItem.usageSummary != null)
+
+                    ChatMessageItem(
+                        item = item,
+                        showModelHeader = showModelHeader,
+                        defaultModelName = selectedModel.displayName,
+                        onApproveTool = onApproveTool
                     )
                 }
+
+                // 对标 pi-web ChatWindow.tsx：当 Agent 正在运行或等待模型响应时，底部展示脉冲状态文字（如 "正在等待模型..."）
+                if (isAgentBusy || isCompacting) {
+                    item(key = "pi_web_agent_phase_indicator") {
+                        PiWebPhaseIndicator(
+                            text = when {
+                                isCompacting -> "正在压缩上下文..."
+                                !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
+                                else -> "正在等待模型..."
+                            }
+                        )
+                    }
+                }
+            }
+
+            // ── 对标 pi-web 右侧用户提问快捷时间轴 (Prompt Timeline Rail) ──
+            if (userPrompts.isNotEmpty()) {
+                val firstVisible by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+                val currentGlobalFirstIdx = windowStartIndex + (firstVisible - (if (hasHiddenHistory) 1 else 0)).coerceAtLeast(0)
+                val activePromptOrder = remember(currentGlobalFirstIdx, userPrompts) {
+                    userPrompts.lastOrNull { it.messageIndex <= currentGlobalFirstIdx + 2 }?.orderNumber
+                        ?: userPrompts.first().orderNumber
+                }
+
+                PiWebPromptTimelineRail(
+                    prompts = userPrompts,
+                    activeOrderNumber = activePromptOrder,
+                    onJumpToPrompt = { entry ->
+                        userJumpedToHistory = entry.orderNumber < userPrompts.size
+                        coroutineScope.launch {
+                            if (entry.messageIndex < windowStartIndex) {
+                                visibleWindowCount = (messages.size - entry.messageIndex + 15).coerceAtLeast(visibleWindowCount)
+                                kotlinx.coroutines.yield()
+                            }
+                            val newStart = (messages.size - visibleWindowCount).coerceAtLeast(0)
+                            val headerOffset = if (newStart > 0) 1 else 0
+                            val targetLazyIdx = (entry.messageIndex - newStart + headerOffset).coerceAtLeast(0)
+                            listState.animateScrollToItem(targetLazyIdx)
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .padding(end = 3.dp)
+                )
             }
         }
     }
@@ -555,6 +684,321 @@ fun ChatScreen(
             },
             onDismiss = { showHudDialog = false }
         )
+    }
+}
+
+/**
+ * 对标 pi-web 右侧用户提问快捷时间轴：
+ * - 右侧竖条展示所有用户提问刻度点，高亮当前视野所在提问
+ * - 点击或上下滑动刻度条可实时预览用户当时提出了什么问题，并一键跳转至对应对话位置
+ * - 点击顶部提问数徽章可展开完整提问目录抽屉
+ */
+@Composable
+fun PiWebPromptTimelineRail(
+    prompts: List<PromptTimelineEntry>,
+    activeOrderNumber: Int,
+    onJumpToPrompt: (PromptTimelineEntry) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    var previewEntry by remember { mutableStateOf<PromptTimelineEntry?>(null) }
+    var showPromptListDrawer by remember { mutableStateOf(false) }
+    var railHeightPx by remember { mutableIntStateOf(1) }
+
+    val visibleTicks = remember(prompts) {
+        if (prompts.size <= 16) prompts
+        else {
+            val step = (prompts.size.toFloat() / 15f)
+            (0 until 15).map { i -> prompts[(i * step).toInt().coerceIn(0, prompts.lastIndex)] }
+                .distinctBy { it.orderNumber } + listOf(prompts.last())
+        }.distinctBy { it.orderNumber }
+    }
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End
+    ) {
+        // 1. 悬浮预览气泡卡片：当点击或滑动时间轴节点时展示该次用户提问详情与跳转按钮
+        AnimatedVisibility(
+            visible = previewEntry != null && !showPromptListDrawer,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            previewEntry?.let { entry ->
+                val timeStr = remember(entry.timestamp) {
+                    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(entry.timestamp))
+                }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.surfaceContainerHigh,
+                    border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.5f)),
+                    shadowElevation = 4.dp,
+                    modifier = Modifier
+                        .padding(end = 8.dp)
+                        .widthIn(min = 180.dp, max = 260.dp)
+                        .clickable {
+                            onJumpToPrompt(entry)
+                            previewEntry = null
+                        }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Surface(
+                                    color = theme.primary.copy(alpha = 0.16f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "提问 #${entry.orderNumber}",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.Bold,
+                                        color = theme.primary,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                                    )
+                                }
+                                Text(
+                                    text = timeStr,
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = theme.textMuted
+                                )
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = "跳转 ➔",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.primary
+                                )
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "关闭预览",
+                                    tint = theme.textMuted,
+                                    modifier = Modifier
+                                        .size(13.dp)
+                                        .clickable { previewEntry = null }
+                                )
+                            }
+                        }
+
+                        Text(
+                            text = entry.content,
+                            fontSize = 12.sp,
+                            color = theme.textPrimary,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. 展开式全量提问时间轴面板
+        AnimatedVisibility(
+            visible = showPromptListDrawer,
+            enter = fadeIn(),
+            exit = fadeOut()
+        ) {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = theme.surfaceContainerHigh,
+                border = BorderStroke(1.dp, theme.outline),
+                shadowElevation = 6.dp,
+                modifier = Modifier
+                    .padding(end = 8.dp)
+                    .width(250.dp)
+                    .heightIn(max = 320.dp)
+            ) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "用户提问时间轴 (${prompts.size})",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = theme.textPrimary
+                        )
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "收起",
+                            tint = theme.textMuted,
+                            modifier = Modifier
+                                .size(15.dp)
+                                .clickable { showPromptListDrawer = false }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        prompts.forEach { item ->
+                            val isCurrent = item.orderNumber == activeOrderNumber
+                            val tStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(item.timestamp))
+                            Surface(
+                                shape = RoundedCornerShape(7.dp),
+                                color = if (isCurrent) theme.primary.copy(alpha = 0.14f) else theme.surfaceContainerLow,
+                                border = BorderStroke(0.7.dp, if (isCurrent) theme.primary else theme.outline),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        onJumpToPrompt(item)
+                                        showPromptListDrawer = false
+                                    }
+                            ) {
+                                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "#${item.orderNumber}",
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isCurrent) theme.primary else theme.textSecondary
+                                        )
+                                        Text(
+                                            text = tStr,
+                                            fontSize = 9.5.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = theme.textMuted
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = item.content,
+                                        fontSize = 11.5.sp,
+                                        color = theme.textPrimary,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 右侧紧凑刻度导航轨 (支持点击与手指上下滑动实时预览跳转)
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = theme.surfaceContainerLow.copy(alpha = 0.88f),
+            border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.7f)),
+            modifier = Modifier.width(20.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(5.dp)
+            ) {
+                // 顶部提问总数按钮：点击展开/收起完整提问列表
+                Surface(
+                    shape = CircleShape,
+                    color = if (showPromptListDrawer) theme.primary else theme.primary.copy(alpha = 0.16f),
+                    modifier = Modifier
+                        .size(15.dp)
+                        .clickable {
+                            showPromptListDrawer = !showPromptListDrawer
+                            previewEntry = null
+                        }
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Text(
+                            text = "${prompts.size}",
+                            fontSize = 8.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold,
+                            color = if (showPromptListDrawer) Color.White else theme.primary
+                        )
+                    }
+                }
+
+                // 刻度轨道：支持上下滑动预览 + 点击节点预览并跳转
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onSizeChanged { railHeightPx = it.height.coerceAtLeast(1) }
+                        .pointerInput(visibleTicks) {
+                            detectVerticalDragGestures(
+                                onDragStart = { offset ->
+                                    val idx = ((offset.y / railHeightPx.toFloat()) * visibleTicks.size)
+                                        .toInt()
+                                        .coerceIn(0, visibleTicks.lastIndex)
+                                    previewEntry = visibleTicks[idx]
+                                },
+                                onVerticalDrag = { change, _ ->
+                                    change.consume()
+                                    val idx = ((change.position.y / railHeightPx.toFloat()) * visibleTicks.size)
+                                        .toInt()
+                                        .coerceIn(0, visibleTicks.lastIndex)
+                                    previewEntry = visibleTicks[idx]
+                                },
+                                onDragEnd = {
+                                    previewEntry?.let { onJumpToPrompt(it) }
+                                }
+                            )
+                        },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    visibleTicks.forEach { tick ->
+                        val isCurrent = tick.orderNumber == activeOrderNumber
+                        val isPreviewed = previewEntry?.orderNumber == tick.orderNumber
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(12.dp)
+                                .pointerInput(tick) {
+                                    detectTapGestures(
+                                        onTap = {
+                                            if (previewEntry?.orderNumber == tick.orderNumber) {
+                                                onJumpToPrompt(tick)
+                                                previewEntry = null
+                                            } else {
+                                                previewEntry = tick
+                                                onJumpToPrompt(tick)
+                                            }
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .width(if (isCurrent || isPreviewed) 12.dp else 7.dp)
+                                    .height(if (isCurrent || isPreviewed) 3.5.dp else 2.dp)
+                                    .clip(RoundedCornerShape(2.dp))
+                                    .background(
+                                        when {
+                                            isPreviewed -> Color(0xFFF59E0B)
+                                            isCurrent -> theme.primary
+                                            else -> theme.textMuted.copy(alpha = 0.55f)
+                                        }
+                                    )
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -602,9 +1046,6 @@ fun ChatMessageItem(
     var isThinkingExpanded by remember { mutableStateOf(false) }
     var isToolExpanded by remember { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
-    val timeFormatted = remember(item.timestamp) {
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(item.timestamp))
-    }
 
     Column(
         modifier = Modifier.fillMaxWidth(),
@@ -622,17 +1063,20 @@ fun ChatMessageItem(
 
         when (item.role) {
             MessageRole.USER -> {
+                // 对标 pi-web MessageView.tsx & globals.css (--user-bg: #EFF6FF / #232C3F, border: rgba(59,130,246,0.22), color: var(--text))
+                val userBubbleBg = if (theme.isDark) Color(0xFF232C3F) else Color(0xFFEFF6FF)
+                val userBubbleBorder = Color(0xFF3B82F6).copy(alpha = if (theme.isDark) 0.28f else 0.22f)
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalArrangement = Arrangement.End
                 ) {
                     Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = theme.primaryContainer,
-                        border = BorderStroke(1.dp, theme.outline),
+                        shape = RoundedCornerShape(12.dp),
+                        color = userBubbleBg,
+                        border = BorderStroke(1.dp, userBubbleBorder),
                         modifier = Modifier.widthIn(max = 330.dp)
                     ) {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)) {
+                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
                             MarkdownRenderer(
                                 content = item.content,
                                 isUser = true
@@ -648,162 +1092,197 @@ fun ChatMessageItem(
                     PiWebThinkingCard(
                         thinking = item.thinking,
                         durationSec = item.thinkingDurationSec,
+                        isStreaming = item.isStreaming && item.content.isBlank(),
                         expanded = isThinkingExpanded,
                         onToggle = { isThinkingExpanded = !isThinkingExpanded }
                     )
                 }
 
-                // 2. 正文回复（标准 CommonMark + GFM 富文本渲染引擎）
+                // 2. 对标 pi-web 正文区：无厚重外框，直接清晰渲染 Markdown 与复制按钮
                 if (item.content.isNotBlank()) {
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = theme.surfaceContainerLow,
-                        border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.7f)),
-                        modifier = Modifier.fillMaxWidth()
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
                     ) {
-                        Box(modifier = Modifier.padding(12.dp)) {
-                            MarkdownRenderer(
-                                content = item.content,
-                                isUser = false
-                            )
+                        MarkdownRenderer(
+                            content = item.content,
+                            isUser = false
+                        )
+
+                        if (!item.isStreaming && item.content.length > 80) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .clickable { clipboardManager.setText(AnnotatedString(item.content)) }
+                                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Default.ContentCopy,
+                                        contentDescription = "复制正文",
+                                        modifier = Modifier.size(11.dp),
+                                        tint = theme.textMuted
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = "复制",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        color = theme.textMuted
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
 
             MessageRole.TOOL -> {
-                val tool = item.toolCall
-                if (tool != null) {
+                item.toolCall?.let { tool ->
                     PiWebToolCallCard(
                         tool = tool,
-                        expanded = isToolExpanded,
+                        expanded = isToolExpanded || tool.requiresApproval,
                         onToggle = { isToolExpanded = !isToolExpanded },
-                        onCopyText = { clipboardManager.setText(AnnotatedString(it)) },
+                        onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
                         onApproveTool = onApproveTool
                     )
                 }
             }
 
             MessageRole.SYSTEM -> {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text(
-                        text = item.content,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = theme.textMuted
-                    )
-                }
+                Text(
+                    text = item.content,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = theme.textMuted,
+                    modifier = Modifier.padding(vertical = 2.dp)
+                )
             }
         }
 
-        // 对标 pi-web MessageView.tsx 底部 Token 用量与时间戳栏：
-        // 左侧: "2,254 in · 1,546 out · 210,686 cache R"   右侧: "16:37"
+        // 对标 pi-web MessageView.tsx：每回合底部展示 Token 与成本明细 (如 34,938 in · 635 out · $0.0021)
         if (!item.usageSummary.isNullOrBlank()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 2.dp, vertical = 1.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = item.usageSummary,
-                    fontSize = 11.sp,
-                    color = theme.textMuted
-                )
-                if (!item.isStreaming) {
-                    Text(
-                        text = timeFormatted,
-                        fontSize = 10.5.sp,
-                        color = theme.textMuted
-                    )
-                }
-            }
+            Text(
+                text = item.usageSummary,
+                fontSize = 10.5.sp,
+                fontFamily = FontFamily.Monospace,
+                color = theme.textMuted.copy(alpha = 0.78f),
+                modifier = Modifier.padding(top = 2.dp, bottom = 4.dp)
+            )
         }
     }
 }
 
 /**
- * 1:1 还原 pi-web MessageView.tsx 中的 ThinkingBlock 组件：
- * [💡 The platform's role needs to be refined; limit UI-specific instructions in prompts...  14s]
+ * 1:1 对标 pi-web ThinkingBlock：
+ * 折叠时展示灯泡图标 + 思考内容最后一行单行省略预览 + 右侧秒数 (如 14s)
+ * 展开时展示完整推理过程文本
  */
 @Composable
 fun PiWebThinkingCard(
     thinking: String,
     durationSec: Int?,
+    isStreaming: Boolean,
     expanded: Boolean,
     onToggle: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val previewText = remember(thinking) {
-        thinking
-            .replace(Regex("[#*`_~>]+"), "")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+    val previewLine = remember(thinking) {
+        thinking.lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .lastOrNull()
+            ?.replace(Regex("[#*_>`~]"), "")
+            ?.trim()
+            ?: thinking.replace('\n', ' ').trim()
+    }
+
+    val borderColor = if (isStreaming) {
+        theme.primary.copy(alpha = 0.55f)
+    } else {
+        theme.outline.copy(alpha = 0.65f)
     }
 
     Surface(
         shape = RoundedCornerShape(7.dp),
-        color = theme.background,
-        border = BorderStroke(1.dp, theme.outline),
+        color = theme.surfaceContainerLow.copy(alpha = 0.65f),
+        border = BorderStroke(0.75.dp, borderColor),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onToggle)
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 7.dp),
-            verticalAlignment = if (expanded) Alignment.Top else Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(7.dp)
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Lightbulb,
-                contentDescription = "思考过程",
-                modifier = Modifier
-                    .size(14.dp)
-                    .padding(top = if (expanded) 2.dp else 0.dp),
-                tint = if (expanded) Color(0xFFD4A017) else theme.textSecondary
-            )
+        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Lightbulb,
+                    contentDescription = "思考过程",
+                    modifier = Modifier.size(13.dp),
+                    tint = if (isStreaming) theme.primary else theme.textMuted
+                )
 
-            if (!expanded) {
                 Text(
-                    text = previewText.ifBlank { "..." },
-                    fontFamily = FontFamily.Monospace,
+                    text = if (expanded) "思考过程" else previewLine,
                     fontSize = 11.5.sp,
-                    color = theme.textSecondary,
+                    color = theme.textMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-            } else {
-                Text(
-                    text = thinking.trim(),
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.5.sp,
-                    lineHeight = 17.sp,
-                    color = theme.textSecondary,
-                    modifier = Modifier.weight(1f)
+
+                if (isStreaming) {
+                    Text(
+                        text = "思考中...",
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = theme.primary
+                    )
+                } else if (durationSec != null && durationSec > 0) {
+                    Text(
+                        text = "${durationSec}s",
+                        fontSize = 10.5.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = theme.textMuted.copy(alpha = 0.75f)
+                    )
+                }
+
+                Icon(
+                    imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = theme.textMuted.copy(alpha = 0.7f)
                 )
             }
 
-            if (durationSec != null && durationSec > 0) {
-                Text(
-                    text = "${durationSec}s",
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp,
-                    color = theme.textMuted
-                )
+            AnimatedVisibility(visible = expanded) {
+                Column {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.4f), thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = thinking.trim(),
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        color = theme.textSecondary
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * 1:1 还原 pi-web MessageView.tsx 中的 ToolCallBlock 组件：
- * - 常规工具 (read / write / edit / bash 等)：清透绿框 rgba(34,197,94,0.28) + 柔和绿底 rgba(34,197,94,0.05) + 绿色粗体工具名
- * - 异常或特殊执行工具 (isError / ctx_execute_file / requiresApproval)：清透珊瑚红框 rgba(248,113,113,0.45) + 柔和红底 + 红色粗体工具名
- * - 头部紧凑展示：[toolName]  [参数单行预览 (如文件路径或命令)]   [0.3s] [⌄]
- * - 展开后展示结构化键值参数与终端输出
+ * 1:1 对标 pi-web ToolCallBlock：
+ * 顶栏：`▸` 折叠箭头 + 工具名徽章 (如 `bash` / `read` / `edit`) + 单行参数预览 + 右侧耗时 (如 `2.5s`) 与完成状态 (`✓` / `✗` / 旋转脉冲)
+ * 展开区：结构化入参 + 配对的完整执行输出 (PairedResult)
  */
 @Composable
 fun PiWebToolCallCard(
@@ -811,130 +1290,181 @@ fun PiWebToolCallCard(
     expanded: Boolean,
     onToggle: () -> Unit,
     onCopyText: (String) -> Unit,
-    onApproveTool: (Boolean) -> Unit
+    onApproveTool: (approved: Boolean) -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val isRedAccent = tool.isError ||
-        tool.requiresApproval ||
-        tool.toolName.startsWith("ctx_", ignoreCase = true)
+    val hasResult = !tool.output.isNullOrBlank() || !tool.isRunning
+    val isPending = tool.isRunning && tool.output.isNullOrBlank() && !tool.requiresApproval
 
-    val borderColor = if (isRedAccent) {
-        Color(0xFFF87171).copy(alpha = 0.45f)
-    } else {
-        Color(0xFF22C55E).copy(alpha = 0.30f)
+    val borderColor = when {
+        tool.requiresApproval && !tool.isApproved -> Color(0xFFD29922)
+        tool.isError -> Color(0xFFF87171).copy(alpha = 0.65f)
+        isPending -> theme.primary.copy(alpha = 0.55f)
+        else -> theme.outline
     }
 
-    val containerBg = if (isRedAccent) {
-        Color(0xFFF87171).copy(alpha = if (theme.isDark) 0.08f else 0.05f)
-    } else {
-        Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.07f else 0.04f)
+    val badgeBg = when {
+        tool.isError -> Color(0xFFEF4444).copy(alpha = 0.14f)
+        else -> theme.primary.copy(alpha = 0.13f)
     }
 
-    val toolNameColor = if (isRedAccent) {
-        if (theme.isDark) Color(0xFFF87171) else Color(0xFFDC2626)
-    } else {
-        if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
+    val badgeFg = when {
+        tool.isError -> Color(0xFFEF4444)
+        else -> theme.primary
     }
 
-    val previewSummary = remember(tool.preview, tool.command) {
-        tool.preview?.takeIf { it.isNotBlank() }
-            ?: tool.command?.replace('\n', ' ')?.trim()?.take(100)
-            ?: ""
+    val previewSummary = remember(tool.preview, tool.command, tool.output) {
+        when {
+            !tool.preview.isNullOrBlank() -> tool.preview
+            !tool.command.isNullOrBlank() -> tool.command.replace('\n', ' ').trim().take(100)
+            !tool.output.isNullOrBlank() -> tool.output.replace('\n', ' ').trim().take(80)
+            else -> ""
+        }
     }
 
     Surface(
         shape = RoundedCornerShape(7.dp),
-        color = containerBg,
-        border = BorderStroke(1.dp, borderColor),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(0.85.dp, borderColor),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // ── Tool Call 紧凑单行头部 (对标 pi-web) ──
+            // ── 头部单行栏 (对标 pi-web ToolCallBlock Header) ──
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onToggle)
                     .padding(horizontal = 10.dp, vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
             ) {
                 Text(
-                    text = tool.toolName,
-                    fontFamily = FontFamily.Monospace,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.5.sp,
-                    color = toolNameColor
+                    text = if (expanded) "▾" else "▸",
+                    fontSize = 11.sp,
+                    color = theme.textMuted
                 )
 
+                // 工具名称胶囊徽章
+                Surface(
+                    shape = RoundedCornerShape(4.dp),
+                    color = badgeBg
+                ) {
+                    Text(
+                        text = tool.toolName.ifBlank { "tool" },
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = badgeFg,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
+                    )
+                }
+
+                // 工具参数单行预览 (如文件路径、命令摘要)
                 Text(
                     text = previewSummary,
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 11.5.sp,
-                    color = theme.textSecondary,
+                    fontSize = 11.sp,
+                    color = theme.textMuted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
 
-                if (tool.isRunning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(11.dp),
-                        strokeWidth = 1.6.dp,
-                        color = toolNameColor
-                    )
-                }
-
-                tool.formattedDuration?.let { durText ->
+                // 右侧耗时徽章 (如 1.8s)
+                tool.formattedDuration?.let { dur ->
                     Text(
-                        text = durText,
+                        text = dur,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 11.sp,
-                        color = theme.textMuted
+                        fontSize = 10.5.sp,
+                        color = theme.textMuted.copy(alpha = 0.78f)
                     )
                 }
 
-                Icon(
-                    imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (expanded) "收起" else "展开",
-                    modifier = Modifier.size(15.dp),
-                    tint = theme.textMuted
-                )
+                // 右侧状态指示 (旋转加载 / ✓ / ✗)
+                when {
+                    tool.requiresApproval && !tool.isApproved -> {
+                        Text(
+                            text = "待审批",
+                            fontSize = 10.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFD97706)
+                        )
+                    }
+                    isPending -> {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(11.dp),
+                            strokeWidth = 1.6.dp,
+                            color = theme.primary
+                        )
+                    }
+                    tool.isError -> {
+                        Text(
+                            text = "✗",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFEF4444)
+                        )
+                    }
+                    hasResult -> {
+                        Text(
+                            text = "✓",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF22C55E)
+                        )
+                    }
+                }
             }
 
-            // ── 展开详情区：结构化参数与配对结果输出 ──
-            if (expanded) {
-                HorizontalDivider(color = borderColor.copy(alpha = 0.35f), thickness = 0.8.dp)
-
+            // ── 展开详情区 (对标 pi-web ToolDetails + PairedResult) ──
+            AnimatedVisibility(visible = expanded) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(theme.surfaceContainerLow.copy(alpha = 0.85f))
-                        .heightIn(max = 260.dp)
-                        .verticalScroll(rememberScrollState())
+                        .background(theme.surfaceContainer.copy(alpha = 0.45f))
                         .padding(horizontal = 10.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    // 1. 若有结构化字段，按 pi-web ToolFieldRows 样式渲染对齐键值表
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f), thickness = 0.5.dp)
+
+                    // 1. 工具输入参数
                     if (tool.fields.isNotEmpty()) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            tool.fields.forEach { (key, value) ->
+                        tool.fields.forEach { (k, v) ->
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    verticalAlignment = Alignment.Top
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = key,
+                                        text = k,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.textMuted
+                                    )
+                                    if (v.length > 40) {
+                                        Text(
+                                            text = "复制",
+                                            fontSize = 10.sp,
+                                            color = theme.primary,
+                                            modifier = Modifier.clickable { onCopyText(v) }
+                                        )
+                                    }
+                                }
+                                Surface(
+                                    color = theme.background,
+                                    shape = RoundedCornerShape(5.dp),
+                                    border = BorderStroke(0.5.dp, theme.outline),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = v,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 11.sp,
-                                        color = theme.textMuted,
-                                        modifier = Modifier.widthIn(min = 68.dp).padding(end = 10.dp)
-                                    )
-                                    Text(
-                                        text = value,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 11.5.sp,
+                                        lineHeight = 16.sp,
                                         color = theme.textPrimary,
-                                        modifier = Modifier.weight(1f)
+                                        modifier = Modifier.padding(7.dp)
                                     )
                                 }
                             }
@@ -945,11 +1475,7 @@ fun PiWebToolCallCard(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(
-                                text = "输入参数",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted
-                            )
+                            Text("输入参数", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                             Text(
                                 text = "复制",
                                 style = MaterialTheme.typography.labelSmall,
@@ -1038,5 +1564,14 @@ fun PiWebToolCallCard(
                 }
             }
         }
+    }
+}
+
+private fun formatCompactTokenCount(tokens: Long): String {
+    return when {
+        tokens >= 1_000_000L -> String.format(Locale.US, "%.1fM", tokens / 1_000_000.0).removeSuffix(".0M") + if (tokens % 1_000_000L == 0L) "M" else ""
+        tokens >= 10_000L -> "${tokens / 1000}k"
+        tokens >= 1_000L -> String.format(Locale.US, "%.1fk", tokens / 1000.0).replace(".0k", "k")
+        else -> tokens.toString()
     }
 }

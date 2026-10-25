@@ -25,31 +25,42 @@ class PiForegroundService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val action = intent?.action
         if (action == ACTION_STOP) {
+            isRunning = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
 
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "piDroid 任务监控中"
-        val content = intent?.getStringExtra(EXTRA_CONTENT) ?: "保持长连接与后台异步执行..."
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "piDroid · 网关守护运行中"
+        val content = intent?.getStringExtra(EXTRA_CONTENT) ?: "保持长连接与后台实时同步..."
 
         val notification = buildNotification(title, content)
+        isRunning = true
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-                } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                }
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    } else {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    }
+                )
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
+            }
+        } catch (_: Exception) {
+            // 防止极少数 ROM 后台启动限制抛异常崩溃
         }
 
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        isRunning = false
+        super.onDestroy()
     }
 
     private fun buildNotification(title: String, content: String): Notification {
@@ -69,7 +80,11 @@ class PiForegroundService : Service() {
             .setContentText(content)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW) // 静音常驻，不打扰用户
+            .setOnlyAlertOnce(true)
+            .setShowWhen(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .build()
     }
 
@@ -77,10 +92,13 @@ class PiForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "piDroid 后台持久连接保活",
-                NotificationManager.IMPORTANCE_LOW
+                "piDroid 常驻通知栏保活服务",
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "确保长任务在息屏和切换后台时保持长连接通信"
+                description = "在通知栏常驻显示网关连接与后台 Agent 任务状态，防止锁屏断连"
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
             }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
@@ -88,31 +106,45 @@ class PiForegroundService : Service() {
     }
 
     companion object {
-        const val CHANNEL_ID = "pi_keepalive_service_channel"
+        const val CHANNEL_ID = "pi_keepalive_persistent_channel"
         const val NOTIFICATION_ID = 2002
         const val ACTION_START = "ACTION_START_KEEP_ALIVE"
         const val ACTION_STOP = "ACTION_STOP_KEEP_ALIVE"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_CONTENT = "extra_content"
 
-        fun start(context: Context, title: String = "piDroid 任务监控中", content: String = "长连接保活运行中") {
-            val intent = Intent(context, PiForegroundService::class.java).apply {
-                action = ACTION_START
-                putExtra(EXTRA_TITLE, title)
-                putExtra(EXTRA_CONTENT, content)
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+        @Volatile
+        var isRunning: Boolean = false
+            private set
+
+        fun start(
+            context: Context,
+            title: String = "piDroid · 网关守护已就绪",
+            content: String = "长连接保活与实时同步运行中"
+        ) {
+            try {
+                val intent = Intent(context, PiForegroundService::class.java).apply {
+                    action = ACTION_START
+                    putExtra(EXTRA_TITLE, title)
+                    putExtra(EXTRA_CONTENT, content)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+            } catch (_: Exception) {
             }
         }
 
         fun stop(context: Context) {
-            val intent = Intent(context, PiForegroundService::class.java).apply {
-                action = ACTION_STOP
+            try {
+                val intent = Intent(context, PiForegroundService::class.java).apply {
+                    action = ACTION_STOP
+                }
+                context.startService(intent)
+            } catch (_: Exception) {
             }
-            context.startService(intent)
         }
     }
 }

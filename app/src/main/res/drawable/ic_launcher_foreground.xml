@@ -4,46 +4,9 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    
-    <!-- 极客终端外框 -->
-    <path
-        android:strokeColor="#30363D"
-        android:strokeWidth="2.5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M28,26 h52 a6,6 0 0,1 6,6 v44 a6,6 0 0,1 -6,6 h-52 a6,6 0 0,1 -6,-6 v-44 a6,6 0 0,1 6,-6 z" />
 
-    <!-- 顶部终端状态栏圆点 (绿/暗灰) -->
+    <!-- 极简扁平化单轮廓几何 π 符号（108x108 画布严格水平垂直对称居中） -->
     <path
-        android:fillColor="#3FB950"
-        android:pathData="M30,33 a2.5,2.5 0 1,0 0.01,0 Z" />
-    <path
-        android:fillColor="#484F58"
-        android:pathData="M37,33 a2.5,2.5 0 1,0 0.01,0 Z" />
-    <path
-        android:fillColor="#484F58"
-        android:pathData="M44,33 a2.5,2.5 0 1,0 0.01,0 Z" />
-
-    <!-- 终端命令行提示符 > -->
-    <path
-        android:strokeColor="#58A6FF"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M32,54 L38,59 L32,64" />
-
-    <!-- 刚劲现代的希腊字母 π 图腾 -->
-    <!-- π 顶部横梁 -->
-    <path
-        android:fillColor="#F0F6FC"
-        android:pathData="M46,46 h26 c2,0 3,1 3,2.5 c0,1.5 -1,2.5 -3,2.5 h-26 c-2,0 -3,-1 -3,-2.5 c0,-1.5 1,-2.5 3,-2.5 z" />
-    <!-- π 左支柱 (带微弧) -->
-    <path
-        android:fillColor="#58A6FF"
-        android:pathData="M52,50 h4 v18 c0,2 -1,3 -3,3 c-2,0 -2.5,-1 -2.5,-2 v-17 c0,-1 0.5,-2 1.5,-2 z" />
-    <!-- π 右支柱 (带向右微翘末端) -->
-    <path
-        android:fillColor="#58A6FF"
-        android:pathData="M64,50 h4 v16 c0,2 1,3 3,3 c1,0 2,-0.5 2.5,-1.5 c0.5,-1 1.5,-1 2.5,-0.5 c1,0.5 1,1.5 0.5,2.5 c-1.5,2 -3.5,3 -5.5,3 c-4,0 -6.5,-2.5 -6.5,-6.5 v-14.5 c0,-1 0.5,-2 1.5,-2 z" />
-
+        android:fillColor="#FFFFFF"
+        android:pathData="M34.5,33 H73.5 A3.5,3.5 0 0 1 77,36.5 V38.5 A3.5,3.5 0 0 1 73.5,42 H69 V71.5 A3.5,3.5 0 0 1 65.5,75 H63.5 A3.5,3.5 0 0 1 60,71.5 V42 H48 V71.5 A3.5,3.5 0 0 1 44.5,75 H42.5 A3.5,3.5 0 0 1 39,71.5 V42 H34.5 A3.5,3.5 0 0 1 31,38.5 V36.5 A3.5,3.5 0 0 1 34.5,33 Z" />
 </vector>

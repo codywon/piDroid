@@ -83,7 +83,7 @@ enum class AppTheme(
     DARK_SLATE(
         id = "dark_slate",
         titleZh = "暗夜极客",
-        titleEn = "Termius Slate",
+        titleEn = "Dark Slate",
         isDark = true,
         primary = Color(0xFF58A6FF),
         primaryContainer = Color(0xFF1F3556),

@@ -92,7 +92,7 @@ object LatexMathParser {
             builder.append("\n")
         }
 
-        val primaryColor = if (textColor != Color.Unspecified) textColor else (if (isUser) Color.White else Color(0xFF1E293B))
+        val primaryColor = textColor
         val formulaTokens = tokenizeAndParseFormula(formula)
 
         for (token in formulaTokens) {

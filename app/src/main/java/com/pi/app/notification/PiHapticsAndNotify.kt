@@ -3,13 +3,17 @@ package com.pi.app.notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.media.AudioAttributes
 import android.os.Build
+import android.os.VibrationAttributes
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import com.pi.app.data.storage.AppPreferences
 
 class PiHapticsAndNotify(private val context: Context) {
+    private val prefs = AppPreferences(context)
     private val notificationManager =
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
@@ -29,26 +33,51 @@ class PiHapticsAndNotify(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Pi 任务执行状态",
+                "Pi 任务完成与审批提醒",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "展示 Pi Coding Agent 的长任务后台执行进度与审批通知"
+                description = "展示 Pi Coding Agent 的任务完成提醒与安全审批通知"
+                enableVibration(true)
+                vibrationPattern = longArrayOf(0, 120, 80, 180)
             }
             notificationManager.createNotificationChannel(channel)
         }
     }
 
     /**
-     * 任务完成触觉反馈：轻震两次
+     * 任务完成触觉反馈：清脆双振脉冲
+     * 显式附带 NOTIFICATION 级 VibrationAttributes / AudioAttributes，
+     * 确保在 MIUI/HyperOS/ColorOS/OneUI 等系统关闭普通触摸震动时依然能正常驱动马达震动。
      */
-    fun vibrateTaskCompleted() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val timings = longArrayOf(0, 100, 100, 150)
-            val amplitudes = intArrayOf(0, 150, 0, 200)
-            vibrator?.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator?.vibrate(longArrayOf(0, 100, 100, 150), -1)
+    fun vibrateTaskCompleted(force: Boolean = false) {
+        if (!force && !prefs.hapticsEnabled) return
+        val vib = vibrator ?: return
+        if (!vib.hasVibrator()) return
+
+        try {
+            val timings = longArrayOf(0, 110, 90, 170)
+            val amplitudes = intArrayOf(0, 200, 0, 255)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                val attrs = VibrationAttributes.Builder()
+                    .setUsage(VibrationAttributes.USAGE_NOTIFICATION)
+                    .build()
+                vib.vibrate(effect, attrs)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                @Suppress("DEPRECATION")
+                val audioAttrs = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build()
+                @Suppress("DEPRECATION")
+                vib.vibrate(effect, audioAttrs)
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(timings, -1)
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -56,11 +85,33 @@ class PiHapticsAndNotify(private val context: Context) {
      * 需要审批危险命令触觉反馈：警示长震
      */
     fun vibrateApprovalRequired() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            vibrator?.vibrate(VibrationEffect.createOneShot(400, VibrationEffect.DEFAULT_AMPLITUDE))
-        } else {
-            @Suppress("DEPRECATION")
-            vibrator?.vibrate(400)
+        if (!prefs.hapticsEnabled) return
+        val vib = vibrator ?: return
+        if (!vib.hasVibrator()) return
+
+        try {
+            val timings = longArrayOf(0, 220, 100, 280)
+            val amplitudes = intArrayOf(0, 255, 0, 255)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                val attrs = VibrationAttributes.Builder()
+                    .setUsage(VibrationAttributes.USAGE_ALARM)
+                    .build()
+                vib.vibrate(effect, attrs)
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val effect = VibrationEffect.createWaveform(timings, amplitudes, -1)
+                @Suppress("DEPRECATION")
+                val audioAttrs = AudioAttributes.Builder()
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build()
+                @Suppress("DEPRECATION")
+                vib.vibrate(effect, audioAttrs)
+            } else {
+                @Suppress("DEPRECATION")
+                vib.vibrate(450)
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -68,23 +119,29 @@ class PiHapticsAndNotify(private val context: Context) {
      * 更新后台长任务通知
      */
     fun updateTaskNotification(title: String, content: String, isFinished: Boolean = false) {
-        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle(title)
-            .setContentText(content)
-            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .setOngoing(!isFinished)
-            .setAutoCancel(isFinished)
+        try {
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle(title)
+                .setContentText(content)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setOngoing(!isFinished)
+                .setAutoCancel(isFinished)
 
-        notificationManager.notify(NOTIFICATION_ID, builder.build())
+            notificationManager.notify(NOTIFICATION_ID, builder.build())
+        } catch (_: Exception) {
+        }
     }
 
     fun clearNotification() {
-        notificationManager.cancel(NOTIFICATION_ID)
+        try {
+            notificationManager.cancel(NOTIFICATION_ID)
+        } catch (_: Exception) {
+        }
     }
 
     companion object {
-        const val CHANNEL_ID = "pi_task_channel"
+        const val CHANNEL_ID = "pi_task_channel_v2"
         const val NOTIFICATION_ID = 1001
     }
 }

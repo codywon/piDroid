@@ -223,6 +223,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     val userText = extractTextFromContent(msgObj.get("content"))
                                     if (userText.isNotBlank()) {
                                         chatItems.add(ChatItem(
+                                            id = "hist_${sessionId}_${chatItems.size}_user",
                                             role = MessageRole.USER,
                                             content = userText,
                                             timestamp = timestamp
@@ -288,6 +289,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     if (text.isNotBlank() || !thinking.isNullOrBlank()) {
                                         val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
                                         chatItems.add(ChatItem(
+                                            id = "hist_${sessionId}_${chatItems.size}_agent",
                                             role = MessageRole.AGENT,
                                             content = text,
                                             thinking = thinking,
@@ -301,6 +303,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                         val isFirstItemInTurn = (chatItems.size == startIndexForTurn)
                                         val isLastToolInTurn = (idx == toolCalls.lastIndex)
                                         chatItems.add(ChatItem(
+                                            id = "hist_${sessionId}_${chatItems.size}_tool_${tc.toolCallId ?: idx}",
                                             role = MessageRole.TOOL,
                                             content = "",
                                             toolCall = tc,
@@ -320,7 +323,6 @@ class PiApiClient(private val prefs: AppPreferences) {
                                         val toolOutput = extractTextFromContent(msgObj.get("content"))
                                         val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                                         val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                        // 尝试合并到最近一张同名且无输出的工具卡片上
                                         val recentIdx = chatItems.indexOfLast {
                                             it.role == MessageRole.TOOL &&
                                                 it.toolCall?.toolName == toolName &&
@@ -337,6 +339,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                             )
                                         } else {
                                             chatItems.add(ChatItem(
+                                                id = "hist_${sessionId}_${chatItems.size}_toolres_${tcId ?: toolName}",
                                                 role = MessageRole.TOOL,
                                                 content = "",
                                                 toolCall = ToolCallInfo(
@@ -492,16 +495,19 @@ class PiApiClient(private val prefs: AppPreferences) {
                     for (item in array) {
                         val obj = item.asJsonObject
                         val id = obj.get("id")?.asString ?: ""
-                        val name = obj.get("name")?.asString ?: id
-                        val provider = obj.get("provider")?.asString ?: "Default"
+                        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
+                        val provider = obj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: "Default"
+                        val ctxWin = obj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 200000L
+                        val maxTok = obj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong ?: 8192L
+                        val reasoning = obj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
                         val input = obj.getAsJsonArray("input")?.map { it.asString } ?: emptyList()
                         models.add(ModelInfo(
                             id = id,
                             name = name,
                             provider = provider,
-                            contextWindow = 200000L,
-                            maxTokens = 8192L,
-                            supportsThinking = true,
+                            contextWindow = ctxWin,
+                            maxTokens = maxTok,
+                            supportsThinking = reasoning,
                             supportsVision = input.contains("image"),
                             input = input
                         ))
@@ -719,12 +725,20 @@ class PiApiClient(private val prefs: AppPreferences) {
                         for (item in array) {
                             val obj = item.asJsonObject
                             val name = obj.get("name")?.asString ?: ""
-                            val description = obj.get("description")?.asString
-                            val transport = obj.get("transport")?.asString ?: "http"
-                            val urlVal = obj.get("url")?.asString
-                            val enabled = obj.get("enabled")?.asBoolean ?: true
-                            val count = obj.get("toolExposureCount")?.asInt ?: 0
-                            val state = if (obj.has("status")) obj.getAsJsonObject("status")?.get("state")?.asString else "connected"
+                            val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
+                            val transport = obj.get("transport")?.takeIf { !it.isJsonNull }?.asString ?: "http"
+                            val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString ?: run {
+                                val cmd = obj.get("command")?.takeIf { !it.isJsonNull }?.asString
+                                val args = if (obj.has("args") && obj.get("args").isJsonArray) {
+                                    obj.getAsJsonArray("args").joinToString(" ") { it.asString }
+                                } else ""
+                                if (!cmd.isNullOrBlank()) "$cmd $args".trim() else null
+                            }
+                            val enabled = obj.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
+                            val count = obj.get("toolExposureCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                            val state = if (obj.has("status") && obj.get("status").isJsonObject) {
+                                obj.getAsJsonObject("status")?.get("state")?.takeIf { !it.isJsonNull }?.asString
+                            } else "connected"
 
                             servers.add(McpServerInfo(
                                 name = name,
@@ -794,4 +808,489 @@ class PiApiClient(private val prefs: AppPreferences) {
             Result.success(false)
         }
     }
+
+    // ==========================================
+    // 8. 对标 pi-web 的模型、提供商、技能、MCP、插件可编辑管理接口
+    // ==========================================
+
+    /**
+     * 刷新网关模型目录 (POST /api/models/refresh)
+     */
+    suspend fun refreshModelsCatalog(): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext getDynamicModels()
+        try {
+            val emptyBody = "{}".toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/models/refresh").post(emptyBody).build()
+            client.newCall(req).execute().close()
+        } catch (_: Exception) {
+        }
+        getDynamicModels()
+    }
+
+    /**
+     * 配置指定 Provider 的 API Key (POST /api/auth/api-key/{provider})
+     */
+    suspend fun setProviderApiKey(provider: String, apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val encodedProvider = URLEncoder.encode(provider.trim(), "UTF-8")
+            val body = gson.toJson(mapOf("apiKey" to apiKey.trim())).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/auth/api-key/$encodedProvider").post(body).build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) Result.success(true)
+                else Result.failure(IOException("配置 API Key 失败 (${response.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 新增或编辑自定义模型与提供商配置 (GET & PUT /api/models-config + POST /api/models/refresh)
+     */
+    suspend fun upsertCustomProviderModel(
+        providerName: String,
+        baseUrlEndpoint: String,
+        apiKey: String,
+        apiType: String = "openai-completions",
+        modelId: String,
+        modelName: String,
+        contextWindow: Long = 128000L,
+        maxTokens: Long = 16384L,
+        reasoning: Boolean = true,
+        supportsVision: Boolean = false
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            // 1. 先读取当前 models.json 配置
+            var rootConfig = JsonObject()
+            val getReq = Request.Builder().url("$baseUrl/api/models-config").get().build()
+            client.newCall(getReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val str = resp.body?.string() ?: "{}"
+                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
+                    if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
+                        rootConfig = parsed.getAsJsonObject("config")
+                    }
+                }
+            }
+
+            val providersObj = if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
+                rootConfig.getAsJsonObject("providers")
+            } else {
+                JsonObject().also { rootConfig.add("providers", it) }
+            }
+
+            val pKey = providerName.trim()
+            val providerObj = if (providersObj.has(pKey) && providersObj.get(pKey).isJsonObject) {
+                providersObj.getAsJsonObject(pKey)
+            } else {
+                JsonObject().also { providersObj.add(pKey, it) }
+            }
+
+            if (baseUrlEndpoint.isNotBlank()) providerObj.addProperty("baseUrl", baseUrlEndpoint.trim())
+            if (apiKey.isNotBlank()) providerObj.addProperty("apiKey", apiKey.trim())
+            if (apiType.isNotBlank()) providerObj.addProperty("api", apiType.trim())
+
+            val modelsArr = if (providerObj.has("models") && providerObj.get("models").isJsonArray) {
+                providerObj.getAsJsonArray("models")
+            } else {
+                JsonArray().also { providerObj.add("models", it) }
+            }
+
+            val mId = modelId.trim()
+            val newModelObj = JsonObject().apply {
+                addProperty("id", mId)
+                addProperty("name", modelName.trim().ifBlank { mId })
+                addProperty("contextWindow", contextWindow)
+                addProperty("maxTokens", maxTokens)
+                addProperty("reasoning", reasoning)
+                val inputArr = JsonArray().apply {
+                    add("text")
+                    if (supportsVision) add("image")
+                }
+                add("input", inputArr)
+            }
+
+            var replaced = false
+            for (i in 0 until modelsArr.size()) {
+                val elem = modelsArr.get(i)
+                if (elem.isJsonObject && elem.asJsonObject.get("id")?.asString == mId) {
+                    modelsArr.set(i, newModelObj)
+                    replaced = true
+                    break
+                }
+            }
+            if (!replaced) {
+                modelsArr.add(newModelObj)
+            }
+
+            val putPayload = JsonObject().apply { add("config", rootConfig) }
+            val putReq = Request.Builder()
+                .url("$baseUrl/api/models-config")
+                .put(gson.toJson(putPayload).toRequestBody(jsonMediaType))
+                .build()
+
+            client.newCall(putReq).execute().use { putResp ->
+                if (!putResp.isSuccessful) {
+                    return@withContext Result.failure(IOException("保存模型配置失败 (${putResp.code})"))
+                }
+            }
+
+            // 触发目录刷新
+            runCatching {
+                val refreshReq = Request.Builder()
+                    .url("$baseUrl/api/models/refresh")
+                    .post("{}".toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(refreshReq).execute().close()
+            }
+
+            Result.success(true)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 切换技能启用/禁用状态 (PATCH /api/skills)
+     */
+    suspend fun toggleSkillOnServer(filePath: String?, disableModelInvocation: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || filePath.isNullOrBlank()) return@withContext Result.success(true)
+        try {
+            val payload = mapOf(
+                "filePath" to filePath,
+                "disableModelInvocation" to disableModelInvocation
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/skills")
+                .patch(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                Result.success(resp.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 读取技能完整 SKILL.md 文档内容 (GET /api/skills/content)
+     */
+    suspend fun getSkillContent(filePath: String?, cwd: String = ""): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || filePath.isNullOrBlank()) return@withContext Result.failure(Exception("无文件路径"))
+        try {
+            val encPath = URLEncoder.encode(filePath, "UTF-8")
+            val encCwd = URLEncoder.encode(cwd, "UTF-8")
+            val url = "$baseUrl/api/skills/content?filePath=$encPath&cwd=$encCwd"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string() ?: "{}"
+                    val json = JsonParser.parseString(body).asJsonObject
+                    val content = json.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    Result.success(content)
+                } else {
+                    Result.failure(IOException("读取技能源码失败 (${resp.code})"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 安装新技能包 (POST /api/skills/install)
+     */
+    suspend fun installSkill(packageSource: String, scope: String = "global", cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = mapOf(
+                "package" to packageSource.trim(),
+                "scope" to scope,
+                "cwd" to cwd
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/skills/install")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(true)
+                else Result.failure(IOException("安装技能失败 (${resp.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 管理 MCP 服务器：新增、启用/禁用、移除 (POST /api/mcp)
+     */
+    suspend fun addMcpServer(
+        name: String,
+        transport: String,
+        endpointOrCommand: String,
+        description: String = "",
+        scope: String = "user",
+        cwd: String = ""
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val serverCfg = mutableMapOf<String, Any>(
+                "transport" to transport,
+                "enabled" to true
+            )
+            if (description.isNotBlank()) serverCfg["description"] = description.trim()
+            if (transport == "stdio") {
+                val parts = endpointOrCommand.trim().split(Regex("\\s+"))
+                serverCfg["command"] = parts.firstOrNull() ?: endpointOrCommand.trim()
+                if (parts.size > 1) serverCfg["args"] = parts.drop(1)
+            } else {
+                serverCfg["url"] = endpointOrCommand.trim()
+            }
+            val payload = mapOf(
+                "action" to "add",
+                "scope" to scope,
+                "name" to name.trim(),
+                "cwd" to cwd,
+                "config" to serverCfg
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/mcp")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(true)
+                else Result.failure(IOException("添加 MCP 节点失败 (${resp.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun manageMcpServerAction(
+        action: String, // "enable", "disable", "remove"
+        name: String,
+        scope: String = "user",
+        cwd: String = ""
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = mapOf(
+                "action" to action,
+                "scope" to scope,
+                "name" to name,
+                "cwd" to cwd
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/mcp")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(true)
+                else Result.failure(IOException("MCP 操作失败 (${resp.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 管理插件扩展：安装、启用、禁用、更新、卸载 (POST /api/plugins)
+     */
+    suspend fun managePluginAction(
+        action: String, // "install", "enable", "disable", "update", "remove"
+        source: String,
+        scope: String = "global",
+        cwd: String = ""
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = mapOf(
+                "action" to action,
+                "source" to source.trim(),
+                "scope" to scope,
+                "cwd" to cwd
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/plugins")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) Result.success(true)
+                else Result.failure(IOException("插件操作失败 (${resp.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 读取网关 models.json 原始配置 JSON (GET /api/models-config)
+     */
+    suspend fun getModelsRawConfig(): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder().url("$baseUrl/api/models-config").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val str = resp.body?.string() ?: "{}"
+                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
+                    val configObj = if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
+                        parsed.getAsJsonObject("config")
+                    } else parsed ?: JsonObject()
+                    val pretty = com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(configObj)
+                    Result.success(pretty)
+                } else {
+                    Result.failure(IOException("读取 models.json 失败 (${resp.code})"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 保存网关 models.json 原始配置 JSON (PUT /api/models-config)
+     */
+    suspend fun saveModelsRawConfig(rawJson: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val configObj = JsonParser.parseString(rawJson).asJsonObject
+            val payload = JsonObject().apply { add("config", configObj) }
+            val req = Request.Builder()
+                .url("$baseUrl/api/models-config")
+                .put(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("保存 models.json 失败 (${resp.code})"))
+                }
+            }
+            runCatching {
+                val refreshReq = Request.Builder().url("$baseUrl/api/models/refresh").post("{}".toRequestBody(jsonMediaType)).build()
+                client.newCall(refreshReq).execute().close()
+            }
+            Result.success(true)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 从 models.json 中删除指定自定义模型 (GET & PUT /api/models-config)
+     */
+    suspend fun deleteCustomModel(providerName: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.success(true)
+        try {
+            var rootConfig = JsonObject()
+            val getReq = Request.Builder().url("$baseUrl/api/models-config").get().build()
+            client.newCall(getReq).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val str = resp.body?.string() ?: "{}"
+                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
+                    if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
+                        rootConfig = parsed.getAsJsonObject("config")
+                    }
+                }
+            }
+            if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
+                val providersObj = rootConfig.getAsJsonObject("providers")
+                val pKey = providerName.trim()
+                if (providersObj.has(pKey) && providersObj.get(pKey).isJsonObject) {
+                    val pObj = providersObj.getAsJsonObject(pKey)
+                    if (pObj.has("models") && pObj.get("models").isJsonArray) {
+                        val arr = pObj.getAsJsonArray("models")
+                        val newArr = JsonArray()
+                        for (item in arr) {
+                            if (item.isJsonObject && item.asJsonObject.get("id")?.asString == modelId.trim()) {
+                                continue
+                            }
+                            newArr.add(item)
+                        }
+                        pObj.add("models", newArr)
+                    }
+                }
+            }
+            val putPayload = JsonObject().apply { add("config", rootConfig) }
+            val putReq = Request.Builder()
+                .url("$baseUrl/api/models-config")
+                .put(gson.toJson(putPayload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(putReq).execute().close()
+            runCatching {
+                val refreshReq = Request.Builder().url("$baseUrl/api/models/refresh").post("{}".toRequestBody(jsonMediaType)).build()
+                client.newCall(refreshReq).execute().close()
+            }
+            Result.success(true)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 保存编辑后的 SKILL.md 文档内容 (PUT /api/skills/content 或 PATCH /api/skills)
+     */
+    suspend fun saveSkillContent(filePath: String?, content: String, cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || filePath.isNullOrBlank()) return@withContext Result.success(true)
+        try {
+            val payload = mapOf(
+                "filePath" to filePath,
+                "content" to content,
+                "cwd" to cwd
+            )
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/skills/content").put(body).build()
+            client.newCall(req).execute().use { resp ->
+                Result.success(resp.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 更新 MCP Code Mode 与 Token 预算配置 (POST /api/mcp)
+     */
+    suspend fun updateMcpCodeMode(
+        mode: String,
+        scriptMode: Boolean,
+        tokenBudget: Int,
+        cwd: String = ""
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.success(true)
+        try {
+            val payload = mapOf(
+                "action" to "set-codemode",
+                "preference" to mode,
+                "scriptMode" to scriptMode,
+                "inlineBudget" to mapOf("default" to tokenBudget),
+                "cwd" to cwd
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/mcp")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                Result.success(resp.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }
+

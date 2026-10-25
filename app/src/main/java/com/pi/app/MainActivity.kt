@@ -10,11 +10,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.pi.app.data.model.*
 import com.pi.app.data.storage.AppPreferences
@@ -33,45 +33,36 @@ import com.pi.app.ui.updater.AppUpdateDialog
 import com.pi.app.ui.updater.UpdateUiState
 import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateCheckResult
-import com.pi.app.voice.SmartTtsManager
-import com.pi.app.voice.VoiceInputManager
-import com.pi.app.voice.VoiceInputState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import java.io.File
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: AppPreferences
     private lateinit var apiClient: PiApiClient
     private lateinit var sseClient: PiSseClient
-    private lateinit var voiceInputManager: VoiceInputManager
-    private lateinit var smartTtsManager: SmartTtsManager
     private lateinit var hapticsAndNotify: PiHapticsAndNotify
-
     private lateinit var keepAliveManager: KeepAliveManager
 
     private var sseJob: Job? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        val recordAudioGranted = permissions[Manifest.permission.RECORD_AUDIO] ?: false
-        if (!recordAudioGranted) {
-            Toast.makeText(this, "未授予录音权限，将无法使用语音输入", Toast.LENGTH_SHORT).show()
-        }
+    ) { _ ->
+        // 权限回调完成后，若已开启常驻通知栏保活则确保前台服务启动
+        syncPersistentForegroundService(isBusy = false, project = "默认工作区")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // 开启标准 Edge-to-Edge 软键盘窗口自适应，配合 ChatScreen bottomBar 的 imePadding() 将输入框平滑顶起
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
         prefs = AppPreferences(this)
         apiClient = PiApiClient(prefs)
         sseClient = PiSseClient(prefs)
-        voiceInputManager = VoiceInputManager(this)
-        smartTtsManager = SmartTtsManager(this)
         hapticsAndNotify = PiHapticsAndNotify(this)
-
         keepAliveManager = KeepAliveManager(this)
 
         // 初始化主题管理
@@ -79,6 +70,7 @@ class MainActivity : ComponentActivity() {
 
         checkAndRequestPermissions()
         handleDeepLink(intent)
+        syncPersistentForegroundService(isBusy = false, project = "默认工作区")
 
         setContent {
             com.pi.app.ui.theme.PiDroidTheme {
@@ -90,6 +82,24 @@ class MainActivity : ComponentActivity() {
                     MainAppNav()
                 }
             }
+        }
+    }
+
+    private fun syncPersistentForegroundService(isBusy: Boolean, project: String, phase: String? = null) {
+        if (!prefs.isConfigured) {
+            PiForegroundService.stop(this)
+            return
+        }
+        if (prefs.persistentNotifyEnabled || isBusy) {
+            val title = if (isBusy) "piDroid · 智能任务执行中" else "piDroid · 网关常驻守护中"
+            val content = if (isBusy) {
+                "项目: $project | ${phase ?: "正在流式同步执行..."}"
+            } else {
+                "主机: ${prefs.deviceName.ifBlank { prefs.serverUrl }} | 随时接收远程指令"
+            }
+            PiForegroundService.start(this, title = title, content = content)
+        } else {
+            PiForegroundService.stop(this)
         }
     }
 
@@ -108,6 +118,7 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 apiClient.ping(url, token).onSuccess {
                     prefs.saveConnection(url, token, name)
+                    syncPersistentForegroundService(isBusy = false, project = "默认工作区")
                     Toast.makeText(this@MainActivity, "已成功绑定设备: $name", Toast.LENGTH_SHORT).show()
                 }.onFailure {
                     Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
@@ -118,7 +129,6 @@ class MainActivity : ComponentActivity() {
 
     private fun checkAndRequestPermissions() {
         val permissions = mutableListOf(
-            Manifest.permission.RECORD_AUDIO,
             Manifest.permission.CAMERA
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -140,7 +150,7 @@ class MainActivity : ComponentActivity() {
         var showModelSheet by remember { mutableStateOf(false) }
         var showManualConfigDialog by remember { mutableStateOf(false) }
 
-        // 工业级应用内自动更新状态 (参考 Termius)
+        // 应用内自动更新状态
         var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
 
         var currentSession by remember { mutableStateOf<Session?>(null) }
@@ -156,55 +166,41 @@ class MainActivity : ComponentActivity() {
         }
 
         var currentProject by remember { mutableStateOf("默认工作区") }
-        var tokenStats by remember { mutableStateOf(TokenStats(contextTokens = 42100, maxContextWindow = 200000, inputTokens = 1240, outputTokens = 412, cacheReadTokens = 38000, cost = 0.0)) }
+        var tokenStats by remember {
+            mutableStateOf(
+                TokenStats(
+                    contextTokens = 42100,
+                    maxContextWindow = 200000,
+                    inputTokens = 1240,
+                    outputTokens = 412,
+                    cacheReadTokens = 38000,
+                    cost = 0.0
+                )
+            )
+        }
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
+
+        var persistentNotifyEnabled by remember { mutableStateOf(prefs.persistentNotifyEnabled) }
+        var hapticsEnabled by remember { mutableStateOf(prefs.hapticsEnabled) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
         var isCompacting by remember { mutableStateOf(false) }
-        var isSpeaking by remember { mutableStateOf(false) }
         var isGatewayOnline by remember { mutableStateOf(true) }
         var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
 
-        val voiceState by voiceInputManager.state.collectAsState()
-        var isRecording by remember { mutableStateOf(false) }
-        var partialVoiceText by remember { mutableStateOf("") }
-
-        // 启动时静默检查更新 (非手动静默模式，若有更新则弹窗)
+        // 启动时静默检查更新
         LaunchedEffect(Unit) {
             when (val result = AppUpdateManager.checkUpdate(this@MainActivity, isManual = false)) {
                 is UpdateCheckResult.HasUpdate -> {
                     updateUiState = UpdateUiState.HasUpdate(result.info)
                 }
                 else -> {}
-            }
-        }
-
-        LaunchedEffect(voiceState) {
-            when (val state = voiceState) {
-                is VoiceInputState.Listening -> {
-                    isRecording = true
-                    partialVoiceText = ""
-                }
-                is VoiceInputState.PartialResult -> {
-                    partialVoiceText = state.text
-                }
-                is VoiceInputState.FinalResult -> {
-                    isRecording = false
-                    partialVoiceText = state.text
-                }
-                is VoiceInputState.Error -> {
-                    isRecording = false
-                    Toast.makeText(this@MainActivity, state.message, Toast.LENGTH_SHORT).show()
-                }
-                is VoiceInputState.Idle -> {
-                    isRecording = false
-                }
             }
         }
 
@@ -251,7 +247,13 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 增量同步会话快照：当正在运行的任务存在网络抖动、SSE 重连或代理缓冲时，保证数据 100% 实时一致
+        // 声明 startListeningEvents 以便在 syncSessionSnapshot 检测到 PC 端新启动任务时自动重连 SSE
+        var reattachSseCallback: ((String, Boolean) -> Unit)? = null
+
+        // 增量无损同步会话快照：
+        // 1) 保留本地正在流式接收 (isStreaming = true) 或正在执行的工具尾部项，绝不因磁盘尚未落盘而抹掉实时流式文本（彻底解决“挤牙膏”与闪烁问题）
+        // 2) 当检测到 PC 端刚启动任务 (!isAgentBusy && isRunning) 时，立即自动挂载 SSE 实时流
+        // 3) 当检测到任务从运行态变为完成态 (isAgentBusy && !isRunning) 时，自动触发马达完成震动
         suspend fun syncSessionSnapshot(sessionId: String, restoreModelMeta: Boolean = false) {
             val isRunning = apiClient.getAgentRunningState(sessionId).getOrDefault(isAgentBusy)
             apiClient.getSessionDetail(sessionId).onSuccess { hist ->
@@ -264,14 +266,86 @@ class MainActivity : ComponentActivity() {
                             item
                         }
                     }
-                    // 对账同步：若服务端消息数量变化，或最后几条消息的工具输出/Token 用量/正文更新，原地无闪烁替换
-                    if (messages.size != synced.size) {
-                        messages.clear()
-                        messages.addAll(synced)
-                    } else {
-                        for (i in synced.indices) {
-                            if (messages[i] != synced[i]) {
-                                messages[i] = synced[i]
+
+                    // 比较两条消息的实质内容是否一致（忽略 id 与 timestamp），并保持既有 item.id 不变，彻底消除轮询闪屏
+                    fun isSameChatContent(a: ChatItem, b: ChatItem): Boolean {
+                        return a.role == b.role &&
+                            a.content == b.content &&
+                            a.thinking == b.thinking &&
+                            a.isStreaming == b.isStreaming &&
+                            a.toolCall == b.toolCall &&
+                            a.usageSummary == b.usageSummary
+                    }
+
+                    // 保存当前内存中尚未落盘的流式尾部消息（例如 SSE 正在推送 delta，但服务端 .jsonl 只在 message_end 才写入）
+                    val inFlightTail = if (isRunning && messages.isNotEmpty()) {
+                        val tail = messages.last()
+                        val isInFlightItem = tail.isStreaming || (tail.role == MessageRole.TOOL && tail.toolCall?.isRunning == true)
+                        if (isInFlightItem && messages.size > synced.size) tail else null
+                    } else null
+
+                    when {
+                        messages.isEmpty() -> {
+                            messages.addAll(synced)
+                        }
+                        synced.size > messages.size -> {
+                            for (i in messages.indices) {
+                                val localItem = messages[i]
+                                val diskItem = synced[i]
+                                if (!isSameChatContent(localItem, diskItem)) {
+                                    messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                }
+                            }
+                            for (i in messages.size until synced.size) {
+                                messages.add(synced[i])
+                            }
+                        }
+                        synced.size == messages.size -> {
+                            for (i in synced.indices) {
+                                val localItem = messages[i]
+                                val diskItem = synced[i]
+                                // 如果最后一条正在 SSE 流式输出且本地累积字符比磁盘快照更新，保留本地流式内容，防止回退卡顿
+                                if (i == synced.lastIndex && localItem.isStreaming && localItem.role == MessageRole.AGENT && diskItem.role == MessageRole.AGENT) {
+                                    val mergedContent = if (localItem.content.length >= diskItem.content.length) localItem.content else diskItem.content
+                                    val mergedThinking = if ((localItem.thinking?.length ?: 0) >= (diskItem.thinking?.length ?: 0)) localItem.thinking else diskItem.thinking
+                                    val updated = diskItem.copy(
+                                        id = localItem.id,
+                                        timestamp = localItem.timestamp,
+                                        content = mergedContent,
+                                        thinking = mergedThinking,
+                                        isStreaming = isRunning
+                                    )
+                                    if (!isSameChatContent(localItem, updated)) {
+                                        messages[i] = updated
+                                    }
+                                } else if (!isSameChatContent(localItem, diskItem)) {
+                                    messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                }
+                            }
+                        }
+                        else -> {
+                            // messages.size > synced.size：说明本地有乐观发送的消息或正在流式输出的尾部消息
+                            if (isRunning && inFlightTail != null && messages.size == synced.size + 1) {
+                                for (i in synced.indices) {
+                                    val localItem = messages[i]
+                                    val diskItem = synced[i]
+                                    if (!isSameChatContent(localItem, diskItem)) {
+                                        messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                    }
+                                }
+                                messages[synced.size] = inFlightTail
+                            } else if (!isRunning) {
+                                // 保持已存在索引的 id 稳定，仅截断多余尾部
+                                for (i in synced.indices) {
+                                    val localItem = messages[i]
+                                    val diskItem = synced[i]
+                                    if (!isSameChatContent(localItem, diskItem)) {
+                                        messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                    }
+                                }
+                                while (messages.size > synced.size) {
+                                    messages.removeAt(messages.lastIndex)
+                                }
                             }
                         }
                     }
@@ -284,19 +358,29 @@ class MainActivity : ComponentActivity() {
                     currentThinkingLevel = hist.thinkingLevel
                 }
             }
+
             if (isAgentBusy && !isRunning) {
                 isAgentBusy = false
                 agentPhaseLabel = null
                 keepAliveManager.releaseWakeLock()
-                PiForegroundService.stop(this@MainActivity)
+                syncPersistentForegroundService(isBusy = false, project = currentProject)
+
+                if (prefs.hapticsEnabled) {
+                    hapticsAndNotify.vibrateTaskCompleted()
+                }
+                hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
+
                 val last = messages.lastOrNull()
                 if (last != null && last.isStreaming) {
                     messages[messages.size - 1] = last.copy(isStreaming = false)
                 }
             } else if (!isAgentBusy && isRunning) {
+                // PC 端或远端刚启动了任务：立即切换为运行态并重新挂载 SSE 实时流
                 isAgentBusy = true
-                if (agentPhaseLabel == null) agentPhaseLabel = "正在等待模型..."
+                if (agentPhaseLabel == null) agentPhaseLabel = "正在同步实时输出..."
                 keepAliveManager.acquireWakeLock()
+                syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                reattachSseCallback?.invoke(sessionId, true)
             }
         }
 
@@ -308,11 +392,7 @@ class MainActivity : ComponentActivity() {
 
                 if (initialBusy) {
                     keepAliveManager.acquireWakeLock()
-                    PiForegroundService.start(
-                        this@MainActivity,
-                        title = "piDroid · 智能任务执行中",
-                        content = "项目: $currentProject | 正在执行代码任务..."
-                    )
+                    syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
                 }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
@@ -332,18 +412,19 @@ class MainActivity : ComponentActivity() {
                             isGatewayOnline = true
                             if (event.isStreaming == true) {
                                 isAgentBusy = true
-                                if (agentPhaseLabel == null) agentPhaseLabel = "正在等待模型..."
+                                if (agentPhaseLabel == null) agentPhaseLabel = "正在接收实时流..."
                                 keepAliveManager.acquireWakeLock()
+                                syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
                             }
                         }
                         "reconnected_sync" -> {
-                            // SSE 断线重连成功后自动拉取一次快照，补齐断线期间遗漏的 Token 与工具输出
                             syncSessionSnapshot(sessionId, restoreModelMeta = false)
                         }
                         "agent_start" -> {
                             isAgentBusy = true
                             agentPhaseLabel = event.phaseLabel ?: "正在等待模型..."
                             keepAliveManager.acquireWakeLock()
+                            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
                             val chunk = event.effectiveText
@@ -351,6 +432,7 @@ class MainActivity : ComponentActivity() {
                                 if (!isAgentBusy) {
                                     isAgentBusy = true
                                     keepAliveManager.acquireWakeLock()
+                                    syncPersistentForegroundService(isBusy = true, project = currentProject, phase = "正在生成回复...")
                                 }
                                 agentPhaseLabel = null
                                 val last = messages.lastOrNull()
@@ -483,6 +565,7 @@ class MainActivity : ComponentActivity() {
                             if (!isAgentBusy) isAgentBusy = true
                             val toolName = event.effectiveToolName
                             agentPhaseLabel = event.phaseLabel ?: "正在执行 $toolName..."
+                            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
                             val idx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else {
@@ -550,13 +633,14 @@ class MainActivity : ComponentActivity() {
                                     usageSummary = event.usageSummary ?: last.usageSummary
                                 )
                             }
-                            // 后台拉取一次详情，确保 fields、配对结果和 Token 统计 100% 同步
                             lifecycleScope.launch {
                                 syncSessionSnapshot(sessionId, restoreModelMeta = false)
                             }
                         }
                         "approval_required" -> {
-                            hapticsAndNotify.vibrateApprovalRequired()
+                            if (prefs.hapticsEnabled) {
+                                hapticsAndNotify.vibrateApprovalRequired()
+                            }
                             agentPhaseLabel = "等待人工安全审批..."
                             messages.add(
                                 ChatItem(
@@ -574,12 +658,15 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         "turn_completed", "done", "message_stop", "agent_idle" -> {
+                            val wasBusy = isAgentBusy
                             isAgentBusy = false
                             agentPhaseLabel = null
                             keepAliveManager.releaseWakeLock()
-                            PiForegroundService.stop(this@MainActivity)
+                            syncPersistentForegroundService(isBusy = false, project = currentProject)
 
-                            hapticsAndNotify.vibrateTaskCompleted()
+                            if (wasBusy && prefs.hapticsEnabled) {
+                                hapticsAndNotify.vibrateTaskCompleted()
+                            }
                             hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
 
                             val last = messages.lastOrNull()
@@ -593,6 +680,10 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        reattachSseCallback = { sid, busy ->
+            startListeningEvents(sid, initialBusy = busy)
+        }
+
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
         fun openSessionWithHistory(session: Session) {
             currentSession = session
@@ -602,7 +693,6 @@ class MainActivity : ComponentActivity() {
             isAgentBusy = session.active
             agentPhaseLabel = if (session.active) "正在等待模型..." else null
 
-            // 立即开启 SSE 监听，避免历史拉取期间漏掉正在产生的流式事件
             startListeningEvents(session.id, session.active)
 
             lifecycleScope.launch {
@@ -610,22 +700,24 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 初始加载与后台自动心跳同步：
-        // 1) 在首页时每 5 秒静默刷新会话状态（包含正在运行的任务 runningSessionIds 动态图标）與网关健康度
-        // 2) 在任务详情页且任务正在运行（或 SSE 重连中）时，每 2 秒执行一次增量快照对账，彻底解决正在跑的任务不实时同步的问题
-        LaunchedEffect(prefs.isConfigured, currentSession?.id, isAgentBusy, sseConnectionState) {
+        // 全场景实时同步循环：
+        // 1) 在首页时每 4 秒静默刷新会话状态（包含正在运行的任务 runningSessionIds 动态图标）与网关健康度
+        // 2) 在任务详情页时：无论当前是运行态还是空闲态，均保持轻量级增量对账（运行中 1.5s，空闲中 2.5s），
+        //    确保在 PC 端发消息或运行工具时，手机端无需点击右上角同步按钮即可自动捕获并实时流式呈现
+        LaunchedEffect(prefs.isConfigured, currentSession?.id) {
             if (!prefs.isConfigured) return@LaunchedEffect
             val activeSession = currentSession
             if (activeSession == null) {
                 loadSessions(silent = true)
                 loadCapabilitiesAndModels()
                 while (true) {
-                    kotlinx.coroutines.delay(5_000L)
+                    kotlinx.coroutines.delay(4_000L)
                     loadSessions(silent = true)
                 }
-            } else if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) {
-                while (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) {
-                    kotlinx.coroutines.delay(2_000L)
+            } else {
+                while (true) {
+                    val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 2_500L
+                    kotlinx.coroutines.delay(delayMs)
                     syncSessionSnapshot(activeSession.id, restoreModelMeta = false)
                 }
             }
@@ -635,6 +727,7 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 apiClient.ping(url, token).onSuccess {
                     prefs.saveConnection(url, token, name)
+                    syncPersistentForegroundService(isBusy = false, project = currentProject)
                     Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
                     loadSessions()
                     loadCapabilitiesAndModels()
@@ -686,10 +779,101 @@ class MainActivity : ComponentActivity() {
                         currentThinkingLevel = level
                         Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
                     },
-                    skills = skills,
-                    onToggleSkill = { name, enabled ->
+                    onRefreshModels = {
                         lifecycleScope.launch {
-                            skills = skills.map { if (it.name == name) it.copy(enabled = enabled) else it }
+                            Toast.makeText(this@MainActivity, "正在从网关刷新模型目录...", Toast.LENGTH_SHORT).show()
+                            apiClient.refreshModelsCatalog().onSuccess { catalog ->
+                                dynamicCatalog = catalog
+                                Toast.makeText(this@MainActivity, "已同步 ${catalog.models.size} 个模型", Toast.LENGTH_SHORT).show()
+                            }.onFailure {
+                                loadCapabilitiesAndModels()
+                            }
+                        }
+                    },
+                    onSaveProviderApiKey = { provider, apiKey ->
+                        lifecycleScope.launch {
+                            apiClient.setProviderApiKey(provider, apiKey).onSuccess {
+                                Toast.makeText(this@MainActivity, "已保存 $provider API Key", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "保存失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    onSaveCustomModel = { providerName, baseUrl, apiKey, apiType, modelId, modelName, contextWindow, reasoning, supportsVision ->
+                        // 立即在本地模型列表中乐观生效，同时同步至网关
+                        val updatedModel = ModelInfo(
+                            id = modelId,
+                            name = modelName.ifBlank { modelId },
+                            provider = providerName,
+                            supportsVision = supportsVision,
+                            supportsThinking = reasoning,
+                            contextWindow = contextWindow
+                        )
+                        val existingIdx = dynamicCatalog.models.indexOfFirst { it.provider == providerName && it.id == modelId }
+                        val updatedList = if (existingIdx >= 0) {
+                            dynamicCatalog.models.toMutableList().apply { set(existingIdx, updatedModel) }
+                        } else {
+                            dynamicCatalog.models + updatedModel
+                        }
+                        dynamicCatalog = dynamicCatalog.copy(models = updatedList)
+
+                        lifecycleScope.launch {
+                            apiClient.upsertCustomProviderModel(
+                                providerName = providerName,
+                                baseUrlEndpoint = baseUrl,
+                                apiKey = apiKey,
+                                apiType = apiType,
+                                modelId = modelId,
+                                modelName = modelName,
+                                contextWindow = contextWindow,
+                                reasoning = reasoning,
+                                supportsVision = supportsVision
+                            ).onSuccess {
+                                Toast.makeText(this@MainActivity, "已保存模型配置: $modelId", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "已更新本地模型配置: $modelId", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onDeleteModel = { providerName, modelId ->
+                        dynamicCatalog = dynamicCatalog.copy(
+                            models = dynamicCatalog.models.filterNot { it.provider == providerName && it.id == modelId }
+                        )
+                        lifecycleScope.launch {
+                            apiClient.deleteCustomModel(providerName, modelId).onSuccess {
+                                Toast.makeText(this@MainActivity, "已删除模型: $modelId", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "已移除模型: $modelId", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onLoadModelsRawConfig = {
+                        apiClient.getModelsRawConfig().getOrNull()
+                    },
+                    onSaveModelsRawConfig = { rawJson ->
+                        lifecycleScope.launch {
+                            apiClient.saveModelsRawConfig(rawJson).onSuccess {
+                                Toast.makeText(this@MainActivity, "已保存 models.json 并刷新目录", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "保存 models.json 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    skills = skills,
+                    onToggleSkill = { skill, enabled ->
+                        skills = skills.map { if (it.name == skill.name) it.copy(enabled = enabled) else it }
+                        lifecycleScope.launch {
+                            apiClient.toggleSkillOnServer(skill.filePath, disableModelInvocation = !enabled).onSuccess {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (enabled) "已启用技能: ${skill.name}" else "已禁用技能: ${skill.name}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
                         }
                     },
                     onUpdateSkillAlias = { name, alias ->
@@ -697,11 +881,138 @@ class MainActivity : ComponentActivity() {
                         skills = skills.map { if (it.name == name) it.copy(alias = alias) else it }
                         Toast.makeText(this@MainActivity, "已保存别名: $alias", Toast.LENGTH_SHORT).show()
                     },
+                    onLoadSkillContent = { filePath ->
+                        apiClient.getSkillContent(filePath, currentProject).getOrNull()
+                    },
+                    onSaveSkillContent = { skill, content ->
+                        lifecycleScope.launch {
+                            apiClient.saveSkillContent(skill.filePath, content, currentProject).onSuccess {
+                                Toast.makeText(this@MainActivity, "已保存 SKILL.md 源码修改", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "已更新本地技能指令", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onInstallSkill = { pkgSource, scope ->
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在安装技能包: $pkgSource...", Toast.LENGTH_SHORT).show()
+                            apiClient.installSkill(pkgSource, scope, currentProject).onSuccess {
+                                Toast.makeText(this@MainActivity, "已成功安装技能包: $pkgSource", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "安装失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
                     plugins = plugins,
+                    onManagePlugin = { action, source, scope ->
+                        // 本地立即乐观更新启用/卸载状态
+                        when (action) {
+                            "enable" -> plugins = plugins.map { if ((it.source ?: it.packageName) == source) it.copy(disabled = false) else it }
+                            "disable" -> plugins = plugins.map { if ((it.source ?: it.packageName) == source) it.copy(disabled = true) else it }
+                            "remove" -> plugins = plugins.filterNot { (it.source ?: it.packageName) == source }
+                        }
+                        lifecycleScope.launch {
+                            apiClient.managePluginAction(action, source, scope, currentProject).onSuccess {
+                                Toast.makeText(this@MainActivity, "插件操作已生效 ($action): $source", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "插件状态已更新 ($action)", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onEditPlugin = { oldPkg, newSource, newVersion, newDesc, newScope ->
+                        val updatedName = newSource.removePrefix("npm:").removePrefix("git:").substringAfterLast("/").ifBlank { oldPkg.packageName }
+                        plugins = plugins.map {
+                            if (it.packageName == oldPkg.packageName) {
+                                it.copy(
+                                    packageName = updatedName,
+                                    version = newVersion,
+                                    description = newDesc,
+                                    source = newSource,
+                                    scope = newScope
+                                )
+                            } else it
+                        }
+                        lifecycleScope.launch {
+                            apiClient.managePluginAction("install", newSource, newScope, currentProject)
+                            Toast.makeText(this@MainActivity, "已保存插件配置: $updatedName", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                     mcpConfig = mcpConfig,
                     mcpServers = mcpServers,
+                    onAddMcpServer = { name, transport, endpoint, description, scope ->
+                        val updatedServer = McpServerInfo(
+                            name = name,
+                            description = description.ifBlank { "$transport: $endpoint" },
+                            transport = transport,
+                            url = endpoint,
+                            enabled = true,
+                            toolExposureCount = 1
+                        )
+                        val existingIdx = mcpServers.indexOfFirst { it.name == name }
+                        mcpServers = if (existingIdx >= 0) {
+                            mcpServers.toMutableList().apply { set(existingIdx, updatedServer) }
+                        } else {
+                            mcpServers + updatedServer
+                        }
+                        lifecycleScope.launch {
+                            apiClient.addMcpServer(name, transport, endpoint, description, scope, currentProject).onSuccess {
+                                Toast.makeText(this@MainActivity, "已保存 MCP 服务: $name", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "已更新 MCP 节点配置: $name", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onManageMcpServer = { action, name ->
+                        when (action) {
+                            "enable" -> mcpServers = mcpServers.map { if (it.name == name) it.copy(enabled = true) else it }
+                            "disable" -> mcpServers = mcpServers.map { if (it.name == name) it.copy(enabled = false) else it }
+                            "remove" -> mcpServers = mcpServers.filterNot { it.name == name }
+                        }
+                        lifecycleScope.launch {
+                            apiClient.manageMcpServerAction(action, name, currentProject).onSuccess {
+                                Toast.makeText(this@MainActivity, "MCP 操作已生效: $name", Toast.LENGTH_SHORT).show()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "已更新 MCP 节点状态: $name", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onUpdateMcpCodeMode = { mode, scriptMode, tokenBudget ->
+                        mcpConfig = mcpConfig.copy(mode = mode, scriptMode = scriptMode, tokenBudget = tokenBudget)
+                        lifecycleScope.launch {
+                            apiClient.updateMcpCodeMode(mode, scriptMode, tokenBudget, currentProject)
+                            Toast.makeText(this@MainActivity, "已保存 MCP 代码沙箱配置", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                     isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
                     onRequestIgnoreBattery = { keepAliveManager.requestIgnoreBatteryOptimizations() },
+                    persistentNotifyEnabled = persistentNotifyEnabled,
+                    onTogglePersistentNotify = { enabled ->
+                        persistentNotifyEnabled = enabled
+                        prefs.persistentNotifyEnabled = enabled
+                        syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (enabled) "已开启常驻通知栏保活守护" else "已关闭常驻通知栏（仅在任务运行时启动前台服务）",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    hapticsEnabled = hapticsEnabled,
+                    onToggleHaptics = { enabled ->
+                        hapticsEnabled = enabled
+                        prefs.hapticsEnabled = enabled
+                        if (enabled) {
+                            hapticsAndNotify.vibrateTaskCompleted()
+                        }
+                    },
+                    onTestHaptics = {
+                        hapticsAndNotify.vibrateTaskCompleted()
+                        Toast.makeText(this@MainActivity, "已触发任务完成双连震动测试", Toast.LENGTH_SHORT).show()
+                    },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
@@ -714,6 +1025,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onDisconnect = {
                         prefs.clear()
+                        PiForegroundService.stop(this@MainActivity)
                         showGlobalSettings = false
                         Toast.makeText(this@MainActivity, "已断开连接", Toast.LENGTH_SHORT).show()
                     },
@@ -734,17 +1046,14 @@ class MainActivity : ComponentActivity() {
                     sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
                     isCompacting = isCompacting,
-                    isSpeaking = isSpeaking,
                     onBack = {
                         sseJob?.cancel()
                         currentSession = null
                         agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
-                        PiForegroundService.stop(this@MainActivity)
+                        syncPersistentForegroundService(isBusy = false, project = currentProject)
                         hapticsAndNotify.clearNotification()
-                        smartTtsManager.stop()
-                        isSpeaking = false
-                        loadSessions() // 返回时刷新会话
+                        loadSessions()
                     },
                     onRefreshSession = {
                         currentSession?.let { sess ->
@@ -772,16 +1081,25 @@ class MainActivity : ComponentActivity() {
                             apiClient.stopAgent(currentSession!!.id).onSuccess {
                                 isAgentBusy = false
                                 agentPhaseLabel = null
+                                keepAliveManager.releaseWakeLock()
+                                syncPersistentForegroundService(isBusy = false, project = currentProject)
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     onSendMessage = { prompt ->
+                        val sid = currentSession!!.id
                         messages.add(ChatItem(role = MessageRole.USER, content = prompt))
                         isAgentBusy = true
                         agentPhaseLabel = "正在等待模型..."
+                        keepAliveManager.acquireWakeLock()
+                        syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+                        // 确保 SSE 已连接
+                        if (sseConnectionState != SseConnectionState.CONNECTED) {
+                            startListeningEvents(sid, initialBusy = true)
+                        }
                         lifecycleScope.launch {
-                            apiClient.sendCommand(currentSession!!.id, prompt)
+                            apiClient.sendCommand(sid, prompt)
                         }
                     },
                     onSendSteer = { steerText ->
@@ -812,29 +1130,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             apiClient.sendApproval(currentSession!!.id, approved)
                         }
-                    },
-                    onToggleSpeakSummary = {
-                        if (isSpeaking) {
-                            smartTtsManager.stop()
-                            isSpeaking = false
-                        } else {
-                            val lastAgentMsg = messages.lastOrNull { it.role == MessageRole.AGENT }?.content
-                            if (!lastAgentMsg.isNullOrBlank()) {
-                                isSpeaking = true
-                                smartTtsManager.speakSummary(lastAgentMsg)
-                            } else {
-                                Toast.makeText(this@MainActivity, "暂无可播报内容", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    onStartVoiceInput = {
-                        voiceInputManager.startListening()
-                    },
-                    onStopVoiceInput = {
-                        voiceInputManager.stopListening()
-                    },
-                    isVoiceRecording = isRecording,
-                    voicePartialText = partialVoiceText
+                    }
                 )
 
                 if (showModelSheet) {
@@ -893,22 +1189,13 @@ class MainActivity : ComponentActivity() {
                         startListeningEvents(newId)
                     },
                     onManualConfigConfirm = { url, token, name ->
-                        lifecycleScope.launch {
-                            apiClient.ping(url, token).onSuccess {
-                                prefs.saveConnection(url, token, name)
-                                Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
-                                loadSessions()
-                                loadCapabilitiesAndModels()
-                            }.onFailure {
-                                Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
+                        connectToServer(url, token, name)
                     }
                 )
             }
         }
 
-        // 工业级应用内自动更新弹窗 (参考 Termius)
+        // 应用内自动更新弹窗
         AppUpdateDialog(
             state = updateUiState,
             onStartDownload = { info ->
@@ -958,8 +1245,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        voiceInputManager.destroy()
-        smartTtsManager.shutdown()
         keepAliveManager.releaseWakeLock()
     }
 }
