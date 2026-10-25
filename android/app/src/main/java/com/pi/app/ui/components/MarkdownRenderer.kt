@@ -31,6 +31,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pi.app.data.model.MediaAttachment
+import com.pi.app.data.model.MediaKind
 import com.pi.app.ui.theme.LocalAppTheme
 import org.commonmark.ext.autolink.AutolinkExtension
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
@@ -48,6 +50,8 @@ import org.commonmark.node.Emphasis
 import org.commonmark.node.FencedCodeBlock
 import org.commonmark.node.HardLineBreak
 import org.commonmark.node.Heading
+import org.commonmark.node.HtmlBlock
+import org.commonmark.node.Image as MdImage
 import org.commonmark.node.IndentedCodeBlock
 import org.commonmark.node.Link
 import org.commonmark.node.ListItem
@@ -107,8 +111,17 @@ object CjkMarkdownNormalizer {
         return sb.toString()
     }
 
+    private val RAW_SVG_BLOCK_REGEX = Regex("""<svg\b[\s\S]*?</svg>""", RegexOption.IGNORE_CASE)
+
     private fun fixSegment(text: String): String {
         var s = text
+
+        // 0.0 将独立内联 <svg>...</svg> 转为 ```svg 代码块以便统一渲染矢量图与全屏预览
+        if (s.contains("<svg", ignoreCase = true) && s.contains("</svg>", ignoreCase = true)) {
+            s = RAW_SVG_BLOCK_REGEX.replace(s) { m ->
+                "\n```svg\n${m.value.trim()}\n```\n"
+            }
+        }
 
         // 0. 将独立块级公式 $$...$$ 与 \[...\] 转为 ```math 代码块以便渲染独立公式卡片
         if (s.contains("$$")) {
@@ -228,20 +241,44 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
         }
 
         is Paragraph -> {
+            val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
             val annotated = buildInlineAnnotatedString(node, isUser)
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
                 MathFormulaBlockCard(formula = rawTrimmed.removeSurrounding("$$").trim())
             } else {
-                Text(
-                    text = annotated,
-                    style = TextStyle(
-                        fontSize = 13.5.sp,
-                        color = theme.textPrimary,
-                        lineHeight = 20.sp,
-                        letterSpacing = 0.1.sp
+                if (rawTrimmed.isNotBlank()) {
+                    Text(
+                        text = annotated,
+                        style = TextStyle(
+                            fontSize = 13.5.sp,
+                            color = theme.textPrimary,
+                            lineHeight = 20.sp,
+                            letterSpacing = 0.1.sp
+                        )
                     )
-                )
+                }
+                if (inlineMedia.isNotEmpty()) {
+                    MediaAttachmentGallery(mediaList = inlineMedia)
+                }
+            }
+        }
+
+        is HtmlBlock -> {
+            val rawHtml = node.literal?.trim() ?: ""
+            if (rawHtml.contains("<svg", ignoreCase = true) && rawHtml.contains("</svg>", ignoreCase = true)) {
+                val svgMedia = remember(rawHtml) {
+                    listOf(
+                        MediaAttachment(
+                            id = "html_svg_${rawHtml.hashCode()}",
+                            kind = MediaKind.SVG,
+                            mimeType = "image/svg+xml",
+                            title = "SVG 矢量图",
+                            rawContent = rawHtml
+                        )
+                    )
+                }
+                MediaAttachmentGallery(mediaList = svgMedia)
             }
         }
 
@@ -249,6 +286,21 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
             val lang = (node.info ?: "").trim().lowercase(Locale.ROOT)
             val codeText = node.literal.trimEnd()
             when {
+                lang in listOf("svg", "xml+svg") ||
+                    (codeText.trimStart().startsWith("<svg", ignoreCase = true) && codeText.contains("</svg>", ignoreCase = true)) -> {
+                    val svgAttachment = remember(codeText) {
+                        listOf(
+                            MediaAttachment(
+                                id = "fenced_svg_${codeText.hashCode()}",
+                                kind = MediaKind.SVG,
+                                mimeType = "image/svg+xml",
+                                title = "SVG 矢量图形",
+                                rawContent = codeText
+                            )
+                        )
+                    }
+                    MediaAttachmentGallery(mediaList = svgAttachment)
+                }
                 lang in listOf("mermaid", "flowchart", "mindmap", "sequence") || isLikelyMermaidCode(codeText) -> {
                     MermaidDiagramCard(code = codeText, language = lang.ifBlank { "mermaid" })
                 }
@@ -489,6 +541,48 @@ private fun isLikelyMermaidCode(code: String): Boolean {
         firstLine.startsWith("gantt")
 }
 
+private fun extractInlineMediaFromNode(parentNode: Node): List<MediaAttachment> {
+    val list = mutableListOf<MediaAttachment>()
+    fun walk(n: Node) {
+        var c = n.firstChild
+        while (c != null) {
+            if (c is MdImage) {
+                val dest = c.destination?.trim() ?: ""
+                if (dest.isNotBlank()) {
+                    val altTitle = c.title?.ifBlank { null }
+                        ?: (c.firstChild as? MdText)?.literal?.ifBlank { null }
+                        ?: dest.substringAfterLast('/').substringBefore('?').ifBlank { "图像预览" }
+                    val lower = dest.lowercase(Locale.ROOT).substringBefore('?')
+                    val kind = when {
+                        lower.endsWith(".svg") || lower.startsWith("data:image/svg") -> MediaKind.SVG
+                        lower.endsWith(".pdf") || lower.startsWith("data:application/pdf") -> MediaKind.PDF
+                        else -> MediaKind.IMAGE
+                    }
+                    val mime = when (kind) {
+                        MediaKind.SVG -> "image/svg+xml"
+                        MediaKind.PDF -> "application/pdf"
+                        else -> "image/png"
+                    }
+                    list.add(
+                        MediaAttachment(
+                            id = "md_img_${dest.hashCode()}_${list.size}",
+                            kind = kind,
+                            mimeType = mime,
+                            title = altTitle,
+                            filePath = dest
+                        )
+                    )
+                }
+            } else {
+                walk(c)
+            }
+            c = c.next
+        }
+    }
+    walk(parentNode)
+    return list
+}
+
 private fun buildInlineAnnotatedString(parentNode: Node, isUser: Boolean): AnnotatedString {
     val initial = buildAnnotatedString {
         appendInlineChildren(parentNode, this, isUser)
@@ -576,6 +670,9 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
                 )
                 appendInlineChildren(child, builder, isUser)
                 builder.pop()
+            }
+            is MdImage -> {
+                // 图片已由 extractInlineMediaFromNode 渲染为缩略图卡片，此处不重复输出文本
             }
             is SoftLineBreak -> builder.append(" ")
             is HardLineBreak -> builder.append("\n")
@@ -697,10 +794,11 @@ private fun MathFormulaBlockCard(formula: String) {
 // 原生可视化图表渲染引擎：支持流程图 (Flowchart)、脑图 (Mindmap)、时序图 (Sequence)、统计图表 (Pie/Bar)
 // ==========================================
 @Composable
-private fun MermaidDiagramCard(code: String, language: String) {
+fun MermaidDiagramCard(code: String, language: String) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     var showRawSource by remember { mutableStateOf(false) }
+    var showFullscreenDiagram by remember { mutableStateOf(false) }
 
     val lines = remember(code) {
         code.lines().map { it.trimEnd() }.filter { it.isNotBlank() && !it.trim().startsWith("%%") }
@@ -721,7 +819,7 @@ private fun MermaidDiagramCard(code: String, language: String) {
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // 顶部工具栏：图表类型标识 + 视图/源码切换 + 复制
+            // 顶部工具栏：图表类型标识 + 视图/源码切换 + 全屏查看 + 复制
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -745,19 +843,44 @@ private fun MermaidDiagramCard(code: String, language: String) {
                     )
                 }
 
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Surface(
                         shape = RoundedCornerShape(4.dp),
                         color = theme.primary.copy(alpha = 0.14f),
                         modifier = Modifier.clickable { showRawSource = !showRawSource }
                     ) {
                         Text(
-                            text = if (showRawSource) "切换图形视图" else "查看源码",
-                            fontSize = 10.5.sp,
+                            text = if (showRawSource) "图形视图" else "源码",
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Medium,
                             color = theme.primary,
-                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp)
                         )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(4.dp),
+                        color = theme.surfaceContainerHigh,
+                        modifier = Modifier.clickable { showFullscreenDiagram = true }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.OpenInFull,
+                                contentDescription = "全屏查看脑图/图表",
+                                tint = theme.textPrimary,
+                                modifier = Modifier.size(11.dp)
+                            )
+                            Text(
+                                text = "全屏",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = theme.textPrimary
+                            )
+                        }
                     }
 
                     IconButton(
@@ -792,7 +915,12 @@ private fun MermaidDiagramCard(code: String, language: String) {
                         .padding(10.dp)
                 )
             } else {
-                Box(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showFullscreenDiagram = true }
+                        .padding(12.dp)
+                ) {
                     when {
                         headerLine.startsWith("mindmap") || language == "mindmap" -> {
                             RenderVisualMindmap(lines)
@@ -810,6 +938,36 @@ private fun MermaidDiagramCard(code: String, language: String) {
                 }
             }
         }
+    }
+
+    if (showFullscreenDiagram) {
+        FullscreenMediaLightboxDialog(
+            attachment = MediaAttachment(
+                id = "diagram_${code.hashCode()}",
+                kind = MediaKind.DIAGRAM,
+                mimeType = "text/vnd.mermaid",
+                title = diagramTypeLabel,
+                rawContent = code
+            ),
+            onDismiss = { showFullscreenDiagram = false },
+            customDiagramComposable = {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = theme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, theme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                        when {
+                            headerLine.startsWith("mindmap") || language == "mindmap" -> RenderVisualMindmap(lines)
+                            headerLine.startsWith("sequencediagram") || language == "sequence" -> RenderVisualSequenceDiagram(lines)
+                            headerLine.startsWith("pie") || language == "chart" || headerLine.startsWith("xychart") -> RenderVisualChart(lines)
+                            else -> RenderVisualFlowchart(lines)
+                        }
+                    }
+                }
+            }
+        )
     }
 }
 

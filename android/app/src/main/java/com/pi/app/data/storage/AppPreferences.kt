@@ -55,6 +55,14 @@ class AppPreferences(context: Context) {
         prefs.edit().putString("alias_$skillName", alias).apply()
     }
 
+    fun getSkillContentOverride(skillName: String): String? {
+        return prefs.getString("skill_md_$skillName", null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveSkillContentOverride(skillName: String, content: String) {
+        prefs.edit().putString("skill_md_$skillName", content).apply()
+    }
+
     // 会话置顶管理
     fun getPinnedSessionIds(): Set<String> {
         return prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()
@@ -83,6 +91,90 @@ class AppPreferences(context: Context) {
 
     fun saveSessionCustomTitle(sessionId: String, title: String) {
         prefs.edit().putString("session_title_$sessionId", title.trim()).apply()
+    }
+
+    // 自定义工作区项目目录列表（支持在手机端直接指定或远程创建 PC 项目目录）
+    fun getCustomWorkspaces(): Set<String> {
+        return prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
+    }
+
+    fun addCustomWorkspace(path: String) {
+        val clean = path.trim()
+        if (clean.isBlank()) return
+        val current = getCustomWorkspaces().toMutableSet()
+        current.add(clean)
+        prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
+    }
+
+    fun removeCustomWorkspace(path: String) {
+        val current = getCustomWorkspaces().toMutableSet()
+        current.remove(path.trim())
+        prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
+    }
+
+    // 模型自定义参数覆盖持久化（解决修改内置/网关模型 contextWindow、maxTokens 等参数后重新打开被默认目录覆盖的问题）
+    data class StoredModelOverride(
+        val provider: String,
+        val modelId: String,
+        val name: String,
+        val baseUrl: String,
+        val apiType: String,
+        val contextWindow: Long,
+        val maxTokens: Long,
+        val reasoning: Boolean,
+        val supportsVision: Boolean
+    )
+
+    fun saveModelOverride(override: StoredModelOverride) {
+        val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
+        val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
+            ?: com.google.gson.JsonObject()
+        val key = "${override.provider.trim()}:${override.modelId.trim()}"
+        val obj = com.google.gson.JsonObject().apply {
+            addProperty("provider", override.provider.trim())
+            addProperty("modelId", override.modelId.trim())
+            addProperty("name", override.name.trim())
+            addProperty("baseUrl", override.baseUrl.trim())
+            addProperty("apiType", override.apiType.trim())
+            addProperty("contextWindow", override.contextWindow)
+            addProperty("maxTokens", override.maxTokens)
+            addProperty("reasoning", override.reasoning)
+            addProperty("supportsVision", override.supportsVision)
+        }
+        root.add(key, obj)
+        prefs.edit().putString(KEY_MODEL_OVERRIDES, root.toString()).apply()
+    }
+
+    fun removeModelOverride(provider: String, modelId: String) {
+        val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
+        val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return
+        root.remove("${provider.trim()}:${modelId.trim()}")
+        prefs.edit().putString(KEY_MODEL_OVERRIDES, root.toString()).apply()
+    }
+
+    fun getModelOverrides(): Map<String, StoredModelOverride> {
+        val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
+        val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
+            ?: return emptyMap()
+        val map = mutableMapOf<String, StoredModelOverride>()
+        for ((k, v) in root.entrySet()) {
+            if (!v.isJsonObject) continue
+            val o = v.asJsonObject
+            val provider = o.get("provider")?.asString ?: continue
+            val modelId = o.get("modelId")?.asString ?: continue
+            map[k] = StoredModelOverride(
+                provider = provider,
+                modelId = modelId,
+                name = o.get("name")?.asString ?: modelId,
+                baseUrl = o.get("baseUrl")?.asString ?: "",
+                apiType = o.get("apiType")?.asString ?: "openai-completions",
+                contextWindow = o.get("contextWindow")?.asLong ?: 200000L,
+                maxTokens = o.get("maxTokens")?.asLong ?: 8192L,
+                reasoning = o.get("reasoning")?.asBoolean ?: true,
+                supportsVision = o.get("supportsVision")?.asBoolean ?: false
+            )
+        }
+        return map
     }
 
     val isConfigured: Boolean
@@ -114,6 +206,8 @@ class AppPreferences(context: Context) {
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
         private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"
+        private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
+        private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     }
 }
 

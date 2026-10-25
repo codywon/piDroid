@@ -30,6 +30,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pi.app.data.model.RemoteBrowseData
+import com.pi.app.data.model.RemoteDirEntry
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.WorkspaceInfo
 import com.pi.app.ui.settings.ServerConfigDialog
@@ -100,21 +102,31 @@ fun SessionListScreen(
     onScanClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onNewSessionClick: (workspacePath: String) -> Unit,
-    onManualConfigConfirm: (url: String, token: String, name: String) -> Unit = { _, _, _ -> }
+    onManualConfigConfirm: (url: String, token: String, name: String) -> Unit = { _, _, _ -> },
+    customWorkspaces: List<String> = emptyList(),
+    onBrowseRemoteDir: suspend (String) -> RemoteBrowseData? = { null },
+    onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) }
 ) {
     val theme = LocalAppTheme.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     var showManualDialog by remember { mutableStateOf(false) }
+    var showAddWorkspaceDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
 
-    // 按工作区项目路径归组，并统计每个工作区下正在运行的任务数（对标 pi-web ActivitySummary）
-    val workspaces = remember(sessions) {
-        val map = sessions.groupBy { it.workspacePath }
+    // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
+    val workspaces = remember(sessions, customWorkspaces) {
+        val map = sessions.groupBy { it.workspacePath }.toMutableMap()
+        customWorkspaces.forEach { customPath ->
+            val trimmed = customPath.trim()
+            if (trimmed.isNotBlank() && !map.containsKey(trimmed)) {
+                map[trimmed] = emptyList()
+            }
+        }
         map.map { (path, list) ->
             val first = list.firstOrNull()
-            val name = first?.workspaceName ?: path.substringAfterLast('\\').substringAfterLast('/')
+            val name = first?.workspaceName ?: path.trimEnd('/', '\\').substringAfterLast('\\').substringAfterLast('/')
             WorkspaceInfo(
                 path = path,
                 name = name.ifBlank { "默认项目" },
@@ -195,7 +207,7 @@ fun SessionListScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
+                        Column(modifier = Modifier.weight(1f)) {
                             Text(
                                 text = "工作区项目",
                                 style = MaterialTheme.typography.titleMedium,
@@ -213,7 +225,20 @@ fun SessionListScreen(
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Button(
+                        onClick = { showAddWorkspaceDialog = true },
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("添加 / 新建远程项目目录", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     HorizontalDivider(color = theme.outline)
                     Spacer(modifier = Modifier.height(8.dp))
 
@@ -374,6 +399,9 @@ fun SessionListScreen(
                     },
                     actions = {
                         if (isConfigured) {
+                            IconButton(onClick = { showAddWorkspaceDialog = true }) {
+                                Icon(Icons.Default.CreateNewFolder, contentDescription = "添加或新建远程项目目录", tint = theme.primary)
+                            }
                             IconButton(onClick = onRefresh, enabled = !isLoading) {
                                 if (isLoading) {
                                     CircularProgressIndicator(
@@ -678,6 +706,279 @@ fun SessionListScreen(
             onDismiss = { showManualDialog = false }
         )
     }
+
+    if (showAddWorkspaceDialog) {
+        RemoteWorkspaceDialog(
+            initialPath = selectedWorkspacePath,
+            onBrowseRemoteDir = onBrowseRemoteDir,
+            onDismiss = { showAddWorkspaceDialog = false },
+            onConfirm = { targetPath, newFolderName, createIfMissing, startSessionNow ->
+                coroutineScope.launch {
+                    val result = onAddWorkspace(targetPath, newFolderName, createIfMissing)
+                    val finalPath = result.getOrDefault(targetPath)
+                    selectedWorkspacePath = finalPath
+                    showAddWorkspaceDialog = false
+                    drawerState.close()
+                    if (startSessionNow) {
+                        onNewSessionClick(finalPath)
+                    }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun RemoteWorkspaceDialog(
+    initialPath: String,
+    onBrowseRemoteDir: suspend (String) -> RemoteBrowseData?,
+    onDismiss: () -> Unit,
+    onConfirm: (targetPath: String, newFolderName: String?, createIfMissing: Boolean, startSessionNow: Boolean) -> Unit
+) {
+    val theme = LocalAppTheme.current
+    val scope = rememberCoroutineScope()
+    var pathInput by remember { mutableStateOf(initialPath) }
+    var newChildName by remember { mutableStateOf("") }
+    var createIfMissing by remember { mutableStateOf(true) }
+    var isBrowsing by remember { mutableStateOf(false) }
+    var browseData by remember { mutableStateOf<RemoteBrowseData?>(null) }
+
+    fun loadDirectory(dirPath: String) {
+        scope.launch {
+            isBrowsing = true
+            val res = onBrowseRemoteDir(dirPath)
+            if (res != null) {
+                browseData = res
+                if (res.currentPath.isNotBlank()) {
+                    pathInput = res.currentPath
+                }
+            }
+            isBrowsing = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        loadDirectory(initialPath)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.surfaceContainerLow,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.CreateNewFolder, contentDescription = null, tint = theme.primary, modifier = Modifier.size(18.dp))
+                Text(
+                    text = "添加 / 新建远程项目目录",
+                    color = theme.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "可直接输入 PC 上的目标工程路径，或从下方远程目录列表中点击选择、新建子目录：",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = theme.textSecondary
+                )
+
+                OutlinedTextField(
+                    value = pathInput,
+                    onValueChange = { pathInput = it },
+                    label = { Text("远程工程目录路径", fontSize = 11.5.sp, color = theme.textSecondary, maxLines = 1, softWrap = false) },
+                    placeholder = { Text("如 D:\\Projects\\my-app 或 ~/projects/app", fontSize = 11.5.sp, color = theme.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = theme.textPrimary),
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { loadDirectory(pathInput) }) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = "浏览该路径", tint = theme.primary, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedTextField(
+                    value = newChildName,
+                    onValueChange = { newChildName = it },
+                    label = { Text("在此路径下新建子文件夹 (选填)", fontSize = 11.5.sp, color = theme.textSecondary, maxLines = 1, softWrap = false) },
+                    placeholder = { Text("如 new-feature-project", fontSize = 11.5.sp, color = theme.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = theme.textPrimary),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // 远程目录浏览器面板
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.surfaceContainer,
+                    border = BorderStroke(1.dp, theme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "PC 远程目录浏览",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = theme.textSecondary,
+                                fontSize = 11.sp
+                            )
+                            val parentPath = browseData?.parentPath
+                            if (!parentPath.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = theme.surfaceContainerLow,
+                                    border = BorderStroke(0.8.dp, theme.outline),
+                                    modifier = Modifier.clickable { loadDirectory(parentPath) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.primary)
+                                        Text("上一级", fontSize = 10.5.sp, color = theme.primary, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        if (isBrowsing) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(110.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = theme.primary)
+                            }
+                        } else {
+                            val dirs = browseData?.directories.orEmpty()
+                            if (dirs.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 14.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "可直接手动输入任意 PC 目录路径并自动创建",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = theme.textMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 150.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    items(dirs, key = { it.path }) { dirEntry ->
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = theme.surfaceContainerLow,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    pathInput = dirEntry.path
+                                                    loadDirectory(dirEntry.path)
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(15.dp), tint = theme.primary)
+                                                Text(
+                                                    text = dirEntry.name,
+                                                    fontSize = 11.5.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = theme.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp), tint = theme.textMuted)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "若远程目录不存在则自动在 PC 上创建",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 11.5.sp,
+                        color = theme.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Switch(
+                        checked = createIfMissing,
+                        onCheckedChange = { createIfMissing = it }
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        if (pathInput.isNotBlank()) {
+                            onConfirm(pathInput.trim(), newChildName.trim().takeIf { it.isNotBlank() }, createIfMissing, false)
+                        }
+                    },
+                    shape = RoundedCornerShape(8.dp),
+                    border = BorderStroke(1.dp, theme.outline),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("仅添加目录", fontSize = 11.5.sp, color = theme.textPrimary, maxLines = 1, softWrap = false)
+                }
+                Button(
+                    onClick = {
+                        if (pathInput.isNotBlank()) {
+                            onConfirm(pathInput.trim(), newChildName.trim().takeIf { it.isNotBlank() }, createIfMissing, true)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text("添加并新建任务", fontSize = 11.5.sp, fontWeight = FontWeight.Bold, maxLines = 1, softWrap = false)
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = theme.textMuted, maxLines = 1, softWrap = false)
+            }
+        }
+    )
 }
 
 @Composable

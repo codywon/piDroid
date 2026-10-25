@@ -146,7 +146,9 @@ data class ModelInfo(
     @SerializedName("supportsThinking") val supportsThinking: Boolean = true,
     @SerializedName("supportsVision") val supportsVision: Boolean = false,
     @SerializedName("input") val input: List<String> = emptyList(),
-    @SerializedName("isActive") val isActive: Boolean = false
+    @SerializedName("isActive") val isActive: Boolean = false,
+    @SerializedName("baseUrl") val baseUrl: String? = null,
+    @SerializedName("apiType") val apiType: String? = null
 ) {
     val displayName: String
         get() = name.ifBlank { id }
@@ -194,7 +196,8 @@ data class SkillInfo(
     @SerializedName("baseDir") val baseDir: String? = null,
     @SerializedName("enabled") var enabled: Boolean = true,
     @SerializedName("category") val category: String? = "全局技能",
-    @SerializedName("disableModelInvocation") val disableModelInvocation: Boolean = false
+    @SerializedName("disableModelInvocation") val disableModelInvocation: Boolean = false,
+    @SerializedName("content") val content: String? = null
 ) {
     val displayTitle: String
         get() = alias?.takeIf { it.isNotBlank() } ?: name
@@ -247,6 +250,39 @@ data class McpCodeModeConfig(
     val tokenBudget: Int = 3000
 )
 
+data class RemoteDirEntry(
+    val name: String,
+    val path: String
+)
+
+data class RemoteBrowseData(
+    val currentPath: String,
+    val parentPath: String?,
+    val directories: List<RemoteDirEntry>
+)
+
+/**
+ * 富媒体附件模型（对标 pi-web ImageContent / SVG / PDF / 脑图预览与大图查看器）
+ */
+enum class MediaKind {
+    IMAGE,
+    SVG,
+    PDF,
+    DIAGRAM
+}
+
+data class MediaAttachment(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val kind: MediaKind = MediaKind.IMAGE,
+    val mimeType: String = "image/png",
+    val dataBase64: String? = null,
+    val url: String? = null,
+    val filePath: String? = null,
+    val title: String = "",
+    val svgOrCode: String? = null,
+    val rawContent: String? = svgOrCode
+)
+
 /**
  * 聊天消息项（对标 pi-web MessageView）
  */
@@ -257,6 +293,7 @@ data class ChatItem(
     val thinking: String? = null,
     val thinkingDurationSec: Int? = null,
     val toolCall: ToolCallInfo? = null,
+    val mediaList: List<MediaAttachment> = emptyList(),
     val modelName: String? = null,
     val usageSummary: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
@@ -280,6 +317,7 @@ data class ToolCallInfo(
     val command: String? = null,
     val fields: List<Pair<String, String>> = emptyList(),
     val output: String? = null,
+    val mediaList: List<MediaAttachment> = emptyList(),
     val durationMs: Long = 0L,
     val isError: Boolean = false,
     val isRunning: Boolean = false,
@@ -325,6 +363,7 @@ data class AgentSseEvent(
     val input: String? = null,
     val preview: String? = null,
     val output: String? = null,
+    val mediaList: List<MediaAttachment> = emptyList(),
     val durationMs: Long? = null,
     val isError: Boolean = false,
     val error: String? = null,

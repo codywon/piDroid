@@ -53,7 +53,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.*
+import com.pi.app.ui.components.LocalMediaGatewayConfig
 import com.pi.app.ui.components.MarkdownRenderer
+import com.pi.app.ui.components.MediaAttachmentGallery
+import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -102,8 +105,10 @@ fun ChatScreen(
     onSendSteer: (String) -> Unit,
     onSendFollowUp: (String) -> Unit,
     onClearQueue: () -> Unit,
-    onApproveTool: (approved: Boolean) -> Unit
+    onApproveTool: (approved: Boolean) -> Unit,
+    mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
+    CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
     // 监听系统物理/手势返回：向左滑动时退回会话列表，而非直接退出应用
     BackHandler { onBack() }
 
@@ -160,15 +165,21 @@ fun ChatScreen(
         }
     }
 
-    // 记录用户是否正在通过时间轴回看历史，避免流式输出强制拉回底部打断阅读
+    // 记录用户是否正在通过时间轴或手动上翻回看历史，避免后台轮询或流式输出强制拉回底部打断阅读
     var userJumpedToHistory by remember(sessionTitle) { mutableStateOf(false) }
 
-    // 针对超长会话的分页按需加载窗口：默认首屏仅渲染最近 50 条记录，杜绝一次性全量加载导致的卡顿与闪屏
+    // 针对超长会话的分页按需加载窗口：默认首屏渲染最近 50 条记录；支持向上追加 50 条或一键展开全部完整历史
     var visibleWindowCount by remember(sessionTitle) { mutableIntStateOf(50) }
+    var isAllHistoryExpanded by remember(sessionTitle) { mutableStateOf(false) }
     var hasInitialScrolled by remember(sessionTitle) { mutableStateOf(false) }
 
-    val windowStartIndex = (messages.size - visibleWindowCount).coerceAtLeast(0)
+    val windowStartIndex = if (isAllHistoryExpanded) {
+        0
+    } else {
+        (messages.size - visibleWindowCount).coerceAtLeast(0)
+    }
     val hasHiddenHistory = windowStartIndex > 0
+    val showOriginBanner = !hasHiddenHistory && messages.size > 6
 
     // 监听软键盘 (IME) 弹出高度：当软键盘弹起时，自动将底部输入框与最新对话内容整体往上推，防止遮挡
     val density = LocalDensity.current
@@ -184,13 +195,14 @@ fun ChatScreen(
         isImeVisible
     ) {
         if (messages.isNotEmpty() && (!userJumpedToHistory || isImeVisible)) {
-            val visibleItemCount = (messages.size - windowStartIndex) + (if (hasHiddenHistory) 1 else 0)
+            val topHeaderCount = if (hasHiddenHistory || showOriginBanner) 1 else 0
+            val visibleItemCount = (messages.size - windowStartIndex) + topHeaderCount
             val targetIdx = (visibleItemCount - 1).coerceAtLeast(0)
             if (!hasInitialScrolled) {
                 // 首屏进入直接瞬间定位到底部，避免长列表逐条滚动造成的屏幕闪现
                 listState.scrollToItem(targetIdx)
                 hasInitialScrolled = true
-            } else {
+            } else if (!listState.canScrollForward || isImeVisible || isAgentBusy) {
                 listState.animateScrollToItem(targetIdx)
             }
         }
@@ -789,63 +801,193 @@ fun ChatScreen(
                 contentPadding = PaddingValues(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 超长会话顶部按需分页加载栏
+                // 超长会话顶部按需分页加载栏（现代简洁大气高级胶囊设计 + 锚定视口位置）
                 if (hasHiddenHistory) {
                     item(key = "history_window_loader") {
+                        val nextBatchCount = windowStartIndex.coerceAtMost(50)
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
+                            shape = RoundedCornerShape(14.dp),
                             color = theme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, theme.outline),
-                            modifier = Modifier.fillMaxWidth()
+                            border = BorderStroke(0.9.dp, theme.primary.copy(alpha = 0.25f)),
+                            shadowElevation = 2.dp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
                         ) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Text(
-                                    text = "已折叠更早的 $windowStartIndex 条记录",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = theme.textSecondary
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = theme.primary.copy(alpha = 0.12f),
-                                        border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.35f)),
-                                        modifier = Modifier.clickable {
-                                            userJumpedToHistory = true
-                                            visibleWindowCount += 50
-                                        }
+                                        shape = CircleShape,
+                                        color = theme.primary.copy(alpha = 0.14f),
+                                        modifier = Modifier.size(30.dp)
                                     ) {
-                                        Text(
-                                            text = "↑ 加载前 50 条",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = theme.primary,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Icon(
+                                                imageVector = Icons.Default.History,
+                                                contentDescription = null,
+                                                tint = theme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = theme.surfaceContainer,
-                                        border = BorderStroke(0.8.dp, theme.outline),
-                                        modifier = Modifier.clickable {
-                                            userJumpedToHistory = true
-                                            visibleWindowCount = messages.size + 500
-                                        }
-                                    ) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
                                         Text(
-                                            text = "展开全部",
-                                            fontSize = 11.sp,
-                                            color = theme.textSecondary,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            text = "已折叠 $windowStartIndex 条早期记录",
+                                            fontSize = 12.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "共 ${messages.size} 条完整对话 · 点击向上回溯",
+                                            fontSize = 10.5.sp,
+                                            color = theme.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                 }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp)
+                                ) {
+                                    // 按钮 1：加载前 N 条（保持当前阅读锚点，不跳回底部）
+                                    Surface(
+                                        shape = RoundedCornerShape(20.dp),
+                                        color = theme.surfaceContainerHigh,
+                                        border = BorderStroke(0.8.dp, theme.outline),
+                                        modifier = Modifier.clickable {
+                                            val oldStart = windowStartIndex
+                                            val newVisible = (visibleWindowCount + 50).coerceAtMost(messages.size)
+                                            val newStart = (messages.size - newVisible).coerceAtLeast(0)
+                                            val addedCount = (oldStart - newStart).coerceAtLeast(0)
+                                            userJumpedToHistory = true
+                                            visibleWindowCount = newVisible
+                                            if (newStart == 0) {
+                                                isAllHistoryExpanded = true
+                                                onRefreshSession()
+                                            }
+                                            coroutineScope.launch {
+                                                kotlinx.coroutines.yield()
+                                                // 锚定在刚加载出来的分界点上方，方便用户顺滑向上翻阅新加载的记录
+                                                listState.scrollToItem(addedCount.coerceAtLeast(0))
+                                            }
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.KeyboardArrowUp,
+                                                contentDescription = null,
+                                                tint = theme.textPrimary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = "前 $nextBatchCount 条",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = theme.textPrimary
+                                            )
+                                        }
+                                    }
+
+                                    // 按钮 2：展开全部完整历史并滚动至任务起点
+                                    Surface(
+                                        shape = RoundedCornerShape(20.dp),
+                                        color = theme.primary.copy(alpha = 0.16f),
+                                        border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.45f)),
+                                        modifier = Modifier.clickable {
+                                            userJumpedToHistory = true
+                                            isAllHistoryExpanded = true
+                                            visibleWindowCount = messages.size + 5000
+                                            onRefreshSession()
+                                            coroutineScope.launch {
+                                                kotlinx.coroutines.yield()
+                                                listState.scrollToItem(0)
+                                            }
+                                        }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.UnfoldMore,
+                                                contentDescription = null,
+                                                tint = theme.primary,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                            Text(
+                                                text = "展开全部",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = theme.primary
+                                            )
+                                        }
+                                    }
+                                }
                             }
+                        }
+                    }
+                } else if (showOriginBanner) {
+                    item(key = "history_origin_banner") {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            HorizontalDivider(
+                                modifier = Modifier.weight(1f),
+                                color = theme.outline.copy(alpha = 0.35f),
+                                thickness = 0.6.dp
+                            )
+                            Surface(
+                                shape = RoundedCornerShape(16.dp),
+                                color = theme.surfaceContainerLow,
+                                border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.55f)),
+                                modifier = Modifier.padding(horizontal = 10.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.5.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Flag,
+                                        contentDescription = null,
+                                        tint = theme.primary.copy(alpha = 0.85f),
+                                        modifier = Modifier.size(11.dp)
+                                    )
+                                    Text(
+                                        text = "任务起点 · 已完整展示全部 ${messages.size} 条记录",
+                                        fontSize = 10.5.sp,
+                                        color = theme.textMuted
+                                    )
+                                }
+                            }
+                            HorizontalDivider(
+                                modifier = Modifier.weight(1f),
+                                color = theme.outline.copy(alpha = 0.35f),
+                                thickness = 0.6.dp
+                            )
                         }
                     }
                 }
@@ -882,8 +1024,9 @@ fun ChatScreen(
 
             // ── 对标 pi-web 右侧用户提问快捷时间轴 (Prompt Timeline Rail) ──
             if (userPrompts.isNotEmpty()) {
+                val topHeaderOffset = if (hasHiddenHistory || showOriginBanner) 1 else 0
                 val firstVisible by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-                val currentGlobalFirstIdx = windowStartIndex + (firstVisible - (if (hasHiddenHistory) 1 else 0)).coerceAtLeast(0)
+                val currentGlobalFirstIdx = windowStartIndex + (firstVisible - topHeaderOffset).coerceAtLeast(0)
                 val activePromptOrder = remember(currentGlobalFirstIdx, userPrompts) {
                     userPrompts.lastOrNull { it.messageIndex <= currentGlobalFirstIdx + 2 }?.orderNumber
                         ?: userPrompts.first().orderNumber
@@ -897,10 +1040,13 @@ fun ChatScreen(
                         coroutineScope.launch {
                             if (entry.messageIndex < windowStartIndex) {
                                 visibleWindowCount = (messages.size - entry.messageIndex + 15).coerceAtLeast(visibleWindowCount)
+                                if (messages.size - visibleWindowCount <= 0) {
+                                    isAllHistoryExpanded = true
+                                }
                                 kotlinx.coroutines.yield()
                             }
-                            val newStart = (messages.size - visibleWindowCount).coerceAtLeast(0)
-                            val headerOffset = if (newStart > 0) 1 else 0
+                            val newStart = if (isAllHistoryExpanded) 0 else (messages.size - visibleWindowCount).coerceAtLeast(0)
+                            val headerOffset = if (newStart > 0 || messages.size > 6) 1 else 0
                             val targetLazyIdx = (entry.messageIndex - newStart + headerOffset).coerceAtLeast(0)
                             listState.animateScrollToItem(targetLazyIdx)
                         }
@@ -932,7 +1078,8 @@ fun ChatScreen(
                             userJumpedToHistory = false
                             coroutineScope.launch {
                                 if (messages.isNotEmpty()) {
-                                    val visibleItemCount = (messages.size - windowStartIndex) + (if (hasHiddenHistory) 1 else 0)
+                                    val topHeaderCount = if (hasHiddenHistory || showOriginBanner) 1 else 0
+                                    val visibleItemCount = (messages.size - windowStartIndex) + topHeaderCount
                                     listState.animateScrollToItem((visibleItemCount - 1).coerceAtLeast(0))
                                 }
                             }
@@ -960,6 +1107,7 @@ fun ChatScreen(
             },
             onDismiss = { showHudDialog = false }
         )
+    }
     }
 }
 
@@ -1383,11 +1531,19 @@ fun ChatMessageItem(
                         border = BorderStroke(1.dp, userBubbleBorder),
                         modifier = Modifier.widthIn(max = 330.dp)
                     ) {
-                        Box(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            MarkdownRenderer(
-                                content = item.content,
-                                isUser = true
-                            )
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (item.content.isNotBlank()) {
+                                MarkdownRenderer(
+                                    content = item.content,
+                                    isUser = true
+                                )
+                            }
+                            if (item.mediaList.isNotEmpty()) {
+                                MediaAttachmentGallery(mediaList = item.mediaList)
+                            }
                         }
                     }
                 }
@@ -1405,17 +1561,24 @@ fun ChatMessageItem(
                     )
                 }
 
-                // 2. 对标 pi-web 正文区：无厚重外框，直接清晰渲染 Markdown 与复制按钮
-                if (item.content.isNotBlank()) {
+                // 2. 对标 pi-web 正文区：无厚重外框，直接清晰渲染 Markdown、内联图片/PDF/SVG 与复制按钮
+                if (item.content.isNotBlank() || item.mediaList.isNotEmpty()) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(vertical = 2.dp)
+                            .padding(vertical = 2.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        MarkdownRenderer(
-                            content = item.content,
-                            isUser = false
-                        )
+                        if (item.content.isNotBlank()) {
+                            MarkdownRenderer(
+                                content = item.content,
+                                isUser = false
+                            )
+                        }
+
+                        if (item.mediaList.isNotEmpty()) {
+                            MediaAttachmentGallery(mediaList = item.mediaList)
+                        }
 
                         if (!item.isStreaming && item.content.length > 80) {
                             Row(
@@ -1452,8 +1615,12 @@ fun ChatMessageItem(
 
             MessageRole.TOOL -> {
                 item.toolCall?.let { tool ->
+                    val mergedMedia = remember(tool.mediaList, item.mediaList) {
+                        if (item.mediaList.isEmpty()) tool.mediaList
+                        else (tool.mediaList + item.mediaList).distinctBy { it.filePath ?: it.dataBase64?.take(48) ?: it.id }
+                    }
                     PiWebToolCallCard(
-                        tool = tool,
+                        tool = if (mergedMedia.size != tool.mediaList.size) tool.copy(mediaList = mergedMedia) else tool,
                         expanded = isToolExpanded || tool.requiresApproval,
                         onToggle = { isToolExpanded = !isToolExpanded },
                         onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
@@ -1463,12 +1630,59 @@ fun ChatMessageItem(
             }
 
             MessageRole.SYSTEM -> {
-                Text(
-                    text = item.content,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = theme.textMuted,
-                    modifier = Modifier.padding(vertical = 2.dp)
-                )
+                var sysExpanded by remember { mutableStateOf(false) }
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.surfaceContainerLow,
+                    border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.6f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { sysExpanded = !sysExpanded }
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Inventory2,
+                                    contentDescription = null,
+                                    tint = theme.primary,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Text(
+                                    text = item.content.lineSequence().firstOrNull()?.trim() ?: "系统状态摘要",
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = theme.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            Icon(
+                                imageVector = if (sysExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = null,
+                                tint = theme.textMuted,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        }
+                        if (sysExpanded && item.content.lines().size > 1) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = item.content.lines().drop(1).joinToString("\n").trim(),
+                                fontSize = 11.5.sp,
+                                color = theme.textSecondary,
+                                lineHeight = 17.sp
+                            )
+                        }
+                    }
+                }
             }
         }
 
@@ -1603,20 +1817,29 @@ fun PiWebToolCallCard(
     val hasResult = !tool.output.isNullOrBlank() || !tool.isRunning
     val isPending = tool.isRunning && tool.output.isNullOrBlank() && !tool.requiresApproval
 
+    val hasMedia = tool.mediaList.isNotEmpty()
     val borderColor = when {
         tool.requiresApproval && !tool.isApproved -> Color(0xFFD29922)
         tool.isError -> Color(0xFFF87171).copy(alpha = 0.65f)
         isPending -> theme.primary.copy(alpha = 0.55f)
+        hasMedia -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.42f else 0.35f)
         else -> theme.outline
+    }
+
+    val cardContainerColor = when {
+        hasMedia && !tool.isError -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.08f else 0.06f)
+        else -> theme.surfaceContainerLow
     }
 
     val badgeBg = when {
         tool.isError -> Color(0xFFEF4444).copy(alpha = 0.14f)
+        hasMedia -> Color(0xFF22C55E).copy(alpha = 0.16f)
         else -> theme.primary.copy(alpha = 0.13f)
     }
 
     val badgeFg = when {
         tool.isError -> Color(0xFFEF4444)
+        hasMedia -> if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
         else -> theme.primary
     }
 
@@ -1631,7 +1854,7 @@ fun PiWebToolCallCard(
 
     Surface(
         shape = RoundedCornerShape(7.dp),
-        color = theme.surfaceContainerLow,
+        color = cardContainerColor,
         border = BorderStroke(0.85.dp, borderColor),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -1720,6 +1943,20 @@ fun PiWebToolCallCard(
                             color = Color(0xFF22C55E)
                         )
                     }
+                }
+            }
+
+            // ── 1:1 复刻 pi-web 多媒体直出预览：当 read xxx.png / svg / pdf 等包含媒体附件时，无需展开文本参数即可在卡片内直接展示缩略图，点击全屏查看 ──
+            if (hasMedia) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    MediaAttachmentGallery(
+                        mediaList = tool.mediaList,
+                        inToolCard = true
+                    )
                 }
             }
 

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version_tag:
-        description: '发布版本号 (例如 v1.3.0)'
+        description: '发布版本号 (例如 v1.5.0)'
         required: true
-        default: 'v1.3.0'
+        default: 'v1.5.0'
 
 permissions:
   contents: write
@@ -35,16 +35,21 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Grant Execute Permission to gradlew
-        run: chmod +x android/gradlew
+        run: |
+          chmod +x gradlew || true
+          chmod +x android/gradlew || true
 
       - name: Build Release APK with Global Keystore
-        working-directory: android
         env:
           KEYSTORE_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
           KEY_ALIAS: pidroid
           KEY_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
         run: |
-          ./gradlew assembleRelease --stacktrace
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleRelease --stacktrace
+          else
+            cd android && ./gradlew assembleRelease --stacktrace
+          fi
 
       - name: Prepare APK Artifact
         id: prepare_apk
@@ -54,8 +59,12 @@ jobs:
             VERSION="${{ github.event.inputs.version_tag }}"
           fi
           
-          # 寻找构建出的 release apk
-          APK_PATH=$(find android/app/build/outputs/apk/release -name "*.apk" | head -n 1)
+          # 寻找构建出的 release apk (兼容根目录 app/build 和 android/app/build)
+          APK_PATH=$(find . -name "*.apk" | grep -i "release" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "Error: No release APK found!"
+            exit 1
+          fi
           TARGET_NAME="piDroid-${VERSION}.apk"
           
           cp "$APK_PATH" "$TARGET_NAME"
@@ -79,15 +88,16 @@ jobs:
           generate_release_notes: true
           files: ${{ steps.prepare_apk.outputs.apk_path }}
           body: |
-            ### 🚀 piDroid 官方正式首发版本 ${{ steps.prepare_apk.outputs.version }}
+            ### 🚀 piDroid 官方正式发布版本 ${{ steps.prepare_apk.outputs.version }}
 
             #### 🌟 核心特性升级：
-            - **✨ CommonMark + GFM 富文本引擎**：完整支持 Markdown 表格横向滚动、CJK 中英文排版、代码块语法高亮与 LaTeX 渲染；
-            - **🎨 Termius 工业级双模自适应主题**：默认浅色纯白明眸与极客暗黑自由切换，全界面容器自适应，消除多余黑框与布局混乱；
-            - **⚡ 多镜像竞速更新体系**：内置官方与加速镜像（ghfast 等）自适应测速与断流重连，系统设置中心一键检查升级与安装；
-            - **🔄 全栈式实时长连接同步**：两阶段历史会话毫秒级 Catch-up 与 SSE 实时打字机事件流同步，保持与 Web 端绝对一致；
-            - **🛠️ 权威系统设置中心**：侧边工作区抽屉切换、模型及推理级别动态切换、技能/MCP 全局管控与后台保活偏好；
-            - **🔑 全局统一签名保障**：固化全局正式签名，后续升级全流程无缝覆盖安装，配置与数据零丢失。
+            - **✨ 多媒体内容与图片预览**：全新集成多媒体附件流式渲染与预览支持；
+            - **🛠️ 自定义工作区与模型扩展**：支持自定义 API 端点与工作区技能配置覆盖；
+            - **💬 对话界面输入重构**：优化输入框与模型推理级别动态切换体验；
+            - **🎨 Termius 工业级双模自适应主题**：默认纯白明眸与极客暗黑自由切换，全界面容器自适应；
+            - **⚡ 多镜像竞速更新体系**：内置官方与加速镜像（ghfast 等）自适应测速与断流重连；
+            - **🔄 全栈式实时长连接同步**：两阶段历史会话毫秒级 Catch-up 与 SSE 实时打字机事件流同步；
+            - **🔑 全局统一签名保障**：固化全局正式签名，全版本无缝覆盖安装，配置与数据零丢失。
 
             #### 📦 下载与安装：
             直接下载下方附件中的 `${{ steps.prepare_apk.outputs.apk_path }}` 并在安卓设备上安装使用！
