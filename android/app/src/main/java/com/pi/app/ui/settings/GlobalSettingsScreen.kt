@@ -251,12 +251,12 @@ fun GlobalSettingsScreen(
     selectedSkillForDetail?.let { skill ->
         AlertDialog(
             onDismissRequest = { selectedSkillForDetail = null },
-            containerColor = TermiusSurface,
+            containerColor = theme.surfaceContainerLow,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Extension, contentDescription = null, tint = TermiusBlue)
+                    Icon(Icons.Default.Extension, contentDescription = null, tint = theme.primary)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text(skill.name, color = TermiusTextPrimary, fontWeight = FontWeight.Bold)
+                    Text(skill.name, color = theme.textPrimary, fontWeight = FontWeight.Bold)
                 }
             },
             text = {
@@ -264,13 +264,13 @@ fun GlobalSettingsScreen(
                     Text(
                         text = "技能说明与语义指南：",
                         style = MaterialTheme.typography.labelSmall,
-                        color = TermiusTextSecondary
+                        color = theme.textSecondary
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = skill.description ?: "暂无描述",
                         style = MaterialTheme.typography.bodySmall,
-                        color = TermiusTextPrimary
+                        color = theme.textPrimary
                     )
                     if (!skill.filePath.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(10.dp))
@@ -278,14 +278,14 @@ fun GlobalSettingsScreen(
                             text = "文件路径: ${skill.filePath}",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
-                            color = TermiusTextMuted
+                            color = theme.textMuted
                         )
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { selectedSkillForDetail = null }) {
-                    Text("完成", color = TermiusBlue)
+                    Text("完成", color = theme.primary)
                 }
             }
         )
@@ -295,21 +295,21 @@ fun GlobalSettingsScreen(
     editingSkillAlias?.let { skill ->
         AlertDialog(
             onDismissRequest = { editingSkillAlias = null },
-            containerColor = TermiusSurface,
-            title = { Text("编辑技能别名", color = TermiusTextPrimary, fontWeight = FontWeight.Bold) },
+            containerColor = theme.surfaceContainerLow,
+            title = { Text("编辑技能别名", color = theme.textPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("原技能名称: ${skill.name}", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary)
+                    Text("原技能名称: ${skill.name}", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary)
                     OutlinedTextField(
                         value = aliasInput,
                         onValueChange = { aliasInput = it },
-                        label = { Text("自定义别名 (如: 上下文节能)", color = TermiusTextSecondary) },
+                        label = { Text("自定义别名 (如: 上下文节能)", color = theme.textSecondary) },
                         singleLine = true,
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = TermiusBlue,
-                            unfocusedBorderColor = TermiusBorder,
-                            focusedTextColor = TermiusTextPrimary,
-                            unfocusedTextColor = TermiusTextPrimary
+                            focusedBorderColor = theme.primary,
+                            unfocusedBorderColor = theme.outline,
+                            focusedTextColor = theme.textPrimary,
+                            unfocusedTextColor = theme.textPrimary
                         )
                     )
                 }
@@ -319,12 +319,12 @@ fun GlobalSettingsScreen(
                     onUpdateSkillAlias(skill.name, aliasInput.trim())
                     editingSkillAlias = null
                 }) {
-                    Text("保存", color = TermiusBlue)
+                    Text("保存", color = theme.primary)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { editingSkillAlias = null }) {
-                    Text("取消", color = TermiusTextMuted)
+                    Text("取消", color = theme.textMuted)
                 }
             }
         )
@@ -342,6 +342,7 @@ fun GlobalModelsTab(
     onSetDefaultModel: (ModelInfo) -> Unit,
     onSetDefaultThinkingLevel: (ThinkingLevel) -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var selectedProvider by remember { mutableStateOf<String?>(null) }
     val providers = remember(models) { models.map { it.provider }.distinct() }
     val filtered = remember(models, selectedProvider) {
@@ -368,8 +369,8 @@ fun GlobalModelsTab(
                     val isSel = currentDefaultThinkingLevel == level
                     Surface(
                         shape = RoundedCornerShape(8.dp),
-                        color = if (isSel) Color(0xFF1B3D5A) else TermiusSurface,
-                        border = BorderStroke(1.dp, if (isSel) TermiusBlue else TermiusBorder),
+                        color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                         modifier = Modifier.clickable { onSetDefaultThinkingLevel(level) }
                     ) {
                         Text(
@@ -377,14 +378,14 @@ fun GlobalModelsTab(
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                            color = if (isSel) TermiusBlue else TermiusTextSecondary,
+                            color = if (isSel) theme.primary else theme.textSecondary,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                         )
                     }
                 }
             }
             Spacer(modifier = Modifier.height(8.dp))
-            HorizontalDivider(color = TermiusBorder)
+            HorizontalDivider(color = theme.outline)
         }
 
         item {
@@ -402,15 +403,15 @@ fun GlobalModelsTab(
             ) {
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = if (selectedProvider == null) TermiusBlue.copy(alpha = 0.2f) else TermiusSurface,
-                    border = BorderStroke(1.dp, if (selectedProvider == null) TermiusBlue else TermiusBorder),
+                    color = if (selectedProvider == null) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainerLow,
+                    border = BorderStroke(1.dp, if (selectedProvider == null) theme.primary else theme.outline),
                     modifier = Modifier.clickable { selectedProvider = null }
                 ) {
                     Text(
                         text = "全部 (${models.size})",
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                        color = if (selectedProvider == null) TermiusBlue else TermiusTextSecondary
+                        color = if (selectedProvider == null) theme.primary else theme.textSecondary
                     )
                 }
 
@@ -418,15 +419,15 @@ fun GlobalModelsTab(
                     val isSel = selectedProvider == p
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (isSel) TermiusBlue.copy(alpha = 0.2f) else TermiusSurface,
-                        border = BorderStroke(1.dp, if (isSel) TermiusBlue else TermiusBorder),
+                        color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainerLow,
+                        border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                         modifier = Modifier.clickable { selectedProvider = p }
                     ) {
                         Text(
                             text = p,
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                            color = if (isSel) TermiusBlue else TermiusTextSecondary
+                            color = if (isSel) theme.primary else theme.textSecondary
                         )
                     }
                 }
@@ -437,8 +438,8 @@ fun GlobalModelsTab(
             val isDefault = model.id == currentDefaultModelId
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, if (isDefault) TermiusBlue else TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, if (isDefault) theme.primary else theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -448,22 +449,22 @@ fun GlobalModelsTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp), tint = TermiusBlue)
+                            Icon(Icons.Default.Memory, contentDescription = null, modifier = Modifier.size(16.dp), tint = theme.primary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(model.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+                            Text(model.displayName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(color = TermiusSurfaceVariant, shape = RoundedCornerShape(4.dp)) {
-                                Text(model.provider, style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = theme.surfaceContainer, shape = RoundedCornerShape(4.dp)) {
+                                Text(model.provider, style = MaterialTheme.typography.labelSmall, color = theme.textSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
 
                         if (isDefault) {
-                            Surface(color = TermiusBlue.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
-                                Text("默认模型", style = MaterialTheme.typography.labelSmall, color = TermiusBlue, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = theme.primary.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
+                                Text("默认模型", style = MaterialTheme.typography.labelSmall, color = theme.primary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         } else {
                             TextButton(onClick = { onSetDefaultModel(model) }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp)) {
-                                Text("设为默认", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary)
+                                Text("设为默认", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary)
                             }
                         }
                     }
@@ -473,19 +474,19 @@ fun GlobalModelsTab(
                         text = "ID: ${model.id}  ·  上下文: ${model.contextWindow / 1000}k",
                         style = MaterialTheme.typography.labelSmall,
                         fontFamily = FontFamily.Monospace,
-                        color = TermiusTextMuted
+                        color = theme.textMuted
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (model.hasVision) {
-                            Surface(color = TermiusGreen.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
-                                Text("Vision 图像输入", style = MaterialTheme.typography.labelSmall, color = TermiusGreen, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = Color(0xFF2EA043).copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
+                                Text("Vision 图像输入", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2EA043), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                         if (model.supportsThinking) {
-                            Surface(color = TermiusBlue.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
-                                Text("Thinking 思考推演", style = MaterialTheme.typography.labelSmall, color = TermiusBlue, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = theme.primary.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
+                                Text("Thinking 思考推演", style = MaterialTheme.typography.labelSmall, color = theme.primary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                     }
@@ -505,6 +506,7 @@ fun GlobalSkillsTab(
     onEditAlias: (SkillInfo) -> Unit,
     onViewDetail: (SkillInfo) -> Unit
 ) {
+    val theme = LocalAppTheme.current
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -521,8 +523,8 @@ fun GlobalSkillsTab(
         items(skills, key = { it.name }) { skill ->
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -534,13 +536,13 @@ fun GlobalSkillsTab(
                         modifier = Modifier.weight(1f).clickable { onViewDetail(skill) }
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Extension, contentDescription = null, modifier = Modifier.size(15.dp), tint = TermiusGreen)
+                            Icon(Icons.Default.Extension, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color(0xFF2EA043))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(skill.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+                            Text(skill.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = theme.textPrimary)
 
                             Spacer(modifier = Modifier.width(6.dp))
                             Surface(
-                                color = if (skill.alias.isNullOrBlank()) TermiusSurfaceVariant else TermiusBlue.copy(alpha = 0.2f),
+                                color = if (skill.alias.isNullOrBlank()) theme.surfaceContainer else theme.primary.copy(alpha = 0.15f),
                                 shape = RoundedCornerShape(4.dp),
                                 modifier = Modifier.clickable { onEditAlias(skill) }
                             ) {
@@ -551,7 +553,7 @@ fun GlobalSkillsTab(
                                     Text(
                                         text = skill.alias?.takeIf { it.isNotBlank() } ?: "加别名 ✎",
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (skill.alias.isNullOrBlank()) TermiusTextMuted else TermiusBlue
+                                        color = if (skill.alias.isNullOrBlank()) theme.textMuted else theme.primary
                                     )
                                 }
                             }
@@ -561,7 +563,7 @@ fun GlobalSkillsTab(
                         Text(
                             text = skill.description ?: "无说明文档",
                             style = MaterialTheme.typography.bodySmall,
-                            color = TermiusTextSecondary,
+                            color = theme.textSecondary,
                             maxLines = 2
                         )
                     }
@@ -570,10 +572,10 @@ fun GlobalSkillsTab(
                         checked = skill.enabled,
                         onCheckedChange = { onToggleSkill(skill.name, it) },
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = TermiusGreen,
-                            checkedTrackColor = Color(0xFF1E3A24),
-                            uncheckedThumbColor = TermiusTextMuted,
-                            uncheckedTrackColor = TermiusSurfaceVariant
+                            checkedThumbColor = Color(0xFF2EA043),
+                            checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                            uncheckedThumbColor = theme.textMuted,
+                            uncheckedTrackColor = theme.surfaceContainer
                         )
                     )
                 }
@@ -590,6 +592,7 @@ fun GlobalMcpTab(
     mcpConfig: McpCodeModeConfig,
     mcpServers: List<McpServerInfo>
 ) {
+    val theme = LocalAppTheme.current
     var codeMode by remember { mutableStateOf(mcpConfig.mode) }
     var scriptMode by remember { mutableStateOf(mcpConfig.scriptMode) }
 
@@ -609,12 +612,12 @@ fun GlobalMcpTab(
         item {
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    Text("代码模式 (Code Mode)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+                    Text("代码模式 (Code Mode)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                     Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -624,15 +627,15 @@ fun GlobalMcpTab(
                             val isSel = codeMode == mode
                             Surface(
                                 shape = RoundedCornerShape(6.dp),
-                                color = if (isSel) TermiusBlue.copy(alpha = 0.2f) else TermiusSurfaceVariant,
-                                border = BorderStroke(1.dp, if (isSel) TermiusBlue else TermiusBorder),
+                                color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                                border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                                 modifier = Modifier.weight(1f).clickable { codeMode = mode }
                             ) {
                                 Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
                                     Text(
                                         text = label,
                                         style = MaterialTheme.typography.labelSmall,
-                                        color = if (isSel) TermiusBlue else TermiusTextSecondary,
+                                        color = if (isSel) theme.primary else theme.textSecondary,
                                         fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
                                     )
                                 }
@@ -647,8 +650,8 @@ fun GlobalMcpTab(
         item {
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -658,42 +661,44 @@ fun GlobalMcpTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("脚本模式 (Script Mode)", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text("使用一次性脚本批处理执行以节约 Token", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("脚本模式 (Script Mode)", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text("使用一次性脚本批处理执行以节约 Token", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
                         Switch(
                             checked = scriptMode,
                             onCheckedChange = { scriptMode = it },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = TermiusGreen,
-                                checkedTrackColor = Color(0xFF1E3A24)
+                                checkedThumbColor = Color(0xFF2EA043),
+                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                                uncheckedThumbColor = theme.textMuted,
+                                uncheckedTrackColor = theme.surfaceContainer
                             )
                         )
                     }
 
-                    HorizontalDivider(color = TermiusBorder)
+                    HorizontalDivider(color = theme.outline)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("工具清单预算", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                        Text("${mcpConfig.tokenBudget} tokens", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = TermiusBlue)
+                        Text("工具清单预算", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                        Text("${mcpConfig.tokenBudget} tokens", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = theme.primary)
                     }
                 }
             }
         }
 
         item {
-            Text("已连接的 MCP 服务器 (${mcpServers.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+            Text("已连接的 MCP 服务器 (${mcpServers.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = theme.textPrimary)
         }
 
         items(mcpServers, key = { it.name }) { server ->
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -706,17 +711,17 @@ fun GlobalMcpTab(
                             Surface(
                                 modifier = Modifier.size(8.dp),
                                 shape = CircleShape,
-                                color = if (server.isConnected) TermiusGreen else TermiusRed
+                                color = if (server.isConnected) Color(0xFF2EA043) else Color(0xFFCF222E)
                             ) {}
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(server.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+                            Text(server.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                         }
 
-                        Surface(shape = RoundedCornerShape(4.dp), color = TermiusSurfaceVariant) {
+                        Surface(shape = RoundedCornerShape(4.dp), color = theme.surfaceContainer) {
                             Text(
                                 text = "${server.toolExposureCount} 个可用工具",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = TermiusTextSecondary,
+                                color = theme.textSecondary,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
@@ -724,7 +729,7 @@ fun GlobalMcpTab(
 
                     if (!server.description.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(server.description ?: "", style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
+                        Text(server.description ?: "", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
                     }
 
                     if (!server.url.isNullOrBlank()) {
@@ -733,7 +738,7 @@ fun GlobalMcpTab(
                             text = "URL: ${server.url}",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
-                            color = TermiusTextMuted
+                            color = theme.textMuted
                         )
                     }
                 }
@@ -747,6 +752,7 @@ fun GlobalMcpTab(
 // ==========================================
 @Composable
 fun GlobalPluginsTab(plugins: List<PluginPackage>) {
+    val theme = LocalAppTheme.current
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -763,8 +769,8 @@ fun GlobalPluginsTab(plugins: List<PluginPackage>) {
         items(plugins, key = { it.packageName }) { pkg ->
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
@@ -774,23 +780,23 @@ fun GlobalPluginsTab(plugins: List<PluginPackage>) {
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(16.dp), tint = TermiusBlue)
+                            Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(16.dp), tint = theme.primary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(pkg.packageName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = TermiusTextPrimary)
+                            Text(pkg.packageName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Surface(color = TermiusSurfaceVariant, shape = RoundedCornerShape(4.dp)) {
-                                Text("v${pkg.version}", style = MaterialTheme.typography.labelSmall, color = TermiusTextSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = theme.surfaceContainer, shape = RoundedCornerShape(4.dp)) {
+                                Text("v${pkg.version}", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
 
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = if (pkg.status == "loaded") TermiusGreen.copy(alpha = 0.15f) else TermiusTextMuted.copy(alpha = 0.15f)
+                            color = if (pkg.status == "loaded") Color(0xFF2EA043).copy(alpha = 0.15f) else theme.textMuted.copy(alpha = 0.15f)
                         ) {
                             Text(
                                 text = if (pkg.status == "loaded") "已加载" else (pkg.status ?: "已加载"),
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (pkg.status == "loaded") TermiusGreen else TermiusTextMuted,
+                                color = if (pkg.status == "loaded") Color(0xFF2EA043) else theme.textMuted,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                             )
                         }
@@ -798,7 +804,7 @@ fun GlobalPluginsTab(plugins: List<PluginPackage>) {
 
                     if (!pkg.description.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(6.dp))
-                        Text(pkg.description ?: "", style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
+                        Text(pkg.description ?: "", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
                     }
 
                     if (!pkg.source.isNullOrBlank()) {
@@ -807,7 +813,7 @@ fun GlobalPluginsTab(plugins: List<PluginPackage>) {
                             text = pkg.source ?: "",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
-                            color = TermiusTextMuted
+                            color = theme.textMuted
                         )
                     }
                 }

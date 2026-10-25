@@ -23,11 +23,12 @@ fun TokenStatsHudDialog(
     onCompactClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = TermiusSurface,
-        titleContentColor = TermiusTextPrimary,
-        textContentColor = TermiusTextSecondary,
+        containerColor = theme.surfaceContainerLow,
+        titleContentColor = theme.textPrimary,
+        textContentColor = theme.textSecondary,
         shape = RoundedCornerShape(14.dp),
         title = {
             InfoTitle(
@@ -58,9 +59,9 @@ fun TokenStatsHudDialog(
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,
                             color = when {
-                                stats.contextUsagePercent > 0.85f -> TermiusRed
+                                stats.contextUsagePercent > 0.85f -> Color(0xFFCF222E)
                                 stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
-                                else -> TermiusBlue
+                                else -> theme.primary
                             }
                         )
                     }
@@ -70,19 +71,19 @@ fun TokenStatsHudDialog(
                             .fillMaxWidth()
                             .height(6.dp),
                         color = when {
-                            stats.contextUsagePercent > 0.85f -> TermiusRed
+                            stats.contextUsagePercent > 0.85f -> Color(0xFFCF222E)
                             stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
-                            else -> TermiusBlue
+                            else -> theme.primary
                         },
-                        trackColor = TermiusSurfaceVariant
+                        trackColor = theme.surfaceContainer
                     )
                 }
 
-                // 2. 缓存命中率卡片 (Termius 纯深色质感)
+                // 2. 缓存命中率卡片
                 Surface(
-                    color = Color(0xFF1B3D23),
+                    color = Color(0xFF2EA043).copy(alpha = if (theme.isDark) 0.25f else 0.12f),
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, TermiusGreen.copy(alpha = 0.3f))
+                    border = BorderStroke(1.dp, Color(0xFF2EA043).copy(alpha = 0.35f))
                 ) {
                     Row(
                         modifier = Modifier
@@ -101,7 +102,7 @@ fun TokenStatsHudDialog(
                             Text(
                                 text = "缓存命中: ${stats.cacheReadTokens} Tokens",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = TermiusGreen,
+                                color = Color(0xFF2EA043),
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -110,7 +111,7 @@ fun TokenStatsHudDialog(
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.ExtraBold,
                             fontFamily = FontFamily.Monospace,
-                            color = TermiusGreen
+                            color = Color(0xFF2EA043)
                         )
                     }
                 }
@@ -119,24 +120,24 @@ fun TokenStatsHudDialog(
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Surface(
                         modifier = Modifier.weight(1f),
-                        color = TermiusSurfaceVariant,
+                        color = theme.surfaceContainer,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, TermiusBorder)
+                        border = BorderStroke(1.dp, theme.outline)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text("输入 (Prompt)", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
-                            Text("${stats.inputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("输入 (Prompt)", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
+                            Text("${stats.inputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = theme.textPrimary)
                         }
                     }
                     Surface(
                         modifier = Modifier.weight(1f),
-                        color = TermiusSurfaceVariant,
+                        color = theme.surfaceContainer,
                         shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, TermiusBorder)
+                        border = BorderStroke(1.dp, theme.outline)
                     ) {
                         Column(modifier = Modifier.padding(10.dp)) {
-                            Text("输出 (Completion)", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
-                            Text("${stats.outputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                            Text("输出 (Completion)", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
+                            Text("${stats.outputTokens}", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, color = theme.textPrimary)
                         }
                     }
                 }
@@ -147,13 +148,13 @@ fun TokenStatsHudDialog(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("当前会话成本", style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
+                    Text("当前会话成本", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
                     Text(
                         "\$${String.format("%.4f", stats.cost)}",
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         fontFamily = FontFamily.Monospace,
-                        color = TermiusTextPrimary
+                        color = theme.textPrimary
                     )
                 }
             }
@@ -164,7 +165,7 @@ fun TokenStatsHudDialog(
                     onCompactClick()
                     onDismiss()
                 },
-                colors = ButtonDefaults.buttonColors(containerColor = TermiusBlue),
+                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
                 shape = RoundedCornerShape(8.dp)
             ) {
                 Icon(Icons.Default.Compress, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -174,7 +175,7 @@ fun TokenStatsHudDialog(
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("关闭", color = TermiusTextSecondary)
+                Text("关闭", color = theme.textSecondary)
             }
         }
     )

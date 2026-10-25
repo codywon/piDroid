@@ -37,6 +37,7 @@ fun ModelAndThinkingSheet(
     onDismiss: () -> Unit
 ) {
     var selectedProvider by remember { mutableStateOf<String?>(null) }
+    val theme = LocalAppTheme.current
     val providers = remember(availableModels) {
         availableModels.map { it.provider }.distinct()
     }
@@ -46,8 +47,8 @@ fun ModelAndThinkingSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = TermiusSurface,
-        contentColor = TermiusTextPrimary,
+        containerColor = theme.surfaceContainerLow,
+        contentColor = theme.textPrimary,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
         dragHandle = {
             Surface(
@@ -56,7 +57,7 @@ fun ModelAndThinkingSheet(
                     .width(36.dp)
                     .height(4.dp),
                 shape = RoundedCornerShape(2.dp),
-                color = TermiusBorder
+                color = theme.outline
             ) {}
         }
     ) {
@@ -78,7 +79,7 @@ fun ModelAndThinkingSheet(
                 Text(
                     text = "思考深度 (Thinking Level)",
                     style = MaterialTheme.typography.labelSmall,
-                    color = TermiusTextSecondary
+                    color = theme.textSecondary
                 )
 
                 Row(
@@ -91,8 +92,8 @@ fun ModelAndThinkingSheet(
                         val isSelected = currentThinkingLevel == level
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) Color(0xFF1B3D5A) else TermiusSurfaceVariant,
-                            border = BorderStroke(1.dp, if (isSelected) TermiusBlue else TermiusBorder),
+                            color = if (isSelected) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (isSelected) theme.primary else theme.outline),
                             modifier = Modifier.clickable { onThinkingLevelChanged(level) }
                         ) {
                             Row(
@@ -104,7 +105,7 @@ fun ModelAndThinkingSheet(
                                     style = MaterialTheme.typography.labelSmall,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
                                     fontFamily = FontFamily.Monospace,
-                                    color = if (isSelected) TermiusBlue else TermiusTextSecondary
+                                    color = if (isSelected) theme.primary else theme.textSecondary
                                 )
                             }
                         }
@@ -112,7 +113,7 @@ fun ModelAndThinkingSheet(
                 }
             }
 
-            HorizontalDivider(color = TermiusBorder)
+            HorizontalDivider(color = theme.outline)
 
             // 2. Provider 分组选择
             if (providers.size > 1) {
@@ -124,15 +125,15 @@ fun ModelAndThinkingSheet(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (selectedProvider == null) TermiusBlue.copy(alpha = 0.2f) else TermiusSurfaceVariant,
-                        border = BorderStroke(1.dp, if (selectedProvider == null) TermiusBlue else TermiusBorder),
+                        color = if (selectedProvider == null) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                        border = BorderStroke(1.dp, if (selectedProvider == null) theme.primary else theme.outline),
                         modifier = Modifier.clickable { selectedProvider = null }
                     ) {
                         Text(
                             text = "全部 (${availableModels.size})",
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            color = if (selectedProvider == null) TermiusBlue else TermiusTextSecondary
+                            color = if (selectedProvider == null) theme.primary else theme.textSecondary
                         )
                     }
 
@@ -140,15 +141,15 @@ fun ModelAndThinkingSheet(
                         val isSel = selectedProvider == p
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = if (isSel) TermiusBlue.copy(alpha = 0.2f) else TermiusSurfaceVariant,
-                            border = BorderStroke(1.dp, if (isSel) TermiusBlue else TermiusBorder),
+                            color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                             modifier = Modifier.clickable { selectedProvider = p }
                         ) {
                             Text(
                                 text = p,
                                 style = MaterialTheme.typography.labelSmall,
                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                color = if (isSel) TermiusBlue else TermiusTextSecondary
+                                color = if (isSel) theme.primary else theme.textSecondary
                             )
                         }
                     }
@@ -172,8 +173,8 @@ fun ModelAndThinkingSheet(
                                 onDismiss()
                             },
                         shape = RoundedCornerShape(8.dp),
-                        color = if (isSelected) Color(0xFF162335) else TermiusSurfaceVariant,
-                        border = BorderStroke(1.dp, if (isSelected) TermiusBlue else TermiusBorder)
+                        color = if (isSelected) theme.primary.copy(alpha = 0.12f) else theme.surfaceContainer,
+                        border = BorderStroke(1.dp, if (isSelected) theme.primary else theme.outline)
                     ) {
                         Row(
                             modifier = Modifier
@@ -188,25 +189,25 @@ fun ModelAndThinkingSheet(
                                         Icons.Default.Memory,
                                         contentDescription = null,
                                         modifier = Modifier.size(14.dp),
-                                        tint = if (isSelected) TermiusBlue else TermiusTextSecondary
+                                        tint = if (isSelected) theme.primary else theme.textSecondary
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Text(
                                         text = model.displayName,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.SemiBold,
-                                        color = if (isSelected) TermiusBlue else TermiusTextPrimary
+                                        color = if (isSelected) theme.primary else theme.textPrimary
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Surface(
-                                        color = TermiusSurface,
+                                        color = theme.surfaceContainerLow,
                                         shape = RoundedCornerShape(4.dp)
                                     ) {
                                         Text(
                                             text = model.provider,
                                             style = MaterialTheme.typography.labelSmall,
                                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                            color = TermiusTextMuted
+                                            color = theme.textMuted
                                         )
                                     }
                                 }
@@ -219,27 +220,27 @@ fun ModelAndThinkingSheet(
                                         text = "ID: ${model.id}",
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
-                                        color = TermiusTextSecondary
+                                        color = theme.textSecondary
                                     )
                                     if (model.hasVision) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(11.dp), tint = TermiusGreen)
+                                            Icon(Icons.Default.Visibility, contentDescription = null, modifier = Modifier.size(11.dp), tint = Color(0xFF2EA043))
                                             Spacer(modifier = Modifier.width(2.dp))
-                                            Text("Vision", style = MaterialTheme.typography.labelSmall, color = TermiusGreen)
+                                            Text("Vision", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2EA043))
                                         }
                                     }
                                     if (model.supportsThinking) {
                                         Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(Icons.Default.Psychology, contentDescription = null, modifier = Modifier.size(11.dp), tint = TermiusBlue)
+                                            Icon(Icons.Default.Psychology, contentDescription = null, modifier = Modifier.size(11.dp), tint = theme.primary)
                                             Spacer(modifier = Modifier.width(2.dp))
-                                            Text("Thinking", style = MaterialTheme.typography.labelSmall, color = TermiusBlue)
+                                            Text("Thinking", style = MaterialTheme.typography.labelSmall, color = theme.primary)
                                         }
                                     }
                                 }
                             }
 
                             if (isSelected) {
-                                Icon(Icons.Default.Check, contentDescription = "已选择", tint = TermiusBlue, modifier = Modifier.size(18.dp))
+                                Icon(Icons.Default.Check, contentDescription = "已选择", tint = theme.primary, modifier = Modifier.size(18.dp))
                             }
                         }
                     }
