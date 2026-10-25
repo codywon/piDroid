@@ -345,12 +345,12 @@ fun SessionCard(
     onClick: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val dateStr = remember(session.updatedAt) {
-        try {
-            val sdf = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault())
-            sdf.format(Date(session.updatedAt))
-        } catch (_: Exception) {
-            ""
+    val timeRaw = session.modified ?: session.created ?: ""
+    val dateStr = remember(timeRaw) {
+        if (timeRaw.length >= 16) {
+            timeRaw.take(16).replace("T", " ")
+        } else {
+            timeRaw
         }
     }
 
@@ -369,7 +369,7 @@ fun SessionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = session.title.ifBlank { "未命名任务" },
+                    text = session.displayTitle,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = theme.textPrimary,
@@ -377,17 +377,19 @@ fun SessionCard(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(
-                    text = dateStr,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = theme.textMuted
-                )
+                if (dateStr.isNotBlank()) {
+                    Text(
+                        text = dateStr,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = theme.textMuted
+                    )
+                }
             }
 
-            if (!session.description.isNullOrBlank()) {
+            if (!session.firstMessage.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = session.description,
+                    text = session.firstMessage,
                     style = MaterialTheme.typography.bodySmall,
                     color = theme.textSecondary,
                     maxLines = 2,

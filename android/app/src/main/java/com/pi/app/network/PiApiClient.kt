@@ -118,6 +118,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                 var currentModelId = "gpt-6.1-sol"
                 var currentThinkingLevel = ThinkingLevel.HIGH
 
+                var lastAssistantContextTokens = 0L
+                var lastAssistantInTokens = 0L
+                var lastAssistantOutTokens = 0L
+
                 // 1. 解析 context 中的历史消息
                 if (json.has("context")) {
                     val ctx = json.getAsJsonObject("context")
@@ -129,10 +133,6 @@ class PiApiClient(private val prefs: AppPreferences) {
                     if (ctx.has("thinkingLevel")) {
                         currentThinkingLevel = ThinkingLevel.fromValue(ctx.get("thinkingLevel")?.asString)
                     }
-
-                    var lastAssistantContextTokens = 0L
-                    var lastAssistantInTokens = 0L
-                    var lastAssistantOutTokens = 0L
 
                     if (ctx.has("messages")) {
                         val msgs = ctx.getAsJsonArray("messages")
