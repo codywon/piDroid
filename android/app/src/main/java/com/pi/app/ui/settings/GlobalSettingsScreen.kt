@@ -54,6 +54,8 @@ fun GlobalSettingsScreen(
     serverUrl: String,
     authToken: String,
     deviceName: String,
+    onManualConfigConfirm: (url: String, token: String, name: String) -> Unit = { _, _, _ -> },
+    onScanClick: () -> Unit = {},
     onDisconnect: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -66,6 +68,7 @@ fun GlobalSettingsScreen(
     var selectedSkillForDetail by remember { mutableStateOf<SkillInfo?>(null) }
     var editingSkillAlias by remember { mutableStateOf<SkillInfo?>(null) }
     var aliasInput by remember { mutableStateOf("") }
+    var showServerConfigDialog by remember { mutableStateOf(false) }
 
     // Termius 工业级应用内更新状态
     var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
@@ -173,6 +176,8 @@ fun GlobalSettingsScreen(
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
+                    onEditConnection = { showServerConfigDialog = true },
+                    onScanQr = onScanClick,
                     onDisconnect = onDisconnect,
                     isCheckingUpdate = isCheckingUpdate,
                     onCheckUpdate = {
@@ -327,6 +332,19 @@ fun GlobalSettingsScreen(
                     Text("取消", color = theme.textMuted)
                 }
             }
+        )
+    }
+
+    if (showServerConfigDialog) {
+        ServerConfigDialog(
+            initialUrl = serverUrl.ifBlank { "http://192.168.1.100:4100" },
+            initialToken = authToken,
+            initialName = deviceName.ifBlank { "My PC" },
+            onConfirm = { url, token, name ->
+                showServerConfigDialog = false
+                onManualConfigConfirm(url, token, name)
+            },
+            onDismiss = { showServerConfigDialog = false }
         )
     }
 }
@@ -626,8 +644,8 @@ fun GlobalMcpTab(
                         listOf("automatic" to "自动 (推荐)", "always" to "始终开启", "off" to "关闭").forEach { (mode, label) ->
                             val isSel = codeMode == mode
                             Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSel) theme.primary.copy(alpha = 0.14f) else theme.background,
                                 border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                                 modifier = Modifier.weight(1f).clickable { codeMode = mode }
                             ) {
@@ -832,6 +850,8 @@ fun GlobalSystemSettingsTab(
     serverUrl: String,
     authToken: String,
     deviceName: String,
+    onEditConnection: () -> Unit = {},
+    onScanQr: () -> Unit = {},
     onDisconnect: () -> Unit,
     isCheckingUpdate: Boolean,
     onCheckUpdate: () -> Unit
@@ -970,8 +990,8 @@ fun GlobalSystemSettingsTab(
 
         item {
             InfoTitle(
-                title = "Termius 级别长任务后台保活",
-                infoDescription = "防止智能体执行 20~40 分钟代码大任务时被 Android 杀后台或断网。",
+                title = "后台保活",
+                infoDescription = "保障智能体执行长时间代码构建与多轮工具调用时，在锁屏或切入后台后不断连。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -983,45 +1003,52 @@ fun GlobalSystemSettingsTab(
                 border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
-                            Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
+                            Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                if (isIgnoringBattery) "已加入白名单，长任务受系统保护" else "未忽略电池优化，锁屏后可能断开",
+                                if (isIgnoringBattery) "已加入系统电池白名单，后台任务受保护" else "未加入白名单，锁屏后系统可能中断网络连接",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (isIgnoringBattery) Color(0xFF2EA043) else Color(0xFFCF222E)
+                                color = if (isIgnoringBattery) theme.textMuted else Color(0xFFD97706)
                             )
                         }
-                        if (!isIgnoringBattery) {
-                            Button(
-                                onClick = onRequestIgnoreBattery,
-                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
-                                shape = RoundedCornerShape(6.dp)
-                            ) {
-                                Text("立即授权", style = MaterialTheme.typography.labelSmall)
-                            }
+                        if (isIgnoringBattery) {
+                            UnifiedStatusBadge(
+                                text = "已加入",
+                                isActive = true
+                            )
+                        } else {
+                            UnifiedStatusBadge(
+                                text = "去开启 ➔",
+                                isActive = false,
+                                isAction = true,
+                                onClick = onRequestIgnoreBattery
+                            )
                         }
                     }
 
-                    HorizontalDivider(color = theme.outline)
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Column {
-                            Text("前台常驻服务与 WakeLock", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
-                            Text("任务执行时自适应持有 CPU 唤醒锁，完成后自动释放省电", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Text("前台常驻服务与唤醒锁", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text("任务运行时自动持有 CPU 唤醒锁，任务完成后立即释放省电", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
-                        Surface(color = Color(0xFF2EA043).copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
-                            Text("常驻就绪", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2EA043), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                        }
+                        UnifiedStatusBadge(
+                            text = "已就绪",
+                            isActive = true
+                        )
                     }
                 }
             }
@@ -1029,8 +1056,8 @@ fun GlobalSystemSettingsTab(
 
         item {
             InfoTitle(
-                title = "当前主机连接",
-                infoDescription = "已配对的 PC 端伴侣网关与安全凭据。",
+                title = "主机网关连接",
+                infoDescription = "管理已配对的 PC 端 Pi 伴侣网关地址与访问令牌，支持手动编辑与扫码切换。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -1042,34 +1069,110 @@ fun GlobalSystemSettingsTab(
                 border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("设备名称: $deviceName", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
-                    Text("网关地址: $serverUrl", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = theme.primary)
-                    Text("安全凭据: ${authToken.take(10)}***", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = theme.textMuted)
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val isConnected = serverUrl.isNotBlank() && authToken.isNotBlank()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.Dns,
+                                contentDescription = null,
+                                tint = if (isConnected) theme.primary else theme.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = deviceName.ifBlank { if (isConnected) "My PC" else "未配置网关" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
+                        }
+                        UnifiedStatusBadge(
+                            text = if (isConnected) "已配置" else "未配对",
+                            isActive = isConnected
+                        )
+                    }
 
-                    Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedButton(
-                        onClick = onDisconnect,
-                        border = BorderStroke(1.dp, Color(0xFFCF222E)),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCF222E)),
+                    Surface(
+                        color = theme.surfaceContainer,
                         shape = RoundedCornerShape(8.dp),
+                        border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.5f)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("断开配对并重新配置", style = MaterialTheme.typography.labelSmall)
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Text(
+                                text = "网关地址: ${serverUrl.ifBlank { "未设置" }}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = if (isConnected) theme.primary else theme.textMuted
+                            )
+                            Text(
+                                text = "访问令牌: ${if (authToken.isNotBlank()) "${authToken.take(10)}••••••••" else "未设置"}",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textMuted
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = onEditConnection,
+                            colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(if (isConnected) "手动编辑配置" else "手动添加连接", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                        }
+                        OutlinedButton(
+                            onClick = onScanQr,
+                            border = BorderStroke(1.dp, theme.outline),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(15.dp), tint = theme.primary)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("扫码 / 相册配对", style = MaterialTheme.typography.labelSmall, color = theme.textPrimary)
+                        }
+                    }
+
+                    if (isConnected) {
+                        OutlinedButton(
+                            onClick = onDisconnect,
+                            border = BorderStroke(1.dp, Color(0xFFCF222E).copy(alpha = 0.5f)),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCF222E)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("断开当前网关连接", style = MaterialTheme.typography.labelSmall)
+                        }
                     }
                 }
             }
         }
 
         // ==========================================
-        // 关于与应用更新 (参考 Termius 架构)
+        // 关于与软件更新
         // ==========================================
         item {
             InfoTitle(
                 title = "关于与软件更新",
-                infoDescription = "查看软件版本信息、检查最新发布版本并进行无缝平滑在线升级。",
+                infoDescription = "查看当前版本信息、检查最新版本并在线升级。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -1112,7 +1215,7 @@ fun GlobalSystemSettingsTab(
                             }
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = "已注入全局统一签名 Key · 支持无缝覆盖安装",
+                                text = "官方发行签名 · 支持平滑覆盖升级",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.textMuted
                             )
@@ -1123,14 +1226,14 @@ fun GlobalSystemSettingsTab(
                             enabled = !isCheckingUpdate,
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = theme.primary,
-                                contentColor = if (theme.isDark) Color.Black else Color.White
+                                contentColor = Color.White
                             ),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             if (isCheckingUpdate) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(14.dp),
-                                    color = if (theme.isDark) Color.Black else Color.White,
+                                    color = Color.White,
                                     strokeWidth = 2.dp
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
@@ -1143,7 +1246,7 @@ fun GlobalSystemSettingsTab(
                         }
                     }
 
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.35f))
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -1152,7 +1255,7 @@ fun GlobalSystemSettingsTab(
                     ) {
                         Text("构建渠道", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
                         Text(
-                            text = "GitHub Actions CI/CD (Official)",
+                            text = "GitHub Releases (Official)",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             color = theme.textSecondary
@@ -1177,3 +1280,58 @@ fun GlobalSystemSettingsTab(
         }
     }
 }
+
+/**
+ * 统一规范的状态/动作徽章组件：用于设置页的电池白名单、前台常驻服务与连接状态
+ */
+@Composable
+private fun UnifiedStatusBadge(
+    text: String,
+    isActive: Boolean,
+    isAction: Boolean = false,
+    onClick: (() -> Unit)? = null
+) {
+    val theme = LocalAppTheme.current
+    val fgColor = when {
+        isActive -> Color(0xFF16A34A)
+        isAction -> theme.primary
+        else -> Color(0xFFD97706)
+    }
+    val bgColor = when {
+        isActive -> Color(0xFF22C55E).copy(alpha = 0.12f)
+        isAction -> theme.primary.copy(alpha = 0.12f)
+        else -> Color(0xFFF59E0B).copy(alpha = 0.12f)
+    }
+    val borderColor = when {
+        isActive -> Color(0xFF22C55E).copy(alpha = 0.35f)
+        isAction -> theme.primary.copy(alpha = 0.4f)
+        else -> Color(0xFFF59E0B).copy(alpha = 0.35f)
+    }
+
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(6.dp),
+        border = BorderStroke(1.dp, borderColor),
+        modifier = if (onClick != null) Modifier.clickable { onClick() } else Modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(fgColor, CircleShape)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelSmall,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = fgColor
+            )
+        }
+    }
+}
+

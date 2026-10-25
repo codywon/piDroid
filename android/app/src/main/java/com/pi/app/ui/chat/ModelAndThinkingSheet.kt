@@ -92,7 +92,7 @@ fun ModelAndThinkingSheet(
                         val isSelected = currentThinkingLevel == level
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                            color = if (isSelected) theme.primary.copy(alpha = 0.14f) else theme.background,
                             border = BorderStroke(1.dp, if (isSelected) theme.primary else theme.outline),
                             modifier = Modifier.clickable { onThinkingLevelChanged(level) }
                         ) {
@@ -125,7 +125,7 @@ fun ModelAndThinkingSheet(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (selectedProvider == null) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                        color = if (selectedProvider == null) theme.primary.copy(alpha = 0.14f) else theme.background,
                         border = BorderStroke(1.dp, if (selectedProvider == null) theme.primary else theme.outline),
                         modifier = Modifier.clickable { selectedProvider = null }
                     ) {
@@ -141,7 +141,7 @@ fun ModelAndThinkingSheet(
                         val isSel = selectedProvider == p
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                            color = if (isSel) theme.primary.copy(alpha = 0.14f) else theme.background,
                             border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
                             modifier = Modifier.clickable { selectedProvider = p }
                         ) {
@@ -173,7 +173,7 @@ fun ModelAndThinkingSheet(
                                 onDismiss()
                             },
                         shape = RoundedCornerShape(8.dp),
-                        color = if (isSelected) theme.primary.copy(alpha = 0.12f) else theme.surfaceContainer,
+                        color = if (isSelected) theme.primary.copy(alpha = 0.12f) else theme.background,
                         border = BorderStroke(1.dp, if (isSelected) theme.primary else theme.outline)
                     ) {
                         Row(

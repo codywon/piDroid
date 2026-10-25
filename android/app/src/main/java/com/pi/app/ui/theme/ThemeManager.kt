@@ -33,9 +33,9 @@ enum class AppTheme(
         primaryContainer = Color(0xFFDDF4FF),
         background = Color(0xFFF6F8FA),
         surfaceContainerLow = Color(0xFFFFFFFF),
-        surfaceContainer = Color(0xFFEAEEF2),
-        surfaceContainerHigh = Color(0xFFE1E4E8),
-        outline = Color(0xFFD0D7DE),
+        surfaceContainer = Color(0xFFF3F6F9),
+        surfaceContainerHigh = Color(0xFFEAECEF),
+        outline = Color(0xFFE1E6EB),
         previewGradient = listOf(Color(0xFF0969DA), Color(0xFF54A0FF))
     ),
     ICE_BLUE(

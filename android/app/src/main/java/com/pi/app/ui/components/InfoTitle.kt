@@ -12,9 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.pi.app.ui.theme.TermiusBlue
-import com.pi.app.ui.theme.TermiusTextMuted
-import com.pi.app.ui.theme.TermiusTextSecondary
+import com.pi.app.ui.theme.LocalAppTheme
 
 /**
  * 极简专业标题：文本紧凑简练，点击末尾感叹号弹出补充说明
@@ -27,6 +25,7 @@ fun InfoTitle(
     fontWeight: FontWeight = FontWeight.Bold,
     modifier: Modifier = Modifier
 ) {
+    val theme = LocalAppTheme.current
     var showDialog by remember { mutableStateOf(false) }
 
     Row(
@@ -36,14 +35,15 @@ fun InfoTitle(
         Text(
             text = title,
             style = style,
-            fontWeight = fontWeight
+            fontWeight = fontWeight,
+            color = theme.textPrimary
         )
         if (!infoDescription.isNullOrBlank()) {
             Spacer(modifier = Modifier.width(4.dp))
             Icon(
                 imageVector = Icons.Outlined.Info,
                 contentDescription = "详细说明",
-                tint = TermiusTextMuted,
+                tint = theme.textMuted,
                 modifier = Modifier
                     .size(15.dp)
                     .clickable(
@@ -59,23 +59,27 @@ fun InfoTitle(
     if (showDialog && !infoDescription.isNullOrBlank()) {
         AlertDialog(
             onDismissRequest = { showDialog = false },
+            containerColor = theme.surfaceContainerLow,
+            titleContentColor = theme.textPrimary,
+            textContentColor = theme.textSecondary,
             title = {
                 Text(
                     text = title,
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary
                 )
             },
             text = {
                 Text(
                     text = infoDescription,
                     style = MaterialTheme.typography.bodyMedium,
-                    color = TermiusTextSecondary
+                    color = theme.textSecondary
                 )
             },
             confirmButton = {
                 TextButton(onClick = { showDialog = false }) {
-                    Text("我知道了", color = TermiusBlue)
+                    Text("我知道了", color = theme.primary)
                 }
             }
         )

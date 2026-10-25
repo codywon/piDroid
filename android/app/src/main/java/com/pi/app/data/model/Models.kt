@@ -1,14 +1,18 @@
 package com.pi.app.data.model
 
 import com.google.gson.annotations.SerializedName
+import java.text.NumberFormat
+import java.util.Locale
 
 /**
- * 工作区模型（按项目根目录划分）
+ * 工作区模型（按项目根目录划分，对标 pi-web SessionTree GroupHeader + ActivitySummary）
  */
 data class WorkspaceInfo(
     val path: String,
     val name: String,
     val sessionCount: Int = 0,
+    val runningCount: Int = 0,
+    val awaitingCount: Int = 0,
     val isCurrent: Boolean = false
 ) {
     val displayName: String
@@ -22,7 +26,7 @@ data class ProjectInfo(
 )
 
 /**
- * Pi 历史任务会话模型
+ * Pi 历史任务会话模型（对标 pi-web SessionInfo & Runtime 状态）
  */
 data class Session(
     @SerializedName("id") val id: String,
@@ -39,12 +43,13 @@ data class Session(
     @SerializedName("messageCount") val messageCount: Int = 0,
     @SerializedName("tokenUsage") val tokenUsage: Long = 0L,
     @SerializedName("cost") val cost: Double = 0.0,
-    @SerializedName("active") val active: Boolean = false
+    @SerializedName("active") val active: Boolean = false,
+    val awaitingInput: Boolean = false
 ) {
     val displayTitle: String
         get() = name?.takeIf { it.isNotBlank() }
             ?: title?.takeIf { it.isNotBlank() }
-            ?: firstMessage?.take(36)
+            ?: firstMessage?.replace('\n', ' ')?.trim()?.take(42)
             ?: "任务: ${id.take(8)}"
 
     val workspacePath: String
@@ -83,6 +88,25 @@ data class TokenStats(
             val totalPrompt = inputTokens + cacheReadTokens
             return if (totalPrompt > 0) (cacheReadTokens.toFloat() / totalPrompt) * 100f else 0f
         }
+
+    companion object {
+        fun formatTurnUsage(
+            input: Long,
+            output: Long,
+            cacheRead: Long = 0L,
+            cacheWrite: Long = 0L,
+            cost: Double = 0.0
+        ): String? {
+            val nf = NumberFormat.getIntegerInstance(Locale.US)
+            val parts = mutableListOf<String>()
+            if (input > 0) parts.add("${nf.format(input)} in")
+            if (output > 0) parts.add("${nf.format(output)} out")
+            if (cacheRead > 0) parts.add("${nf.format(cacheRead)} cache R")
+            if (cacheWrite > 0) parts.add("${nf.format(cacheWrite)} cache W")
+            if (cost >= 0.0001) parts.add(String.format(Locale.US, "$%.4f", cost))
+            return if (parts.isEmpty()) null else parts.joinToString(" · ")
+        }
+    }
 }
 
 /**
@@ -199,14 +223,17 @@ data class McpCodeModeConfig(
 )
 
 /**
- * 聊天消息项
+ * 聊天消息项（对标 pi-web MessageView）
  */
 data class ChatItem(
     val id: String = java.util.UUID.randomUUID().toString(),
     val role: MessageRole,
     val content: String,
     val thinking: String? = null,
+    val thinkingDurationSec: Int? = null,
     val toolCall: ToolCallInfo? = null,
+    val modelName: String? = null,
+    val usageSummary: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
     val isStreaming: Boolean = false
 )
@@ -219,28 +246,77 @@ enum class MessageRole {
 }
 
 /**
- * 工具调用与审批卡片数据
+ * 工具调用与审批卡片数据（对标 pi-web ToolCallBlock）
  */
 data class ToolCallInfo(
+    val toolCallId: String? = null,
     val toolName: String,
+    val preview: String? = null,
     val command: String? = null,
+    val fields: List<Pair<String, String>> = emptyList(),
     val output: String? = null,
     val durationMs: Long = 0L,
+    val isError: Boolean = false,
+    val isRunning: Boolean = false,
     val requiresApproval: Boolean = false,
     val isApproved: Boolean = false
-)
+) {
+    val formattedDuration: String?
+        get() {
+            if (durationMs < 100L) return null
+            val seconds = durationMs / 1000.0
+            if (seconds < 60.0) return String.format(Locale.US, "%.1fs", seconds)
+            val totalSeconds = seconds.toLong()
+            val minutes = totalSeconds / 60L
+            val rem = totalSeconds % 60L
+            if (minutes < 60L) return "${minutes}m ${rem}s"
+            return "${minutes / 60L}h ${minutes % 60L}m ${rem}s"
+        }
+}
 
 /**
- * SSE 推送事件结构
+ * SSE 实时流连接状态
+ */
+enum class SseConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    CONNECTED,
+    RECONNECTING
+}
+
+/**
+ * SSE 推送事件结构（兼容 pi-web 全量事件流）
  */
 data class AgentSseEvent(
     val type: String,
     val delta: String? = null,
+    val text: String? = null,
+    val content: String? = null,
     val thinking: String? = null,
     val tool: String? = null,
+    val toolName: String? = null,
+    val toolCallId: String? = null,
     val command: String? = null,
+    val input: String? = null,
+    val preview: String? = null,
     val output: String? = null,
+    val durationMs: Long? = null,
+    val isError: Boolean = false,
     val error: String? = null,
     val done: Boolean = false,
-    val tokenStats: TokenStats? = null
-)
+    val isStreaming: Boolean? = null,
+    val phaseLabel: String? = null,
+    val modelName: String? = null,
+    val usageSummary: String? = null,
+    val tokenStats: TokenStats? = null,
+    val connectionState: String? = null
+) {
+    val effectiveText: String
+        get() = delta ?: text ?: content ?: ""
+
+    val effectiveToolName: String
+        get() = tool ?: toolName ?: "bash"
+
+    val effectiveCommand: String?
+        get() = command ?: input
+}

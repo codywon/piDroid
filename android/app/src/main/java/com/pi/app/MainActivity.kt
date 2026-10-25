@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity() {
         var isScanning by remember { mutableStateOf(false) }
         var showGlobalSettings by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
+        var showManualConfigDialog by remember { mutableStateOf(false) }
 
         // 工业级应用内自动更新状态 (参考 Termius)
         var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
@@ -164,8 +165,11 @@ class MainActivity : ComponentActivity() {
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
+        var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
         var isCompacting by remember { mutableStateOf(false) }
         var isSpeaking by remember { mutableStateOf(false) }
+        var isGatewayOnline by remember { mutableStateOf(true) }
+        var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
 
         val voiceState by voiceInputManager.state.collectAsState()
         var isRecording by remember { mutableStateOf(false) }
@@ -217,7 +221,6 @@ class MainActivity : ComponentActivity() {
 
                 val cwd = currentProject
                 apiClient.getSkills(cwd).onSuccess { list ->
-                    // 填充用户自定义的技能别名
                     skills = list.map {
                         val customAlias = prefs.getSkillAlias(it.name)
                         if (!customAlias.isNullOrBlank()) it.copy(alias = customAlias) else it
@@ -231,16 +234,69 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun loadSessions() {
+        fun loadSessions(silent: Boolean = false) {
             if (!prefs.isConfigured) return
-            isLoadingSessions = true
+            if (!silent) isLoadingSessions = true
             lifecycleScope.launch {
                 apiClient.getSessions().onSuccess {
                     sessions = it
+                    isGatewayOnline = true
                 }.onFailure {
-                    Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                    isGatewayOnline = false
+                    if (!silent) {
+                        Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
-                isLoadingSessions = false
+                if (!silent) isLoadingSessions = false
+            }
+        }
+
+        // 增量同步会话快照：当正在运行的任务存在网络抖动、SSE 重连或代理缓冲时，保证数据 100% 实时一致
+        suspend fun syncSessionSnapshot(sessionId: String, restoreModelMeta: Boolean = false) {
+            val isRunning = apiClient.getAgentRunningState(sessionId).getOrDefault(isAgentBusy)
+            apiClient.getSessionDetail(sessionId).onSuccess { hist ->
+                isGatewayOnline = true
+                if (hist.messages.isNotEmpty()) {
+                    val synced = hist.messages.mapIndexed { idx, item ->
+                        if (isRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
+                            item.copy(isStreaming = true)
+                        } else {
+                            item
+                        }
+                    }
+                    // 对账同步：若服务端消息数量变化，或最后几条消息的工具输出/Token 用量/正文更新，原地无闪烁替换
+                    if (messages.size != synced.size) {
+                        messages.clear()
+                        messages.addAll(synced)
+                    } else {
+                        for (i in synced.indices) {
+                            if (messages[i] != synced[i]) {
+                                messages[i] = synced[i]
+                            }
+                        }
+                    }
+                }
+                tokenStats = hist.stats
+                if (restoreModelMeta) {
+                    dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
+                        selectedModel = it
+                    }
+                    currentThinkingLevel = hist.thinkingLevel
+                }
+            }
+            if (isAgentBusy && !isRunning) {
+                isAgentBusy = false
+                agentPhaseLabel = null
+                keepAliveManager.releaseWakeLock()
+                PiForegroundService.stop(this@MainActivity)
+                val last = messages.lastOrNull()
+                if (last != null && last.isStreaming) {
+                    messages[messages.size - 1] = last.copy(isStreaming = false)
+                }
+            } else if (!isAgentBusy && isRunning) {
+                isAgentBusy = true
+                if (agentPhaseLabel == null) agentPhaseLabel = "正在等待模型..."
+                keepAliveManager.acquireWakeLock()
             }
         }
 
@@ -248,6 +304,7 @@ class MainActivity : ComponentActivity() {
             sseJob?.cancel()
             sseJob = lifecycleScope.launch {
                 isAgentBusy = initialBusy
+                agentPhaseLabel = if (initialBusy) "正在等待模型..." else null
 
                 if (initialBusy) {
                     keepAliveManager.acquireWakeLock()
@@ -260,64 +317,265 @@ class MainActivity : ComponentActivity() {
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
                     when (event.type) {
-                        "delta", "message" -> {
-                            if (!isAgentBusy) {
+                        "connection_state" -> {
+                            sseConnectionState = when (event.connectionState) {
+                                "CONNECTED" -> {
+                                    isGatewayOnline = true
+                                    SseConnectionState.CONNECTED
+                                }
+                                "RECONNECTING" -> SseConnectionState.RECONNECTING
+                                "CONNECTING" -> SseConnectionState.CONNECTING
+                                else -> SseConnectionState.DISCONNECTED
+                            }
+                        }
+                        "connected" -> {
+                            isGatewayOnline = true
+                            if (event.isStreaming == true) {
                                 isAgentBusy = true
+                                if (agentPhaseLabel == null) agentPhaseLabel = "正在等待模型..."
                                 keepAliveManager.acquireWakeLock()
                             }
-                            val last = messages.lastOrNull()
-                            if (last != null && last.role == MessageRole.AGENT && last.isStreaming) {
-                                val updated = last.copy(content = last.content + (event.delta ?: ""))
-                                messages[messages.size - 1] = updated
+                        }
+                        "reconnected_sync" -> {
+                            // SSE 断线重连成功后自动拉取一次快照，补齐断线期间遗漏的 Token 与工具输出
+                            syncSessionSnapshot(sessionId, restoreModelMeta = false)
+                        }
+                        "agent_start" -> {
+                            isAgentBusy = true
+                            agentPhaseLabel = event.phaseLabel ?: "正在等待模型..."
+                            keepAliveManager.acquireWakeLock()
+                        }
+                        "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
+                            val chunk = event.effectiveText
+                            if (chunk.isNotEmpty()) {
+                                if (!isAgentBusy) {
+                                    isAgentBusy = true
+                                    keepAliveManager.acquireWakeLock()
+                                }
+                                agentPhaseLabel = null
+                                val last = messages.lastOrNull()
+                                if (last != null && last.role == MessageRole.AGENT) {
+                                    val updated = last.copy(
+                                        content = last.content + chunk,
+                                        isStreaming = true
+                                    )
+                                    messages[messages.size - 1] = updated
+                                } else {
+                                    messages.add(
+                                        ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = chunk,
+                                            modelName = selectedModel.displayName,
+                                            isStreaming = true
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        "text_replace" -> {
+                            val fullText = event.effectiveText
+                            if (fullText.isNotEmpty()) {
+                                val last = messages.lastOrNull()
+                                if (last != null && last.role == MessageRole.AGENT) {
+                                    messages[messages.size - 1] = last.copy(
+                                        content = fullText,
+                                        isStreaming = event.isStreaming ?: false
+                                    )
+                                }
+                            }
+                        }
+                        "thinking", "thinking_delta" -> {
+                            val thinkChunk = event.thinking ?: event.effectiveText
+                            if (thinkChunk.isNotEmpty()) {
+                                if (!isAgentBusy) isAgentBusy = true
+                                agentPhaseLabel = null
+                                val last = messages.lastOrNull()
+                                if (last != null && last.role == MessageRole.AGENT && last.content.isEmpty()) {
+                                    val updated = last.copy(
+                                        thinking = (last.thinking ?: "") + thinkChunk,
+                                        isStreaming = true
+                                    )
+                                    messages[messages.size - 1] = updated
+                                } else {
+                                    messages.add(
+                                        ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = "",
+                                            thinking = thinkChunk,
+                                            modelName = selectedModel.displayName,
+                                            isStreaming = true
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                        "thinking_replace" -> {
+                            val fullThink = event.thinking ?: ""
+                            if (fullThink.isNotEmpty()) {
+                                val lastIdx = messages.indexOfLast { it.role == MessageRole.AGENT && it.thinking != null }
+                                if (lastIdx >= 0) {
+                                    val existing = messages[lastIdx]
+                                    messages[lastIdx] = existing.copy(thinking = fullThink)
+                                }
+                            }
+                        }
+                        "tool", "tool_call", "tool_use", "tool_start" -> {
+                            if (!isAgentBusy) isAgentBusy = true
+                            val toolName = event.effectiveToolName
+                            agentPhaseLabel = event.phaseLabel ?: "正在准备工具 $toolName..."
+                            val existingIdx = if (!event.toolCallId.isNullOrBlank()) {
+                                messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
+                            } else -1
+                            if (existingIdx < 0) {
+                                messages.add(
+                                    ChatItem(
+                                        role = MessageRole.TOOL,
+                                        content = "",
+                                        modelName = selectedModel.displayName,
+                                        toolCall = ToolCallInfo(
+                                            toolCallId = event.toolCallId,
+                                            toolName = toolName,
+                                            preview = event.preview,
+                                            command = event.effectiveCommand,
+                                            output = event.output,
+                                            isRunning = true,
+                                            durationMs = event.durationMs ?: 0L
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                        "tool_call_ready" -> {
+                            val idx = if (!event.toolCallId.isNullOrBlank()) {
+                                messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
+                            } else {
+                                messages.indexOfLast { it.role == MessageRole.TOOL }
+                            }
+                            if (idx >= 0) {
+                                val existing = messages[idx]
+                                val existingTool = existing.toolCall ?: ToolCallInfo(toolName = event.effectiveToolName)
+                                messages[idx] = existing.copy(
+                                    toolCall = existingTool.copy(
+                                        toolCallId = event.toolCallId?.takeIf { it.isNotBlank() } ?: existingTool.toolCallId,
+                                        toolName = event.effectiveToolName,
+                                        preview = event.preview?.takeIf { it.isNotBlank() } ?: existingTool.preview,
+                                        command = event.effectiveCommand?.takeIf { it.isNotBlank() } ?: existingTool.command
+                                    )
+                                )
                             } else {
                                 messages.add(
                                     ChatItem(
-                                        role = MessageRole.AGENT,
-                                        content = event.delta ?: "",
-                                        isStreaming = true
+                                        role = MessageRole.TOOL,
+                                        content = "",
+                                        modelName = selectedModel.displayName,
+                                        toolCall = ToolCallInfo(
+                                            toolCallId = event.toolCallId,
+                                            toolName = event.effectiveToolName,
+                                            preview = event.preview,
+                                            command = event.effectiveCommand,
+                                            isRunning = true
+                                        )
                                     )
                                 )
                             }
                         }
-                        "thinking" -> {
+                        "tool_execution_start" -> {
                             if (!isAgentBusy) isAgentBusy = true
+                            val toolName = event.effectiveToolName
+                            agentPhaseLabel = event.phaseLabel ?: "正在执行 $toolName..."
+                            val idx = if (!event.toolCallId.isNullOrBlank()) {
+                                messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
+                            } else {
+                                messages.indexOfLast { it.role == MessageRole.TOOL }
+                            }
+                            if (idx >= 0) {
+                                val existing = messages[idx]
+                                val existingTool = existing.toolCall
+                                if (existingTool != null) {
+                                    messages[idx] = existing.copy(
+                                        toolCall = existingTool.copy(
+                                            preview = event.preview?.takeIf { it.isNotBlank() } ?: existingTool.preview,
+                                            command = event.effectiveCommand?.takeIf { it.isNotBlank() } ?: existingTool.command,
+                                            isRunning = true
+                                        )
+                                    )
+                                }
+                            } else {
+                                messages.add(
+                                    ChatItem(
+                                        role = MessageRole.TOOL,
+                                        content = "",
+                                        modelName = selectedModel.displayName,
+                                        toolCall = ToolCallInfo(
+                                            toolCallId = event.toolCallId,
+                                            toolName = toolName,
+                                            preview = event.preview,
+                                            command = event.effectiveCommand,
+                                            isRunning = true
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                        "tool_result", "tool_output", "tool_end", "tool_execution_end" -> {
+                            val idx = if (!event.toolCallId.isNullOrBlank()) {
+                                messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
+                            } else {
+                                messages.indexOfLast { it.role == MessageRole.TOOL }
+                            }
+                            if (idx >= 0) {
+                                val existing = messages[idx]
+                                val existingTool = existing.toolCall
+                                if (existingTool != null) {
+                                    messages[idx] = existing.copy(
+                                        toolCall = existingTool.copy(
+                                            output = event.output ?: event.effectiveText.ifBlank { existingTool.output },
+                                            durationMs = event.durationMs ?: existingTool.durationMs,
+                                            isError = event.isError || existingTool.isError,
+                                            isRunning = event.isStreaming ?: false
+                                        )
+                                    )
+                                }
+                            }
+                            if (event.type == "tool_execution_end") {
+                                agentPhaseLabel = event.phaseLabel ?: "正在等待模型..."
+                            }
+                        }
+                        "message_end_sync" -> {
                             val last = messages.lastOrNull()
-                            if (last != null && last.role == MessageRole.AGENT) {
-                                val updated = last.copy(thinking = (last.thinking ?: "") + (event.thinking ?: ""))
-                                messages[messages.size - 1] = updated
-                            }
-                        }
-                        "tool" -> {
-                            if (!isAgentBusy) isAgentBusy = true
-                            messages.add(
-                                ChatItem(
-                                    role = MessageRole.TOOL,
-                                    content = "",
-                                    toolCall = ToolCallInfo(
-                                        toolName = event.tool ?: "Bash",
-                                        command = event.command,
-                                        output = event.output
-                                    )
+                            if (last != null) {
+                                messages[messages.size - 1] = last.copy(
+                                    isStreaming = false,
+                                    modelName = event.modelName ?: last.modelName,
+                                    usageSummary = event.usageSummary ?: last.usageSummary
                                 )
-                            )
+                            }
+                            // 后台拉取一次详情，确保 fields、配对结果和 Token 统计 100% 同步
+                            lifecycleScope.launch {
+                                syncSessionSnapshot(sessionId, restoreModelMeta = false)
+                            }
                         }
                         "approval_required" -> {
                             hapticsAndNotify.vibrateApprovalRequired()
+                            agentPhaseLabel = "等待人工安全审批..."
                             messages.add(
                                 ChatItem(
                                     role = MessageRole.TOOL,
                                     content = "",
                                     toolCall = ToolCallInfo(
-                                        toolName = event.tool ?: "System",
-                                        command = event.command,
+                                        toolCallId = event.toolCallId,
+                                        toolName = event.effectiveToolName,
+                                        preview = event.preview,
+                                        command = event.effectiveCommand,
                                         requiresApproval = true,
                                         isApproved = false
                                     )
                                 )
                             )
                         }
-                        "turn_completed" -> {
+                        "turn_completed", "done", "message_stop", "agent_idle" -> {
                             isAgentBusy = false
+                            agentPhaseLabel = null
                             keepAliveManager.releaseWakeLock()
                             PiForegroundService.stop(this@MainActivity)
 
@@ -328,47 +586,75 @@ class MainActivity : ComponentActivity() {
                             if (last != null && last.isStreaming) {
                                 messages[messages.size - 1] = last.copy(isStreaming = false)
                             }
-                            apiClient.getSessionStats(sessionId).onSuccess { tokenStats = it }
+                            syncSessionSnapshot(sessionId, restoreModelMeta = false)
                         }
                     }
                 }
             }
         }
 
-        // 打开任务会话：拉取完整历史并探知真实状态
+        // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
         fun openSessionWithHistory(session: Session) {
             currentSession = session
             currentProject = session.workspaceName
             messages.clear()
             queuedMessages.clear()
+            isAgentBusy = session.active
+            agentPhaseLabel = if (session.active) "正在等待模型..." else null
+
+            // 立即开启 SSE 监听，避免历史拉取期间漏掉正在产生的流式事件
+            startListeningEvents(session.id, session.active)
 
             lifecycleScope.launch {
-                // 1. 调用 GET /api/sessions/[id] 获取完整历史消息与元数据
-                apiClient.getSessionDetail(session.id).onSuccess { hist ->
-                    messages.addAll(hist.messages)
-                    tokenStats = hist.stats
-
-                    // 还原任务上次使用的模型
-                    dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
-                        selectedModel = it
-                    }
-                    currentThinkingLevel = hist.thinkingLevel
-                }
-
-                // 2. 探测 Agent 是否真正处于运行中
-                val isRunning = apiClient.getAgentRunningState(session.id).getOrDefault(false)
-                isAgentBusy = isRunning
-
-                // 3. 开启增量监听并进入会话
-                startListeningEvents(session.id, isRunning)
+                syncSessionSnapshot(session.id, restoreModelMeta = true)
             }
         }
 
-        LaunchedEffect(prefs.isConfigured) {
-            if (prefs.isConfigured) {
-                loadSessions()
+        // 初始加载与后台自动心跳同步：
+        // 1) 在首页时每 5 秒静默刷新会话状态（包含正在运行的任务 runningSessionIds 动态图标）與网关健康度
+        // 2) 在任务详情页且任务正在运行（或 SSE 重连中）时，每 2 秒执行一次增量快照对账，彻底解决正在跑的任务不实时同步的问题
+        LaunchedEffect(prefs.isConfigured, currentSession?.id, isAgentBusy, sseConnectionState) {
+            if (!prefs.isConfigured) return@LaunchedEffect
+            val activeSession = currentSession
+            if (activeSession == null) {
+                loadSessions(silent = true)
                 loadCapabilitiesAndModels()
+                while (true) {
+                    kotlinx.coroutines.delay(5_000L)
+                    loadSessions(silent = true)
+                }
+            } else if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) {
+                while (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) {
+                    kotlinx.coroutines.delay(2_000L)
+                    syncSessionSnapshot(activeSession.id, restoreModelMeta = false)
+                }
             }
+        }
+
+        fun connectToServer(url: String, token: String, name: String) {
+            lifecycleScope.launch {
+                apiClient.ping(url, token).onSuccess {
+                    prefs.saveConnection(url, token, name)
+                    Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
+                    loadSessions()
+                    loadCapabilitiesAndModels()
+                }.onFailure {
+                    Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+        if (showManualConfigDialog) {
+            com.pi.app.ui.settings.ServerConfigDialog(
+                initialUrl = prefs.serverUrl.ifBlank { "http://192.168.1.100:4100" },
+                initialToken = prefs.authToken,
+                initialName = prefs.deviceName.ifBlank { "My PC" },
+                onConfirm = { url, token, name ->
+                    showManualConfigDialog = false
+                    connectToServer(url, token, name)
+                },
+                onDismiss = { showManualConfigDialog = false }
+            )
         }
 
         when {
@@ -376,16 +662,11 @@ class MainActivity : ComponentActivity() {
                 QrScannerScreen(
                     onScanSuccess = { url, token, name ->
                         isScanning = false
-                        lifecycleScope.launch {
-                            apiClient.ping(url, token).onSuccess {
-                                prefs.saveConnection(url, token, name)
-                                Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
-                                loadSessions()
-                                loadCapabilitiesAndModels()
-                            }.onFailure {
-                                Toast.makeText(this@MainActivity, "握手失败: ${it.message}", Toast.LENGTH_LONG).show()
-                            }
-                        }
+                        connectToServer(url, token, name)
+                    },
+                    onManualInputClick = {
+                        isScanning = false
+                        showManualConfigDialog = true
                     },
                     onClose = { isScanning = false }
                 )
@@ -424,6 +705,13 @@ class MainActivity : ComponentActivity() {
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
+                    onManualConfigConfirm = { url, token, name ->
+                        connectToServer(url, token, name)
+                    },
+                    onScanClick = {
+                        showGlobalSettings = false
+                        isScanning = true
+                    },
                     onDisconnect = {
                         prefs.clear()
                         showGlobalSettings = false
@@ -442,18 +730,29 @@ class MainActivity : ComponentActivity() {
                     tokenStats = tokenStats,
                     messages = messages,
                     isAgentBusy = isAgentBusy,
+                    agentPhaseLabel = agentPhaseLabel,
+                    sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
                     isCompacting = isCompacting,
                     isSpeaking = isSpeaking,
                     onBack = {
                         sseJob?.cancel()
                         currentSession = null
+                        agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
                         PiForegroundService.stop(this@MainActivity)
                         hapticsAndNotify.clearNotification()
                         smartTtsManager.stop()
                         isSpeaking = false
                         loadSessions() // 返回时刷新会话
+                    },
+                    onRefreshSession = {
+                        currentSession?.let { sess ->
+                            lifecycleScope.launch {
+                                syncSessionSnapshot(sess.id, restoreModelMeta = true)
+                                Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     },
                     onOpenModelSheet = { showModelSheet = true },
                     onOpenCapabilities = { showGlobalSettings = true },
@@ -472,6 +771,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             apiClient.stopAgent(currentSession!!.id).onSuccess {
                                 isAgentBusy = false
+                                agentPhaseLabel = null
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -479,6 +779,7 @@ class MainActivity : ComponentActivity() {
                     onSendMessage = { prompt ->
                         messages.add(ChatItem(role = MessageRole.USER, content = prompt))
                         isAgentBusy = true
+                        agentPhaseLabel = "正在等待模型..."
                         lifecycleScope.launch {
                             apiClient.sendCommand(currentSession!!.id, prompt)
                         }
@@ -569,6 +870,7 @@ class MainActivity : ComponentActivity() {
                     deviceName = prefs.deviceName,
                     serverUrl = prefs.serverUrl,
                     isConfigured = prefs.isConfigured,
+                    isGatewayOnline = isGatewayOnline,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
                     onRefresh = { loadSessions() },

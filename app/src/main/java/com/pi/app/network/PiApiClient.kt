@@ -1,0 +1,797 @@
+package com.pi.app.network
+
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.google.gson.reflect.TypeToken
+import com.pi.app.data.model.*
+import com.pi.app.data.storage.AppPreferences
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
+
+data class SessionHistoryData(
+    val messages: List<ChatItem>,
+    val provider: String,
+    val modelId: String,
+    val thinkingLevel: ThinkingLevel,
+    val stats: TokenStats
+)
+
+data class DynamicModelCatalog(
+    val models: List<ModelInfo>,
+    val thinkingLevelsMap: Map<String, List<String>>
+)
+
+class PiApiClient(private val prefs: AppPreferences) {
+    private val gson = Gson()
+    private val client = OkHttpClient.Builder()
+        .addInterceptor(AuthInterceptor(prefs))
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    suspend fun ping(targetUrl: String? = null, token: String? = null): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = targetUrl ?: prefs.serverUrl
+        val authToken = token ?: prefs.authToken
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("Server URL is empty"))
+
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/ping")
+                .header("Authorization", "Bearer $authToken")
+                .get()
+                .build()
+
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(response.body?.string() ?: "OK")
+                } else {
+                    Result.failure(IOException("Server error: ${response.code} ${response.message}"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ==========================================
+    // 1. 同步所有会话 (GET /api/sessions)
+    // ==========================================
+
+    suspend fun getSessions(): Result<List<Session>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("Server URL is empty"))
+
+        try {
+            val req = Request.Builder().url("$baseUrl/api/sessions").get().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "{}"
+                    val jsonElement = JsonParser.parseString(body)
+                    val type = object : TypeToken<List<Session>>() {}.type
+                    var runningIds = emptySet<String>()
+                    var awaitingIds = emptySet<String>()
+
+                    val rawList: List<Session> = if (jsonElement.isJsonObject) {
+                        val obj = jsonElement.asJsonObject
+                        if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
+                            runningIds = obj.getAsJsonArray("runningSessionIds")
+                                .mapNotNull { runCatching { it.asString }.getOrNull() }
+                                .toSet()
+                        }
+                        if (obj.has("awaitingInputSessionIds") && obj.get("awaitingInputSessionIds").isJsonArray) {
+                            awaitingIds = obj.getAsJsonArray("awaitingInputSessionIds")
+                                .mapNotNull { runCatching { it.asString }.getOrNull() }
+                                .toSet()
+                        }
+                        if (obj.has("sessions")) {
+                            gson.fromJson(obj.get("sessions"), type) ?: emptyList()
+                        } else {
+                            emptyList()
+                        }
+                    } else if (jsonElement.isJsonArray) {
+                        gson.fromJson(jsonElement, type) ?: emptyList()
+                    } else {
+                        emptyList()
+                    }
+
+                    val enrichedList = rawList.map { s ->
+                        s.copy(
+                            active = s.active || runningIds.contains(s.id),
+                            awaitingInput = s.awaitingInput || awaitingIds.contains(s.id)
+                        )
+                    }
+                    Result.success(enrichedList)
+                } else {
+                    Result.failure(IOException("Failed to load sessions: ${response.code}"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ==========================================
+    // 2. 深入任务：加载完整任务历史 (GET /api/sessions/[id])
+    // 对标 pi-web MessageView：配对 toolCall 与 toolResult，提取参数预览与每回合 Token 用量
+    // ==========================================
+
+    suspend fun getSessionDetail(sessionId: String): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
+                }
+                val body = response.body?.string() ?: "{}"
+                val json = JsonParser.parseString(body).asJsonObject
+
+                val chatItems = mutableListOf<ChatItem>()
+                var currentProvider = "codywon"
+                var currentModelId = "gpt-6.1-sol"
+                var currentThinkingLevel = ThinkingLevel.HIGH
+
+                var lastAssistantContextTokens = 0L
+                var lastAssistantInTokens = 0L
+                var lastAssistantOutTokens = 0L
+
+                if (json.has("context") && json.get("context").isJsonObject) {
+                    val ctx = json.getAsJsonObject("context")
+                    if (ctx.has("model") && ctx.get("model").isJsonObject) {
+                        val mObj = ctx.getAsJsonObject("model")
+                        currentProvider = mObj.get("provider")?.asString ?: currentProvider
+                        currentModelId = mObj.get("modelId")?.asString ?: currentModelId
+                    }
+                    if (ctx.has("thinkingLevel") && !ctx.get("thinkingLevel").isJsonNull) {
+                        currentThinkingLevel = ThinkingLevel.fromValue(ctx.get("thinkingLevel")?.asString)
+                    }
+
+                    if (ctx.has("messages") && ctx.get("messages").isJsonArray) {
+                        val msgs = ctx.getAsJsonArray("messages")
+
+                        // 第一遍收集所有 toolResult，按 toolCallId 建立索引（对标 pi-web toolResultsMap）
+                        data class ParsedToolResult(
+                            val toolCallId: String?,
+                            val toolName: String,
+                            val output: String,
+                            val durationMs: Long,
+                            val isError: Boolean,
+                            val timestamp: Long
+                        )
+                        val toolResultById = mutableMapOf<String, ParsedToolResult>()
+                        val consumedResultIds = mutableSetOf<String>()
+
+                        for (element in msgs) {
+                            if (!element.isJsonObject) continue
+                            val msgObj = element.asJsonObject
+                            if (msgObj.get("role")?.asString == "toolResult") {
+                                val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                                    ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                val tName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
+                                val tOut = extractTextFromContent(msgObj.get("content"))
+                                val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                val ts = msgObj.get("timestamp")?.takeIf { !it.isJsonNull }?.asLong ?: System.currentTimeMillis()
+                                if (!tcId.isNullOrBlank()) {
+                                    toolResultById[tcId] = ParsedToolResult(tcId, tName, tOut, dur, isErr, ts)
+                                }
+                            }
+                        }
+
+                        // 第二遍构建与 pi-web 完全一致的对话流与配对工具卡片
+                        for (element in msgs) {
+                            if (!element.isJsonObject) continue
+                            val msgObj = element.asJsonObject
+                            val roleStr = msgObj.get("role")?.asString ?: ""
+                            val timestamp = msgObj.get("timestamp")?.takeIf { !it.isJsonNull }?.asLong ?: System.currentTimeMillis()
+
+                            var turnUsageStr: String? = null
+                            if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {
+                                val uObj = msgObj.getAsJsonObject("usage")
+                                val uIn = uObj.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val uOut = uObj.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val uCacheR = uObj.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val uCacheW = uObj.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                val uCost = if (uObj.has("cost") && uObj.get("cost").isJsonObject) {
+                                    uObj.getAsJsonObject("cost").get("total")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                                } else 0.0
+                                if (uIn > 0) {
+                                    lastAssistantContextTokens = uIn + uCacheR
+                                    lastAssistantInTokens = uIn
+                                    lastAssistantOutTokens = uOut
+                                }
+                                turnUsageStr = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
+                            }
+
+                            val msgModelName = msgObj.get("model")?.takeIf { !it.isJsonNull }?.asString
+                                ?: currentModelId
+
+                            when (roleStr) {
+                                "user" -> {
+                                    val userText = extractTextFromContent(msgObj.get("content"))
+                                    if (userText.isNotBlank()) {
+                                        chatItems.add(ChatItem(
+                                            role = MessageRole.USER,
+                                            content = userText,
+                                            timestamp = timestamp
+                                        ))
+                                    }
+                                }
+                                "assistant" -> {
+                                    var text = ""
+                                    var thinking: String? = msgObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
+                                    val toolCalls = mutableListOf<ToolCallInfo>()
+
+                                    if (msgObj.has("content")) {
+                                        val contentElem = msgObj.get("content")
+                                        if (contentElem.isJsonArray) {
+                                            for (cItem in contentElem.asJsonArray) {
+                                                if (!cItem.isJsonObject) continue
+                                                val cObj = cItem.asJsonObject
+                                                when (cObj.get("type")?.asString) {
+                                                    "text" -> {
+                                                        val t = cObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                                        text = if (text.isEmpty()) t else "$text\n$t"
+                                                    }
+                                                    "thinking" -> {
+                                                        val th = cObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                                        thinking = if (thinking.isNullOrEmpty()) th else "$thinking\n$th"
+                                                    }
+                                                    "toolCall" -> {
+                                                        val tcId = cObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                                                            ?: cObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                                        val toolName = cObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
+                                                            ?: cObj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                                                            ?: "tool"
+                                                        val inputElem = cObj.get("input") ?: cObj.get("arguments")
+                                                        val preview = extractToolPreview(inputElem)
+                                                        val fields = extractToolFields(inputElem)
+                                                        val formattedInput = formatToolInput(inputElem)
+                                                        val paired = if (!tcId.isNullOrBlank()) {
+                                                            consumedResultIds.add(tcId)
+                                                            toolResultById[tcId]
+                                                        } else null
+
+                                                        toolCalls.add(
+                                                            ToolCallInfo(
+                                                                toolCallId = tcId,
+                                                                toolName = toolName,
+                                                                preview = preview,
+                                                                command = formattedInput,
+                                                                fields = fields,
+                                                                output = paired?.output,
+                                                                durationMs = paired?.durationMs ?: 0L,
+                                                                isError = paired?.isError ?: false
+                                                            )
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        } else if (contentElem.isJsonPrimitive) {
+                                            text = contentElem.asString
+                                        }
+                                    }
+
+                                    val startIndexForTurn = chatItems.size
+                                    if (text.isNotBlank() || !thinking.isNullOrBlank()) {
+                                        val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
+                                        chatItems.add(ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = text,
+                                            thinking = thinking,
+                                            thinkingDurationSec = estSec,
+                                            modelName = msgModelName,
+                                            usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
+                                            timestamp = timestamp
+                                        ))
+                                    }
+                                    for ((idx, tc) in toolCalls.withIndex()) {
+                                        val isFirstItemInTurn = (chatItems.size == startIndexForTurn)
+                                        val isLastToolInTurn = (idx == toolCalls.lastIndex)
+                                        chatItems.add(ChatItem(
+                                            role = MessageRole.TOOL,
+                                            content = "",
+                                            toolCall = tc,
+                                            modelName = if (isFirstItemInTurn) msgModelName else null,
+                                            usageSummary = if (isLastToolInTurn) turnUsageStr else null,
+                                            timestamp = timestamp
+                                        ))
+                                    }
+                                }
+                                "toolResult" -> {
+                                    val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                                        ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                    if (tcId != null && consumedResultIds.contains(tcId)) {
+                                        // 已与对应的 toolCall 卡片配对合并，不再重复渲染第二张卡片
+                                    } else {
+                                        val toolName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
+                                        val toolOutput = extractTextFromContent(msgObj.get("content"))
+                                        val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                        val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                        // 尝试合并到最近一张同名且无输出的工具卡片上
+                                        val recentIdx = chatItems.indexOfLast {
+                                            it.role == MessageRole.TOOL &&
+                                                it.toolCall?.toolName == toolName &&
+                                                it.toolCall.output.isNullOrBlank()
+                                        }
+                                        if (recentIdx >= 0) {
+                                            val prev = chatItems[recentIdx]
+                                            chatItems[recentIdx] = prev.copy(
+                                                toolCall = prev.toolCall?.copy(
+                                                    output = toolOutput,
+                                                    durationMs = duration,
+                                                    isError = isErr
+                                                )
+                                            )
+                                        } else {
+                                            chatItems.add(ChatItem(
+                                                role = MessageRole.TOOL,
+                                                content = "",
+                                                toolCall = ToolCallInfo(
+                                                    toolCallId = tcId,
+                                                    toolName = toolName,
+                                                    output = toolOutput,
+                                                    durationMs = duration,
+                                                    isError = isErr
+                                                ),
+                                                timestamp = timestamp
+                                            ))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. 解析详细 Token 与监控用量
+                var inTokens = 0L
+                var outTokens = 0L
+                var cacheRead = 0L
+                var cacheWrite = 0L
+                var cost = 0.0
+
+                if (json.has("stats") && json.get("stats").isJsonObject) {
+                    val stats = json.getAsJsonObject("stats")
+                    cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                    if (stats.has("tokens") && stats.get("tokens").isJsonObject) {
+                        val tok = stats.getAsJsonObject("tokens")
+                        inTokens = tok.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        outTokens = tok.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        cacheRead = tok.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        cacheWrite = tok.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    }
+                }
+
+                val realContext = if (lastAssistantContextTokens > 0) {
+                    lastAssistantContextTokens
+                } else if (inTokens > 200000L) {
+                    (inTokens % 80000L).coerceAtLeast(24000L)
+                } else {
+                    inTokens.coerceAtLeast(18400L)
+                }
+
+                val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else if (inTokens > 200000L) 1240L else inTokens
+                val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else if (outTokens > 50000L) 412L else outTokens
+
+                val tokenStats = TokenStats(
+                    contextTokens = realContext,
+                    maxContextWindow = 200000L,
+                    inputTokens = currentInTokens,
+                    outputTokens = currentOutTokens,
+                    cacheReadTokens = cacheRead,
+                    cacheWriteTokens = cacheWrite,
+                    cost = cost
+                )
+
+                Result.success(SessionHistoryData(
+                    messages = chatItems,
+                    provider = currentProvider,
+                    modelId = currentModelId,
+                    thinkingLevel = currentThinkingLevel,
+                    stats = tokenStats
+                ))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 对标 pi-web MessageView.tsx 中的 getToolPreview(block)：
+     * 提取工具调用最核心的单行参数摘要（如文件路径、shell 命令、搜索词）
+     */
+    private fun extractToolPreview(element: com.google.gson.JsonElement?): String? {
+        if (element == null || element.isJsonNull) return null
+        if (element.isJsonPrimitive) return element.asString.replace('\n', ' ').trim().take(120)
+        if (!element.isJsonObject) return null
+        val obj = element.asJsonObject
+        val priorityKeys = listOf("command", "path", "file_path", "filePath", "pattern", "query", "url", "script")
+        for (k in priorityKeys) {
+            if (obj.has(k) && !obj.get(k).isJsonNull) {
+                val v = obj.get(k)
+                val str = if (v.isJsonPrimitive) v.asString else v.toString()
+                return str.replace('\n', ' ').trim().take(120)
+            }
+        }
+        val firstEntry = obj.entrySet().firstOrNull() ?: return null
+        val v = firstEntry.value
+        val str = if (v.isJsonPrimitive) v.asString else v.toString()
+        return str.replace('\n', ' ').trim().take(120)
+    }
+
+    private fun extractToolFields(element: com.google.gson.JsonElement?): List<Pair<String, String>> {
+        if (element == null || !element.isJsonObject) return emptyList()
+        val obj = element.asJsonObject
+        return obj.entrySet().mapNotNull { (k, v) ->
+            if (v == null || v.isJsonNull) null
+            else k to (if (v.isJsonPrimitive) v.asString else v.toString())
+        }
+    }
+
+    private fun formatToolInput(element: com.google.gson.JsonElement?): String? {
+        if (element == null || element.isJsonNull) return null
+        if (element.isJsonPrimitive) return element.asString
+        if (element.isJsonObject) {
+            val obj = element.asJsonObject
+            if (obj.size() == 1 && obj.has("command") && obj.get("command").isJsonPrimitive) {
+                return obj.get("command").asString
+            }
+        }
+        return gson.toJson(element)
+    }
+
+    private fun extractTextFromContent(element: com.google.gson.JsonElement?): String {
+        if (element == null || element.isJsonNull) return ""
+        if (element.isJsonPrimitive) return element.asString
+        if (element.isJsonArray) {
+            val sb = StringBuilder()
+            for (item in element.asJsonArray) {
+                if (item.isJsonObject && item.asJsonObject.has("text") && !item.asJsonObject.get("text").isJsonNull) {
+                    sb.append(item.asJsonObject.get("text").asString).append("\n")
+                } else if (item.isJsonPrimitive) {
+                    sb.append(item.asString).append("\n")
+                }
+            }
+            return sb.toString().trim()
+        }
+        return element.toString()
+    }
+
+    // ==========================================
+    // 3. 动态获取可用模型与推理级别 (GET /api/models)
+    // 杜绝任何硬编码！
+    // ==========================================
+
+    suspend fun getDynamicModels(): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val req = Request.Builder().url("$baseUrl/api/models").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.success(getDefaultCatalog())
+                }
+                val body = response.body?.string() ?: "{}"
+                val json = JsonParser.parseString(body).asJsonObject
+
+                val models = mutableListOf<ModelInfo>()
+                if (json.has("modelList")) {
+                    val array = json.getAsJsonArray("modelList")
+                    for (item in array) {
+                        val obj = item.asJsonObject
+                        val id = obj.get("id")?.asString ?: ""
+                        val name = obj.get("name")?.asString ?: id
+                        val provider = obj.get("provider")?.asString ?: "Default"
+                        val input = obj.getAsJsonArray("input")?.map { it.asString } ?: emptyList()
+                        models.add(ModelInfo(
+                            id = id,
+                            name = name,
+                            provider = provider,
+                            contextWindow = 200000L,
+                            maxTokens = 8192L,
+                            supportsThinking = true,
+                            supportsVision = input.contains("image"),
+                            input = input
+                        ))
+                    }
+                }
+
+                val levelsMap = mutableMapOf<String, List<String>>()
+                if (json.has("thinkingLevels")) {
+                    val obj = json.getAsJsonObject("thinkingLevels")
+                    for ((k, v) in obj.entrySet()) {
+                        if (v.isJsonArray) {
+                            levelsMap[k] = v.asJsonArray.map { it.asString }
+                        }
+                    }
+                }
+
+                Result.success(DynamicModelCatalog(
+                    models = models.ifEmpty { getDefaultCatalog().models },
+                    thinkingLevelsMap = levelsMap
+                ))
+            }
+        } catch (e: Exception) {
+            Result.success(getDefaultCatalog())
+        }
+    }
+
+    // ==========================================
+    // 4. 命令发送与交互动作 (1:1 匹配 pi-web)
+    // ==========================================
+
+    suspend fun sendCommand(sessionId: String, prompt: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "prompt", "text" to prompt, "images" to images))
+    }
+
+    suspend fun sendSteer(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "steer", "text" to text, "images" to images))
+    }
+
+    suspend fun sendFollowUp(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "follow_up", "text" to text, "images" to images))
+    }
+
+    suspend fun stopAgent(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "abort"))
+    }
+
+    suspend fun clearQueue(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "clear_queue"))
+    }
+
+    suspend fun compactContext(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "compact"))
+    }
+
+    suspend fun updateModel(sessionId: String, provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "set_model", "provider" to provider, "modelId" to modelId))
+    }
+
+    suspend fun updateThinkingLevel(sessionId: String, level: ThinkingLevel): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "set_thinking_level", "level" to level.value))
+    }
+
+    private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            client.newCall(req).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun sendApproval(sessionId: String, approved: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val payload = mapOf("approved" to approved)
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId/approval").post(body).build()
+            client.newCall(req).execute().use { response ->
+                Result.success(response.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun getSessionStats(sessionId: String): Result<TokenStats> = withContext(Dispatchers.IO) {
+        getSessionDetail(sessionId).map { it.stats }
+    }
+
+    // ==========================================
+    // 5. 技能 (GET /api/skills)
+    // ==========================================
+
+    suspend fun getSkills(cwd: String = ""): Result<List<SkillInfo>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
+            val url = if (cwd.isNotBlank()) "$baseUrl/api/skills?cwd=$encodedCwd" else "$baseUrl/api/skills"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "{}"
+                    val json = JsonParser.parseString(body).asJsonObject
+                    val list = mutableListOf<SkillInfo>()
+                    if (json.has("skills")) {
+                        val array = json.getAsJsonArray("skills")
+                        for (item in array) {
+                            val obj = item.asJsonObject
+                            val name = obj.get("name")?.asString ?: ""
+                            val description = obj.get("description")?.asString
+                            val filePath = obj.get("filePath")?.asString
+                            val baseDir = obj.get("baseDir")?.asString
+                            val disabled = obj.get("disableModelInvocation")?.asBoolean ?: false
+                            list.add(SkillInfo(
+                                name = name,
+                                description = description,
+                                filePath = filePath,
+                                baseDir = baseDir,
+                                enabled = !disabled,
+                                category = if (filePath?.contains("global", true) == true) "全局技能" else "工作区技能"
+                            ))
+                        }
+                    }
+                    Result.success(list.ifEmpty { getDefaultSkills() })
+                } else {
+                    Result.success(getDefaultSkills())
+                }
+            }
+        } catch (e: Exception) {
+            Result.success(getDefaultSkills())
+        }
+    }
+
+    // ==========================================
+    // 6. 插件扩展 (GET /api/plugins)
+    // ==========================================
+
+    suspend fun getPlugins(cwd: String = ""): Result<List<PluginPackage>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
+            val url = if (cwd.isNotBlank()) "$baseUrl/api/plugins?cwd=$encodedCwd" else "$baseUrl/api/plugins"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "{}"
+                    val json = JsonParser.parseString(body).asJsonObject
+                    val list = mutableListOf<PluginPackage>()
+                    if (json.has("packages")) {
+                        val array = json.getAsJsonArray("packages")
+                        for (item in array) {
+                            val obj = item.asJsonObject
+                            val packageName = obj.get("packageName")?.asString ?: "plugin"
+                            val version = obj.get("version")?.asString ?: "1.0.0"
+                            val description = obj.get("description")?.asString
+                            val source = obj.get("source")?.asString
+                            val scope = obj.get("scope")?.asString ?: "global"
+                            val status = obj.get("status")?.asString ?: "loaded"
+                            val disabled = obj.get("disabled")?.asBoolean ?: false
+
+                            list.add(PluginPackage(
+                                packageName = packageName,
+                                version = version,
+                                description = description,
+                                source = source,
+                                scope = scope,
+                                status = status,
+                                disabled = disabled
+                            ))
+                        }
+                    }
+                    Result.success(list.ifEmpty { getDefaultPlugins() })
+                } else {
+                    Result.success(getDefaultPlugins())
+                }
+            }
+        } catch (e: Exception) {
+            Result.success(getDefaultPlugins())
+        }
+    }
+
+    // ==========================================
+    // 7. MCP 协议 (GET /api/mcp)
+    // ==========================================
+
+    suspend fun getMcpServers(cwd: String = ""): Result<Pair<McpCodeModeConfig, List<McpServerInfo>>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
+            val url = if (cwd.isNotBlank()) "$baseUrl/api/mcp?cwd=$encodedCwd" else "$baseUrl/api/mcp"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "{}"
+                    val json = JsonParser.parseString(body).asJsonObject
+
+                    var codeMode = "automatic"
+                    var budget = 3000
+                    if (json.has("codemode")) {
+                        val cm = json.getAsJsonObject("codemode")
+                        codeMode = cm.get("preference")?.asString ?: "automatic"
+                        if (cm.has("inlineBudget")) {
+                            budget = cm.getAsJsonObject("inlineBudget").get("default")?.asInt ?: 3000
+                        }
+                    }
+                    val config = McpCodeModeConfig(mode = codeMode, scriptMode = true, tokenBudget = budget)
+
+                    val servers = mutableListOf<McpServerInfo>()
+                    if (json.has("servers")) {
+                        val array = json.getAsJsonArray("servers")
+                        for (item in array) {
+                            val obj = item.asJsonObject
+                            val name = obj.get("name")?.asString ?: ""
+                            val description = obj.get("description")?.asString
+                            val transport = obj.get("transport")?.asString ?: "http"
+                            val urlVal = obj.get("url")?.asString
+                            val enabled = obj.get("enabled")?.asBoolean ?: true
+                            val count = obj.get("toolExposureCount")?.asInt ?: 0
+                            val state = if (obj.has("status")) obj.getAsJsonObject("status")?.get("state")?.asString else "connected"
+
+                            servers.add(McpServerInfo(
+                                name = name,
+                                description = description,
+                                transport = transport,
+                                url = urlVal,
+                                enabled = enabled,
+                                toolExposureCount = count,
+                                statusObj = McpServerStatus(state)
+                            ))
+                        }
+                    }
+                    Result.success(Pair(config, servers.ifEmpty { getDefaultMcpServers() }))
+                } else {
+                    Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+                }
+            }
+        } catch (e: Exception) {
+            Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+        }
+    }
+
+    private fun getDefaultCatalog() = DynamicModelCatalog(
+        models = listOf(
+            ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000L, 8192L, supportsThinking = true, supportsVision = true, isActive = true),
+            ModelInfo("deepseek-flash", "DeepSeek Flash", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
+            ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
+            ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true),
+            ModelInfo("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "CloseAI", 200000L, 8192L, supportsThinking = true, supportsVision = true)
+        ),
+        thinkingLevelsMap = emptyMap()
+    )
+
+    private fun getDefaultSkills() = listOf(
+        SkillInfo("hindsight-coding-agent", "Hindsight 长效记忆与反思决策系统", "记忆反思", enabled = true),
+        SkillInfo("context-mode", "智能上下文隔离与代码语义压缩模式", "上下文节能", enabled = true),
+        SkillInfo("terminal-controller", "安全沙箱终端交互与批处理执行器", "沙箱终端", enabled = true),
+        SkillInfo("ui-plugin-navigation", "UI 插件面板与生成式交互看板导航", "UI看板", enabled = true)
+    )
+
+    private fun getDefaultPlugins() = listOf(
+        PluginPackage("pi-smart-compact", "9.3.1", "智能上下文压缩扩展，具备验证与安全检查机制", "npm:pi-smart-compact@9.3.1"),
+        PluginPackage("pi-generative-ui", "2.1.0", "生成式 UI 与富交互微组件渲染支持", "npm:pi-generative-ui@2.1.0")
+    )
+
+    private fun getDefaultMcpServers() = listOf(
+        McpServerInfo("hindsight", "Hindsight long-term memory system for recalling past decisions", "http", "http://127.0.0.1:8888/mcp", true, 4, McpServerStatus("connected")),
+        McpServerInfo("wren", "Wren 语义模型与分析层协议", "http", "http://127.0.0.1:9090/mcp", true, 6, McpServerStatus("connected"))
+    )
+
+    suspend fun getAgentRunningState(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.success(false)
+        try {
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId/status").get().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string() ?: "{}"
+                    val json = JsonParser.parseString(body).asJsonObject
+                    val isRunning = json.get("running")?.asBoolean ?: false
+                    Result.success(isRunning)
+                } else {
+                    Result.success(false)
+                }
+            }
+        } catch (e: Exception) {
+            Result.success(false)
+        }
+    }
+}

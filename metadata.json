@@ -1,0 +1,6 @@
+{
+  "name": "PiDroid",
+  "description": "PiDroid mobile client for Pi Gateway with AI chat, voice interaction, and Markdown rendering",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

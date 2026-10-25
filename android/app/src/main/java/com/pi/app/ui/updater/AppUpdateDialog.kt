@@ -181,20 +181,32 @@ fun AppUpdateDialog(
                             ) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "发布日期: ${state.info.publishedAt.ifBlank { "最近" }}",
-                                        fontSize = 11.sp,
-                                        color = theme.textMuted
+                                        text = "本次更新内容",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.textPrimary
                                     )
-                                    if (state.info.fileSize > 0) {
-                                        Text(
-                                            text = String.format(Locale.US, "%.1f MB", state.info.fileSize / (1024.0 * 1024.0)),
-                                            fontSize = 11.sp,
-                                            color = theme.textMuted,
-                                            fontFamily = FontFamily.Monospace
-                                        )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        if (state.info.publishedAt.isNotBlank()) {
+                                            Text(
+                                                text = state.info.publishedAt,
+                                                fontSize = 11.sp,
+                                                color = theme.textMuted,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
+                                        if (state.info.fileSize > 0) {
+                                            Text(
+                                                text = String.format(Locale.US, "%.1f MB", state.info.fileSize / (1024.0 * 1024.0)),
+                                                fontSize = 11.sp,
+                                                color = theme.textMuted,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
                                     }
                                 }
 
@@ -202,11 +214,9 @@ fun AppUpdateDialog(
                                 HorizontalDivider(color = theme.outline.copy(alpha = 0.25f), thickness = 0.5.dp)
                                 Spacer(modifier = Modifier.height(8.dp))
 
-                                Text(
-                                    text = state.info.releaseNotes,
-                                    fontSize = 13.sp,
-                                    color = theme.textPrimary,
-                                    lineHeight = 20.sp
+                                com.pi.app.ui.components.MarkdownRenderer(
+                                    content = state.info.releaseNotes,
+                                    isUser = false
                                 )
                             }
                         }

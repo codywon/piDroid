@@ -12,13 +12,22 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
+        create("debugConfig") {
+            val debugKeystore = file("${rootDir}/debug.keystore")
+            if (debugKeystore.exists()) {
+                storeFile = debugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         create("release") {
             val keystoreFile = file("${rootDir}/keystore/release.jks")
             if (keystoreFile.exists()) {
@@ -31,6 +40,12 @@ android {
     }
 
     buildTypes {
+        debug {
+            val debugKeystore = file("${rootDir}/debug.keystore")
+            if (debugKeystore.exists()) {
+                signingConfig = signingConfigs.getByName("debugConfig")
+            }
+        }
         release {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("release")

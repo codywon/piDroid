@@ -5,13 +5,13 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-val LocalAppTheme = staticCompositionLocalOf { AppTheme.LIGHT_PAPER }
-val LocalTextPrimary = staticCompositionLocalOf { Color(0xFF1F2328) }
-val LocalTextSecondary = staticCompositionLocalOf { Color(0xFF57606A) }
-val LocalTextMuted = staticCompositionLocalOf { Color(0xFF8C959F) }
+val LocalAppTheme = compositionLocalOf { AppTheme.LIGHT_PAPER }
+val LocalTextPrimary = compositionLocalOf { Color(0xFF1F2328) }
+val LocalTextSecondary = compositionLocalOf { Color(0xFF57606A) }
+val LocalTextMuted = compositionLocalOf { Color(0xFF8C959F) }
 
 // 经典 Termius 与极客色彩常量（用于静态样式回退）
 val TermiusBlack = Color(0xFF0D1117)
@@ -65,6 +65,11 @@ fun PiDroidTheme(
             onSurface = theme.textPrimary,
             surfaceVariant = theme.surfaceContainer,
             onSurfaceVariant = theme.textSecondary,
+            surfaceContainerLowest = theme.background,
+            surfaceContainerLow = theme.surfaceContainerLow,
+            surfaceContainer = theme.surfaceContainer,
+            surfaceContainerHigh = theme.surfaceContainerHigh,
+            surfaceContainerHighest = theme.surfaceContainerHigh,
             outline = theme.outline,
             outlineVariant = theme.surfaceContainerHigh,
             error = TermiusRed
@@ -83,8 +88,13 @@ fun PiDroidTheme(
             onSurface = theme.textPrimary,
             surfaceVariant = theme.surfaceContainer,
             onSurfaceVariant = theme.textSecondary,
+            surfaceContainerLowest = Color(0xFFFFFFFF),
+            surfaceContainerLow = theme.surfaceContainerLow,
+            surfaceContainer = theme.surfaceContainer,
+            surfaceContainerHigh = theme.surfaceContainerHigh,
+            surfaceContainerHighest = theme.surfaceContainerHigh,
             outline = theme.outline,
-            outlineVariant = Color(0xFFE1E4E8),
+            outlineVariant = Color(0xFFE5EAF0),
             error = Color(0xFFCF222E)
         )
     }

@@ -145,7 +145,8 @@ object AppUpdateManager {
             val json = JSONObject(bodyStr)
             val tagName = json.optString("tag_name", "").trim()
             val releaseTitle = json.optString("name", tagName).trim()
-            val releaseNotes = json.optString("body", "• 优化智能体交互与稳定性").trim()
+            val rawNotes = json.optString("body", "• 优化智能体交互与稳定性").trim()
+            val releaseNotes = cleanChangelogMarkdown(rawNotes)
             val publishedAt = json.optString("published_at", "").take(10)
 
             val currentVersion = getCurrentVersionName(context)
@@ -153,12 +154,10 @@ object AppUpdateManager {
                 return@withContext UpdateCheckResult.NoUpdate(currentVersion)
             }
 
-            // 如果不是手动触发且用户已设置忽略此版本，则静默跳过
             if (!isManual && isVersionIgnored(context, tagName)) {
                 return@withContext UpdateCheckResult.Ignored(tagName)
             }
 
-            // 精准匹配 APK 下载链接（优先 release 签名包）
             val assets = json.optJSONArray("assets")
             var targetDownloadUrl = ""
             var targetFileSize = 0L
@@ -202,6 +201,38 @@ object AppUpdateManager {
             Log.e(TAG, "checkUpdate error", e)
             UpdateCheckResult.Error(e.localizedMessage ?: "检查更新异常，请检查网络连接")
         }
+    }
+
+    /**
+     * 规范化 Release Notes：剔除与更新无关的下载说明、宣传标语，只保留简洁的更新与修复条目
+     */
+    private fun cleanChangelogMarkdown(raw: String): String {
+        if (raw.isBlank()) return "- 优化智能体连接稳定性与界面交互体验"
+        val lines = raw.lines()
+        val filtered = mutableListOf<String>()
+        var skipSection = false
+        for (line in lines) {
+            val trimmed = line.trim()
+            if (trimmed.startsWith("#") && (trimmed.contains("下载") || trimmed.contains("安装") || trimmed.contains("首发版本"))) {
+                if (trimmed.contains("下载") || trimmed.contains("安装")) {
+                    skipSection = true
+                }
+                continue
+            }
+            if (skipSection) {
+                if (trimmed.startsWith("#")) {
+                    skipSection = false
+                } else {
+                    continue
+                }
+            }
+            if (trimmed.contains("直接下载下方附件") || trimmed.startsWith("Full Changelog")) {
+                continue
+            }
+            filtered.add(line)
+        }
+        val result = filtered.joinToString("\n").trim()
+        return result.ifBlank { raw }
     }
 
     data class DownloadChannel(
