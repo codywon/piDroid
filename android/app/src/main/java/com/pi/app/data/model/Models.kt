@@ -49,45 +49,116 @@ data class TokenStats(
 }
 
 /**
- * 模型信息
+ * 真实 pi-web 模型信息
  */
 data class ModelInfo(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("provider") val provider: String,
     @SerializedName("contextWindow") val contextWindow: Long = 200000L,
+    @SerializedName("maxTokens") val maxTokens: Long = 8192L,
     @SerializedName("supportsThinking") val supportsThinking: Boolean = true,
+    @SerializedName("supportsVision") val supportsVision: Boolean = false,
+    @SerializedName("input") val input: List<String> = emptyList(),
     @SerializedName("isActive") val isActive: Boolean = false
-)
+) {
+    val displayName: String
+        get() = name.ifBlank { id }
 
-/**
- * 思考深度级别
- */
-enum class ThinkingLevel(val label: String, val budgetTokens: Int) {
-    OFF("关闭思考", 0),
-    LOW("轻度思考 (1k)", 1024),
-    MEDIUM("适度思考 (4k)", 4096),
-    HIGH("深度推理 (16k)", 16384)
+    val hasVision: Boolean
+        get() = supportsVision || input.contains("image")
 }
 
 /**
- * 技能 (Skills) 描述
+ * 思考深度级别（与 pi-web 官方档位完全一致）
+ */
+enum class ThinkingLevel(val value: String, val label: String, val budgetTokens: Int) {
+    OFF("off", "关闭", 0),
+    MINIMAL("minimal", "微弱 (512)", 512),
+    LOW("low", "轻度 (1k)", 1024),
+    MEDIUM("medium", "适度 (4k)", 4096),
+    HIGH("high", "深度 (16k)", 16384),
+    XHIGH("xhigh", "超深 (32k)", 32768),
+    MAX("max", "极限 (64k)", 65536);
+
+    companion object {
+        fun fromValue(v: String?): ThinkingLevel {
+            return entries.firstOrNull { it.value.equals(v, ignoreCase = true) } ?: HIGH
+        }
+    }
+}
+
+/**
+ * 排队中的消息
+ */
+data class QueuedMessage(
+    val kind: String, // "steer" or "followUp"
+    val text: String,
+    val images: List<String> = emptyList()
+)
+
+/**
+ * 技能 (Skills) - 对应 pi-web GET /api/skills
  */
 data class SkillInfo(
     @SerializedName("name") val name: String,
     @SerializedName("description") val description: String? = null,
+    @SerializedName("alias") var alias: String? = null, // 用户别名
+    @SerializedName("filePath") val filePath: String? = null,
+    @SerializedName("baseDir") val baseDir: String? = null,
     @SerializedName("enabled") var enabled: Boolean = true,
-    @SerializedName("category") val category: String? = "内置技能"
+    @SerializedName("category") val category: String? = "全局技能",
+    @SerializedName("disableModelInvocation") val disableModelInvocation: Boolean = false
+) {
+    val displayTitle: String
+        get() = alias?.takeIf { it.isNotBlank() } ?: name
+}
+
+/**
+ * 插件扩展 (Plugins) - 对应 pi-web GET /api/plugins
+ */
+data class PluginPackage(
+    @SerializedName("packageName") val packageName: String,
+    @SerializedName("version") val version: String,
+    @SerializedName("description") val description: String? = null,
+    @SerializedName("source") val source: String? = null,
+    @SerializedName("scope") val scope: String? = "global",
+    @SerializedName("status") val status: String? = "loaded",
+    @SerializedName("disabled") val disabled: Boolean = false,
+    @SerializedName("counts") val counts: PluginCounts? = null
+)
+
+data class PluginCounts(
+    @SerializedName("extensions") val extensions: Int = 0,
+    @SerializedName("skills") val skills: Int = 0,
+    @SerializedName("prompts") val prompts: Int = 0,
+    @SerializedName("themes") val themes: Int = 0
 )
 
 /**
- * MCP (Model Context Protocol) 服务
+ * MCP (Model Context Protocol)
  */
 data class McpServerInfo(
-    @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
-    @SerializedName("status") val status: String = "active", // active, connecting, error
-    @SerializedName("tools") val tools: List<String> = emptyList()
+    @SerializedName("description") val description: String? = null,
+    @SerializedName("transport") val transport: String? = "http",
+    @SerializedName("url") val url: String? = null,
+    @SerializedName("enabled") val enabled: Boolean = true,
+    @SerializedName("toolExposureCount") val toolExposureCount: Int = 0,
+    @SerializedName("status") val statusObj: McpServerStatus? = null
+) {
+    val isConnected: Boolean
+        get() = statusObj?.state == "connected" || enabled
+}
+
+data class McpServerStatus(
+    @SerializedName("state") val state: String? = "connected"
+)
+
+data class McpCodeModeConfig(
+    val mode: String = "automatic", // automatic, always, off
+    val scriptMode: Boolean = true,
+    val tokenBudget: Int = 3000
 )
 
 /**
@@ -126,6 +197,7 @@ data class ToolCallInfo(
     val toolName: String,
     val command: String? = null,
     val output: String? = null,
+    val durationMs: Long = 0L,
     val requiresApproval: Boolean = false,
     val isApproved: Boolean = false
 )

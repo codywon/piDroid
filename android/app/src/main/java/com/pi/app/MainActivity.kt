@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
         hapticsAndNotify = PiHapticsAndNotify(this)
 
         keepAliveManager = KeepAliveManager(this)
-        updateChecker = UpdateChecker(currentVersion = "1.3.2")
+        updateChecker = UpdateChecker(currentVersion = "1.4.0")
         apkInstaller = ApkInstaller(this)
 
         checkAndRequestPermissions()
@@ -130,17 +130,22 @@ class MainActivity : ComponentActivity() {
 
         var availableModels by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
         var selectedModel by remember {
-            mutableStateOf(ModelInfo("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic", 200000, true))
+            mutableStateOf(ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000, 8192, true, true))
         }
-        var currentThinkingLevel by remember { mutableStateOf(ThinkingLevel.MEDIUM) }
-        var currentProject by remember { mutableStateOf("pi-app") }
+        var currentThinkingLevel by remember { mutableStateOf(ThinkingLevel.HIGH) }
+        var currentProject by remember { mutableStateOf("eldercare-agent-platform") }
         var projects by remember { mutableStateOf<List<ProjectInfo>>(emptyList()) }
-        var tokenStats by remember { mutableStateOf(TokenStats(contextTokens = 38400, maxContextWindow = 200000, inputTokens = 1240, outputTokens = 680, cacheReadTokens = 36480, cost = 0.016)) }
+        var tokenStats by remember { mutableStateOf(TokenStats(contextTokens = 42100, maxContextWindow = 200000, inputTokens = 1240, outputTokens = 412, cacheReadTokens = 38000, cost = 0.0)) }
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
+        var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
+        var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
+        val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
+        var isCompacting by remember { mutableStateOf(false) }
+        var isSpeaking by remember { mutableStateOf(false) }
 
         val voiceState by voiceInputManager.state.collectAsState()
         var isRecording by remember { mutableStateOf(false) }
@@ -189,8 +194,13 @@ class MainActivity : ComponentActivity() {
                     projects = projs
                     projs.firstOrNull { it.isCurrent }?.let { currentProject = it.name }
                 }
-                apiClient.getSkills().onSuccess { skills = it }
-                apiClient.getMcpServers().onSuccess { mcpServers = it }
+                val cwd = currentProject
+                apiClient.getSkills(cwd).onSuccess { skills = it }
+                apiClient.getPlugins(cwd).onSuccess { plugins = it }
+                apiClient.getMcpServers(cwd).onSuccess { (cfg, srvs) ->
+                    mcpConfig = cfg
+                    mcpServers = srvs
+                }
             }
         }
 
@@ -322,13 +332,15 @@ class MainActivity : ComponentActivity() {
             }
             showCapabilities -> {
                 CapabilitiesCenterScreen(
+                    models = availableModels,
                     skills = skills,
+                    plugins = plugins,
+                    mcpConfig = mcpConfig,
                     mcpServers = mcpServers,
                     isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
                     onRequestIgnoreBattery = { keepAliveManager.requestIgnoreBatteryOptimizations() },
                     onToggleSkill = { name, enabled ->
                         lifecycleScope.launch {
-                            apiClient.toggleSkill(name, enabled)
                             skills = skills.map { if (it.name == name) it.copy(enabled = enabled) else it }
                         }
                     },
@@ -337,7 +349,7 @@ class MainActivity : ComponentActivity() {
             }
             currentSession != null -> {
                 ChatScreen(
-                    sessionTitle = currentSession?.title ?: "任务控制台",
+                    sessionTitle = currentSession?.displayTitle ?: "任务控制台",
                     currentProject = currentProject,
                     projects = projects,
                     selectedModel = selectedModel,
@@ -345,18 +357,23 @@ class MainActivity : ComponentActivity() {
                     tokenStats = tokenStats,
                     messages = messages,
                     isAgentBusy = isAgentBusy,
+                    queuedMessages = queuedMessages,
+                    isCompacting = isCompacting,
+                    isSpeaking = isSpeaking,
                     onBack = {
                         sseJob?.cancel()
                         currentSession = null
                         keepAliveManager.releaseWakeLock()
                         PiForegroundService.stop(this@MainActivity)
                         hapticsAndNotify.clearNotification()
+                        smartTtsManager.stop()
+                        isSpeaking = false
                     },
                     onProjectSwitch = { proj ->
                         currentProject = proj.name
                         lifecycleScope.launch {
-                            apiClient.switchProject(proj.path)
                             loadSessions()
+                            loadCapabilitiesAndModels()
                             Toast.makeText(this@MainActivity, "已切换工作区: ${proj.name}", Toast.LENGTH_SHORT).show()
                         }
                     },
@@ -364,17 +381,52 @@ class MainActivity : ComponentActivity() {
                     onOpenCapabilities = { showCapabilities = true },
                     onCompactContext = {
                         lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在压缩上下文...", Toast.LENGTH_SHORT).show()
+                            isCompacting = true
+                            Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
                             apiClient.compactContext(currentSession!!.id).onSuccess {
                                 Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
                                 apiClient.getSessionStats(currentSession!!.id).onSuccess { tokenStats = it }
+                            }
+                            isCompacting = false
+                        }
+                    },
+                    onStopAgent = {
+                        lifecycleScope.launch {
+                            apiClient.stopAgent(currentSession!!.id).onSuccess {
+                                isAgentBusy = false
+                                Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     onSendMessage = { prompt ->
                         messages.add(ChatItem(role = MessageRole.USER, content = prompt))
+                        isAgentBusy = true
                         lifecycleScope.launch {
                             apiClient.sendCommand(currentSession!!.id, prompt)
+                        }
+                    },
+                    onSendSteer = { steerText ->
+                        messages.add(ChatItem(role = MessageRole.USER, content = "➔ [引导] $steerText"))
+                        lifecycleScope.launch {
+                            apiClient.sendSteer(currentSession!!.id, steerText).onSuccess {
+                                Toast.makeText(this@MainActivity, "已下发引导指令", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onSendFollowUp = { followText ->
+                        queuedMessages.add(QueuedMessage("followUp", followText))
+                        lifecycleScope.launch {
+                            apiClient.sendFollowUp(currentSession!!.id, followText).onSuccess {
+                                Toast.makeText(this@MainActivity, "已排入后续任务队列", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onClearQueue = {
+                        lifecycleScope.launch {
+                            apiClient.clearQueue(currentSession!!.id).onSuccess {
+                                queuedMessages.clear()
+                                Toast.makeText(this@MainActivity, "已撤回排队消息", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     onApproveTool = { approved ->
@@ -382,8 +434,19 @@ class MainActivity : ComponentActivity() {
                             apiClient.sendApproval(currentSession!!.id, approved)
                         }
                     },
-                    onSpeakSummary = { rawContent ->
-                        smartTtsManager.speakSummary(rawContent)
+                    onToggleSpeakSummary = {
+                        if (isSpeaking) {
+                            smartTtsManager.stop()
+                            isSpeaking = false
+                        } else {
+                            val lastAgentMsg = messages.lastOrNull { it.role == MessageRole.AGENT }?.content
+                            if (!lastAgentMsg.isNullOrBlank()) {
+                                isSpeaking = true
+                                smartTtsManager.speakSummary(lastAgentMsg)
+                            } else {
+                                Toast.makeText(this@MainActivity, "暂无可播报内容", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     },
                     onStartVoiceInput = {
                         voiceInputManager.startListening()
@@ -404,7 +467,8 @@ class MainActivity : ComponentActivity() {
                             selectedModel = model
                             currentSession?.let { sess ->
                                 lifecycleScope.launch {
-                                    apiClient.updateModelConfig(sess.id, model.id, currentThinkingLevel)
+                                    apiClient.updateModel(sess.id, model.provider, model.id)
+                                    Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -412,7 +476,8 @@ class MainActivity : ComponentActivity() {
                             currentThinkingLevel = level
                             currentSession?.let { sess ->
                                 lifecycleScope.launch {
-                                    apiClient.updateModelConfig(sess.id, selectedModel.id, level)
+                                    apiClient.updateThinkingLevel(sess.id, level)
+                                    Toast.makeText(this@MainActivity, "已切换思考级别: ${level.value}", Toast.LENGTH_SHORT).show()
                                 }
                             }
                         },
@@ -437,7 +502,7 @@ class MainActivity : ComponentActivity() {
                     onSettingsClick = { showSettings = true },
                     onNewSessionClick = {
                         val newId = "session_" + System.currentTimeMillis()
-                        val newSession = Session(id = newId, title = "新任务会话", active = true)
+                        val newSession = Session(id = newId, name = "新任务会话", active = true)
                         currentSession = newSession
                         messages.clear()
                         startListeningEvents(newId)
@@ -452,28 +517,22 @@ class MainActivity : ComponentActivity() {
                 updateInfo = info,
                 isDownloading = isDownloadingUpdate,
                 downloadProgress = downloadProgress,
-                isDownloaded = downloadedApkFile != null,
-                onStartDownload = {
+                onDismiss = { updateInfo = null },
+                onStartUpdate = {
                     isDownloadingUpdate = true
                     lifecycleScope.launch {
-                        apkInstaller.downloadApk(
-                            downloadUrl = info.downloadUrl,
-                            fileName = "piDroid-${info.latestVersion}.apk",
-                            onProgress = { downloadProgress = it }
-                        ).onSuccess { file ->
+                        apkInstaller.downloadApk(info.downloadUrl) { progress ->
+                            downloadProgress = progress
+                        }.onSuccess { file ->
                             isDownloadingUpdate = false
                             downloadedApkFile = file
                             apkInstaller.installApk(file)
                         }.onFailure { err ->
                             isDownloadingUpdate = false
-                            Toast.makeText(this@MainActivity, "下载失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(this@MainActivity, "下载更新失败: ${err.message}", Toast.LENGTH_LONG).show()
                         }
                     }
-                },
-                onInstall = {
-                    downloadedApkFile?.let { apkInstaller.installApk(it) }
-                },
-                onDismiss = { updateInfo = null }
+                }
             )
         }
 
@@ -482,24 +541,21 @@ class MainActivity : ComponentActivity() {
                 initialUrl = prefs.serverUrl,
                 initialToken = prefs.authToken,
                 initialName = prefs.deviceName,
-                onConfirm = { url, token, name ->
+                onDismiss = { showSettings = false },
+                onSave = { url, token, name ->
                     showSettings = false
                     prefs.saveConnection(url, token, name)
                     loadSessions()
                     loadCapabilitiesAndModels()
-                },
-                onDismiss = { showSettings = false }
+                }
             )
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        sseJob?.cancel()
-        keepAliveManager.releaseWakeLock()
-        PiForegroundService.stop(this)
         voiceInputManager.destroy()
         smartTtsManager.shutdown()
-        hapticsAndNotify.clearNotification()
+        keepAliveManager.releaseWakeLock()
     }
 }
