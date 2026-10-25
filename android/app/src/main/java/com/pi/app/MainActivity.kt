@@ -1,6 +1,7 @@
 package com.pi.app
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -81,6 +82,7 @@ class MainActivity : ComponentActivity() {
         com.pi.app.ui.theme.ThemeManager.init(this)
 
         checkAndRequestPermissions()
+        handleDeepLink(intent)
 
         setContent {
             com.pi.app.ui.theme.PiDroidTheme {
@@ -90,6 +92,29 @@ class MainActivity : ComponentActivity() {
                     color = theme.background
                 ) {
                     MainAppNav()
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: Intent?) {
+        val data = intent?.data ?: return
+        if (data.scheme == "pidroid" && data.host == "connect") {
+            val url = data.getQueryParameter("url") ?: return
+            val token = data.getQueryParameter("token") ?: ""
+            val name = data.getQueryParameter("name") ?: "Remote PC"
+            lifecycleScope.launch {
+                apiClient.ping(url, token).onSuccess {
+                    prefs.saveConnection(url, token, name)
+                    Toast.makeText(this@MainActivity, "已成功绑定设备: $name", Toast.LENGTH_SHORT).show()
+                }.onFailure {
+                    Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
