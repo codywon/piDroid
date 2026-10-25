@@ -77,17 +77,19 @@ class MainActivity : ComponentActivity() {
         updateChecker = UpdateChecker(currentVersion = "1.0.0")
         apkInstaller = ApkInstaller(this)
 
+        // 初始化主题管理
+        com.pi.app.ui.theme.ThemeManager.init(this)
+
         checkAndRequestPermissions()
 
         setContent {
-            com.pi.app.ui.theme.TermiusColorScheme.let { scheme ->
-                MaterialTheme(colorScheme = scheme) {
-                    Surface(
-                        modifier = Modifier.fillMaxSize(),
-                        color = com.pi.app.ui.theme.TermiusBlack
-                    ) {
-                        MainAppNav()
-                    }
+            com.pi.app.ui.theme.PiDroidTheme {
+                val theme = com.pi.app.ui.theme.LocalAppTheme.current
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = theme.background
+                ) {
+                    MainAppNav()
                 }
             }
         }
@@ -223,21 +225,27 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun startListeningEvents(sessionId: String) {
+        fun startListeningEvents(sessionId: String, initialBusy: Boolean = false) {
             sseJob?.cancel()
             sseJob = lifecycleScope.launch {
-                isAgentBusy = true
+                isAgentBusy = initialBusy
 
-                keepAliveManager.acquireWakeLock()
-                PiForegroundService.start(
-                    this@MainActivity,
-                    title = "piDroid · 智能任务执行中",
-                    content = "项目: $currentProject | 正在执行代码任务..."
-                )
+                if (initialBusy) {
+                    keepAliveManager.acquireWakeLock()
+                    PiForegroundService.start(
+                        this@MainActivity,
+                        title = "piDroid · 智能任务执行中",
+                        content = "项目: $currentProject | 正在执行代码任务..."
+                    )
+                }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
                     when (event.type) {
                         "delta", "message" -> {
+                            if (!isAgentBusy) {
+                                isAgentBusy = true
+                                keepAliveManager.acquireWakeLock()
+                            }
                             val last = messages.lastOrNull()
                             if (last != null && last.role == MessageRole.AGENT && last.isStreaming) {
                                 val updated = last.copy(content = last.content + (event.delta ?: ""))
@@ -253,6 +261,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "thinking" -> {
+                            if (!isAgentBusy) isAgentBusy = true
                             val last = messages.lastOrNull()
                             if (last != null && last.role == MessageRole.AGENT) {
                                 val updated = last.copy(thinking = (last.thinking ?: "") + (event.thinking ?: ""))
@@ -260,6 +269,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         "tool" -> {
+                            if (!isAgentBusy) isAgentBusy = true
                             messages.add(
                                 ChatItem(
                                     role = MessageRole.TOOL,
@@ -306,7 +316,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 打开任务会话：拉取完整历史并无缝继续任务！
+        // 打开任务会话：拉取完整历史并探知真实状态
         fun openSessionWithHistory(session: Session) {
             currentSession = session
             currentProject = session.workspaceName
@@ -326,8 +336,12 @@ class MainActivity : ComponentActivity() {
                     currentThinkingLevel = hist.thinkingLevel
                 }
 
-                // 2. 开启增量监听并进入会话
-                startListeningEvents(session.id)
+                // 2. 探测 Agent 是否真正处于运行中
+                val isRunning = apiClient.getAgentRunningState(session.id).getOrDefault(false)
+                isAgentBusy = isRunning
+
+                // 3. 开启增量监听并进入会话
+                startListeningEvents(session.id, isRunning)
             }
         }
 

@@ -47,32 +47,34 @@ fun GlobalSettingsScreen(
     onDisconnect: () -> Unit,
     onClose: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("模型管理", "技能中心", "MCP协议", "插件扩展", "偏好保活")
+    val tabs = listOf("模型管理", "技能中心", "MCP协议", "插件扩展", "系统设置")
 
     var selectedSkillForDetail by remember { mutableStateOf<SkillInfo?>(null) }
     var editingSkillAlias by remember { mutableStateOf<SkillInfo?>(null) }
     var aliasInput by remember { mutableStateOf("") }
 
     Scaffold(
-        containerColor = TermiusBlack,
+        containerColor = theme.background,
         topBar = {
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = TermiusBlack,
-                    titleContentColor = TermiusTextPrimary
+                    containerColor = theme.background,
+                    titleContentColor = theme.textPrimary
                 ),
                 title = {
                     Text(
                         text = "全局设置与能力中心",
                         fontWeight = FontWeight.Bold,
                         fontSize = 18.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        color = theme.textPrimary
                     )
                 },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = TermiusTextSecondary)
+                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textSecondary)
                     }
                 }
             )
@@ -82,13 +84,13 @@ fun GlobalSettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(TermiusBlack)
+                .background(theme.background)
         ) {
             ScrollableTabRow(
                 selectedTabIndex = selectedTab,
-                containerColor = TermiusSurface,
-                contentColor = TermiusBlue,
-                divider = { HorizontalDivider(color = TermiusBorder) },
+                containerColor = theme.surfaceContainerLow,
+                contentColor = theme.primary,
+                divider = { HorizontalDivider(color = theme.outline) },
                 edgePadding = 12.dp
             ) {
                 tabs.forEachIndexed { index, title ->
@@ -100,7 +102,7 @@ fun GlobalSettingsScreen(
                                 text = title,
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selectedTab == index) TermiusBlue else TermiusTextSecondary
+                                color = if (selectedTab == index) theme.primary else theme.textSecondary
                             )
                         }
                     )
@@ -129,7 +131,7 @@ fun GlobalSettingsScreen(
                     mcpServers = mcpServers
                 )
                 3 -> GlobalPluginsTab(plugins = plugins)
-                4 -> GlobalPreferencesTab(
+                4 -> GlobalSystemSettingsTab(
                     isIgnoringBattery = isIgnoringBattery,
                     onRequestIgnoreBattery = onRequestIgnoreBattery,
                     serverUrl = serverUrl,
@@ -711,10 +713,10 @@ fun GlobalPluginsTab(plugins: List<PluginPackage>) {
 }
 
 // ==========================================
-// Tab 5: 偏好设置与保活
+// Tab 5: 系统设置 (参考 Termius 主题切换与系统保活)
 // ==========================================
 @Composable
-fun GlobalPreferencesTab(
+fun GlobalSystemSettingsTab(
     isIgnoringBattery: Boolean,
     onRequestIgnoreBattery: () -> Unit,
     serverUrl: String,
@@ -722,6 +724,7 @@ fun GlobalPreferencesTab(
     deviceName: String,
     onDisconnect: () -> Unit
 ) {
+    val theme = LocalAppTheme.current
     var hapticsEnabled by remember { mutableStateOf(true) }
     var autoTtsEnabled by remember { mutableStateOf(false) }
 
@@ -731,8 +734,8 @@ fun GlobalPreferencesTab(
     ) {
         item {
             InfoTitle(
-                title = "外观与触觉偏好",
-                infoDescription = "Termius 纯暗夜风格，无紫色纯粹极客审美体验。",
+                title = "应用主题外观",
+                infoDescription = "参考 Termius 配色体系，默认浅色纸质明眸，提供纯黑、冰蓝、翡翠等深色高质感配色，杜绝紫色。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -740,26 +743,73 @@ fun GlobalPreferencesTab(
         item {
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "当前主题: ${ThemeManager.currentTheme.titleZh} (${if (ThemeManager.currentTheme.isDark) "深色" else "浅色"})",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = theme.textPrimary
+                    )
+
+                    // 5 大主题色卡选择器
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Column {
-                            Text("主题外观", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text("Termius 纯暗夜 (#0D1117 深黑 + 电光蓝强调)", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
-                        }
-                        Surface(color = TermiusBlue.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
-                            Text("已启用", style = MaterialTheme.typography.labelSmall, color = TermiusBlue, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        AppTheme.entries.forEach { appTheme ->
+                            val isSelected = ThemeManager.currentTheme == appTheme
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = if (isSelected) appTheme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                                border = BorderStroke(
+                                    if (isSelected) 2.dp else 1.dp,
+                                    if (isSelected) appTheme.primary else theme.outline
+                                ),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { ThemeManager.setTheme(appTheme) }
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(22.dp)
+                                            .background(
+                                                brush = androidx.compose.ui.graphics.Brush.linearGradient(appTheme.previewGradient),
+                                                shape = CircleShape
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isSelected) {
+                                            Icon(
+                                                Icons.Default.Check,
+                                                contentDescription = null,
+                                                tint = Color.White,
+                                                modifier = Modifier.size(13.dp)
+                                            )
+                                        }
+                                    }
+                                    Text(
+                                        text = appTheme.titleZh,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) appTheme.primary else theme.textPrimary,
+                                        maxLines = 1
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    HorizontalDivider(color = TermiusBorder)
+                    HorizontalDivider(color = theme.outline)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -767,20 +817,20 @@ fun GlobalPreferencesTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("马达触觉反馈", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text("任务完成时两次短震动提醒，审批时重震提醒", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("马达触觉反馈", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text("任务完成时两次短震动提醒，审批时重震提醒", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
                         Switch(
                             checked = hapticsEnabled,
                             onCheckedChange = { hapticsEnabled = it },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = TermiusGreen,
-                                checkedTrackColor = Color(0xFF1E3A24)
+                                checkedThumbColor = theme.primary,
+                                checkedTrackColor = theme.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
 
-                    HorizontalDivider(color = TermiusBorder)
+                    HorizontalDivider(color = theme.outline)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -788,15 +838,15 @@ fun GlobalPreferencesTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("任务自动语音播报", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text("默认关闭；建议在工作台按需点击朗读", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("任务自动语音播报", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text("默认关闭；建议在工作台按需点击朗读", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
                         Switch(
                             checked = autoTtsEnabled,
                             onCheckedChange = { autoTtsEnabled = it },
                             colors = SwitchDefaults.colors(
-                                checkedThumbColor = TermiusGreen,
-                                checkedTrackColor = Color(0xFF1E3A24)
+                                checkedThumbColor = theme.primary,
+                                checkedTrackColor = theme.primary.copy(alpha = 0.3f)
                             )
                         )
                     }
@@ -815,8 +865,8 @@ fun GlobalPreferencesTab(
         item {
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -826,13 +876,17 @@ fun GlobalPreferencesTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text(if (isIgnoringBattery) "已加入白名单，长任务受系统保护" else "未忽略电池优化，锁屏后可能断开", style = MaterialTheme.typography.labelSmall, color = if (isIgnoringBattery) TermiusGreen else TermiusRed)
+                            Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text(
+                                if (isIgnoringBattery) "已加入白名单，长任务受系统保护" else "未忽略电池优化，锁屏后可能断开",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isIgnoringBattery) Color(0xFF2EA043) else Color(0xFFCF222E)
+                            )
                         }
                         if (!isIgnoringBattery) {
                             Button(
                                 onClick = onRequestIgnoreBattery,
-                                colors = ButtonDefaults.buttonColors(containerColor = TermiusBlue),
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
                                 shape = RoundedCornerShape(6.dp)
                             ) {
                                 Text("立即授权", style = MaterialTheme.typography.labelSmall)
@@ -840,7 +894,7 @@ fun GlobalPreferencesTab(
                         }
                     }
 
-                    HorizontalDivider(color = TermiusBorder)
+                    HorizontalDivider(color = theme.outline)
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -848,11 +902,11 @@ fun GlobalPreferencesTab(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Column {
-                            Text("前台常驻服务与 WakeLock", style = MaterialTheme.typography.bodyMedium, color = TermiusTextPrimary)
-                            Text("任务执行时自适应持有 CPU 唤醒锁，完成后自动释放省电", style = MaterialTheme.typography.labelSmall, color = TermiusTextMuted)
+                            Text("前台常驻服务与 WakeLock", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
+                            Text("任务执行时自适应持有 CPU 唤醒锁，完成后自动释放省电", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
-                        Surface(color = TermiusGreen.copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
-                            Text("常驻就绪", style = MaterialTheme.typography.labelSmall, color = TermiusGreen, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                        Surface(color = Color(0xFF2EA043).copy(alpha = 0.2f), shape = RoundedCornerShape(4.dp)) {
+                            Text("常驻就绪", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2EA043), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                         }
                     }
                 }
@@ -862,7 +916,7 @@ fun GlobalPreferencesTab(
         item {
             InfoTitle(
                 title = "当前主机连接",
-                infoDescription = "已配对的 PC 端网关与鉴权凭据。",
+                infoDescription = "已配对的 PC 端伴侣网关与安全凭据。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -870,20 +924,20 @@ fun GlobalPreferencesTab(
         item {
             Surface(
                 shape = RoundedCornerShape(10.dp),
-                color = TermiusSurface,
-                border = BorderStroke(1.dp, TermiusBorder),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("设备名称: $deviceName", style = MaterialTheme.typography.bodySmall, color = TermiusTextPrimary)
-                    Text("网关地址: $serverUrl", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = TermiusBlue)
-                    Text("安全凭据: ${authToken.take(10)}***", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = TermiusTextMuted)
+                    Text("设备名称: $deviceName", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
+                    Text("网关地址: $serverUrl", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = theme.primary)
+                    Text("安全凭据: ${authToken.take(10)}***", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace, color = theme.textMuted)
 
                     Spacer(modifier = Modifier.height(4.dp))
                     OutlinedButton(
                         onClick = onDisconnect,
-                        border = BorderStroke(1.dp, TermiusRed),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = TermiusRed),
+                        border = BorderStroke(1.dp, Color(0xFFCF222E)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCF222E)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
