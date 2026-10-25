@@ -159,60 +159,95 @@ function printBannerAndQr(connectHost, isPiWebRunning) {
 }
 
 // 自动探测并启动网关
-async function start() {
-  // 先检查 30141，再检查 3000
-  let isAlive = await checkServerAlive('http://127.0.0.1:30141');
-  if (isAlive) {
-    TARGET = 'http://127.0.0.1:30141';
+async function start(options = {}) {
+  const listenPort = options.port || PORT;
+  const targetOverride = options.target || customUrlArg || null;
+  const isTunnelEnabled = options.autoTunnel !== undefined ? options.autoTunnel : autoTunnel;
+
+  // 先检查指定目标或 30141，再检查 3000
+  let isAlive = false;
+  if (targetOverride) {
+    TARGET = targetOverride;
+    isAlive = await checkServerAlive(TARGET);
   } else {
-    const is3000Alive = await checkServerAlive('http://127.0.0.1:3000');
-    if (is3000Alive) {
-      TARGET = 'http://127.0.0.1:3000';
-      isAlive = true;
+    isAlive = await checkServerAlive('http://127.0.0.1:30141');
+    if (isAlive) {
+      TARGET = 'http://127.0.0.1:30141';
+    } else {
+      const is3000Alive = await checkServerAlive('http://127.0.0.1:3000');
+      if (is3000Alive) {
+        TARGET = 'http://127.0.0.1:3000';
+        isAlive = true;
+      }
     }
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    const localIp = getLocalIp();
-    const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${PORT}`;
+  return new Promise((resolve, reject) => {
+    const server = app.listen(listenPort, '0.0.0.0', () => {
+      const localIp = getLocalIp();
+      const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${listenPort}`;
 
-    if (autoTunnel) {
-      console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
-      const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${PORT}`], {
-        shell: true
-      });
+      if (isTunnelEnabled) {
+        console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
+        const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
+          shell: true
+        });
 
-      let detectedUrl = false;
-      const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
+        let detectedUrl = false;
+        const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
 
-      function handleOutput(data) {
-        if (detectedUrl) return;
-        const text = data.toString();
-        const match = text.match(regex);
-        if (match) {
-          detectedUrl = true;
-          const publicUrl = match[0];
-          printBannerAndQr(publicUrl, isAlive);
+        function handleOutput(data) {
+          if (detectedUrl) return;
+          const text = data.toString();
+          const match = text.match(regex);
+          if (match) {
+            detectedUrl = true;
+            const publicUrl = match[0];
+            printBannerAndQr(publicUrl, isAlive);
+            resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
+          }
         }
-      }
 
-      tunnelProcess.stdout.on('data', handleOutput);
-      tunnelProcess.stderr.on('data', handleOutput);
+        tunnelProcess.stdout.on('data', handleOutput);
+        tunnelProcess.stderr.on('data', handleOutput);
 
-      tunnelProcess.on('error', () => {
-        printBannerAndQr(defaultHost, isAlive);
-      });
-
-      setTimeout(() => {
-        if (!detectedUrl) {
+        tunnelProcess.on('error', () => {
           printBannerAndQr(defaultHost, isAlive);
-        }
-      }, 10000);
+          resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+        });
 
-    } else {
-      printBannerAndQr(defaultHost, isAlive);
-    }
+        setTimeout(() => {
+          if (!detectedUrl) {
+            printBannerAndQr(defaultHost, isAlive);
+            resolve({ server, tunnelProcess, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+          }
+        }, 10000);
+
+      } else {
+        printBannerAndQr(defaultHost, isAlive);
+        resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+      }
+    });
+
+    server.on('error', (err) => {
+      reject(err);
+    });
   });
 }
 
-start();
+if (require.main === module) {
+  start().catch((err) => {
+    console.error('[Gateway Fatal Error]', err.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  start,
+  app,
+  getOrCreateToken,
+  getLocalIp,
+  checkServerAlive,
+  printBannerAndQr,
+  AUTH_TOKEN
+};

@@ -1,6 +1,6 @@
 @echo off
-title piDroid Companion Gateway (Auto Cloudflare Tunnel)
-echo Starting piDroid Gateway with Cloudflare Auto Tunnel...
+title piDroid Unified Companion (Auto Cloudflare Tunnel)
+echo Starting piDroid Unified Companion with Cloudflare Auto Tunnel...
 cd /d %~dp0
 
 if not exist node_modules (
@@ -8,5 +8,5 @@ if not exist node_modules (
     npm install
 )
 
-node --no-deprecation gateway.js --tunnel
+node --no-deprecation launcher.js --tunnel
 pause

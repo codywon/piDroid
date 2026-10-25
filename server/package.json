@@ -2,11 +2,12 @@
   "name": "pi-mobile-gateway",
   "version": "1.0.0",
   "description": "Secure mobile companion gateway for pi-web with Token Auth, QR Code and Tunnel integration",
-  "main": "gateway.js",
+  "main": "launcher.js",
   "scripts": {
-    "start": "node gateway.js",
-    "tunnel": "node gateway.js --tunnel",
-    "start:tunnel": "node gateway.js --tunnel"
+    "start": "node launcher.js",
+    "tunnel": "node launcher.js --tunnel",
+    "gateway": "node gateway.js",
+    "gateway:tunnel": "node gateway.js --tunnel"
   },
   "dependencies": {
     "express": "^4.21.2",
