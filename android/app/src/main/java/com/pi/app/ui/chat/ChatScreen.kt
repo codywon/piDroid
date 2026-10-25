@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -36,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -336,33 +338,172 @@ fun ChatScreen(
                     }
                 }
 
-                // 2. 核心输入框容器
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = theme.surfaceContainerLow,
-                    border = BorderStroke(1.dp, theme.outline),
+                val canSend = inputText.isNotBlank() || attachments.isNotEmpty()
+
+                // 2. 附着在输入框上边沿上方的控制栏（最佳实践：释放输入框内部宽度，避免按钮挤占文本空间）
+                Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                        .padding(horizontal = 14.dp, vertical = 3.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                    // 左侧：模型+思考档位胶囊芯片 + 圆形压缩上下文图标按钮
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Surface(
+                            shape = CircleShape,
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.clickable { onOpenModelSheet() }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Memory,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(13.dp),
+                                    tint = theme.primary
+                                )
+                                Spacer(modifier = Modifier.width(5.dp))
+                                Text(
+                                    text = "${selectedModel.displayName.take(18)} · ${thinkingLevel.value}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    color = theme.textPrimary
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Icon(
+                                    Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = theme.textSecondary
+                                )
+                            }
+                        }
+
+                        // 圆圈 + 压缩图标按钮
+                        Surface(
+                            shape = CircleShape,
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier
+                                .size(28.dp)
+                                .clickable { onCompactContext() }
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                if (isCompacting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(13.dp),
+                                        strokeWidth = 1.5.dp,
+                                        color = theme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Compress,
+                                        contentDescription = "压缩上下文",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 右侧：任务运行中展示精简“引导 / 后续”胶囊按钮（不占用下方输入框宽度）
+                    if (isAgentBusy) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (canSend) theme.primary else theme.surfaceContainerHigh,
+                                border = BorderStroke(
+                                    0.8.dp,
+                                    if (canSend) theme.primary else theme.outline
+                                ),
+                                modifier = Modifier.clickable(enabled = canSend) {
+                                    userJumpedToHistory = false
+                                    val fullMsg = buildMessageWithAttachments(inputText.trim())
+                                    onSendSteer(fullMsg)
+                                    inputText = ""
+                                }
+                            ) {
+                                Text(
+                                    text = "➔ 引导",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = if (canSend) Color.White else theme.textMuted,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                )
+                            }
+
+                            Surface(
+                                shape = CircleShape,
+                                color = theme.surfaceContainerHigh,
+                                border = BorderStroke(0.8.dp, if (canSend) theme.primary.copy(alpha = 0.6f) else theme.outline),
+                                modifier = Modifier.clickable(enabled = canSend) {
+                                    userJumpedToHistory = false
+                                    val fullMsg = buildMessageWithAttachments(inputText.trim())
+                                    onSendFollowUp(fullMsg)
+                                    inputText = ""
+                                }
+                            ) {
+                                Text(
+                                    text = "↑ 后续",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = if (canSend) theme.textPrimary else theme.textMuted,
+                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. 核心大圆角舒适输入框容器 (22.dp 圆角 + 充足输入高度 + 零挤压单行占位提示)
+                Surface(
+                    shape = RoundedCornerShape(22.dp),
+                    color = theme.surfaceContainerLow,
+                    border = BorderStroke(
+                        1.dp,
+                        if (isAgentBusy) theme.primary.copy(alpha = 0.35f) else theme.outline
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 8.dp)
+                    ) {
                         // 附件预览列表 (支持图片预览与普通文件标签)
                         if (attachments.isNotEmpty()) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .horizontalScroll(rememberScrollState())
-                                    .padding(bottom = 6.dp),
+                                    .padding(bottom = 6.dp, start = 2.dp, end = 2.dp),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 attachments.forEachIndexed { idx, att ->
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
+                                        shape = RoundedCornerShape(8.dp),
                                         color = theme.surfaceContainer,
                                         border = BorderStroke(1.dp, theme.outline)
                                     ) {
                                         Row(
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                                         ) {
@@ -393,208 +534,100 @@ fun ChatScreen(
                         }
 
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 38.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // 附件选择图标按钮 (支持选择图片和文件，完全对标 pi-web)
-                            IconButton(
-                                onClick = { attachmentPicker.launch("*/*") },
-                                modifier = Modifier.size(34.dp)
+                            // 左侧：圆形附件按钮
+                            Surface(
+                                shape = CircleShape,
+                                color = if (attachments.isNotEmpty()) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clickable { attachmentPicker.launch("*/*") }
                             ) {
-                                Icon(
-                                    imageVector = Icons.Default.AttachFile,
-                                    contentDescription = "添加图片或文件",
-                                    tint = if (attachments.isNotEmpty()) theme.primary else theme.textSecondary,
-                                    modifier = Modifier.size(19.dp)
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.AttachFile,
+                                        contentDescription = "添加图片或文件",
+                                        tint = if (attachments.isNotEmpty()) theme.primary else theme.textSecondary,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+
+                            // 中间：真正宽敞、无默认内边距裁剪的输入区域
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 38.dp)
+                                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                if (inputText.isEmpty()) {
+                                    Text(
+                                        text = if (isAgentBusy) "输入指令后点上方 引导 / 后续..." else "向 Agent 发送指令...",
+                                        color = theme.textMuted,
+                                        fontSize = 14.sp,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                                BasicTextField(
+                                    value = inputText,
+                                    onValueChange = { inputText = it },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    maxLines = 5,
+                                    textStyle = TextStyle(
+                                        color = theme.textPrimary,
+                                        fontSize = 14.5.sp,
+                                        lineHeight = 20.sp
+                                    ),
+                                    cursorBrush = SolidColor(theme.primary)
                                 )
                             }
 
-                            TextField(
-                                value = inputText,
-                                onValueChange = { inputText = it },
-                                placeholder = {
-                                    Text(
-                                        text = if (isAgentBusy) "立即引导 / 排队后续消息..." else "向 Agent 发送指令...",
-                                        color = theme.textMuted,
-                                        fontSize = 13.5.sp
-                                    )
-                                },
-                                modifier = Modifier.weight(1f),
-                                maxLines = 4,
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedTextColor = theme.textPrimary,
-                                    unfocusedTextColor = theme.textPrimary,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent
-                                )
-                            )
-
-                            // 右侧动作按钮组
-                            val canSend = inputText.isNotBlank() || attachments.isNotEmpty()
+                            // 右侧：行业标准主动作按钮
+                            // 空闲时为圆形上箭头发送按钮；运行中为红色填充圆圈 + 中央白色正方形块（停止按钮）
                             if (!isAgentBusy) {
-                                IconButton(
-                                    onClick = {
-                                        if (canSend) {
+                                Surface(
+                                    shape = CircleShape,
+                                    color = if (canSend) theme.primary else theme.surfaceContainerHigh,
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clickable(enabled = canSend) {
                                             userJumpedToHistory = false
                                             val fullMsg = buildMessageWithAttachments(inputText.trim())
                                             onSendMessage(fullMsg)
                                             inputText = ""
                                         }
-                                    },
-                                    enabled = canSend,
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .background(
-                                            if (canSend) theme.primary else theme.surfaceContainerHigh,
-                                            CircleShape
-                                        )
                                 ) {
-                                    Icon(
-                                        Icons.Default.ArrowUpward,
-                                        contentDescription = "发送",
-                                        tint = if (canSend) Color.White else theme.textMuted,
-                                        modifier = Modifier.size(18.dp)
-                                    )
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            Icons.Default.ArrowUpward,
+                                            contentDescription = "发送",
+                                            tint = if (canSend) Color.White else theme.textMuted,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             } else {
-                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (canSend) theme.primary else theme.surfaceContainerHigh,
-                                        modifier = Modifier.clickable(enabled = canSend) {
-                                            userJumpedToHistory = false
-                                            val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                            onSendSteer(fullMsg)
-                                            inputText = ""
-                                        }
-                                    ) {
-                                        Text(
-                                            text = "➔ 引导",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = if (canSend) Color.White else theme.textMuted,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                        )
-                                    }
-
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = theme.surfaceContainerHigh,
-                                        border = BorderStroke(1.dp, theme.outline),
-                                        modifier = Modifier.clickable(enabled = canSend) {
-                                            userJumpedToHistory = false
-                                            val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                            onSendFollowUp(fullMsg)
-                                            inputText = ""
-                                        }
-                                    ) {
-                                        Text(
-                                            text = "↑ 后续",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = if (canSend) theme.textPrimary else theme.textMuted,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // 3. 输入框底栏（模型+思考极简合并芯片 + 仅图标压缩按钮/停止按钮）
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = theme.surfaceContainer,
-                                border = BorderStroke(1.dp, theme.outline),
-                                modifier = Modifier.clickable { onOpenModelSheet() }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Memory,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(12.dp),
-                                        tint = theme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "${selectedModel.displayName.take(18)} · ${thinkingLevel.value}",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 11.sp,
-                                        color = theme.textPrimary
-                                    )
-                                    Spacer(modifier = Modifier.width(2.dp))
-                                    Icon(
-                                        Icons.Default.ArrowDropDown,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp),
-                                        tint = theme.textSecondary
-                                    )
-                                }
-                            }
-
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                // 压缩上下文按钮：留图标去掉文字，保持极致简洁
+                                // 行业标准停止按钮：红色填充圆圈 + 内部纯白正方形块，无多余文字
                                 Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = theme.surfaceContainer,
-                                    border = BorderStroke(1.dp, theme.outline),
-                                    modifier = Modifier.clickable { onCompactContext() }
+                                    shape = CircleShape,
+                                    color = Color(0xFFDF2A39),
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clickable { onStopAgent() }
                                 ) {
-                                    Box(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (isCompacting) {
-                                            CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                        } else {
-                                            Icon(
-                                                Icons.Default.Compress,
-                                                contentDescription = "压缩上下文",
-                                                modifier = Modifier.size(14.dp),
-                                                tint = theme.textSecondary
-                                            )
-                                        }
-                                    }
-                                }
-
-                                if (isAgentBusy) {
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = Color(0xFFCF222E),
-                                        modifier = Modifier.clickable { onStopAgent() }
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Stop,
-                                                contentDescription = "停止",
-                                                modifier = Modifier.size(12.dp),
-                                                tint = Color.White
-                                            )
-                                            Spacer(modifier = Modifier.width(2.dp))
-                                            Text(
-                                                text = "停止",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = Color.White,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(11.dp)
+                                                .background(Color.White, RoundedCornerShape(2.dp))
+                                        )
                                     }
                                 }
                             }
@@ -602,39 +635,141 @@ fun ChatScreen(
                     }
                 }
 
-                // 4. 微型 Monospace 单行紧凑状态栏 (ctx · in · out · cache，边距留足 20dp 针对圆角屏防裁切)
+                // 4. 底部极简图标化指标栏（小图标 + 百分比/精简数值 + 竖杠 | 分隔，点击弹出完整 HUD 详情）
+                val percent = (tokenStats.contextUsagePercent * 100).toInt().coerceIn(0, 100)
+                val hitRate = tokenStats.cacheHitRate.toInt().coerceIn(0, 100)
+                val inTokens = TokenStats.formatTokenCompact(tokenStats.inputTokens)
+                val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
+                val ctxColor = when {
+                    percent >= 90 -> Color(0xFFCF222E)
+                    percent >= 75 -> Color(0xFFD29922)
+                    else -> theme.textSecondary
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 3.dp)
+                        .padding(horizontal = 24.dp, vertical = 4.dp)
                         .clickable { showHudDialog = true },
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    val percent = (tokenStats.contextUsagePercent * 100).toInt()
-                    val hitRate = tokenStats.cacheHitRate.toInt()
-                    val ctxTokens = TokenStats.formatTokenCompact(tokenStats.contextTokens)
-                    val maxCtx = TokenStats.formatTokenCompact(tokenStats.maxContextWindow)
-                    val inTokens = TokenStats.formatTokenCompact(tokenStats.inputTokens)
-                    val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
-                    Text(
-                        text = "ctx $ctxTokens/$maxCtx($percent%) · in $inTokens · out $outTokens · cache $hitRate%",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        color = theme.textMuted,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // 1) 上下文占用百分比 (图标 + 百分比)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DataUsage,
+                                contentDescription = "上下文占用",
+                                modifier = Modifier.size(11.dp),
+                                tint = ctxColor
+                            )
+                            Text(
+                                text = "$percent%",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = ctxColor,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "|",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = theme.outline
+                        )
 
+                        // 2) 输入 Token (上箭头小图标 + 数值)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowUpward,
+                                contentDescription = "输入 Token",
+                                modifier = Modifier.size(10.5.dp),
+                                tint = theme.textMuted
+                            )
+                            Text(
+                                text = inTokens,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                color = theme.textSecondary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        Text(
+                            text = "|",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = theme.outline
+                        )
+
+                        // 3) 输出 Token (下箭头小图标 + 数值)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ArrowDownward,
+                                contentDescription = "输出 Token",
+                                modifier = Modifier.size(10.5.dp),
+                                tint = theme.textMuted
+                            )
+                            Text(
+                                text = outTokens,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                color = theme.textSecondary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+
+                        Text(
+                            text = "|",
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 10.sp,
+                            color = theme.outline
+                        )
+
+                        // 4) 缓存命中率 (闪电小图标 + 百分比)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Bolt,
+                                contentDescription = "缓存命中率",
+                                modifier = Modifier.size(11.dp),
+                                tint = theme.primary.copy(alpha = 0.85f)
+                            )
+                            Text(
+                                text = "$hitRate%",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                color = theme.textSecondary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                    }
+
+                    // 右侧详情提示小图标（点击查看完整 HUD 弹窗）
                     Icon(
                         Icons.Default.Info,
-                        contentDescription = "HUD",
-                        modifier = Modifier.size(11.dp),
+                        contentDescription = "查看 Token 详情",
+                        modifier = Modifier.size(12.dp),
                         tint = theme.textMuted
                     )
                 }

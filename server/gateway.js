@@ -101,10 +101,192 @@ app.get('/api/ping', authMiddleware, (req, res) => {
     status: 'ok',
     device: os.hostname(),
     platform: process.platform,
-    version: '1.3.1',
+    version: '1.3.2',
     target: TARGET,
     timestamp: Date.now()
   });
+});
+
+// 3.5 伴侣网关直接增强能力：支持读取/保存 SKILL.md 源码及在 PC 上创建远程项目工作区目录
+function resolveHomePath(p) {
+  if (!p || typeof p !== 'string') return '';
+  if (p.startsWith('~/') || p.startsWith('~\\')) {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
+}
+
+// 自动检测并无损自愈本地 ~/.pi/agent/models.json（防止因缺失 baseUrl 的单模型数组或顶层 config 字段导致 pi 无法工作）
+function autoHealLocalModelsJson() {
+  try {
+    const modelsJsonPath = path.join(os.homedir(), '.pi', 'agent', 'models.json');
+    if (!fs.existsSync(modelsJsonPath)) return;
+    const raw = fs.readFileSync(modelsJsonPath, 'utf8').trim();
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return;
+
+    let modified = false;
+    if (!parsed.providers || typeof parsed.providers !== 'object') {
+      parsed.providers = {};
+    }
+    if (parsed.config && typeof parsed.config === 'object') {
+      if (parsed.config.providers && typeof parsed.config.providers === 'object') {
+        for (const [k, v] of Object.entries(parsed.config.providers)) {
+          if (!parsed.providers[k] && v && typeof v === 'object') {
+            parsed.providers[k] = v;
+          }
+        }
+      }
+      delete parsed.config;
+      modified = true;
+    }
+
+    for (const [provKey, provObj] of Object.entries(parsed.providers)) {
+      if (!provObj || typeof provObj !== 'object') continue;
+      const baseUrl = typeof provObj.baseUrl === 'string' ? provObj.baseUrl.trim() : '';
+      if (Array.isArray(provObj.models) && !baseUrl) {
+        if (!provObj.modelOverrides || typeof provObj.modelOverrides !== 'object') {
+          provObj.modelOverrides = {};
+        }
+        for (const m of provObj.models) {
+          if (m && typeof m === 'object' && typeof m.id === 'string' && m.id.trim()) {
+            const mId = m.id.trim();
+            const ov = provObj.modelOverrides[mId] || {};
+            if (typeof m.name === 'string' && m.name.trim()) ov.name = m.name.trim();
+            if (typeof m.contextWindow === 'number') ov.contextWindow = m.contextWindow;
+            if (typeof m.maxTokens === 'number') ov.maxTokens = m.maxTokens;
+            if (typeof m.reasoning === 'boolean') ov.reasoning = m.reasoning;
+            if (Array.isArray(m.input)) ov.input = m.input;
+            provObj.modelOverrides[mId] = ov;
+          }
+        }
+        delete provObj.models;
+        if (!provObj.baseUrl) {
+          delete provObj.api;
+        }
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      fs.writeFileSync(modelsJsonPath + '.bak', raw, 'utf8');
+      fs.writeFileSync(modelsJsonPath, JSON.stringify(parsed, null, 2), 'utf8');
+      console.log('[Gateway] 已自动修复 ~/.pi/agent/models.json 中的模型覆盖配置结构');
+    }
+  } catch (e) {
+    // 忽略本地文件不存在或无权限情况
+  }
+}
+
+autoHealLocalModelsJson();
+
+app.get('/api/skills/content', authMiddleware, (req, res, next) => {
+  try {
+    const rawPath = (req.query.filePath || req.query.path || '').toString().trim();
+    const rawBaseDir = (req.query.baseDir || '').toString().trim();
+    const skillName = (req.query.name || req.query.skill || req.query.skillName || '').toString().trim();
+    const rawCwd = (req.query.cwd || '').toString().trim();
+
+    const candidates = [];
+    if (rawPath) candidates.push(resolveHomePath(rawPath));
+    if (rawBaseDir) candidates.push(path.join(resolveHomePath(rawBaseDir), 'SKILL.md'));
+    if (skillName) {
+      candidates.push(path.join(os.homedir(), '.pi', 'agent', 'skills', skillName, 'SKILL.md'));
+      candidates.push(path.join(os.homedir(), '.claude', 'skills', skillName, 'SKILL.md'));
+      if (rawCwd) {
+        const resolvedCwd = resolveHomePath(rawCwd);
+        candidates.push(path.join(resolvedCwd, '.pi', 'skills', skillName, 'SKILL.md'));
+        candidates.push(path.join(resolvedCwd, '.claude', 'skills', skillName, 'SKILL.md'));
+      }
+    }
+
+    for (const candidate of candidates) {
+      if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+        const content = fs.readFileSync(candidate, 'utf8');
+        return res.json({ content, filePath: candidate });
+      }
+    }
+  } catch (e) {
+    // 交由下游 pi-web 继续处理
+  }
+  next();
+});
+
+app.put('/api/skills/content', authMiddleware, express.json({ limit: '5mb' }), (req, res) => {
+  try {
+    const body = req.body || {};
+    const rawPath = (body.filePath || body.path || '').toString().trim();
+    const skillName = (body.name || body.skill || '').toString().trim();
+    const content = (body.content || '').toString();
+    let resolved = resolveHomePath(rawPath);
+    if (!resolved && skillName) {
+      resolved = path.join(os.homedir(), '.pi', 'agent', 'skills', skillName, 'SKILL.md');
+    }
+    if (!resolved) {
+      return res.status(400).json({ error: 'Missing filePath' });
+    }
+    const dir = path.dirname(resolved);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(resolved, content, 'utf8');
+    res.json({ ok: true, filePath: resolved });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/cwd/browse', authMiddleware, express.json(), (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const targetFull = resolveHomePath(body.fullPath || body.cwd || '');
+    const parentDir = resolveHomePath(body.path || body.dir || '');
+    const childName = (body.name || '').trim();
+    const finalDir = targetFull || (parentDir && childName ? path.join(parentDir, childName) : parentDir);
+    if (finalDir) {
+      fs.mkdirSync(finalDir, { recursive: true });
+      return res.json({ ok: true, path: finalDir, cwd: finalDir });
+    }
+  } catch (e) {
+    // 继续交由下游处理
+  }
+  next();
+});
+
+// 3.6 支持直接读取工作区中的图片、SVG、PDF 原始文件供 App 渲染缩略图与全屏预览
+app.get('/api/files/raw', authMiddleware, (req, res, next) => {
+  try {
+    const rawPath = (req.query.path || req.query.filePath || '').toString().trim();
+    const rawCwd = (req.query.cwd || '').toString().trim();
+    if (!rawPath) return next();
+
+    let resolved = resolveHomePath(rawPath);
+    if (!path.isAbsolute(resolved) && rawCwd) {
+      resolved = path.resolve(resolveHomePath(rawCwd), resolved);
+    }
+    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+      const ext = path.extname(resolved).toLowerCase();
+      const mimeMap = {
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.webp': 'image/webp',
+        '.gif': 'image/gif',
+        '.bmp': 'image/bmp',
+        '.svg': 'image/svg+xml',
+        '.pdf': 'application/pdf'
+      };
+      if (mimeMap[ext]) {
+        res.setHeader('Content-Type', mimeMap[ext]);
+      }
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      return res.sendFile(path.resolve(resolved));
+    }
+  } catch (e) {
+    // 交由下游 pi-web 继续处理
+  }
+  next();
 });
 
 // 4. 反向代理到 pi-web

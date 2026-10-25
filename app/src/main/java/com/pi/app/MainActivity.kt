@@ -191,6 +191,7 @@ class MainActivity : ComponentActivity() {
         var completionSoundEnabled by remember { mutableStateOf(prefs.completionSoundEnabled) }
         var pinnedSessionIds by remember { mutableStateOf(prefs.getPinnedSessionIds()) }
         var customTitles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+        var customWorkspaces by remember { mutableStateOf(prefs.getCustomWorkspaces()) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
@@ -577,13 +578,14 @@ class MainActivity : ComponentActivity() {
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
                             val chunk = event.effectiveText
-                            if (chunk.isNotEmpty()) {
+                            if (chunk.isNotEmpty() || event.mediaList.isNotEmpty()) {
                                 isAutoRetrying = false
                                 markAgentRunActive(phase = null, clearPhaseIfNull = true)
                                 val last = messages.lastOrNull()
                                 if (last != null && last.role == MessageRole.AGENT) {
                                     val updated = last.copy(
                                         content = last.content + chunk,
+                                        mediaList = if (event.mediaList.isNotEmpty()) (last.mediaList + event.mediaList).distinctBy { "${it.kind}:${it.url ?: it.filePath ?: it.id}" } else last.mediaList,
                                         isStreaming = true
                                     )
                                     messages[messages.size - 1] = updated
@@ -593,6 +595,7 @@ class MainActivity : ComponentActivity() {
                                             role = MessageRole.AGENT,
                                             content = chunk,
                                             modelName = selectedModel.displayName,
+                                            mediaList = event.mediaList,
                                             isStreaming = true
                                         )
                                     )
@@ -601,12 +604,13 @@ class MainActivity : ComponentActivity() {
                         }
                         "text_replace" -> {
                             val fullText = event.effectiveText
-                            if (fullText.isNotEmpty()) {
+                            if (fullText.isNotEmpty() || event.mediaList.isNotEmpty()) {
                                 lastSseActivityAt = System.currentTimeMillis()
                                 val last = messages.lastOrNull()
                                 if (last != null && last.role == MessageRole.AGENT) {
                                     messages[messages.size - 1] = last.copy(
-                                        content = fullText,
+                                        content = fullText.ifEmpty { last.content },
+                                        mediaList = if (event.mediaList.isNotEmpty()) event.mediaList else last.mediaList,
                                         isStreaming = event.isStreaming ?: false
                                     )
                                 }
@@ -764,12 +768,16 @@ class MainActivity : ComponentActivity() {
                                 val existingTool = existing.toolCall
                                 if (existingTool != null) {
                                     val newOutput = event.output ?: event.effectiveText.ifBlank { existingTool.output }
+                                    val mergedMedia = if (event.mediaList.isNotEmpty()) {
+                                        (existingTool.mediaList + event.mediaList).distinctBy { "${it.kind}:${it.url ?: it.filePath ?: it.id}" }
+                                    } else existingTool.mediaList
                                     messages[idx] = existing.copy(
                                         toolCall = existingTool.copy(
                                             output = newOutput,
                                             durationMs = event.durationMs ?: existingTool.durationMs,
                                             isError = event.isError || existingTool.isError,
-                                            isRunning = if (isEndOfTool) false else (event.isStreaming ?: true)
+                                            isRunning = if (isEndOfTool) false else (event.isStreaming ?: true),
+                                            mediaList = mergedMedia
                                         )
                                     )
                                 }
@@ -983,6 +991,10 @@ class MainActivity : ComponentActivity() {
                             dynamicCatalog.models + updatedModel
                         }
                         dynamicCatalog = dynamicCatalog.copy(models = updatedList)
+                        if (selectedModel.id == modelId) {
+                            selectedModel = updatedModel
+                            tokenStats = tokenStats.copy(maxContextWindow = contextWindow)
+                        }
 
                         lifecycleScope.launch {
                             apiClient.upsertCustomProviderModel(
@@ -1048,12 +1060,12 @@ class MainActivity : ComponentActivity() {
                         skills = skills.map { if (it.name == name) it.copy(alias = alias) else it }
                         Toast.makeText(this@MainActivity, "已保存别名: $alias", Toast.LENGTH_SHORT).show()
                     },
-                    onLoadSkillContent = { filePath ->
-                        apiClient.getSkillContent(filePath, currentProject).getOrNull()
+                    onLoadSkillContent = { skill ->
+                        apiClient.getSkillContent(skill, currentProject).getOrNull()
                     },
                     onSaveSkillContent = { skill, content ->
                         lifecycleScope.launch {
-                            apiClient.saveSkillContent(skill.filePath, content, currentProject).onSuccess {
+                            apiClient.saveSkillContent(skill, content, currentProject).onSuccess {
                                 Toast.makeText(this@MainActivity, "已保存 SKILL.md 源码修改", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
@@ -1140,7 +1152,7 @@ class MainActivity : ComponentActivity() {
                             "remove" -> mcpServers = mcpServers.filterNot { it.name == name }
                         }
                         lifecycleScope.launch {
-                            apiClient.manageMcpServerAction(action, name, currentProject).onSuccess {
+                            apiClient.manageMcpServerAction(action, name, cwd = currentProject).onSuccess {
                                 Toast.makeText(this@MainActivity, "MCP 操作已生效: $name", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
@@ -1229,6 +1241,11 @@ class MainActivity : ComponentActivity() {
                     queuedMessages = queuedMessages,
                     isCompacting = isCompacting,
                     isPinned = isPinned,
+                    mediaGatewayConfig = com.pi.app.ui.components.MediaGatewayConfig(
+                        serverUrl = prefs.serverUrl,
+                        authToken = prefs.authToken,
+                        cwd = currentSession?.cwd ?: currentProject
+                    ),
                     onTogglePin = {
                         val pinned = prefs.togglePinSession(activeSessionId)
                         pinnedSessionIds = prefs.getPinnedSessionIds()
@@ -1413,6 +1430,26 @@ class MainActivity : ComponentActivity() {
                     },
                     onManualConfigConfirm = { url, token, name ->
                         connectToServer(url, token, name)
+                    },
+                    customWorkspaces = customWorkspaces.toList(),
+                    onBrowseRemoteDir = { path ->
+                        apiClient.browseRemoteDirectories(path).getOrNull()
+                    },
+                    onAddWorkspace = { targetPath, newFolderName, createIfMissing ->
+                        val result = apiClient.addOrCreateRemoteWorkspace(
+                            targetPath = targetPath,
+                            newChildFolderName = newFolderName,
+                            createIfMissing = createIfMissing
+                        )
+                        val finalPath = result.getOrNull()?.takeIf { it.isNotBlank() }
+                            ?: if (!newFolderName.isNullOrBlank()) {
+                                val sep = if (targetPath.contains('\\')) "\\" else "/"
+                                "${targetPath.trimEnd('/', '\\')}$sep$newFolderName"
+                            } else targetPath
+                        prefs.addCustomWorkspace(finalPath)
+                        customWorkspaces = prefs.getCustomWorkspaces()
+                        Toast.makeText(this@MainActivity, "已添加工作区目录: $finalPath", Toast.LENGTH_SHORT).show()
+                        Result.success(finalPath)
                     }
                 )
             }

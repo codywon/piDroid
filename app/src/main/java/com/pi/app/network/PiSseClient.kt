@@ -6,6 +6,8 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.pi.app.data.model.AgentSseEvent
+import com.pi.app.data.model.MediaAttachment
+import com.pi.app.data.model.MediaKind
 import com.pi.app.data.model.SseConnectionState
 import com.pi.app.data.model.TokenStats
 import com.pi.app.data.storage.AppPreferences
@@ -311,13 +313,15 @@ class PiSseClient(private val prefs: AppPreferences) {
                                 val argsElem = tcObj?.get("arguments")
                                 val preview = extractPreview(argsElem)
                                 val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
+                                val pathMedia = extractMediaFromToolArgs(tName, preview, argsElem)
                                 listOf(
                                     AgentSseEvent(
                                         type = "tool_call_ready",
                                         toolCallId = tcId,
                                         toolName = tName,
                                         preview = preview,
-                                        command = cmdStr
+                                        command = cmdStr,
+                                        mediaList = pathMedia
                                     )
                                 )
                             }
@@ -343,6 +347,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val argsElem = obj.get("args") ?: obj.get("arguments") ?: obj.get("input")
                     val preview = extractPreview(argsElem)
                     val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
+                    val pathMedia = extractMediaFromToolArgs(tName, preview, argsElem)
                     listOf(
                         AgentSseEvent(
                             type = "tool_execution_start",
@@ -350,6 +355,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                             toolName = tName,
                             preview = preview,
                             command = cmdStr,
+                            mediaList = pathMedia,
                             isStreaming = true,
                             phaseLabel = "正在执行 $tName..."
                         )
@@ -360,7 +366,9 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val tcId = obj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
                     val tName = obj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
                     val partial = obj.get("partialResult")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val outText = extractContentText(partial?.get("content"))
+                    val contentElem = partial?.get("content")
+                    val outText = extractContentText(contentElem)
+                    val media = extractMediaAttachments(contentElem, outText)
                     val isErr = partial?.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                     listOf(
                         AgentSseEvent(
@@ -368,6 +376,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                             toolCallId = tcId,
                             toolName = tName,
                             output = outText,
+                            mediaList = media,
                             isError = isErr,
                             isStreaming = true,
                             phaseLabel = "正在执行 $tName..."
@@ -379,7 +388,9 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val tcId = obj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
                     val tName = obj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
                     val resObj = obj.get("result")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val outText = extractContentText(resObj?.get("content"))
+                    val contentElem = resObj?.get("content")
+                    val outText = extractContentText(contentElem)
+                    val media = extractMediaAttachments(contentElem, outText)
                     val isErr = obj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
                         ?: resObj?.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
                         ?: false
@@ -389,6 +400,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                             toolCallId = tcId,
                             toolName = tName,
                             output = outText,
+                            mediaList = media,
                             isError = isErr,
                             isStreaming = false,
                             phaseLabel = "正在等待模型..."
@@ -501,5 +513,96 @@ class PiSseClient(private val prefs: AppPreferences) {
             return sb.toString().trim().takeIf { it.isNotEmpty() }
         }
         return null
+    }
+
+    private fun extractMediaAttachments(contentElem: JsonElement?, outputText: String? = null): List<MediaAttachment> {
+        val list = mutableListOf<MediaAttachment>()
+        if (contentElem != null && contentElem.isJsonArray) {
+            for (item in contentElem.asJsonArray) {
+                if (!item.isJsonObject) continue
+                val obj = item.asJsonObject
+                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                if (type == "image" || type == "image_url" || type == "document" || obj.has("data") || obj.has("source")) {
+                    val srcObj = obj.get("source")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val mime = obj.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("mediaType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("media_type")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: "image/png"
+                    val b64 = obj.get("data")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("data")?.takeIf { !it.isJsonNull }?.asString
+                    val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("image_url")?.takeIf { it.isJsonObject }?.asJsonObject?.get("url")?.takeIf { !it.isJsonNull }?.asString
+                    val kind = when {
+                        mime.contains("pdf", ignoreCase = true) -> MediaKind.PDF
+                        mime.contains("svg", ignoreCase = true) -> MediaKind.SVG
+                        else -> MediaKind.IMAGE
+                    }
+                    if (!b64.isNullOrBlank() || !urlVal.isNullOrBlank()) {
+                        list.add(
+                            MediaAttachment(
+                                kind = kind,
+                                mimeType = mime,
+                                dataBase64 = b64?.substringAfter("base64,", b64),
+                                url = urlVal
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        if (!outputText.isNullOrBlank() && outputText.contains("<svg", ignoreCase = true) && outputText.contains("</svg>", ignoreCase = true)) {
+            val svgMatch = Regex("""<svg[\s\S]*?</svg>""", RegexOption.IGNORE_CASE).find(outputText)
+            if (svgMatch != null) {
+                list.add(
+                    MediaAttachment(
+                        kind = MediaKind.SVG,
+                        mimeType = "image/svg+xml",
+                        svgOrCode = svgMatch.value,
+                        title = "SVG 矢量图"
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    private fun extractMediaFromToolArgs(toolName: String, preview: String?, argsElem: JsonElement?): List<MediaAttachment> {
+        val rawPath = preview?.takeIf { it.isNotBlank() } ?: run {
+            if (argsElem != null && argsElem.isJsonObject) {
+                val obj = argsElem.asJsonObject
+                (obj.get("path") ?: obj.get("file_path") ?: obj.get("filePath"))
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+            } else null
+        } ?: return emptyList()
+
+        val cleanPath = rawPath.trim().removeSurrounding("\"").removeSurrounding("'")
+        val lower = cleanPath.lowercase()
+        val isReadOrFileTool = toolName.lowercase() in setOf("read", "view_file", "read_file", "write", "write_file", "open")
+        if (!isReadOrFileTool && !lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") &&
+            !lower.endsWith(".webp") && !lower.endsWith(".gif") && !lower.endsWith(".svg") && !lower.endsWith(".pdf")
+        ) {
+            return emptyList()
+        }
+
+        val (kind, mime) = when {
+            lower.endsWith(".png") -> MediaKind.IMAGE to "image/png"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> MediaKind.IMAGE to "image/jpeg"
+            lower.endsWith(".webp") -> MediaKind.IMAGE to "image/webp"
+            lower.endsWith(".gif") -> MediaKind.IMAGE to "image/gif"
+            lower.endsWith(".bmp") -> MediaKind.IMAGE to "image/bmp"
+            lower.endsWith(".svg") -> MediaKind.SVG to "image/svg+xml"
+            lower.endsWith(".pdf") -> MediaKind.PDF to "application/pdf"
+            else -> return emptyList()
+        }
+
+        return listOf(
+            MediaAttachment(
+                kind = kind,
+                mimeType = mime,
+                filePath = cleanPath,
+                title = cleanPath.substringAfterLast('/').substringAfterLast('\\')
+            )
+        )
     }
 }

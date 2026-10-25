@@ -127,10 +127,10 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 对标 pi-web MessageView：配对 toolCall 与 toolResult，提取参数预览与每回合 Token 用量
     // ==========================================
 
-    suspend fun getSessionDetail(sessionId: String): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
+    suspend fun getSessionDetail(sessionId: String, tail: Int = 5000): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
-            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId").get().build()
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId?tail=$tail&limit=$tail").get().build()
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
@@ -138,225 +138,80 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val body = response.body?.string() ?: "{}"
                 val json = JsonParser.parseString(body).asJsonObject
 
-                val chatItems = mutableListOf<ChatItem>()
                 var currentProvider = "codywon"
                 var currentModelId = "gpt-6.1-sol"
                 var currentThinkingLevel = ThinkingLevel.HIGH
+                var modelContextWindow = 0L
 
                 var lastAssistantContextTokens = 0L
                 var lastAssistantInTokens = 0L
                 var lastAssistantOutTokens = 0L
 
-                if (json.has("context") && json.get("context").isJsonObject) {
-                    val ctx = json.getAsJsonObject("context")
-                    if (ctx.has("model") && ctx.get("model").isJsonObject) {
-                        val mObj = ctx.getAsJsonObject("model")
-                        currentProvider = mObj.get("provider")?.asString ?: currentProvider
-                        currentModelId = mObj.get("modelId")?.asString ?: currentModelId
+                val ctxObj = if (json.has("context") && json.get("context").isJsonObject) {
+                    json.getAsJsonObject("context")
+                } else null
+
+                if (ctxObj != null) {
+                    if (ctxObj.has("model") && ctxObj.get("model").isJsonObject) {
+                        val mObj = ctxObj.getAsJsonObject("model")
+                        currentProvider = mObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: currentProvider
+                        currentModelId = mObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString
+                            ?: mObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                            ?: currentModelId
+                        modelContextWindow = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                     }
-                    if (ctx.has("thinkingLevel") && !ctx.get("thinkingLevel").isJsonNull) {
-                        currentThinkingLevel = ThinkingLevel.fromValue(ctx.get("thinkingLevel")?.asString)
+                    if (ctxObj.has("thinkingLevel") && !ctxObj.get("thinkingLevel").isJsonNull) {
+                        currentThinkingLevel = ThinkingLevel.fromValue(ctxObj.get("thinkingLevel")?.asString)
                     }
+                }
 
-                    if (ctx.has("messages") && ctx.get("messages").isJsonArray) {
-                        val msgs = ctx.getAsJsonArray("messages")
+                // 收集完整的原始消息数组：
+                // 1) 如果服务端 /api/sessions/[id] 默认只返回最近 50 条 (hasMore == true)，主动通过 /api/sessions/[id]/context?tail=... 及 before=... 向上翻页拉取全量历史
+                // 2) 同时支持解析 entries（包含上下文压缩 Compaction 之前的完整早期对话与压缩摘要节点），确保用户点击“展开全部”或“加载前50条”能看到从第 1 条提问开始的整个任务全貌
+                val rawContextMessages = JsonArray()
+                val initialCtxMsgs = ctxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+                val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
+                    (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
+                val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+                    ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
 
-                        // 第一遍收集所有 toolResult，按 toolCallId 建立索引（对标 pi-web toolResultsMap）
-                        data class ParsedToolResult(
-                            val toolCallId: String?,
-                            val toolName: String,
-                            val output: String,
-                            val durationMs: Long,
-                            val isError: Boolean,
-                            val timestamp: Long
-                        )
-                        val toolResultById = mutableMapOf<String, ParsedToolResult>()
-                        val consumedResultIds = mutableSetOf<String>()
+                if (initialHasMore) {
+                    // 优先直接请求大窗口 context
+                    val pagedMessages = fetchFullContextPages(baseUrl, sessionId, leafId, tail, initialCtxMsgs, ctxObj)
+                    for (m in pagedMessages) rawContextMessages.add(m)
+                } else if (initialCtxMsgs != null) {
+                    for (m in initialCtxMsgs) rawContextMessages.add(m)
+                }
 
-                        for (element in msgs) {
-                            if (!element.isJsonObject) continue
-                            val msgObj = element.asJsonObject
-                            if (msgObj.get("role")?.asString == "toolResult") {
-                                val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                                    ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                                val tName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
-                                val tOut = extractTextFromContent(msgObj.get("content"))
-                                val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                val ts = msgObj.get("timestamp")?.takeIf { !it.isJsonNull }?.asLong ?: System.currentTimeMillis()
-                                if (!tcId.isNullOrBlank()) {
-                                    toolResultById[tcId] = ParsedToolResult(tcId, tName, tOut, dur, isErr, ts)
-                                }
-                            }
-                        }
+                // 检查是否存在完整 entries 树（包含被 compaction 折叠前的早期历史记录）
+                val entriesArr = when {
+                    json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
+                    json.has("tree") && json.get("tree").isJsonObject && json.getAsJsonObject("tree").has("entries") ->
+                        json.getAsJsonObject("tree").getAsJsonArray("entries")
+                    json.has("messages") && json.get("messages").isJsonArray -> json.getAsJsonArray("messages")
+                    else -> null
+                }
 
-                        // 第二遍构建与 pi-web 完全一致的对话流与配对工具卡片
-                        for (element in msgs) {
-                            if (!element.isJsonObject) continue
-                            val msgObj = element.asJsonObject
-                            val roleStr = msgObj.get("role")?.asString ?: ""
-                            val timestamp = msgObj.get("timestamp")?.takeIf { !it.isJsonNull }?.asLong ?: System.currentTimeMillis()
+                val normalizedEntryMessages = if (entriesArr != null && entriesArr.size() > 0) {
+                    extractChronologicalMessagesFromEntries(entriesArr, leafId)
+                } else JsonArray()
 
-                            var turnUsageStr: String? = null
-                            if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {
-                                val uObj = msgObj.getAsJsonObject("usage")
-                                val uIn = uObj.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                val uOut = uObj.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                val uCacheR = uObj.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                val uCacheW = uObj.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                val uCost = if (uObj.has("cost") && uObj.get("cost").isJsonObject) {
-                                    uObj.getAsJsonObject("cost").get("total")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
-                                } else 0.0
-                                if (uIn > 0) {
-                                    lastAssistantContextTokens = uIn + uCacheR
-                                    lastAssistantInTokens = uIn
-                                    lastAssistantOutTokens = uOut
-                                }
-                                turnUsageStr = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
-                            }
+                val chosenMessages = if (normalizedEntryMessages.size() > rawContextMessages.size()) {
+                    normalizedEntryMessages
+                } else {
+                    rawContextMessages
+                }
 
-                            val msgModelName = msgObj.get("model")?.takeIf { !it.isJsonNull }?.asString
-                                ?: currentModelId
-
-                            when (roleStr) {
-                                "user" -> {
-                                    val userText = extractTextFromContent(msgObj.get("content"))
-                                    if (userText.isNotBlank()) {
-                                        chatItems.add(ChatItem(
-                                            id = "hist_${sessionId}_${chatItems.size}_user",
-                                            role = MessageRole.USER,
-                                            content = userText,
-                                            timestamp = timestamp
-                                        ))
-                                    }
-                                }
-                                "assistant" -> {
-                                    var text = ""
-                                    var thinking: String? = msgObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
-                                    val toolCalls = mutableListOf<ToolCallInfo>()
-
-                                    if (msgObj.has("content")) {
-                                        val contentElem = msgObj.get("content")
-                                        if (contentElem.isJsonArray) {
-                                            for (cItem in contentElem.asJsonArray) {
-                                                if (!cItem.isJsonObject) continue
-                                                val cObj = cItem.asJsonObject
-                                                when (cObj.get("type")?.asString) {
-                                                    "text" -> {
-                                                        val t = cObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                                                        text = if (text.isEmpty()) t else "$text\n$t"
-                                                    }
-                                                    "thinking" -> {
-                                                        val th = cObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                                                        thinking = if (thinking.isNullOrEmpty()) th else "$thinking\n$th"
-                                                    }
-                                                    "toolCall" -> {
-                                                        val tcId = cObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                                                            ?: cObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                                                        val toolName = cObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
-                                                            ?: cObj.get("name")?.takeIf { !it.isJsonNull }?.asString
-                                                            ?: "tool"
-                                                        val inputElem = cObj.get("input") ?: cObj.get("arguments")
-                                                        val preview = extractToolPreview(inputElem)
-                                                        val fields = extractToolFields(inputElem)
-                                                        val formattedInput = formatToolInput(inputElem)
-                                                        val paired = if (!tcId.isNullOrBlank()) {
-                                                            consumedResultIds.add(tcId)
-                                                            toolResultById[tcId]
-                                                        } else null
-
-                                                        toolCalls.add(
-                                                            ToolCallInfo(
-                                                                toolCallId = tcId,
-                                                                toolName = toolName,
-                                                                preview = preview,
-                                                                command = formattedInput,
-                                                                fields = fields,
-                                                                output = paired?.output,
-                                                                durationMs = paired?.durationMs ?: 0L,
-                                                                isError = paired?.isError ?: false
-                                                            )
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        } else if (contentElem.isJsonPrimitive) {
-                                            text = contentElem.asString
-                                        }
-                                    }
-
-                                    val startIndexForTurn = chatItems.size
-                                    if (text.isNotBlank() || !thinking.isNullOrBlank()) {
-                                        val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
-                                        chatItems.add(ChatItem(
-                                            id = "hist_${sessionId}_${chatItems.size}_agent",
-                                            role = MessageRole.AGENT,
-                                            content = text,
-                                            thinking = thinking,
-                                            thinkingDurationSec = estSec,
-                                            modelName = msgModelName,
-                                            usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
-                                            timestamp = timestamp
-                                        ))
-                                    }
-                                    for ((idx, tc) in toolCalls.withIndex()) {
-                                        val isFirstItemInTurn = (chatItems.size == startIndexForTurn)
-                                        val isLastToolInTurn = (idx == toolCalls.lastIndex)
-                                        chatItems.add(ChatItem(
-                                            id = "hist_${sessionId}_${chatItems.size}_tool_${tc.toolCallId ?: idx}",
-                                            role = MessageRole.TOOL,
-                                            content = "",
-                                            toolCall = tc,
-                                            modelName = if (isFirstItemInTurn) msgModelName else null,
-                                            usageSummary = if (isLastToolInTurn) turnUsageStr else null,
-                                            timestamp = timestamp
-                                        ))
-                                    }
-                                }
-                                "toolResult" -> {
-                                    val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                                        ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                                    if (tcId != null && consumedResultIds.contains(tcId)) {
-                                        // 已与对应的 toolCall 卡片配对合并，不再重复渲染第二张卡片
-                                    } else {
-                                        val toolName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString ?: "tool"
-                                        val toolOutput = extractTextFromContent(msgObj.get("content"))
-                                        val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                                        val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                        val recentIdx = chatItems.indexOfLast {
-                                            it.role == MessageRole.TOOL &&
-                                                it.toolCall?.toolName == toolName &&
-                                                it.toolCall.output.isNullOrBlank()
-                                        }
-                                        if (recentIdx >= 0) {
-                                            val prev = chatItems[recentIdx]
-                                            chatItems[recentIdx] = prev.copy(
-                                                toolCall = prev.toolCall?.copy(
-                                                    output = toolOutput,
-                                                    durationMs = duration,
-                                                    isError = isErr
-                                                )
-                                            )
-                                        } else {
-                                            chatItems.add(ChatItem(
-                                                id = "hist_${sessionId}_${chatItems.size}_toolres_${tcId ?: toolName}",
-                                                role = MessageRole.TOOL,
-                                                content = "",
-                                                toolCall = ToolCallInfo(
-                                                    toolCallId = tcId,
-                                                    toolName = toolName,
-                                                    output = toolOutput,
-                                                    durationMs = duration,
-                                                    isError = isErr
-                                                ),
-                                                timestamp = timestamp
-                                            ))
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                val parsedResult = parseRawMessagesToChatItems(
+                    sessionId = sessionId,
+                    msgs = chosenMessages,
+                    defaultModelId = currentModelId
+                )
+                val chatItems = parsedResult.items
+                if (parsedResult.lastContextTokens > 0) {
+                    lastAssistantContextTokens = parsedResult.lastContextTokens
+                    lastAssistantInTokens = parsedResult.lastInTokens
+                    lastAssistantOutTokens = parsedResult.lastOutTokens
                 }
 
                 // 2. 解析详细 Token 与监控用量
@@ -378,20 +233,30 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
 
-                val realContext = if (lastAssistantContextTokens > 0) {
-                    lastAssistantContextTokens
-                } else if (inTokens > 200000L) {
-                    (inTokens % 80000L).coerceAtLeast(24000L)
-                } else {
-                    inTokens.coerceAtLeast(18400L)
+                // 动态匹配该模型配置的上下文窗口上限（优先读取用户保存的模型覆盖配置）
+                val overrides = prefs.getModelOverrides()
+                val overrideModel = overrides["$currentProvider:$currentModelId"]
+                    ?: overrides.values.firstOrNull { it.modelId.equals(currentModelId, ignoreCase = true) }
+                val effectiveMaxContext = when {
+                    overrideModel != null && overrideModel.contextWindow > 0L -> overrideModel.contextWindow
+                    modelContextWindow > 0L -> modelContextWindow
+                    else -> 200000L
                 }
 
-                val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else if (inTokens > 200000L) 1240L else inTokens
-                val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else if (outTokens > 50000L) 412L else outTokens
+                val realContext = if (lastAssistantContextTokens > 0) {
+                    lastAssistantContextTokens
+                } else if (inTokens > effectiveMaxContext) {
+                    (inTokens % 80000L).coerceAtLeast(24000L)
+                } else {
+                    inTokens.coerceAtLeast(0L)
+                }
+
+                val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else inTokens
+                val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else outTokens
 
                 val tokenStats = TokenStats(
                     contextTokens = realContext,
-                    maxContextWindow = 200000L,
+                    maxContextWindow = effectiveMaxContext,
                     inputTokens = currentInTokens,
                     outputTokens = currentOutTokens,
                     cacheReadTokens = cacheRead,
@@ -410,6 +275,508 @@ class PiApiClient(private val prefs: AppPreferences) {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private data class ParsedMessagesResult(
+        val items: MutableList<ChatItem>,
+        val lastContextTokens: Long,
+        val lastInTokens: Long,
+        val lastOutTokens: Long
+    )
+
+    /**
+     * 当服务端默认分页截断时，通过 /api/sessions/[id]/context?tail=... 以及 before=<oldestEntryId> 拉取全部早期历史页
+     */
+    private fun fetchFullContextPages(
+        baseUrl: String,
+        sessionId: String,
+        leafId: String?,
+        tail: Int,
+        initialMsgs: JsonArray?,
+        initialCtxObj: JsonObject?
+    ): List<com.google.gson.JsonElement> {
+        val collected = mutableListOf<com.google.gson.JsonElement>()
+        var oldestEntryId: String? = null
+        var hasMore = false
+
+        // 1. 先尝试直接通过 /api/sessions/$sessionId/context?tail=$tail 获取大窗口数据
+        val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
+        val bigPageJson = runCatching {
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail$leafParam")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val str = resp.body?.string() ?: "{}"
+                    JsonParser.parseString(str).takeIf { it.isJsonObject }?.asJsonObject
+                } else null
+            }
+        }.getOrNull()
+
+        val activeCtxObj = if (bigPageJson != null) {
+            if (bigPageJson.has("context") && bigPageJson.get("context").isJsonObject) {
+                bigPageJson.getAsJsonObject("context")
+            } else bigPageJson
+        } else initialCtxObj
+
+        val baseMsgs = activeCtxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray ?: initialMsgs
+        if (baseMsgs != null) {
+            for (el in baseMsgs) collected.add(el)
+        }
+
+        hasMore = activeCtxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true
+        oldestEntryId = extractOldestEntryId(activeCtxObj, baseMsgs)
+
+        // 2. 若仍有更早的分页 (hasMore == true)，使用 before=<oldestEntryId> 向上翻页拉取并拼接到最前面
+        var pageGuard = 0
+        while (hasMore && !oldestEntryId.isNullOrBlank() && pageGuard < 12) {
+            pageGuard++
+            val encBefore = URLEncoder.encode(oldestEntryId, "UTF-8")
+            val olderJson = runCatching {
+                val req = Request.Builder()
+                    .url("$baseUrl/api/sessions/$sessionId/context?tail=200&before=$encBefore$leafParam")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val str = resp.body?.string() ?: "{}"
+                        JsonParser.parseString(str).takeIf { it.isJsonObject }?.asJsonObject
+                    } else null
+                }
+            }.getOrNull() ?: break
+
+            val olderCtx = if (olderJson.has("context") && olderJson.get("context").isJsonObject) {
+                olderJson.getAsJsonObject("context")
+            } else olderJson
+
+            val olderMsgs = olderCtx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+            if (olderMsgs == null || olderMsgs.size() == 0) break
+
+            val prependList = mutableListOf<com.google.gson.JsonElement>()
+            for (el in olderMsgs) prependList.add(el)
+            collected.addAll(0, prependList)
+
+            val nextOldest = extractOldestEntryId(olderCtx, olderMsgs)
+            hasMore = olderCtx.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true && nextOldest != oldestEntryId
+            oldestEntryId = nextOldest
+        }
+
+        return collected
+    }
+
+    private fun extractOldestEntryId(ctxObj: JsonObject?, msgs: JsonArray?): String? {
+        if (ctxObj != null) {
+            if (ctxObj.has("entryIds") && ctxObj.get("entryIds").isJsonArray) {
+                val ids = ctxObj.getAsJsonArray("entryIds")
+                if (ids.size() > 0 && !ids.get(0).isJsonNull) {
+                    return ids.get(0).asString
+                }
+            }
+            if (ctxObj.has("firstEntryId") && !ctxObj.get("firstEntryId").isJsonNull) {
+                return ctxObj.get("firstEntryId").asString
+            }
+        }
+        if (msgs != null && msgs.size() > 0 && msgs.get(0).isJsonObject) {
+            val firstMsg = msgs.get(0).asJsonObject
+            return firstMsg.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+                ?: firstMsg.get("id")?.takeIf { !it.isJsonNull }?.asString
+        }
+        return null
+    }
+
+    /**
+     * 从会话完整 entries 树中按时间顺序提取所有消息（包含被 compaction 压缩之前的全部早期消息与压缩摘要里程碑）
+     */
+    private fun extractChronologicalMessagesFromEntries(entriesArr: JsonArray, leafId: String?): JsonArray {
+        val rawEntries = mutableListOf<JsonObject>()
+        val byId = mutableMapOf<String, JsonObject>()
+        for (el in entriesArr) {
+            if (!el.isJsonObject) continue
+            val obj = el.asJsonObject
+            rawEntries.add(obj)
+            val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            if (!id.isNullOrBlank()) {
+                byId[id] = obj
+            }
+        }
+
+        // 如果存在 parentId 树结构且能够回溯到根，则提取当前活跃分支的完整根到叶路径（不跳过 compaction 之前的节点！）
+        val orderedEntries: List<JsonObject> = if (byId.isNotEmpty()) {
+            val startNode = if (!leafId.isNullOrBlank() && byId.containsKey(leafId)) {
+                byId[leafId]
+            } else {
+                rawEntries.lastOrNull { it.has("id") }
+            }
+            if (startNode != null) {
+                val branchReversed = mutableListOf<JsonObject>()
+                val visited = mutableSetOf<String>()
+                var curr: JsonObject? = startNode
+                while (curr != null) {
+                    branchReversed.add(curr)
+                    val cid = curr.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    if (cid != null) visited.add(cid)
+                    val pid = curr.get("parentId")?.takeIf { !it.isJsonNull }?.asString
+                    curr = if (!pid.isNullOrBlank() && !visited.contains(pid)) byId[pid] else null
+                }
+                val branch = branchReversed.asReversed()
+                if (branch.size >= rawEntries.size / 2) branch else rawEntries
+            } else {
+                rawEntries
+            }
+        } else {
+            rawEntries
+        }
+
+        val result = JsonArray()
+        for (entry in orderedEntries) {
+            val entryType = entry.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val entryTs = parseFlexibleTimestamp(entry.get("timestamp"))
+            when {
+                entryType == "message" && entry.has("message") && entry.get("message").isJsonObject -> {
+                    val mObj = entry.getAsJsonObject("message").deepCopy()
+                    if (!mObj.has("timestamp") && entryTs > 0L) {
+                        mObj.addProperty("timestamp", entryTs)
+                    }
+                    result.add(mObj)
+                }
+                entryType == "compaction" -> {
+                    val summary = entry.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val tokensBefore = entry.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    val synthetic = JsonObject().apply {
+                        addProperty("role", "compactionSummary")
+                        addProperty("summary", summary)
+                        addProperty("tokensBefore", tokensBefore)
+                        if (entryTs > 0L) addProperty("timestamp", entryTs)
+                    }
+                    result.add(synthetic)
+                }
+                entryType == "branch_summary" -> {
+                    val summary = entry.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    if (summary.isNotBlank()) {
+                        val synthetic = JsonObject().apply {
+                            addProperty("role", "branchSummary")
+                            addProperty("summary", summary)
+                            if (entryTs > 0L) addProperty("timestamp", entryTs)
+                        }
+                        result.add(synthetic)
+                    }
+                }
+                entryType == "custom_message" -> {
+                    val contentText = extractTextFromContent(entry.get("content"))
+                    if (contentText.isNotBlank()) {
+                        val synthetic = JsonObject().apply {
+                            addProperty("role", "system")
+                            addProperty("content", contentText)
+                            if (entryTs > 0L) addProperty("timestamp", entryTs)
+                        }
+                        result.add(synthetic)
+                    }
+                }
+                entry.has("role") -> {
+                    result.add(entry)
+                }
+            }
+        }
+        return result
+    }
+
+    private fun parseFlexibleTimestamp(el: com.google.gson.JsonElement?): Long {
+        if (el == null || el.isJsonNull) return System.currentTimeMillis()
+        if (el.isJsonPrimitive) {
+            val prim = el.asJsonPrimitive
+            if (prim.isNumber) return prim.asLong
+            if (prim.isString) {
+                val str = prim.asString
+                str.toLongOrNull()?.let { return it }
+                return runCatching { java.time.Instant.parse(str).toEpochMilli() }.getOrDefault(System.currentTimeMillis())
+            }
+        }
+        return System.currentTimeMillis()
+    }
+
+    private fun parseRawMessagesToChatItems(
+        sessionId: String,
+        msgs: JsonArray,
+        defaultModelId: String
+    ): ParsedMessagesResult {
+        val chatItems = mutableListOf<ChatItem>()
+        var lastAssistantContextTokens = 0L
+        var lastAssistantInTokens = 0L
+        var lastAssistantOutTokens = 0L
+
+        data class ParsedToolResult(
+            val toolCallId: String?,
+            val toolName: String,
+            val output: String,
+            val mediaList: List<MediaAttachment>,
+            val durationMs: Long,
+            val isError: Boolean,
+            val timestamp: Long
+        )
+        val toolResultById = mutableMapOf<String, ParsedToolResult>()
+        val consumedResultIds = mutableSetOf<String>()
+
+        for (element in msgs) {
+            if (!element.isJsonObject) continue
+            val rawObj = element.asJsonObject
+            val msgObj = if (rawObj.has("message") && rawObj.get("message").isJsonObject) {
+                rawObj.getAsJsonObject("message")
+            } else rawObj
+            val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            if (roleStr == "toolResult" || roleStr == "tool") {
+                val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                    ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                val tName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
+                    ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                    ?: "tool"
+                val contentElem = msgObj.get("content") ?: msgObj.get("output")
+                val tOut = extractTextFromContent(contentElem)
+                val tMedia = extractMediaFromContent(contentElem, tOut)
+                val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                val ts = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
+                if (!tcId.isNullOrBlank()) {
+                    toolResultById[tcId] = ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts)
+                }
+            }
+        }
+
+        for (element in msgs) {
+            if (!element.isJsonObject) continue
+            val rawObj = element.asJsonObject
+            val msgObj = if (rawObj.has("message") && rawObj.get("message").isJsonObject) {
+                rawObj.getAsJsonObject("message")
+            } else rawObj
+            val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val timestamp = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
+
+            var turnUsageStr: String? = null
+            if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {
+                val uObj = msgObj.getAsJsonObject("usage")
+                val uIn = uObj.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                val uOut = uObj.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                val uCacheR = uObj.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                val uCacheW = uObj.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                val uCost = if (uObj.has("cost") && uObj.get("cost").isJsonObject) {
+                    uObj.getAsJsonObject("cost").get("total")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                } else 0.0
+                if (uIn > 0) {
+                    lastAssistantContextTokens = uIn + uCacheR
+                    lastAssistantInTokens = uIn
+                    lastAssistantOutTokens = uOut
+                }
+                turnUsageStr = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
+            }
+
+            val msgModelName = msgObj.get("model")?.takeIf { !it.isJsonNull }?.asString
+                ?: defaultModelId
+
+            when (roleStr) {
+                "user" -> {
+                    val contentElem = msgObj.get("content") ?: msgObj.get("text")
+                    val userText = extractTextFromContent(contentElem)
+                    val userMedia = extractMediaFromContent(contentElem, userText)
+                    if (userText.isNotBlank() || userMedia.isNotEmpty()) {
+                        // 识别是否为 [Compaction summary] 摘要节点
+                        if (userText.startsWith("[Compaction summary]") || userText.startsWith("<compaction_summary>")) {
+                            val cleanSummary = userText
+                                .removePrefix("[Compaction summary]")
+                                .removePrefix("<compaction_summary>")
+                                .removeSuffix("</compaction_summary>")
+                                .trim()
+                            chatItems.add(ChatItem(
+                                id = "hist_${sessionId}_${chatItems.size}_compaction",
+                                role = MessageRole.SYSTEM,
+                                content = "📦 上下文已归档压缩" + if (cleanSummary.isNotBlank()) "\n$cleanSummary" else "",
+                                timestamp = timestamp
+                            ))
+                        } else {
+                            chatItems.add(ChatItem(
+                                id = "hist_${sessionId}_${chatItems.size}_user",
+                                role = MessageRole.USER,
+                                content = userText,
+                                mediaList = userMedia,
+                                timestamp = timestamp
+                            ))
+                        }
+                    }
+                }
+                "assistant" -> {
+                    var text = ""
+                    var thinking: String? = msgObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
+                    val toolCalls = mutableListOf<ToolCallInfo>()
+                    val assistantMedia = mutableListOf<MediaAttachment>()
+
+                    if (msgObj.has("content")) {
+                        val contentElem = msgObj.get("content")
+                        assistantMedia.addAll(extractMediaFromContent(contentElem, null))
+                        if (contentElem.isJsonArray) {
+                            for (cItem in contentElem.asJsonArray) {
+                                if (!cItem.isJsonObject) continue
+                                val cObj = cItem.asJsonObject
+                                when (cObj.get("type")?.takeIf { !it.isJsonNull }?.asString) {
+                                    "text", "output_text", "input_text" -> {
+                                        val t = cObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                        text = if (text.isEmpty()) t else "$text\n$t"
+                                    }
+                                    "thinking" -> {
+                                        val th = cObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
+                                            ?: cObj.get("text")?.takeIf { !it.isJsonNull }?.asString
+                                            ?: ""
+                                        thinking = if (thinking.isNullOrEmpty()) th else "$thinking\n$th"
+                                    }
+                                    "toolCall", "tool_use", "tool_call" -> {
+                                        val tcId = cObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                                            ?: cObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                                        val toolName = cObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
+                                            ?: cObj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                                            ?: "tool"
+                                        val inputElem = cObj.get("input") ?: cObj.get("arguments") ?: cObj.get("args")
+                                        val preview = extractToolPreview(inputElem)
+                                        val fields = extractToolFields(inputElem)
+                                        val formattedInput = formatToolInput(inputElem)
+                                        val paired = if (!tcId.isNullOrBlank()) {
+                                            consumedResultIds.add(tcId)
+                                            toolResultById[tcId]
+                                        } else null
+                                        val argMedia = extractMediaFromToolArgs(toolName, preview, inputElem)
+                                        val combinedMedia = mergeMediaLists(paired?.mediaList ?: emptyList(), argMedia)
+
+                                        toolCalls.add(
+                                            ToolCallInfo(
+                                                toolCallId = tcId,
+                                                toolName = toolName,
+                                                preview = preview,
+                                                command = formattedInput,
+                                                fields = fields,
+                                                output = paired?.output,
+                                                mediaList = combinedMedia,
+                                                durationMs = paired?.durationMs ?: 0L,
+                                                isError = paired?.isError ?: false
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        } else if (contentElem.isJsonPrimitive) {
+                            text = contentElem.asString
+                        }
+                    }
+
+                    val startIndexForTurn = chatItems.size
+                    if (text.isNotBlank() || !thinking.isNullOrBlank() || assistantMedia.isNotEmpty()) {
+                        val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
+                        chatItems.add(ChatItem(
+                            id = "hist_${sessionId}_${chatItems.size}_agent",
+                            role = MessageRole.AGENT,
+                            content = text,
+                            thinking = thinking,
+                            thinkingDurationSec = estSec,
+                            mediaList = assistantMedia,
+                            modelName = msgModelName,
+                            usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
+                            timestamp = timestamp
+                        ))
+                    }
+                    for ((idx, tc) in toolCalls.withIndex()) {
+                        val isFirstItemInTurn = (chatItems.size == startIndexForTurn)
+                        val isLastToolInTurn = (idx == toolCalls.lastIndex)
+                        chatItems.add(ChatItem(
+                            id = "hist_${sessionId}_${chatItems.size}_tool_${tc.toolCallId ?: idx}",
+                            role = MessageRole.TOOL,
+                            content = "",
+                            toolCall = tc,
+                            modelName = if (isFirstItemInTurn) msgModelName else null,
+                            usageSummary = if (isLastToolInTurn) turnUsageStr else null,
+                            timestamp = timestamp
+                        ))
+                    }
+                }
+                "toolResult", "tool" -> {
+                    val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
+                        ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    if (tcId != null && consumedResultIds.contains(tcId)) {
+                        // 已与对应的 toolCall 卡片配对合并，不再重复渲染第二张卡片
+                    } else {
+                        val toolName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
+                            ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                            ?: "tool"
+                        val contentElem = msgObj.get("content") ?: msgObj.get("output")
+                        val toolOutput = extractTextFromContent(contentElem)
+                        val toolMedia = extractMediaFromContent(contentElem, toolOutput)
+                        val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                        val recentIdx = chatItems.indexOfLast {
+                            it.role == MessageRole.TOOL &&
+                                it.toolCall?.toolName == toolName &&
+                                it.toolCall.output.isNullOrBlank()
+                        }
+                        if (recentIdx >= 0) {
+                            val prev = chatItems[recentIdx]
+                            val prevTool = prev.toolCall
+                            chatItems[recentIdx] = prev.copy(
+                                toolCall = prevTool?.copy(
+                                    output = toolOutput,
+                                    mediaList = mergeMediaLists(toolMedia, prevTool.mediaList),
+                                    durationMs = duration,
+                                    isError = isErr
+                                )
+                            )
+                        } else {
+                            chatItems.add(ChatItem(
+                                id = "hist_${sessionId}_${chatItems.size}_toolres_${tcId ?: toolName}",
+                                role = MessageRole.TOOL,
+                                content = "",
+                                toolCall = ToolCallInfo(
+                                    toolCallId = tcId,
+                                    toolName = toolName,
+                                    output = toolOutput,
+                                    mediaList = toolMedia,
+                                    durationMs = duration,
+                                    isError = isErr
+                                ),
+                                timestamp = timestamp
+                            ))
+                        }
+                    }
+                }
+                "compactionSummary", "branchSummary" -> {
+                    val summary = msgObj.get("summary")?.takeIf { !it.isJsonNull }?.asString
+                        ?: extractTextFromContent(msgObj.get("content"))
+                    val tokensBefore = msgObj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    val header = if (tokensBefore > 0) {
+                        "📦 上下文已归档压缩 (压缩前 ${TokenStats.formatTokenCompact(tokensBefore)} tokens)"
+                    } else {
+                        "📦 上下文已归档压缩"
+                    }
+                    chatItems.add(ChatItem(
+                        id = "hist_${sessionId}_${chatItems.size}_compaction",
+                        role = MessageRole.SYSTEM,
+                        content = if (summary.isNotBlank()) "$header\n$summary" else header,
+                        timestamp = timestamp
+                    ))
+                }
+                "custom", "system" -> {
+                    val sysText = extractTextFromContent(msgObj.get("content") ?: msgObj.get("text"))
+                    if (sysText.isNotBlank()) {
+                        chatItems.add(ChatItem(
+                            id = "hist_${sessionId}_${chatItems.size}_sys",
+                            role = MessageRole.SYSTEM,
+                            content = sysText,
+                            timestamp = timestamp
+                        ))
+                    }
+                }
+            }
+        }
+
+        return ParsedMessagesResult(
+            items = chatItems,
+            lastContextTokens = lastAssistantContextTokens,
+            lastInTokens = lastAssistantInTokens,
+            lastOutTokens = lastAssistantOutTokens
+        )
     }
 
     /**
@@ -473,6 +840,119 @@ class PiApiClient(private val prefs: AppPreferences) {
         return element.toString()
     }
 
+    private fun extractMediaFromContent(
+        element: com.google.gson.JsonElement?,
+        outputText: String? = null
+    ): List<MediaAttachment> {
+        val list = mutableListOf<MediaAttachment>()
+        if (element != null && element.isJsonArray) {
+            for (item in element.asJsonArray) {
+                if (!item.isJsonObject) continue
+                val obj = item.asJsonObject
+                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                if (type == "image" || type == "image_url" || type == "document" || obj.has("data") || obj.has("source")) {
+                    val srcObj = obj.get("source")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val mime = obj.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("mediaType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("media_type")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
+                        ?: "image/png"
+                    val b64 = obj.get("data")?.takeIf { !it.isJsonNull }?.asString
+                        ?: srcObj?.get("data")?.takeIf { !it.isJsonNull }?.asString
+                    val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("image_url")?.takeIf { it.isJsonObject }?.asJsonObject?.get("url")?.takeIf { !it.isJsonNull }?.asString
+                    val kind = when {
+                        mime.contains("pdf", ignoreCase = true) -> MediaKind.PDF
+                        mime.contains("svg", ignoreCase = true) -> MediaKind.SVG
+                        else -> MediaKind.IMAGE
+                    }
+                    if (!b64.isNullOrBlank() || !urlVal.isNullOrBlank()) {
+                        list.add(
+                            MediaAttachment(
+                                kind = kind,
+                                mimeType = mime,
+                                dataBase64 = b64?.substringAfter("base64,", b64),
+                                url = urlVal
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        if (!outputText.isNullOrBlank() && outputText.contains("<svg", ignoreCase = true) && outputText.contains("</svg>", ignoreCase = true)) {
+            val svgMatch = Regex("""<svg[\s\S]*?</svg>""", RegexOption.IGNORE_CASE).find(outputText)
+            if (svgMatch != null) {
+                list.add(
+                    MediaAttachment(
+                        kind = MediaKind.SVG,
+                        mimeType = "image/svg+xml",
+                        svgOrCode = svgMatch.value,
+                        title = "SVG 矢量图"
+                    )
+                )
+            }
+        }
+        return list
+    }
+
+    private fun extractMediaFromToolArgs(
+        toolName: String,
+        preview: String?,
+        argsElem: com.google.gson.JsonElement?
+    ): List<MediaAttachment> {
+        val rawPath = preview?.takeIf { it.isNotBlank() } ?: run {
+            if (argsElem != null && argsElem.isJsonObject) {
+                val obj = argsElem.asJsonObject
+                (obj.get("path") ?: obj.get("file_path") ?: obj.get("filePath"))
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+            } else null
+        } ?: return emptyList()
+
+        val cleanPath = rawPath.trim().removeSurrounding("\"").removeSurrounding("'")
+        val lower = cleanPath.lowercase()
+        val isReadOrFileTool = toolName.lowercase() in setOf("read", "view_file", "read_file", "write", "write_file", "open")
+        if (!isReadOrFileTool && !lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") &&
+            !lower.endsWith(".webp") && !lower.endsWith(".gif") && !lower.endsWith(".svg") && !lower.endsWith(".pdf")
+        ) {
+            return emptyList()
+        }
+
+        val (kind, mime) = when {
+            lower.endsWith(".png") -> MediaKind.IMAGE to "image/png"
+            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> MediaKind.IMAGE to "image/jpeg"
+            lower.endsWith(".webp") -> MediaKind.IMAGE to "image/webp"
+            lower.endsWith(".gif") -> MediaKind.IMAGE to "image/gif"
+            lower.endsWith(".bmp") -> MediaKind.IMAGE to "image/bmp"
+            lower.endsWith(".svg") -> MediaKind.SVG to "image/svg+xml"
+            lower.endsWith(".pdf") -> MediaKind.PDF to "application/pdf"
+            else -> return emptyList()
+        }
+
+        return listOf(
+            MediaAttachment(
+                kind = kind,
+                mimeType = mime,
+                filePath = cleanPath,
+                title = cleanPath.substringAfterLast('/').substringAfterLast('\\')
+            )
+        )
+    }
+
+    private fun mergeMediaLists(
+        primary: List<MediaAttachment>,
+        secondary: List<MediaAttachment>
+    ): List<MediaAttachment> {
+        if (primary.isEmpty()) return secondary
+        if (secondary.isEmpty()) return primary
+        val fallbackMeta = secondary.firstOrNull()
+        return primary.map { item ->
+            item.copy(
+                filePath = item.filePath ?: fallbackMeta?.filePath,
+                title = item.title.ifBlank { fallbackMeta?.title ?: "" }
+            )
+        }
+    }
+
     // ==========================================
     // 3. 动态获取可用模型与推理级别 (GET /api/models)
     // 杜绝任何硬编码！
@@ -484,23 +964,26 @@ class PiApiClient(private val prefs: AppPreferences) {
             val req = Request.Builder().url("$baseUrl/api/models").get().build()
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return@withContext Result.success(getDefaultCatalog())
+                    return@withContext Result.success(applyModelOverrides(getDefaultCatalog(), null))
                 }
                 val body = response.body?.string() ?: "{}"
                 val json = JsonParser.parseString(body).asJsonObject
 
                 val models = mutableListOf<ModelInfo>()
-                if (json.has("modelList")) {
+                if (json.has("modelList") && json.get("modelList").isJsonArray) {
                     val array = json.getAsJsonArray("modelList")
                     for (item in array) {
+                        if (!item.isJsonObject) continue
                         val obj = item.asJsonObject
-                        val id = obj.get("id")?.asString ?: ""
+                        val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
                         val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
                         val provider = obj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: "Default"
                         val ctxWin = obj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 200000L
                         val maxTok = obj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong ?: 8192L
                         val reasoning = obj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
-                        val input = obj.getAsJsonArray("input")?.map { it.asString } ?: emptyList()
+                        val input = obj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
+                            runCatching { it.asString }.getOrNull()
+                        } ?: emptyList()
                         models.add(ModelInfo(
                             id = id,
                             name = name,
@@ -515,23 +998,378 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
 
                 val levelsMap = mutableMapOf<String, List<String>>()
-                if (json.has("thinkingLevels")) {
+                if (json.has("thinkingLevels") && json.get("thinkingLevels").isJsonObject) {
                     val obj = json.getAsJsonObject("thinkingLevels")
                     for ((k, v) in obj.entrySet()) {
                         if (v.isJsonArray) {
-                            levelsMap[k] = v.asJsonArray.map { it.asString }
+                            levelsMap[k] = v.asJsonArray.mapNotNull { runCatching { it.asString }.getOrNull() }
                         }
                     }
                 }
 
-                Result.success(DynamicModelCatalog(
+                // 同时拉取 /api/models-config (models.json) 与本地保存的模型参数覆盖，确保用户修改的 contextWindow 等参数100%生效且不回退
+                val serverModelsConfig = fetchServerModelsConfigObject(baseUrl)
+                val baseCatalog = DynamicModelCatalog(
                     models = models.ifEmpty { getDefaultCatalog().models },
                     thinkingLevelsMap = levelsMap
-                ))
+                )
+                Result.success(applyModelOverrides(baseCatalog, serverModelsConfig))
             }
         } catch (e: Exception) {
-            Result.success(getDefaultCatalog())
+            Result.success(applyModelOverrides(getDefaultCatalog(), null))
         }
+    }
+
+    private data class ModelsConfigFetchResult(
+        val config: JsonObject,
+        val wrappedInConfigKey: Boolean,
+        val wasHealed: Boolean
+    )
+
+    private fun fetchServerModelsConfigWithEnvelope(baseUrl: String, autoPushHeal: Boolean = true): ModelsConfigFetchResult? {
+        if (baseUrl.isBlank()) return null
+        return runCatching {
+            val req = Request.Builder().url("$baseUrl/api/models-config").get().build()
+            val fetched = client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val str = resp.body?.string()?.trim() ?: return@use null
+                if (str.isEmpty()) return@use ModelsConfigFetchResult(JsonObject().apply { add("providers", JsonObject()) }, false, false)
+                val parsed = runCatching { JsonParser.parseString(str) }.getOrNull() ?: return@use null
+                if (!parsed.isJsonObject) return@use null
+                val root = parsed.asJsonObject
+                var wrappedInConfig = false
+                val targetObj: JsonObject = when {
+                    root.has("providers") && root.get("providers").isJsonObject -> {
+                        // 如果同时存在残留的顶层 config 字段，说明曾被旧版写入污染，后续由 sanitizeAndHealModelsConfig 清理
+                        root.deepCopy()
+                    }
+                    root.has("config") && root.get("config").isJsonObject -> {
+                        wrappedInConfig = true
+                        root.getAsJsonObject("config").deepCopy()
+                    }
+                    root.has("config") && root.get("config").isJsonPrimitive -> {
+                        wrappedInConfig = true
+                        val innerStr = root.get("config").asString
+                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                    }
+                    root.has("content") && root.get("content").isJsonPrimitive -> {
+                        val innerStr = root.get("content").asString
+                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                    }
+                    root.has("raw") && root.get("raw").isJsonPrimitive -> {
+                        val innerStr = root.get("raw").asString
+                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                    }
+                    else -> root.deepCopy()
+                }
+                val healed = sanitizeAndHealModelsConfig(targetObj)
+                ModelsConfigFetchResult(targetObj, wrappedInConfig, healed)
+            } ?: return@runCatching null
+
+            if (fetched.wasHealed && autoPushHeal) {
+                runCatching {
+                    putModelsConfigToServer(baseUrl, fetched.config, fetched.wrappedInConfigKey)
+                }
+            }
+            fetched
+        }.getOrNull()
+    }
+
+    private fun fetchServerModelsConfigObject(baseUrl: String): JsonObject? {
+        return fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = true)?.config
+    }
+
+    /**
+     * 自动检测并无损修复损坏的 models.json：
+     * 1. 若顶层意外残留了 "config" 递归包装，抢救其中的 providers 后移除顶层 "config"（修复 schema 校验报错）
+     * 2. 若某个 provider 下存在 "models" 数组但却没有 "baseUrl"（此前修改单个内置模型如 Gemini 上下文时误写入了 1 项 models 数组，导致该提供商其他模型被清空且缺失 baseUrl 引起 pi 无法工作），
+     *    自动将其中的模型参数无损迁移到 pi-coding-agent 官方标准的 "modelOverrides" 字段下，并移除非法的无 baseUrl "models" 数组！
+     */
+    private fun sanitizeAndHealModelsConfig(rootConfig: JsonObject): Boolean {
+        var modified = false
+
+        val providersObj = if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
+            rootConfig.getAsJsonObject("providers")
+        } else {
+            JsonObject().also { rootConfig.add("providers", it) }
+        }
+
+        // 1. 抢救并移除顶层可能残留的 "config" 污染字段
+        if (rootConfig.has("config")) {
+            val nested = rootConfig.get("config")
+            if (nested != null && nested.isJsonObject) {
+                val nestedObj = nested.asJsonObject
+                if (nestedObj.has("providers") && nestedObj.get("providers").isJsonObject) {
+                    val nestedProviders = nestedObj.getAsJsonObject("providers")
+                    for ((k, v) in nestedProviders.entrySet()) {
+                        if (!providersObj.has(k) && v.isJsonObject) {
+                            providersObj.add(k, v)
+                        }
+                    }
+                }
+            }
+            rootConfig.remove("config")
+            modified = true
+        }
+
+        // 2. 检查每个 provider：若没有 baseUrl 却定义了 models 数组，无损转换为 modelOverrides
+        for ((_, provElem) in providersObj.entrySet()) {
+            if (!provElem.isJsonObject) continue
+            val pObj = provElem.asJsonObject
+            val baseUrlVal = pObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim() ?: ""
+            val hasModelsArr = pObj.has("models") && pObj.get("models").isJsonArray
+            if (hasModelsArr && baseUrlVal.isEmpty()) {
+                val mArr = pObj.getAsJsonArray("models")
+                val overridesObj = if (pObj.has("modelOverrides") && pObj.get("modelOverrides").isJsonObject) {
+                    pObj.getAsJsonObject("modelOverrides")
+                } else {
+                    JsonObject().also { pObj.add("modelOverrides", it) }
+                }
+
+                for (mElem in mArr) {
+                    if (!mElem.isJsonObject) continue
+                    val mObj = mElem.asJsonObject
+                    val mId = mObj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                    val ovItem = if (overridesObj.has(mId) && overridesObj.get(mId).isJsonObject) {
+                        overridesObj.getAsJsonObject(mId)
+                    } else {
+                        JsonObject().also { overridesObj.add(mId, it) }
+                    }
+                    mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }?.let {
+                        ovItem.addProperty("name", it)
+                    }
+                    mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong?.let {
+                        ovItem.addProperty("contextWindow", it)
+                    }
+                    mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong?.let {
+                        ovItem.addProperty("maxTokens", it)
+                    }
+                    mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean?.let {
+                        ovItem.addProperty("reasoning", it)
+                    }
+                    if (mObj.has("input") && mObj.get("input").isJsonArray) {
+                        ovItem.add("input", mObj.getAsJsonArray("input").deepCopy())
+                    }
+                }
+
+                pObj.remove("models")
+                // 若没有 baseUrl，移除之前误加的默认 api: "openai-completions" 以免破坏 google/anthropic 等原生协议
+                if (!pObj.has("baseUrl")) {
+                    pObj.remove("api")
+                }
+                modified = true
+            }
+        }
+
+        return modified
+    }
+
+    /**
+     * 将纯净的 models.json 配置写回网关并触发模型目录刷新
+     */
+    private fun putModelsConfigToServer(
+        baseUrl: String,
+        cleanRootConfig: JsonObject,
+        wrappedInConfigKey: Boolean
+    ): Boolean {
+        cleanRootConfig.remove("config")
+        val primaryPayload = if (wrappedInConfigKey) {
+            JsonObject().apply { add("config", cleanRootConfig) }
+        } else {
+            cleanRootConfig
+        }
+        val req1 = Request.Builder()
+            .url("$baseUrl/api/models-config")
+            .put(gson.toJson(primaryPayload).toRequestBody(jsonMediaType))
+            .build()
+        val ok1 = runCatching {
+            client.newCall(req1).execute().use { it.isSuccessful }
+        }.getOrDefault(false)
+
+        if (!ok1) {
+            val fallbackPayload = if (wrappedInConfigKey) {
+                cleanRootConfig
+            } else {
+                JsonObject().apply { add("config", cleanRootConfig) }
+            }
+            val req2 = Request.Builder()
+                .url("$baseUrl/api/models-config")
+                .put(gson.toJson(fallbackPayload).toRequestBody(jsonMediaType))
+                .build()
+            val ok2 = runCatching {
+                client.newCall(req2).execute().use { it.isSuccessful }
+            }.getOrDefault(false)
+            if (!ok2) return false
+        }
+
+        runCatching {
+            val refreshReq = Request.Builder()
+                .url("$baseUrl/api/models/refresh")
+                .post("{}".toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(refreshReq).execute().close()
+        }
+        return true
+    }
+
+    /**
+     * 将服务端 models.json 中的自定义配置 (models 与 modelOverrides) 以及本地持久化的用户修改参数合并至模型列表中
+     */
+    private fun applyModelOverrides(
+        catalog: DynamicModelCatalog,
+        serverConfig: JsonObject?
+    ): DynamicModelCatalog {
+        val merged = catalog.models.toMutableList()
+
+        // 1. 应用服务端 models.json 中的 providers.<prov>.models 与 providers.<prov>.modelOverrides 配置
+        if (serverConfig != null && serverConfig.has("providers") && serverConfig.get("providers").isJsonObject) {
+            val providersObj = serverConfig.getAsJsonObject("providers")
+            for ((provName, provElem) in providersObj.entrySet()) {
+                if (!provElem.isJsonObject) continue
+                val pObj = provElem.asJsonObject
+                val provBaseUrl = pObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+                val provApi = pObj.get("api")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+
+                // 为该提供商下的所有现有模型补充 baseUrl / apiType 元信息，方便编辑弹窗回填
+                if (!provBaseUrl.isNullOrBlank() || !provApi.isNullOrBlank()) {
+                    for (i in merged.indices) {
+                        if (merged[i].provider.equals(provName, ignoreCase = true)) {
+                            merged[i] = merged[i].copy(
+                                baseUrl = provBaseUrl ?: merged[i].baseUrl,
+                                apiType = provApi ?: merged[i].apiType
+                            )
+                        }
+                    }
+                }
+
+                // 1a. 处理自定义提供商的 models 数组
+                val mArr = pObj.get("models")?.takeIf { it.isJsonArray }?.asJsonArray
+                if (mArr != null) {
+                    for (mElem in mArr) {
+                        if (!mElem.isJsonObject) continue
+                        val mObj = mElem.asJsonObject
+                        val mId = mObj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                        val mName = mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: mId
+                        val ctxWin = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
+                        val maxTok = mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong
+                        val reasoning = mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean
+                        val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
+                            runCatching { it.asString }.getOrNull()
+                        }
+                        val idx = merged.indexOfFirst {
+                            it.provider.equals(provName, ignoreCase = true) && it.id.equals(mId, ignoreCase = true)
+                        }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(mId, ignoreCase = true) }
+
+                        if (idx >= 0) {
+                            val old = merged[idx]
+                            val newInputs = inputList ?: old.input
+                            merged[idx] = old.copy(
+                                name = mName.ifBlank { old.name },
+                                contextWindow = ctxWin ?: old.contextWindow,
+                                maxTokens = maxTok ?: old.maxTokens,
+                                supportsThinking = reasoning ?: old.supportsThinking,
+                                supportsVision = if (inputList != null) inputList.contains("image") else old.supportsVision,
+                                input = newInputs,
+                                baseUrl = provBaseUrl ?: old.baseUrl,
+                                apiType = provApi ?: old.apiType
+                            )
+                        } else {
+                            val inputs = inputList ?: listOf("text")
+                            merged.add(
+                                ModelInfo(
+                                    id = mId,
+                                    name = mName,
+                                    provider = provName,
+                                    contextWindow = ctxWin ?: 200000L,
+                                    maxTokens = maxTok ?: 8192L,
+                                    supportsThinking = reasoning ?: true,
+                                    supportsVision = inputs.contains("image"),
+                                    input = inputs,
+                                    baseUrl = provBaseUrl,
+                                    apiType = provApi
+                                )
+                            )
+                        }
+                    }
+                }
+
+                // 1b. 处理 pi-coding-agent 标准 modelOverrides 字典 (无损覆盖内置或扩展模型参数)
+                val ovObj = pObj.get("modelOverrides")?.takeIf { it.isJsonObject }?.asJsonObject
+                if (ovObj != null) {
+                    for ((mIdKey, ovElem) in ovObj.entrySet()) {
+                        if (!ovElem.isJsonObject) continue
+                        val mObj = ovElem.asJsonObject
+                        val mId = mIdKey.trim()
+                        val mName = mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                        val ctxWin = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
+                        val maxTok = mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong
+                        val reasoning = mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean
+                        val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
+                            runCatching { it.asString }.getOrNull()
+                        }
+                        val idx = merged.indexOfFirst {
+                            it.provider.equals(provName, ignoreCase = true) && it.id.equals(mId, ignoreCase = true)
+                        }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(mId, ignoreCase = true) }
+
+                        if (idx >= 0) {
+                            val old = merged[idx]
+                            val newInputs = inputList ?: old.input
+                            merged[idx] = old.copy(
+                                name = if (!mName.isNullOrBlank()) mName else old.name,
+                                contextWindow = ctxWin ?: old.contextWindow,
+                                maxTokens = maxTok ?: old.maxTokens,
+                                supportsThinking = reasoning ?: old.supportsThinking,
+                                supportsVision = if (inputList != null) inputList.contains("image") else old.supportsVision,
+                                input = newInputs,
+                                baseUrl = provBaseUrl ?: old.baseUrl,
+                                apiType = provApi ?: old.apiType
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 再应用用户在 App 内保存的持久化覆盖配置（确保即使修改内置模型参数也 100% 永久生效）
+        val localOverrides = prefs.getModelOverrides()
+        for ((_, ov) in localOverrides) {
+            val idx = merged.indexOfFirst {
+                it.provider.equals(ov.provider, ignoreCase = true) && it.id.equals(ov.modelId, ignoreCase = true)
+            }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(ov.modelId, ignoreCase = true) }
+
+            val inputs = if (ov.supportsVision) listOf("text", "image") else listOf("text")
+            if (idx >= 0) {
+                val old = merged[idx]
+                merged[idx] = old.copy(
+                    provider = ov.provider.ifBlank { old.provider },
+                    name = ov.name.ifBlank { old.name },
+                    contextWindow = ov.contextWindow,
+                    maxTokens = ov.maxTokens,
+                    supportsThinking = ov.reasoning,
+                    supportsVision = ov.supportsVision,
+                    input = inputs,
+                    baseUrl = ov.baseUrl.takeIf { it.isNotBlank() } ?: old.baseUrl,
+                    apiType = ov.apiType.takeIf { it.isNotBlank() } ?: old.apiType
+                )
+            } else if (ov.baseUrl.isNotBlank()) {
+                merged.add(
+                    ModelInfo(
+                        id = ov.modelId,
+                        name = ov.name.ifBlank { ov.modelId },
+                        provider = ov.provider,
+                        contextWindow = ov.contextWindow,
+                        maxTokens = ov.maxTokens,
+                        supportsThinking = ov.reasoning,
+                        supportsVision = ov.supportsVision,
+                        input = inputs,
+                        baseUrl = ov.baseUrl,
+                        apiType = ov.apiType
+                    )
+                )
+            }
+        }
+
+        return catalog.copy(models = merged)
     }
 
     // ==========================================
@@ -601,48 +1439,98 @@ class PiApiClient(private val prefs: AppPreferences) {
         getSessionDetail(sessionId).map { it.stats }
     }
 
+    private fun sanitizeCwd(cwd: String): String {
+        val trimmed = cwd.trim()
+        if (trimmed.isBlank() || trimmed == "默认工作区" || trimmed == "全部工作区") return ""
+        if (!trimmed.contains('/') && !trimmed.contains('\\')) return ""
+        return trimmed
+    }
+
     // ==========================================
     // 5. 技能 (GET /api/skills)
     // ==========================================
 
     suspend fun getSkills(cwd: String = ""): Result<List<SkillInfo>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        try {
-            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
-            val url = if (cwd.isNotBlank()) "$baseUrl/api/skills?cwd=$encodedCwd" else "$baseUrl/api/skills"
-            val req = Request.Builder().url(url).get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
+        if (baseUrl.isBlank()) return@withContext Result.success(getDefaultSkills())
+        val validCwd = sanitizeCwd(cwd)
+        val urlsToTry = if (validCwd.isNotBlank()) {
+            val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
+            listOf("$baseUrl/api/skills?cwd=$encodedCwd", "$baseUrl/api/skills")
+        } else {
+            listOf("$baseUrl/api/skills")
+        }
+
+        for (url in urlsToTry) {
+            try {
+                val req = Request.Builder().url(url).get().build()
+                val parsedList = client.newCall(req).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
                     val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
+                    val jsonEl = runCatching { JsonParser.parseString(body) }.getOrNull() ?: return@use null
+                    val array = when {
+                        jsonEl.isJsonArray -> jsonEl.asJsonArray
+                        jsonEl.isJsonObject && jsonEl.asJsonObject.has("skills") && jsonEl.asJsonObject.get("skills").isJsonArray ->
+                            jsonEl.asJsonObject.getAsJsonArray("skills")
+                        jsonEl.isJsonObject && jsonEl.asJsonObject.has("items") && jsonEl.asJsonObject.get("items").isJsonArray ->
+                            jsonEl.asJsonObject.getAsJsonArray("items")
+                        else -> null
+                    } ?: return@use null
+
                     val list = mutableListOf<SkillInfo>()
-                    if (json.has("skills")) {
-                        val array = json.getAsJsonArray("skills")
-                        for (item in array) {
-                            val obj = item.asJsonObject
-                            val name = obj.get("name")?.asString ?: ""
-                            val description = obj.get("description")?.asString
-                            val filePath = obj.get("filePath")?.asString
-                            val baseDir = obj.get("baseDir")?.asString
-                            val disabled = obj.get("disableModelInvocation")?.asBoolean ?: false
-                            list.add(SkillInfo(
+                    for (item in array) {
+                        if (!item.isJsonObject) continue
+                        val obj = item.asJsonObject
+                        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                            ?: continue
+                        val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
+                        val baseDir = obj.get("baseDir")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("dir")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("directory")?.takeIf { !it.isJsonNull }?.asString
+                        val rawFilePath = obj.get("filePath")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("path")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("skillPath")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("location")?.takeIf { !it.isJsonNull }?.asString
+                        val resolvedFilePath = rawFilePath?.takeIf { it.isNotBlank() }
+                            ?: baseDir?.takeIf { it.isNotBlank() }?.let { dir ->
+                                val sep = if (dir.contains('\\')) "\\" else "/"
+                                dir.trimEnd('/', '\\') + sep + "SKILL.md"
+                            }
+                        val inlineContent = obj.get("content")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("markdown")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("rawContent")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.get("body")?.takeIf { !it.isJsonNull }?.asString
+                        val disabled = obj.get("disableModelInvocation")?.takeIf { !it.isJsonNull }?.asBoolean
+                            ?: obj.get("disabled")?.takeIf { !it.isJsonNull }?.asBoolean
+                            ?: false
+                        val scopeStr = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val isGlobal = scopeStr.equals("global", true) ||
+                            scopeStr.equals("user", true) ||
+                            resolvedFilePath?.contains(".pi", true) == true ||
+                            resolvedFilePath?.contains("global", true) == true
+                        list.add(
+                            SkillInfo(
                                 name = name,
                                 description = description,
-                                filePath = filePath,
+                                filePath = resolvedFilePath,
                                 baseDir = baseDir,
                                 enabled = !disabled,
-                                category = if (filePath?.contains("global", true) == true) "全局技能" else "工作区技能"
-                            ))
-                        }
+                                category = if (isGlobal) "全局技能" else "工作区技能",
+                                disableModelInvocation = disabled,
+                                content = inlineContent
+                            )
+                        )
                     }
-                    Result.success(list.ifEmpty { getDefaultSkills() })
-                } else {
-                    Result.success(getDefaultSkills())
+                    list
                 }
+                if (!parsedList.isNullOrEmpty()) {
+                    return@withContext Result.success(parsedList)
+                }
+            } catch (_: Exception) {
             }
-        } catch (e: Exception) {
-            Result.success(getDefaultSkills())
         }
+        Result.success(getDefaultSkills())
     }
 
     // ==========================================
@@ -651,46 +1539,58 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getPlugins(cwd: String = ""): Result<List<PluginPackage>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        try {
-            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
-            val url = if (cwd.isNotBlank()) "$baseUrl/api/plugins?cwd=$encodedCwd" else "$baseUrl/api/plugins"
-            val req = Request.Builder().url(url).get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
+        if (baseUrl.isBlank()) return@withContext Result.success(getDefaultPlugins())
+        val validCwd = sanitizeCwd(cwd)
+        val urlsToTry = if (validCwd.isNotBlank()) {
+            val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
+            listOf("$baseUrl/api/plugins?cwd=$encodedCwd", "$baseUrl/api/plugins")
+        } else {
+            listOf("$baseUrl/api/plugins")
+        }
+
+        for (url in urlsToTry) {
+            try {
+                val req = Request.Builder().url(url).get().build()
+                val parsedList = client.newCall(req).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
                     val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
+                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
                     val list = mutableListOf<PluginPackage>()
-                    if (json.has("packages")) {
+                    if (json.has("packages") && json.get("packages").isJsonArray) {
                         val array = json.getAsJsonArray("packages")
                         for (item in array) {
+                            if (!item.isJsonObject) continue
                             val obj = item.asJsonObject
-                            val packageName = obj.get("packageName")?.asString ?: "plugin"
-                            val version = obj.get("version")?.asString ?: "1.0.0"
-                            val description = obj.get("description")?.asString
-                            val source = obj.get("source")?.asString
-                            val scope = obj.get("scope")?.asString ?: "global"
-                            val status = obj.get("status")?.asString ?: "loaded"
-                            val disabled = obj.get("disabled")?.asBoolean ?: false
+                            val packageName = obj.get("packageName")?.takeIf { !it.isJsonNull }?.asString ?: "plugin"
+                            val version = obj.get("version")?.takeIf { !it.isJsonNull }?.asString ?: "1.0.0"
+                            val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
+                            val source = obj.get("source")?.takeIf { !it.isJsonNull }?.asString
+                            val scope = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: "global"
+                            val status = obj.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "loaded"
+                            val disabled = obj.get("disabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
 
-                            list.add(PluginPackage(
-                                packageName = packageName,
-                                version = version,
-                                description = description,
-                                source = source,
-                                scope = scope,
-                                status = status,
-                                disabled = disabled
-                            ))
+                            list.add(
+                                PluginPackage(
+                                    packageName = packageName,
+                                    version = version,
+                                    description = description,
+                                    source = source,
+                                    scope = scope,
+                                    status = status,
+                                    disabled = disabled
+                                )
+                            )
                         }
                     }
-                    Result.success(list.ifEmpty { getDefaultPlugins() })
-                } else {
-                    Result.success(getDefaultPlugins())
+                    list
                 }
+                if (!parsedList.isNullOrEmpty()) {
+                    return@withContext Result.success(parsedList)
+                }
+            } catch (_: Exception) {
             }
-        } catch (e: Exception) {
-            Result.success(getDefaultPlugins())
         }
+        Result.success(getDefaultPlugins())
     }
 
     // ==========================================
@@ -699,38 +1599,53 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getMcpServers(cwd: String = ""): Result<Pair<McpCodeModeConfig, List<McpServerInfo>>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        try {
-            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
-            val url = if (cwd.isNotBlank()) "$baseUrl/api/mcp?cwd=$encodedCwd" else "$baseUrl/api/mcp"
-            val req = Request.Builder().url(url).get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
+        if (baseUrl.isBlank()) return@withContext Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+        val validCwd = sanitizeCwd(cwd)
+        val urlsToTry = if (validCwd.isNotBlank()) {
+            val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
+            listOf("$baseUrl/api/mcp?cwd=$encodedCwd", "$baseUrl/api/mcp")
+        } else {
+            listOf("$baseUrl/api/mcp")
+        }
+
+        for (url in urlsToTry) {
+            try {
+                val req = Request.Builder().url(url).get().build()
+                val resultPair = client.newCall(req).execute().use { response ->
+                    if (!response.isSuccessful) return@use null
                     val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
+                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
 
                     var codeMode = "automatic"
                     var budget = 3000
-                    if (json.has("codemode")) {
+                    if (json.has("codemode") && json.get("codemode").isJsonObject) {
                         val cm = json.getAsJsonObject("codemode")
-                        codeMode = cm.get("preference")?.asString ?: "automatic"
-                        if (cm.has("inlineBudget")) {
-                            budget = cm.getAsJsonObject("inlineBudget").get("default")?.asInt ?: 3000
+                        codeMode = cm.get("preference")?.takeIf { !it.isJsonNull }?.asString ?: "automatic"
+                        if (cm.has("inlineBudget") && cm.get("inlineBudget").isJsonObject) {
+                            budget = cm.getAsJsonObject("inlineBudget").get("default")?.takeIf { !it.isJsonNull }?.asInt ?: 3000
                         }
                     }
                     val config = McpCodeModeConfig(mode = codeMode, scriptMode = true, tokenBudget = budget)
 
                     val servers = mutableListOf<McpServerInfo>()
-                    if (json.has("servers")) {
+                    if (json.has("servers") && json.get("servers").isJsonArray) {
                         val array = json.getAsJsonArray("servers")
                         for (item in array) {
+                            if (!item.isJsonObject) continue
                             val obj = item.asJsonObject
-                            val name = obj.get("name")?.asString ?: ""
+                            val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
                             val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
-                            val transport = obj.get("transport")?.takeIf { !it.isJsonNull }?.asString ?: "http"
+                            val rawTransport = obj.get("transport")?.takeIf { !it.isJsonNull }?.asString
+                            val cmd = obj.get("command")?.takeIf { !it.isJsonNull }?.asString
+                            val transport = when {
+                                rawTransport?.equals("stdio", ignoreCase = true) == true -> "stdio"
+                                rawTransport != null -> "http"
+                                !cmd.isNullOrBlank() -> "stdio"
+                                else -> "http"
+                            }
                             val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString ?: run {
-                                val cmd = obj.get("command")?.takeIf { !it.isJsonNull }?.asString
                                 val args = if (obj.has("args") && obj.get("args").isJsonArray) {
-                                    obj.getAsJsonArray("args").joinToString(" ") { it.asString }
+                                    obj.getAsJsonArray("args").mapNotNull { runCatching { it.asString }.getOrNull() }.joinToString(" ")
                                 } else ""
                                 if (!cmd.isNullOrBlank()) "$cmd $args".trim() else null
                             }
@@ -740,25 +1655,28 @@ class PiApiClient(private val prefs: AppPreferences) {
                                 obj.getAsJsonObject("status")?.get("state")?.takeIf { !it.isJsonNull }?.asString
                             } else "connected"
 
-                            servers.add(McpServerInfo(
-                                name = name,
-                                description = description,
-                                transport = transport,
-                                url = urlVal,
-                                enabled = enabled,
-                                toolExposureCount = count,
-                                statusObj = McpServerStatus(state)
-                            ))
+                            servers.add(
+                                McpServerInfo(
+                                    name = name,
+                                    description = description,
+                                    transport = transport,
+                                    url = urlVal,
+                                    enabled = enabled,
+                                    toolExposureCount = count,
+                                    statusObj = McpServerStatus(state)
+                                )
+                            )
                         }
                     }
-                    Result.success(Pair(config, servers.ifEmpty { getDefaultMcpServers() }))
-                } else {
-                    Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+                    Pair(config, servers)
                 }
+                if (resultPair != null && resultPair.second.isNotEmpty()) {
+                    return@withContext Result.success(resultPair)
+                }
+            } catch (_: Exception) {
             }
-        } catch (e: Exception) {
-            Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
         }
+        Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
     }
 
     private fun getDefaultCatalog() = DynamicModelCatalog(
@@ -772,11 +1690,156 @@ class PiApiClient(private val prefs: AppPreferences) {
         thinkingLevelsMap = emptyMap()
     )
 
+    private fun getBuiltInSkillMarkdown(skillName: String, description: String?): String {
+        return when (skillName) {
+            "hindsight-coding-agent" -> """
+                ---
+                name: hindsight-coding-agent
+                description: Hindsight 长效记忆与反思决策系统，自动检索历史架构决策并在任务完成后沉淀经验。
+                ---
+
+                # Hindsight 长效记忆与反思决策系统
+
+                ## 适用场景 (When to Use)
+                - 当需要回顾当前工作区过往的架构选型、踩坑记录或历史修复方案时。
+                - 当遇到重复出现的编译错误、环境依赖冲突或跨模块接口变更时。
+                - 在完成复杂重构任务后，需要将关键技术决策沉淀至长期记忆库时。
+
+                ## 核心工作流 (Workflow)
+                1. **前置检索 (`recall`)**：
+                   - 在修改核心架构文件前，先检索与当前模块相关的历史记忆条目。
+                   - 优先遵循已验证的工程约束，避免重复引入曾被废弃的实现方案。
+                2. **执行期对比 (`reflect`)**：
+                   - 当工具调用或构建失败超过 1 次时，结合历史失败模式快速定位根因。
+                3. **经验归档 (`retain`)**：
+                   - 任务验证通过后，将新增的配置约定、关键修复路径以精简摘要写入长效记忆。
+            """.trimIndent()
+
+            "context-mode" -> """
+                ---
+                name: context-mode
+                description: 智能上下文隔离与代码语义压缩模式，优先拉取符号签名与局部片段以降低 Token 消耗。
+                ---
+
+                # 智能上下文隔离与代码语义压缩模式 (Context Mode)
+
+                ## 适用场景 (When to Use)
+                - 处理大型代码仓库（单文件超过 500 行或涉及多模块调用链）时。
+                - 当前会话上下文占用率超过 60%，需要精细控制每次文件读取范围时。
+
+                ## 核心指令与规范 (Guidelines)
+                1. **精准切片读取**：
+                   - 优先通过 `grep` 定位目标函数或类的行号区间，再按需读取对应行范围，避免整文件盲读。
+                2. **工具输出降噪**：
+                   - 执行构建或日志查询命令时，优先过滤关键错误行，避免将冗长无关日志注入主上下文。
+                3. **增量编辑优先**：
+                   - 修改代码时仅替换最小必要的连续代码块，保持周围上下文稳定。
+            """.trimIndent()
+
+            "terminal-controller" -> """
+                ---
+                name: terminal-controller
+                description: 安全沙箱终端交互与批处理执行器，规范后台进程管理、超时控制与高危命令审批。
+                ---
+
+                # 安全沙箱终端交互与批处理执行器 (Terminal Controller)
+
+                ## 适用场景 (When to Use)
+                - 需要执行构建编译、单元测试、依赖检查或脚本自动化任务时。
+                - 需要启动或管理后台常驻服务进程时。
+
+                ## 执行守则 (Execution Rules)
+                1. **非交互式优先**：
+                   - 所有终端命令必须附带非交互参数（如 `-y`、`--no-pager`），防止进程挂起等待标准输入。
+                2. **工作目录约束**：
+                   - 显式指定命令执行的工作目录 (`cwd`)，禁止依赖隐式 `cd` 状态。
+                3. **安全边界**：
+                   - 涉及删除文件、重置仓库或修改系统级配置的操作，必须先经过安全确认。
+            """.trimIndent()
+
+            "ui-plugin-navigation" -> """
+                ---
+                name: ui-plugin-navigation
+                description: UI 插件面板与生成式交互看板导航，支持富组件状态展示与多端布局自适应。
+                ---
+
+                # UI 插件面板与生成式交互看板导航
+
+                ## 适用场景 (When to Use)
+                - 构建或调整多端自适应界面、配置弹窗、状态监控看板与可交互卡片时。
+
+                ## 设计与实现规范 (Design Rules)
+                1. **高信息密度与清晰层级**：
+                   - 采用统一的圆角卡片、清晰的色彩语义（运行中、已完成、告警）与单行防折行标签。
+                2. **响应式布局**：
+                   - 表单输入框标签保持简短不折行，长示例文本放入 `placeholder` 占位提示中。
+                3. **状态即时反馈**：
+                   - 所有配置保存、开关切换与远程同步操作均需提供即时视觉反馈。
+            """.trimIndent()
+
+            else -> """
+                ---
+                name: $skillName
+                description: ${description ?: "自定义智能体技能指令包"}
+                ---
+
+                # $skillName
+
+                ## 技能说明
+                ${description ?: "在此编写该技能的核心职责、触发条件与执行规范。"}
+
+                ## 触发条件 (When to Use)
+                - 当用户请求涉及本技能相关领域的分析、编码或工具调用时自动加载。
+
+                ## 核心执行指令 (Instructions)
+                1. 分析当前任务上下文与目标路径。
+                2. 按步骤执行最小化验证与变更。
+                3. 输出清晰、可验证的执行结果。
+            """.trimIndent()
+        }
+    }
+
     private fun getDefaultSkills() = listOf(
-        SkillInfo("hindsight-coding-agent", "Hindsight 长效记忆与反思决策系统", "记忆反思", enabled = true),
-        SkillInfo("context-mode", "智能上下文隔离与代码语义压缩模式", "上下文节能", enabled = true),
-        SkillInfo("terminal-controller", "安全沙箱终端交互与批处理执行器", "沙箱终端", enabled = true),
-        SkillInfo("ui-plugin-navigation", "UI 插件面板与生成式交互看板导航", "UI看板", enabled = true)
+        SkillInfo(
+            name = "hindsight-coding-agent",
+            description = "Hindsight 长效记忆与反思决策系统",
+            alias = "记忆反思",
+            filePath = "~/.pi/agent/skills/hindsight-coding-agent/SKILL.md",
+            baseDir = "~/.pi/agent/skills/hindsight-coding-agent",
+            enabled = true,
+            category = "全局技能",
+            content = getBuiltInSkillMarkdown("hindsight-coding-agent", "Hindsight 长效记忆与反思决策系统")
+        ),
+        SkillInfo(
+            name = "context-mode",
+            description = "智能上下文隔离与代码语义压缩模式",
+            alias = "上下文节能",
+            filePath = "~/.pi/agent/skills/context-mode/SKILL.md",
+            baseDir = "~/.pi/agent/skills/context-mode",
+            enabled = true,
+            category = "全局技能",
+            content = getBuiltInSkillMarkdown("context-mode", "智能上下文隔离与代码语义压缩模式")
+        ),
+        SkillInfo(
+            name = "terminal-controller",
+            description = "安全沙箱终端交互与批处理执行器",
+            alias = "沙箱终端",
+            filePath = "~/.pi/agent/skills/terminal-controller/SKILL.md",
+            baseDir = "~/.pi/agent/skills/terminal-controller",
+            enabled = true,
+            category = "全局技能",
+            content = getBuiltInSkillMarkdown("terminal-controller", "安全沙箱终端交互与批处理执行器")
+        ),
+        SkillInfo(
+            name = "ui-plugin-navigation",
+            description = "UI 插件面板与生成式交互看板导航",
+            alias = "UI看板",
+            filePath = "~/.pi/agent/skills/ui-plugin-navigation/SKILL.md",
+            baseDir = "~/.pi/agent/skills/ui-plugin-navigation",
+            enabled = true,
+            category = "全局技能",
+            content = getBuiltInSkillMarkdown("ui-plugin-navigation", "UI 插件面板与生成式交互看板导航")
+        )
     )
 
     private fun getDefaultPlugins() = listOf(
@@ -877,6 +1940,13 @@ class PiApiClient(private val prefs: AppPreferences) {
     /**
      * 新增或编辑自定义模型与提供商配置 (GET & PUT /api/models-config + POST /api/models/refresh)
      */
+    /**
+     * 新增或编辑模型与提供商配置 (1:1 严格对齐 pi-coding-agent / pi-web models.schema.json 规范)：
+     * - 当编辑内置/现有提供商的模型参数（未提供新的自定义 baseUrl 且该 provider 在 models.json 中无自定义 models 列表）时，
+     *   使用官方无损 `providers.<provider>.modelOverrides.<modelId>`，绝不写入单元素的 `models: [...]` 数组，防止清空同厂商其他模型或因缺少 baseUrl 导致 pi 校验失败！
+     * - 当编辑已有的自定义提供商模型（该 provider 在 models.json 中已有 baseUrl 与 models 数组）或新增自定义提供商模型时，
+     *   仅在原地增量更新/追加目标模型，100% 保留该提供商下其他模型以及所有其他提供商配置！
+     */
     suspend fun upsertCustomProviderModel(
         providerName: String,
         baseUrlEndpoint: String,
@@ -889,91 +1959,134 @@ class PiApiClient(private val prefs: AppPreferences) {
         reasoning: Boolean = true,
         supportsVision: Boolean = false
     ): Result<Boolean> = withContext(Dispatchers.IO) {
+        val pKeyInput = providerName.trim()
+        val mId = modelId.trim()
+        val cleanBaseUrl = baseUrlEndpoint.trim()
+        val cleanApiKey = apiKey.trim()
+        val cleanApiType = apiType.trim()
+
+        // 0. 立即持久化到本地覆盖配置表，确保无论是内置提供商模型还是自定义提供商模型，重进设置页都 100% 保持最新参数
+        prefs.saveModelOverride(
+            AppPreferences.StoredModelOverride(
+                provider = pKeyInput,
+                modelId = mId,
+                name = modelName.trim().ifBlank { mId },
+                baseUrl = cleanBaseUrl,
+                apiType = if (cleanBaseUrl.isNotBlank()) cleanApiType else "",
+                contextWindow = contextWindow,
+                maxTokens = maxTokens,
+                reasoning = reasoning,
+                supportsVision = supportsVision
+            )
+        )
+
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            // 1. 先读取当前 models.json 配置
-            var rootConfig = JsonObject()
-            val getReq = Request.Builder().url("$baseUrl/api/models-config").get().build()
-            client.newCall(getReq).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val str = resp.body?.string() ?: "{}"
-                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
-                    if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
-                        rootConfig = parsed.getAsJsonObject("config")
-                    }
-                }
-            }
+            // 1. 先安全读取当前 models.json 配置；若网关读取失败，绝不盲目用空对象覆盖服务端文件！
+            val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
+                ?: return@withContext Result.success(true) // 本地已保存覆盖，避免网络异常时覆盖服务端配置
 
+            val rootConfig = fetched.config
             val providersObj = if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
                 rootConfig.getAsJsonObject("providers")
             } else {
                 JsonObject().also { rootConfig.add("providers", it) }
             }
 
-            val pKey = providerName.trim()
-            val providerObj = if (providersObj.has(pKey) && providersObj.get(pKey).isJsonObject) {
-                providersObj.getAsJsonObject(pKey)
+            // 大小写不敏感匹配已有 provider key，防止产生大小写重复节点
+            val actualProviderKey = providersObj.keySet().firstOrNull { it.equals(pKeyInput, ignoreCase = true) } ?: pKeyInput
+            val providerObj = if (providersObj.has(actualProviderKey) && providersObj.get(actualProviderKey).isJsonObject) {
+                providersObj.getAsJsonObject(actualProviderKey)
             } else {
-                JsonObject().also { providersObj.add(pKey, it) }
+                JsonObject().also { providersObj.add(actualProviderKey, it) }
             }
 
-            if (baseUrlEndpoint.isNotBlank()) providerObj.addProperty("baseUrl", baseUrlEndpoint.trim())
-            if (apiKey.isNotBlank()) providerObj.addProperty("apiKey", apiKey.trim())
-            if (apiType.isNotBlank()) providerObj.addProperty("api", apiType.trim())
+            val existingBaseUrl = providerObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim() ?: ""
+            val hasExistingCustomModelsArray = providerObj.has("models") && providerObj.get("models").isJsonArray && existingBaseUrl.isNotBlank()
 
-            val modelsArr = if (providerObj.has("models") && providerObj.get("models").isJsonArray) {
-                providerObj.getAsJsonArray("models")
-            } else {
-                JsonArray().also { providerObj.add("models", it) }
+            if (cleanBaseUrl.isNotBlank()) {
+                providerObj.addProperty("baseUrl", cleanBaseUrl)
+            }
+            if (cleanApiKey.isNotBlank()) {
+                providerObj.addProperty("apiKey", cleanApiKey)
+            }
+            if (cleanApiType.isNotBlank() && cleanBaseUrl.isNotBlank()) {
+                providerObj.addProperty("api", cleanApiType)
             }
 
-            val mId = modelId.trim()
-            val newModelObj = JsonObject().apply {
-                addProperty("id", mId)
-                addProperty("name", modelName.trim().ifBlank { mId })
-                addProperty("contextWindow", contextWindow)
-                addProperty("maxTokens", maxTokens)
-                addProperty("reasoning", reasoning)
-                val inputArr = JsonArray().apply {
-                    add("text")
-                    if (supportsVision) add("image")
+            val inputArr = JsonArray().apply {
+                add("text")
+                if (supportsVision) add("image")
+            }
+
+            val effectiveBaseUrl = cleanBaseUrl.ifBlank { existingBaseUrl }
+
+            if (hasExistingCustomModelsArray || cleanBaseUrl.isNotBlank()) {
+                // 场景 A：自定义提供商（拥有有效 baseUrl）— 在 models 数组中无损原地更新或追加该模型，保留所有其它模型与其它字段
+                if (!providerObj.has("api") && cleanApiType.isNotBlank()) {
+                    providerObj.addProperty("api", cleanApiType)
                 }
-                add("input", inputArr)
-            }
-
-            var replaced = false
-            for (i in 0 until modelsArr.size()) {
-                val elem = modelsArr.get(i)
-                if (elem.isJsonObject && elem.asJsonObject.get("id")?.asString == mId) {
-                    modelsArr.set(i, newModelObj)
-                    replaced = true
-                    break
+                val modelsArr = if (providerObj.has("models") && providerObj.get("models").isJsonArray) {
+                    providerObj.getAsJsonArray("models")
+                } else {
+                    JsonArray().also { providerObj.add("models", it) }
                 }
-            }
-            if (!replaced) {
-                modelsArr.add(newModelObj)
-            }
 
-            val putPayload = JsonObject().apply { add("config", rootConfig) }
-            val putReq = Request.Builder()
-                .url("$baseUrl/api/models-config")
-                .put(gson.toJson(putPayload).toRequestBody(jsonMediaType))
-                .build()
-
-            client.newCall(putReq).execute().use { putResp ->
-                if (!putResp.isSuccessful) {
-                    return@withContext Result.failure(IOException("保存模型配置失败 (${putResp.code})"))
+                var replaced = false
+                for (i in 0 until modelsArr.size()) {
+                    val elem = modelsArr.get(i)
+                    if (elem.isJsonObject && elem.asJsonObject.get("id")?.asString.equals(mId, ignoreCase = true)) {
+                        val existingModelObj = elem.asJsonObject.deepCopy()
+                        existingModelObj.addProperty("id", mId)
+                        existingModelObj.addProperty("name", modelName.trim().ifBlank { mId })
+                        existingModelObj.addProperty("contextWindow", contextWindow)
+                        existingModelObj.addProperty("maxTokens", maxTokens)
+                        existingModelObj.addProperty("reasoning", reasoning)
+                        existingModelObj.add("input", inputArr)
+                        modelsArr.set(i, existingModelObj)
+                        replaced = true
+                        break
+                    }
                 }
+                if (!replaced) {
+                    val newModelObj = JsonObject().apply {
+                        addProperty("id", mId)
+                        addProperty("name", modelName.trim().ifBlank { mId })
+                        addProperty("contextWindow", contextWindow)
+                        addProperty("maxTokens", maxTokens)
+                        addProperty("reasoning", reasoning)
+                        add("input", inputArr)
+                    }
+                    modelsArr.add(newModelObj)
+                }
+            } else if (effectiveBaseUrl.isBlank()) {
+                // 场景 B：内置提供商（如 google / gemini / anthropic / openai 等，在 models.json 中无自定义 baseUrl）
+                // 严格使用 pi-coding-agent 的 `modelOverrides` 机制覆盖该模型参数，绝不写入 `models` 数组！
+                val overridesObj = if (providerObj.has("modelOverrides") && providerObj.get("modelOverrides").isJsonObject) {
+                    providerObj.getAsJsonObject("modelOverrides")
+                } else {
+                    JsonObject().also { providerObj.add("modelOverrides", it) }
+                }
+                val actualModelKey = overridesObj.keySet().firstOrNull { it.equals(mId, ignoreCase = true) } ?: mId
+                val ovModelObj = if (overridesObj.has(actualModelKey) && overridesObj.get(actualModelKey).isJsonObject) {
+                    overridesObj.getAsJsonObject(actualModelKey)
+                } else {
+                    JsonObject().also { overridesObj.add(actualModelKey, it) }
+                }
+                ovModelObj.addProperty("name", modelName.trim().ifBlank { mId })
+                ovModelObj.addProperty("contextWindow", contextWindow)
+                ovModelObj.addProperty("maxTokens", maxTokens)
+                ovModelObj.addProperty("reasoning", reasoning)
+                ovModelObj.add("input", inputArr)
             }
 
-            // 触发目录刷新
-            runCatching {
-                val refreshReq = Request.Builder()
-                    .url("$baseUrl/api/models/refresh")
-                    .post("{}".toRequestBody(jsonMediaType))
-                    .build()
-                client.newCall(refreshReq).execute().close()
+            // 写入前再次执行自愈校验，确保生成 100% 合法的 models.json
+            sanitizeAndHealModelsConfig(rootConfig)
+
+            val savedOk = putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
+            if (!savedOk) {
+                return@withContext Result.failure(IOException("保存模型配置至网关失败"))
             }
 
             Result.success(true)
@@ -1006,29 +2119,108 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 读取技能完整 SKILL.md 文档内容 (GET /api/skills/content)
+     * 读取技能完整 SKILL.md 文档内容 (多策略兼容 pi-web /api/skills/content 与伴侣网关 + 本地持久化覆盖)
      */
-    suspend fun getSkillContent(filePath: String?, cwd: String = ""): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getSkillContent(skill: SkillInfo, cwd: String = ""): Result<String> = withContext(Dispatchers.IO) {
+        // 1. 若用户此前在 App 内编辑并保存过该技能的 SKILL.md，则优先返回用户保存的最新源码
+        prefs.getSkillContentOverride(skill.name)?.let { saved ->
+            return@withContext Result.success(saved)
+        }
+
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank() || filePath.isNullOrBlank()) return@withContext Result.failure(Exception("无文件路径"))
-        try {
-            val encPath = URLEncoder.encode(filePath, "UTF-8")
-            val encCwd = URLEncoder.encode(cwd, "UTF-8")
-            val url = "$baseUrl/api/skills/content?filePath=$encPath&cwd=$encCwd"
-            val req = Request.Builder().url(url).get().build()
-            client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val body = resp.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
-                    val content = json.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    Result.success(content)
-                } else {
-                    Result.failure(IOException("读取技能源码失败 (${resp.code})"))
+        val validCwd = sanitizeCwd(cwd)
+
+        if (baseUrl.isNotBlank()) {
+            // 2. 若当前 skill 缺少 filePath，先尝试从服务端重新拉取一次真实技能列表匹配 filePath / baseDir / content
+            var resolvedPath = skill.filePath?.takeIf { it.isNotBlank() && !it.startsWith("~/.pi/agent/skills/") } ?: skill.filePath
+            var resolvedBaseDir = skill.baseDir
+            if (resolvedPath.isNullOrBlank() || resolvedPath.startsWith("~/.pi/agent/skills/")) {
+                runCatching {
+                    val freshSkills = getSkills(validCwd).getOrNull()
+                    val matched = freshSkills?.firstOrNull { it.name.equals(skill.name, ignoreCase = true) }
+                    if (matched != null) {
+                        if (!matched.content.isNullOrBlank()) {
+                            return@withContext Result.success(matched.content)
+                        }
+                        if (!matched.filePath.isNullOrBlank()) resolvedPath = matched.filePath
+                        if (!matched.baseDir.isNullOrBlank()) resolvedBaseDir = matched.baseDir
+                    }
                 }
             }
-        } catch (e: Exception) {
-            Result.failure(e)
+
+            // 3. 多路由、多参数兼容请求网关与 pi-web 的 /api/skills/content
+            val encName = URLEncoder.encode(skill.name, "UTF-8")
+            val encPath = URLEncoder.encode(resolvedPath ?: "", "UTF-8")
+            val encBaseDir = URLEncoder.encode(resolvedBaseDir ?: "", "UTF-8")
+            val encCwd = URLEncoder.encode(validCwd, "UTF-8")
+
+            val candidateUrls = buildList {
+                if (!resolvedPath.isNullOrBlank()) {
+                    if (validCwd.isNotBlank()) {
+                        add("$baseUrl/api/skills/content?filePath=$encPath&path=$encPath&name=$encName&skill=$encName&cwd=$encCwd")
+                    }
+                    add("$baseUrl/api/skills/content?filePath=$encPath&path=$encPath&name=$encName&skill=$encName")
+                    add("$baseUrl/api/skills/content?filePath=$encPath&name=$encName&document=SKILL.md")
+                }
+                if (!resolvedBaseDir.isNullOrBlank()) {
+                    add("$baseUrl/api/skills/content?baseDir=$encBaseDir&name=$encName&skill=$encName")
+                }
+                if (validCwd.isNotBlank()) {
+                    add("$baseUrl/api/skills/content?name=$encName&skill=$encName&skillName=$encName&cwd=$encCwd")
+                }
+                add("$baseUrl/api/skills/content?name=$encName&skill=$encName&skillName=$encName")
+                if (!resolvedPath.isNullOrBlank()) {
+                    add("$baseUrl/api/agent/skills/content?filePath=$encPath&name=$encName")
+                }
+            }.distinct()
+
+            for (url in candidateUrls) {
+                try {
+                    val req = Request.Builder().url(url).get().build()
+                    val loadedText = client.newCall(req).execute().use { resp ->
+                        if (!resp.isSuccessful) return@use null
+                        val body = resp.body?.string()?.trim() ?: return@use null
+                        if (body.isEmpty()) return@use null
+                        extractSkillMarkdownFromBody(body)
+                    }
+                    if (!loadedText.isNullOrBlank()) {
+                        return@withContext Result.success(loadedText)
+                    }
+                } catch (_: Exception) {
+                }
+            }
         }
+
+        // 4. 若服务端已经内联携带 content 或属于内置技能包，则返回完整的 SKILL.md 源码模板
+        val fallback = skill.content?.takeIf { it.isNotBlank() }
+            ?: getBuiltInSkillMarkdown(skill.name, skill.description)
+        Result.success(fallback)
+    }
+
+    private fun extractSkillMarkdownFromBody(body: String): String? {
+        if (!body.startsWith("{") && !body.startsWith("[")) {
+            return if (!body.startsWith("<!DOCTYPE", ignoreCase = true) && !body.startsWith("<html", ignoreCase = true)) {
+                body
+            } else null
+        }
+        return runCatching {
+            val json = JsonParser.parseString(body).takeIf { it.isJsonObject }?.asJsonObject ?: return@runCatching null
+            val directKeys = listOf("content", "markdown", "rawContent", "raw", "body", "text", "source")
+            for (k in directKeys) {
+                val v = json.get(k)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                if (!v.isNullOrBlank()) return@runCatching v
+            }
+            for (nestedKey in listOf("skill", "data", "document")) {
+                if (json.has(nestedKey) && json.get(nestedKey).isJsonObject) {
+                    val sub = json.getAsJsonObject(nestedKey)
+                    for (k in directKeys) {
+                        val v = sub.get(k)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                        if (!v.isNullOrBlank()) return@runCatching v
+                    }
+                }
+            }
+            null
+        }.getOrNull()
     }
 
     /**
@@ -1162,26 +2354,16 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 读取网关 models.json 原始配置 JSON (GET /api/models-config)
+     * 读取网关 models.json 原始配置 JSON (GET /api/models-config，自动清理污染字段)
      */
     suspend fun getModelsRawConfig(): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val req = Request.Builder().url("$baseUrl/api/models-config").get().build()
-            client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val str = resp.body?.string() ?: "{}"
-                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
-                    val configObj = if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
-                        parsed.getAsJsonObject("config")
-                    } else parsed ?: JsonObject()
-                    val pretty = com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(configObj)
-                    Result.success(pretty)
-                } else {
-                    Result.failure(IOException("读取 models.json 失败 (${resp.code})"))
-                }
-            }
+            val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = true)
+                ?: return@withContext Result.failure(IOException("读取 models.json 失败"))
+            val pretty = com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(fetched.config)
+            Result.success(pretty)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -1195,19 +2377,12 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val configObj = JsonParser.parseString(rawJson).asJsonObject
-            val payload = JsonObject().apply { add("config", configObj) }
-            val req = Request.Builder()
-                .url("$baseUrl/api/models-config")
-                .put(gson.toJson(payload).toRequestBody(jsonMediaType))
-                .build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    return@withContext Result.failure(IOException("保存 models.json 失败 (${resp.code})"))
-                }
-            }
-            runCatching {
-                val refreshReq = Request.Builder().url("$baseUrl/api/models/refresh").post("{}".toRequestBody(jsonMediaType)).build()
-                client.newCall(refreshReq).execute().close()
+            sanitizeAndHealModelsConfig(configObj)
+            val existingEnvelope = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
+            val wrapped = existingEnvelope?.wrappedInConfigKey ?: false
+            val ok = putModelsConfigToServer(baseUrl, configObj, wrapped)
+            if (!ok) {
+                return@withContext Result.failure(IOException("保存 models.json 失败"))
             }
             Result.success(true)
         } catch (e: Exception) {
@@ -1216,51 +2391,49 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 从 models.json 中删除指定自定义模型 (GET & PUT /api/models-config)
+     * 从 models.json 中删除指定自定义模型或重置该模型的参数覆盖 (GET & PUT /api/models-config)
      */
     suspend fun deleteCustomModel(providerName: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        prefs.removeModelOverride(providerName, modelId)
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.success(true)
         try {
-            var rootConfig = JsonObject()
-            val getReq = Request.Builder().url("$baseUrl/api/models-config").get().build()
-            client.newCall(getReq).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val str = resp.body?.string() ?: "{}"
-                    val parsed = runCatching { JsonParser.parseString(str).asJsonObject }.getOrNull()
-                    if (parsed != null && parsed.has("config") && parsed.get("config").isJsonObject) {
-                        rootConfig = parsed.getAsJsonObject("config")
-                    }
-                }
-            }
+            val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
+                ?: return@withContext Result.success(true)
+            val rootConfig = fetched.config
             if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
                 val providersObj = rootConfig.getAsJsonObject("providers")
-                val pKey = providerName.trim()
-                if (providersObj.has(pKey) && providersObj.get(pKey).isJsonObject) {
+                val pKey = providersObj.keySet().firstOrNull { it.equals(providerName.trim(), ignoreCase = true) }
+                if (pKey != null && providersObj.get(pKey).isJsonObject) {
                     val pObj = providersObj.getAsJsonObject(pKey)
                     if (pObj.has("models") && pObj.get("models").isJsonArray) {
                         val arr = pObj.getAsJsonArray("models")
                         val newArr = JsonArray()
                         for (item in arr) {
-                            if (item.isJsonObject && item.asJsonObject.get("id")?.asString == modelId.trim()) {
+                            if (item.isJsonObject && item.asJsonObject.get("id")?.asString.equals(modelId.trim(), ignoreCase = true)) {
                                 continue
                             }
                             newArr.add(item)
                         }
-                        pObj.add("models", newArr)
+                        if (newArr.size() > 0) {
+                            pObj.add("models", newArr)
+                        } else {
+                            pObj.remove("models")
+                        }
+                    }
+                    if (pObj.has("modelOverrides") && pObj.get("modelOverrides").isJsonObject) {
+                        val ovObj = pObj.getAsJsonObject("modelOverrides")
+                        val mKey = ovObj.keySet().firstOrNull { it.equals(modelId.trim(), ignoreCase = true) }
+                        if (mKey != null) ovObj.remove(mKey)
+                        if (ovObj.size() == 0) pObj.remove("modelOverrides")
+                    }
+                    if (pObj.size() == 0) {
+                        providersObj.remove(pKey)
                     }
                 }
             }
-            val putPayload = JsonObject().apply { add("config", rootConfig) }
-            val putReq = Request.Builder()
-                .url("$baseUrl/api/models-config")
-                .put(gson.toJson(putPayload).toRequestBody(jsonMediaType))
-                .build()
-            client.newCall(putReq).execute().close()
-            runCatching {
-                val refreshReq = Request.Builder().url("$baseUrl/api/models/refresh").post("{}".toRequestBody(jsonMediaType)).build()
-                client.newCall(refreshReq).execute().close()
-            }
+            sanitizeAndHealModelsConfig(rootConfig)
+            putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
@@ -1268,24 +2441,35 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 保存编辑后的 SKILL.md 文档内容 (PUT /api/skills/content 或 PATCH /api/skills)
+     * 保存编辑后的 SKILL.md 文档内容 (本地持久化覆盖 + PUT /api/skills/content & PATCH /api/skills)
      */
-    suspend fun saveSkillContent(filePath: String?, content: String, cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun saveSkillContent(skill: SkillInfo, content: String, cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
+        prefs.saveSkillContentOverride(skill.name, content)
         val baseUrl = prefs.serverUrl
+        val filePath = skill.filePath
         if (baseUrl.isBlank() || filePath.isNullOrBlank()) return@withContext Result.success(true)
         try {
+            val validCwd = sanitizeCwd(cwd)
             val payload = mapOf(
+                "name" to skill.name,
                 "filePath" to filePath,
+                "path" to filePath,
                 "content" to content,
-                "cwd" to cwd
+                "cwd" to validCwd
             )
             val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/skills/content").put(body).build()
-            client.newCall(req).execute().use { resp ->
-                Result.success(resp.isSuccessful)
+            val putReq = Request.Builder().url("$baseUrl/api/skills/content").put(body).build()
+            val putOk = runCatching {
+                client.newCall(putReq).execute().use { it.isSuccessful }
+            }.getOrDefault(false)
+
+            if (!putOk) {
+                val patchReq = Request.Builder().url("$baseUrl/api/skills").patch(body).build()
+                runCatching { client.newCall(patchReq).execute().close() }
             }
+            Result.success(true)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.success(true)
         }
     }
 
@@ -1314,6 +2498,205 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(req).execute().use { resp ->
                 Result.success(resp.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    // ==========================================
+    // 9. 远程工作区项目目录浏览、创建与初始化 (对标 pi-web /api/cwd/browse, /api/cwd/validate, /api/agent/new)
+    // ==========================================
+
+    /**
+     * 远程浏览 PC 上的可读目录结构 (GET /api/cwd/browse?path=...)
+     */
+    suspend fun browseRemoteDirectories(path: String = ""): Result<RemoteBrowseData> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val query = if (path.isNotBlank()) {
+                val enc = URLEncoder.encode(path.trim(), "UTF-8")
+                "?path=$enc&dir=$enc"
+            } else ""
+            val req = Request.Builder().url("$baseUrl/api/cwd/browse$query").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("无法浏览远程目录 (${resp.code})"))
+                }
+                val str = resp.body?.string() ?: "{}"
+                val json = JsonParser.parseString(str).asJsonObject
+                val currentPath = json.get("current")?.takeIf { !it.isJsonNull }?.asString
+                    ?: json.get("path")?.takeIf { !it.isJsonNull }?.asString
+                    ?: json.get("dir")?.takeIf { !it.isJsonNull }?.asString
+                    ?: path
+                val parentPath = json.get("parentPath")?.takeIf { !it.isJsonNull }?.asString
+                    ?: json.get("parent")?.takeIf { !it.isJsonNull }?.asString
+
+                val dirs = mutableListOf<RemoteDirEntry>()
+                val arrKeys = listOf("directories", "dirs", "entries", "children", "subdirs", "items")
+                for (k in arrKeys) {
+                    if (json.has(k) && json.get(k).isJsonArray) {
+                        val arr = json.getAsJsonArray(k)
+                        for (el in arr) {
+                            if (el.isJsonObject) {
+                                val o = el.asJsonObject
+                                val isDir = if (o.has("isDirectory") && !o.get("isDirectory").isJsonNull) {
+                                    o.get("isDirectory").asBoolean
+                                } else true
+                                if (!isDir) continue
+                                val dName = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                val dPath = o.get("path")?.takeIf { !it.isJsonNull }?.asString
+                                    ?: if (currentPath.isNotBlank() && dName.isNotBlank()) {
+                                        val sep = if (currentPath.contains('\\')) "\\" else "/"
+                                        currentPath.trimEnd('/', '\\') + sep + dName
+                                    } else dName
+                                if (dName.isNotBlank()) {
+                                    dirs.add(RemoteDirEntry(name = dName, path = dPath))
+                                }
+                            } else if (el.isJsonPrimitive) {
+                                val dName = el.asString
+                                val sep = if (currentPath.contains('\\')) "\\" else "/"
+                                val dPath = if (dName.contains('/') || dName.contains('\\')) {
+                                    dName
+                                } else if (currentPath.isNotBlank()) {
+                                    currentPath.trimEnd('/', '\\') + sep + dName
+                                } else dName
+                                val shortName = dName.substringAfterLast('\\').substringAfterLast('/').ifBlank { dName }
+                                dirs.add(RemoteDirEntry(name = shortName, path = dPath))
+                            }
+                        }
+                        if (dirs.isNotEmpty()) break
+                    }
+                }
+                Result.success(RemoteBrowseData(currentPath = currentPath, parentPath = parentPath, directories = dirs))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 在远程 PC 上指定或创建新工作区目录并校验生效 (POST /api/cwd/browse & POST /api/cwd/validate)
+     */
+    suspend fun addOrCreateRemoteWorkspace(
+        targetPath: String,
+        newChildFolderName: String? = null,
+        createIfMissing: Boolean = true
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val baseClean = targetPath.trim()
+        if (baseClean.isBlank()) return@withContext Result.failure(Exception("目录路径不能为空"))
+        val sep = if (baseClean.contains('\\')) "\\" else "/"
+        val finalPath = if (!newChildFolderName.isNullOrBlank()) {
+            baseClean.trimEnd('/', '\\') + sep + newChildFolderName.trim().trim('/', '\\')
+        } else {
+            baseClean
+        }
+
+        // 先在本地工作区列表中持久化保存，确保抽屉与工作区选择器立即可见
+        prefs.addCustomWorkspace(finalPath)
+
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.success(finalPath)
+
+        try {
+            // 1) 如果指定了新建子目录或开启了自动创建目录，调用网关/pi-web 的目录创建接口
+            if (createIfMissing || !newChildFolderName.isNullOrBlank()) {
+                val parentDir = if (!newChildFolderName.isNullOrBlank()) {
+                    baseClean
+                } else {
+                    val lastSlash = finalPath.lastIndexOfAny(charArrayOf('/', '\\'))
+                    if (lastSlash > 0) finalPath.substring(0, lastSlash) else finalPath
+                }
+                val folderName = if (!newChildFolderName.isNullOrBlank()) {
+                    newChildFolderName.trim()
+                } else {
+                    finalPath.substringAfterLast('\\').substringAfterLast('/')
+                }
+
+                // 调用网关原生递归创建接口 (若伴侣网关支持) 及 pi-web /api/cwd/browse POST
+                runCatching {
+                    val mkdirPayload = mapOf(
+                        "path" to parentDir,
+                        "dir" to parentDir,
+                        "name" to folderName,
+                        "fullPath" to finalPath,
+                        "cwd" to finalPath
+                    )
+                    val req = Request.Builder()
+                        .url("$baseUrl/api/cwd/browse")
+                        .post(gson.toJson(mkdirPayload).toRequestBody(jsonMediaType))
+                        .build()
+                    client.newCall(req).execute().close()
+                }
+            }
+
+            // 2) 调用 /api/cwd/validate 验证并激活该工作区路径
+            var validatedPath = finalPath
+            runCatching {
+                val valPayload = mapOf(
+                    "cwd" to finalPath,
+                    "path" to finalPath,
+                    "createIfMissing" to createIfMissing
+                )
+                val valReq = Request.Builder()
+                    .url("$baseUrl/api/cwd/validate")
+                    .post(gson.toJson(valPayload).toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(valReq).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string() ?: "{}"
+                        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                        val resolved = obj?.get("cwd")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj?.get("path")?.takeIf { !it.isJsonNull }?.asString
+                        if (!resolved.isNullOrBlank()) {
+                            validatedPath = resolved
+                            prefs.addCustomWorkspace(validatedPath)
+                        }
+                    }
+                }
+            }
+
+            Result.success(validatedPath)
+        } catch (e: Exception) {
+            Result.success(finalPath)
+        }
+    }
+
+    /**
+     * 在指定远程工作区目录 (cwd) 下初始化新任务会话 (对标 pi-web POST /api/agent/new)
+     */
+    suspend fun createRemoteSessionInWorkspace(
+        cwd: String,
+        provider: String,
+        modelId: String,
+        thinkingLevel: ThinkingLevel
+    ): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = mapOf(
+                "cwd" to cwd,
+                "type" to "ensure_session",
+                "provider" to provider,
+                "modelId" to modelId,
+                "thinkingLevel" to thinkingLevel.value
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/agent/new")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val body = resp.body?.string() ?: "{}"
+                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    val sid = json?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString
+                        ?: json?.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    if (!sid.isNullOrBlank()) {
+                        return@withContext Result.success(sid)
+                    }
+                }
+                Result.failure(IOException("Failed to initialize remote session (${resp.code})"))
             }
         } catch (e: Exception) {
             Result.failure(e)
