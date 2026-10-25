@@ -75,7 +75,7 @@ class MainActivity : ComponentActivity() {
         hapticsAndNotify = PiHapticsAndNotify(this)
 
         keepAliveManager = KeepAliveManager(this)
-        updateChecker = UpdateChecker(currentVersion = "1.3.1")
+        updateChecker = UpdateChecker(currentVersion = "1.3.2")
         apkInstaller = ApkInstaller(this)
 
         checkAndRequestPermissions()

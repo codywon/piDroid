@@ -3,6 +3,7 @@ package com.pi.app.ui.chat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -413,7 +414,7 @@ fun ChatMessageCard(
                                 if (isThinkingExpanded) {
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Text(
-                                        text = message.thinking,
+                                        text = message.thinking ?: "",
                                         style = MaterialTheme.typography.bodySmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = TermiusTextSecondary
@@ -482,7 +483,7 @@ fun ChatMessageCard(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
-                                text = tool?.command,
+                                text = tool?.command ?: "",
                                 color = TermiusGreen,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontFamily = FontFamily.Monospace,
