@@ -303,7 +303,7 @@ fun AppUpdateDialog(
                                         .height(8.dp)
                                         .clip(RoundedCornerShape(4.dp)),
                                     color = theme.primary,
-                                    trackColor = theme.surfaceContainerHighest
+                                    trackColor = theme.surfaceContainerHigh
                                 )
 
                                 Spacer(modifier = Modifier.height(10.dp))
