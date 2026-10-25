@@ -19,15 +19,15 @@ import com.pi.app.data.model.*
 import com.pi.app.data.storage.AppPreferences
 import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.keepalive.PiForegroundService
+import com.pi.app.network.DynamicModelCatalog
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
 import com.pi.app.notification.PiHapticsAndNotify
-import com.pi.app.ui.capabilities.CapabilitiesCenterScreen
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
-import com.pi.app.ui.settings.ServerConfigDialog
+import com.pi.app.ui.settings.GlobalSettingsScreen
 import com.pi.app.ui.updater.UpdateDialog
 import com.pi.app.updater.ApkInstaller
 import com.pi.app.updater.UpdateChecker
@@ -48,7 +48,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var smartTtsManager: SmartTtsManager
     private lateinit var hapticsAndNotify: PiHapticsAndNotify
 
-    // 参考 Termius / MQTT 助手：保活与应用内更新引擎
     private lateinit var keepAliveManager: KeepAliveManager
     private lateinit var updateChecker: UpdateChecker
     private lateinit var apkInstaller: ApkInstaller
@@ -75,7 +74,7 @@ class MainActivity : ComponentActivity() {
         hapticsAndNotify = PiHapticsAndNotify(this)
 
         keepAliveManager = KeepAliveManager(this)
-        updateChecker = UpdateChecker(currentVersion = "1.4.0")
+        updateChecker = UpdateChecker(currentVersion = "1.0.0")
         apkInstaller = ApkInstaller(this)
 
         checkAndRequestPermissions()
@@ -114,8 +113,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun MainAppNav() {
         var isScanning by remember { mutableStateOf(false) }
-        var showSettings by remember { mutableStateOf(false) } // 首次打开绝不弹窗打扰用户
-        var showCapabilities by remember { mutableStateOf(false) }
+        var showGlobalSettings by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
 
         // 应用内更新状态
@@ -128,13 +126,15 @@ class MainActivity : ComponentActivity() {
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         var isLoadingSessions by remember { mutableStateOf(false) }
 
-        var availableModels by remember { mutableStateOf<List<ModelInfo>>(emptyList()) }
+        var dynamicCatalog by remember { mutableStateOf(DynamicModelCatalog(emptyList(), emptyMap())) }
         var selectedModel by remember {
             mutableStateOf(ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000, 8192, true, true))
         }
-        var currentThinkingLevel by remember { mutableStateOf(ThinkingLevel.HIGH) }
-        var currentProject by remember { mutableStateOf("eldercare-agent-platform") }
-        var projects by remember { mutableStateOf<List<ProjectInfo>>(emptyList()) }
+        var currentThinkingLevel by remember {
+            mutableStateOf(ThinkingLevel.fromValue(prefs.defaultThinkingLevel))
+        }
+
+        var currentProject by remember { mutableStateOf("默认工作区") }
         var tokenStats by remember { mutableStateOf(TokenStats(contextTokens = 42100, maxContextWindow = 200000, inputTokens = 1240, outputTokens = 412, cacheReadTokens = 38000, cost = 0.0)) }
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
@@ -151,7 +151,7 @@ class MainActivity : ComponentActivity() {
         var isRecording by remember { mutableStateOf(false) }
         var partialVoiceText by remember { mutableStateOf("") }
 
-        // 启动时自动检查更新 (参考 Termius)
+        // 启动时自动检查更新
         LaunchedEffect(Unit) {
             updateChecker.checkForUpdates().onSuccess { info ->
                 if (info.hasNewVersion) {
@@ -186,16 +186,22 @@ class MainActivity : ComponentActivity() {
         fun loadCapabilitiesAndModels() {
             if (!prefs.isConfigured) return
             lifecycleScope.launch {
-                apiClient.getModels().onSuccess { models ->
-                    availableModels = models
-                    models.firstOrNull()?.let { selectedModel = it }
+                apiClient.getDynamicModels().onSuccess { catalog ->
+                    dynamicCatalog = catalog
+                    val savedModelId = prefs.defaultModelId
+                    val matched = catalog.models.firstOrNull { it.id == savedModelId }
+                        ?: catalog.models.firstOrNull()
+                    matched?.let { selectedModel = it }
                 }
-                apiClient.getProjects().onSuccess { projs ->
-                    projects = projs
-                    projs.firstOrNull { it.isCurrent }?.let { currentProject = it.name }
-                }
+
                 val cwd = currentProject
-                apiClient.getSkills(cwd).onSuccess { skills = it }
+                apiClient.getSkills(cwd).onSuccess { list ->
+                    // 填充用户自定义的技能别名
+                    skills = list.map {
+                        val customAlias = prefs.getSkillAlias(it.name)
+                        if (!customAlias.isNullOrBlank()) it.copy(alias = customAlias) else it
+                    }
+                }
                 apiClient.getPlugins(cwd).onSuccess { plugins = it }
                 apiClient.getMcpServers(cwd).onSuccess { (cfg, srvs) ->
                     mcpConfig = cfg
@@ -211,7 +217,7 @@ class MainActivity : ComponentActivity() {
                 apiClient.getSessions().onSuccess {
                     sessions = it
                 }.onFailure {
-                    Toast.makeText(this@MainActivity, "获取会话失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
                 }
                 isLoadingSessions = false
             }
@@ -222,15 +228,12 @@ class MainActivity : ComponentActivity() {
             sseJob = lifecycleScope.launch {
                 isAgentBusy = true
 
-                // 参考 Termius / MQTT 助手：启动唤醒锁与前台服务保活！
                 keepAliveManager.acquireWakeLock()
                 PiForegroundService.start(
                     this@MainActivity,
-                    title = "piDroid · 任务运行中",
-                    content = "项目: $currentProject | 正在执行代码长任务..."
+                    title = "piDroid · 智能任务执行中",
+                    content = "项目: $currentProject | 正在执行代码任务..."
                 )
-
-                apiClient.getSessionStats(sessionId).onSuccess { tokenStats = it }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
                     when (event.type) {
@@ -286,7 +289,6 @@ class MainActivity : ComponentActivity() {
                         }
                         "turn_completed" -> {
                             isAgentBusy = false
-                            // 任务完成：释放唤醒锁省电，触发触觉震动两次
                             keepAliveManager.releaseWakeLock()
                             PiForegroundService.stop(this@MainActivity)
 
@@ -301,6 +303,31 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+
+        // 打开任务会话：拉取完整历史并无缝继续任务！
+        fun openSessionWithHistory(session: Session) {
+            currentSession = session
+            currentProject = session.workspaceName
+            messages.clear()
+            queuedMessages.clear()
+
+            lifecycleScope.launch {
+                // 1. 调用 GET /api/sessions/[id] 获取完整历史消息与元数据
+                apiClient.getSessionDetail(session.id).onSuccess { hist ->
+                    messages.addAll(hist.messages)
+                    tokenStats = hist.stats
+
+                    // 还原任务上次使用的模型
+                    dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
+                        selectedModel = it
+                    }
+                    currentThinkingLevel = hist.thinkingLevel
+                }
+
+                // 2. 开启增量监听并进入会话
+                startListeningEvents(session.id)
             }
         }
 
@@ -330,28 +357,54 @@ class MainActivity : ComponentActivity() {
                     onClose = { isScanning = false }
                 )
             }
-            showCapabilities -> {
-                CapabilitiesCenterScreen(
-                    models = availableModels,
+            showGlobalSettings -> {
+                GlobalSettingsScreen(
+                    models = dynamicCatalog.models,
+                    currentDefaultModelId = prefs.defaultModelId,
+                    currentDefaultThinkingLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),
+                    onSetDefaultModel = { model ->
+                        prefs.defaultModelId = model.id
+                        selectedModel = model
+                        Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                    },
+                    onSetDefaultThinkingLevel = { level ->
+                        prefs.defaultThinkingLevel = level.value
+                        currentThinkingLevel = level
+                        Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
+                    },
                     skills = skills,
-                    plugins = plugins,
-                    mcpConfig = mcpConfig,
-                    mcpServers = mcpServers,
-                    isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
-                    onRequestIgnoreBattery = { keepAliveManager.requestIgnoreBatteryOptimizations() },
                     onToggleSkill = { name, enabled ->
                         lifecycleScope.launch {
                             skills = skills.map { if (it.name == name) it.copy(enabled = enabled) else it }
                         }
                     },
-                    onClose = { showCapabilities = false }
+                    onUpdateSkillAlias = { name, alias ->
+                        prefs.saveSkillAlias(name, alias)
+                        skills = skills.map { if (it.name == name) it.copy(alias = alias) else it }
+                        Toast.makeText(this@MainActivity, "已保存别名: $alias", Toast.LENGTH_SHORT).show()
+                    },
+                    plugins = plugins,
+                    mcpConfig = mcpConfig,
+                    mcpServers = mcpServers,
+                    isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
+                    onRequestIgnoreBattery = { keepAliveManager.requestIgnoreBatteryOptimizations() },
+                    serverUrl = prefs.serverUrl,
+                    authToken = prefs.authToken,
+                    deviceName = prefs.deviceName,
+                    onDisconnect = {
+                        prefs.clear()
+                        showGlobalSettings = false
+                        Toast.makeText(this@MainActivity, "已断开连接", Toast.LENGTH_SHORT).show()
+                    },
+                    onClose = { showGlobalSettings = false }
                 )
             }
             currentSession != null -> {
+                // 工作台任务执行界面
                 ChatScreen(
                     sessionTitle = currentSession?.displayTitle ?: "任务控制台",
                     currentProject = currentProject,
-                    projects = projects,
+                    projects = emptyList(),
                     selectedModel = selectedModel,
                     thinkingLevel = currentThinkingLevel,
                     tokenStats = tokenStats,
@@ -368,17 +421,11 @@ class MainActivity : ComponentActivity() {
                         hapticsAndNotify.clearNotification()
                         smartTtsManager.stop()
                         isSpeaking = false
+                        loadSessions() // 返回时刷新会话
                     },
-                    onProjectSwitch = { proj ->
-                        currentProject = proj.name
-                        lifecycleScope.launch {
-                            loadSessions()
-                            loadCapabilitiesAndModels()
-                            Toast.makeText(this@MainActivity, "已切换工作区: ${proj.name}", Toast.LENGTH_SHORT).show()
-                        }
-                    },
+                    onProjectSwitch = { /* 由顶部或首页管理 */ },
                     onOpenModelSheet = { showModelSheet = true },
-                    onOpenCapabilities = { showCapabilities = true },
+                    onOpenCapabilities = { showGlobalSettings = true },
                     onCompactContext = {
                         lifecycleScope.launch {
                             isCompacting = true
@@ -460,7 +507,7 @@ class MainActivity : ComponentActivity() {
 
                 if (showModelSheet) {
                     ModelAndThinkingSheet(
-                        availableModels = availableModels,
+                        availableModels = dynamicCatalog.models,
                         selectedModelId = selectedModel.id,
                         currentThinkingLevel = currentThinkingLevel,
                         onModelSelected = { model ->
@@ -486,6 +533,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
             else -> {
+                // 首页：工作区与任务管理
                 SessionListScreen(
                     deviceName = prefs.deviceName,
                     serverUrl = prefs.serverUrl,
@@ -494,16 +542,20 @@ class MainActivity : ComponentActivity() {
                     isLoading = isLoadingSessions,
                     onRefresh = { loadSessions() },
                     onSessionClick = { session ->
-                        currentSession = session
-                        messages.clear()
-                        startListeningEvents(session.id)
+                        openSessionWithHistory(session)
                     },
                     onScanClick = { isScanning = true },
-                    onSettingsClick = { showSettings = true },
-                    onNewSessionClick = {
+                    onSettingsClick = { showGlobalSettings = true },
+                    onNewSessionClick = { wsPath ->
                         val newId = "session_" + System.currentTimeMillis()
-                        val newSession = Session(id = newId, name = "新任务会话", active = true)
+                        val newSession = Session(
+                            id = newId,
+                            name = "新任务会话",
+                            cwd = wsPath.ifBlank { "D:/myscript/eldercare-agent-platform" },
+                            active = true
+                        )
                         currentSession = newSession
+                        currentProject = newSession.workspaceName
                         messages.clear()
                         startListeningEvents(newId)
                     }
@@ -511,7 +563,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 应用内更新弹窗 (参考 Termius / MQTT 助手)
+        // 应用内平滑更新弹窗
         updateInfo?.let { info ->
             UpdateDialog(
                 updateInfo = info,
@@ -537,21 +589,6 @@ class MainActivity : ComponentActivity() {
                     downloadedApkFile?.let { apkInstaller.installApk(it) }
                 },
                 onDismiss = { updateInfo = null }
-            )
-        }
-
-        if (showSettings) {
-            ServerConfigDialog(
-                initialUrl = prefs.serverUrl,
-                initialToken = prefs.authToken,
-                initialName = prefs.deviceName,
-                onConfirm = { url, token, name ->
-                    showSettings = false
-                    prefs.saveConnection(url, token, name)
-                    loadSessions()
-                    loadCapabilitiesAndModels()
-                },
-                onDismiss = { showSettings = false }
             )
         }
     }

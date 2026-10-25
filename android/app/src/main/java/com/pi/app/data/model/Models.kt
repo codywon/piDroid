@@ -3,7 +3,20 @@ package com.pi.app.data.model
 import com.google.gson.annotations.SerializedName
 
 /**
- * Pi 历史会话模型
+ * 工作区模型（按项目根目录划分）
+ */
+data class WorkspaceInfo(
+    val path: String,
+    val name: String,
+    val sessionCount: Int = 0,
+    val isCurrent: Boolean = false
+) {
+    val displayName: String
+        get() = name.ifBlank { path.substringAfterLast('\\').substringAfterLast('/') }
+}
+
+/**
+ * Pi 历史任务会话模型
  */
 data class Session(
     @SerializedName("id") val id: String,
@@ -12,6 +25,9 @@ data class Session(
     @SerializedName("firstMessage") val firstMessage: String? = null,
     @SerializedName("cwd") val cwd: String? = null,
     @SerializedName("project") val project: String? = null,
+    @SerializedName("projectRoot") val projectRoot: String? = null,
+    @SerializedName("projectKey") val projectKey: String? = null,
+    @SerializedName("branch") val branch: String? = null,
     @SerializedName("created") val created: String? = null,
     @SerializedName("modified") val modified: String? = null,
     @SerializedName("messageCount") val messageCount: Int = 0,
@@ -22,8 +38,20 @@ data class Session(
     val displayTitle: String
         get() = name?.takeIf { it.isNotBlank() }
             ?: title?.takeIf { it.isNotBlank() }
-            ?: firstMessage?.take(30)
+            ?: firstMessage?.take(36)
             ?: "任务: ${id.take(8)}"
+
+    val workspacePath: String
+        get() = projectRoot?.takeIf { it.isNotBlank() }
+            ?: cwd?.takeIf { it.isNotBlank() }
+            ?: projectKey?.takeIf { it.isNotBlank() }
+            ?: "默认工作区"
+
+    val workspaceName: String
+        get() {
+            val p = workspacePath
+            return p.substringAfterLast('\\').substringAfterLast('/').ifBlank { p }
+        }
 }
 
 /**
@@ -49,7 +77,7 @@ data class TokenStats(
 }
 
 /**
- * 真实 pi-web 模型信息
+ * 真实 pi-web 动态模型信息
  */
 data class ModelInfo(
     @SerializedName("id") val id: String,
@@ -70,10 +98,10 @@ data class ModelInfo(
 }
 
 /**
- * 思考深度级别（与 pi-web 官方档位完全一致）
+ * 思考深度级别（7档官方规格）
  */
 enum class ThinkingLevel(val value: String, val label: String, val budgetTokens: Int) {
-    OFF("off", "关闭", 0),
+    OFF("off", "关闭思考", 0),
     MINIMAL("minimal", "微弱 (512)", 512),
     LOW("low", "轻度 (1k)", 1024),
     MEDIUM("medium", "适度 (4k)", 4096),
@@ -98,12 +126,12 @@ data class QueuedMessage(
 )
 
 /**
- * 技能 (Skills) - 对应 pi-web GET /api/skills
+ * 技能 (Skills)
  */
 data class SkillInfo(
     @SerializedName("name") val name: String,
     @SerializedName("description") val description: String? = null,
-    @SerializedName("alias") var alias: String? = null, // 用户别名
+    @SerializedName("alias") var alias: String? = null, // 用户自定义别名
     @SerializedName("filePath") val filePath: String? = null,
     @SerializedName("baseDir") val baseDir: String? = null,
     @SerializedName("enabled") var enabled: Boolean = true,
@@ -115,7 +143,7 @@ data class SkillInfo(
 }
 
 /**
- * 插件扩展 (Plugins) - 对应 pi-web GET /api/plugins
+ * 插件扩展 (Plugins)
  */
 data class PluginPackage(
     @SerializedName("packageName") val packageName: String,
@@ -136,7 +164,7 @@ data class PluginCounts(
 )
 
 /**
- * MCP (Model Context Protocol)
+ * MCP 协议
  */
 data class McpServerInfo(
     @SerializedName("name") val name: String,
@@ -159,15 +187,6 @@ data class McpCodeModeConfig(
     val mode: String = "automatic", // automatic, always, off
     val scriptMode: Boolean = true,
     val tokenBudget: Int = 3000
-)
-
-/**
- * 项目 / 工作区
- */
-data class ProjectInfo(
-    @SerializedName("name") val name: String,
-    @SerializedName("path") val path: String,
-    @SerializedName("isCurrent") val isCurrent: Boolean = false
 )
 
 /**

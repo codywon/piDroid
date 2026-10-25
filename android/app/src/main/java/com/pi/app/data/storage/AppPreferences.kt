@@ -24,6 +24,22 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_AUTO_SPEAK, false)
         set(value) = prefs.edit().putBoolean(KEY_AUTO_SPEAK, value).apply()
 
+    var defaultModelId: String
+        get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
+        set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
+
+    var defaultThinkingLevel: String
+        get() = prefs.getString(KEY_DEFAULT_THINKING, "high") ?: "high"
+        set(value) = prefs.edit().putString(KEY_DEFAULT_THINKING, value).apply()
+
+    fun getSkillAlias(skillName: String): String? {
+        return prefs.getString("alias_$skillName", null)
+    }
+
+    fun saveSkillAlias(skillName: String, alias: String) {
+        prefs.edit().putString("alias_$skillName", alias).apply()
+    }
+
     val isConfigured: Boolean
         get() = serverUrl.isNotEmpty() && authToken.isNotEmpty()
 

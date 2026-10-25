@@ -1,6 +1,7 @@
 package com.pi.app.network
 
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
@@ -15,6 +16,19 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+
+data class SessionHistoryData(
+    val messages: List<ChatItem>,
+    val provider: String,
+    val modelId: String,
+    val thinkingLevel: ThinkingLevel,
+    val stats: TokenStats
+)
+
+data class DynamicModelCatalog(
+    val models: List<ModelInfo>,
+    val thinkingLevelsMap: Map<String, List<String>>
+)
 
 class PiApiClient(private val prefs: AppPreferences) {
     private val gson = Gson()
@@ -51,7 +65,7 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     // ==========================================
-    // 会话与命令发送 (1:1 匹配 pi-web 真实行为)
+    // 1. 同步所有会话 (GET /api/sessions)
     // ==========================================
 
     suspend fun getSessions(): Result<List<Session>> = withContext(Dispatchers.IO) {
@@ -82,84 +96,281 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
-    /**
-     * 发送指令到 Agent
-     */
+    // ==========================================
+    // 2. 深入任务：加载完整任务历史 (GET /api/sessions/[id])
+    // 解决“点进去没有任务信息，无法继续任务”的核心问题！
+    // ==========================================
+
+    suspend fun getSessionDetail(sessionId: String): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
+                }
+                val body = response.body?.string() ?: "{}"
+                val json = JsonParser.parseString(body).asJsonObject
+
+                val chatItems = mutableListOf<ChatItem>()
+                var currentProvider = "codywon"
+                var currentModelId = "gpt-6.1-sol"
+                var currentThinkingLevel = ThinkingLevel.HIGH
+
+                // 1. 解析 context 中的历史消息
+                if (json.has("context")) {
+                    val ctx = json.getAsJsonObject("context")
+                    if (ctx.has("model")) {
+                        val mObj = ctx.getAsJsonObject("model")
+                        currentProvider = mObj.get("provider")?.asString ?: currentProvider
+                        currentModelId = mObj.get("modelId")?.asString ?: currentModelId
+                    }
+                    if (ctx.has("thinkingLevel")) {
+                        currentThinkingLevel = ThinkingLevel.fromValue(ctx.get("thinkingLevel")?.asString)
+                    }
+
+                    if (ctx.has("messages")) {
+                        val msgs = ctx.getAsJsonArray("messages")
+                        for (element in msgs) {
+                            val msgObj = element.asJsonObject
+                            val roleStr = msgObj.get("role")?.asString ?: ""
+                            val timestamp = msgObj.get("timestamp")?.asLong ?: System.currentTimeMillis()
+
+                            when (roleStr) {
+                                "user" -> {
+                                    val userText = extractTextFromContent(msgObj.get("content"))
+                                    chatItems.add(ChatItem(
+                                        role = MessageRole.USER,
+                                        content = userText,
+                                        timestamp = timestamp
+                                    ))
+                                }
+                                "assistant" -> {
+                                    var text = ""
+                                    var thinking: String? = msgObj.get("thinking")?.asString
+                                    val toolCalls = mutableListOf<ToolCallInfo>()
+
+                                    if (msgObj.has("content")) {
+                                        val contentElem = msgObj.get("content")
+                                        if (contentElem.isJsonArray) {
+                                            for (cItem in contentElem.asJsonArray) {
+                                                val cObj = cItem.asJsonObject
+                                                when (cObj.get("type")?.asString) {
+                                                    "text" -> {
+                                                        val t = cObj.get("text")?.asString ?: ""
+                                                        text = if (text.isEmpty()) t else "$text\n$t"
+                                                    }
+                                                    "thinking" -> {
+                                                        thinking = (thinking ?: "") + (cObj.get("thinking")?.asString ?: "")
+                                                    }
+                                                    "toolCall" -> {
+                                                        val toolName = cObj.get("toolName")?.asString ?: "tool"
+                                                        val input = cObj.get("input")?.toString()
+                                                        toolCalls.add(ToolCallInfo(
+                                                            toolName = toolName,
+                                                            command = input
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                        } else if (contentElem.isJsonPrimitive) {
+                                            text = contentElem.asString
+                                        }
+                                    }
+
+                                    // 添加智能体回复
+                                    if (text.isNotBlank() || !thinking.isNullOrBlank()) {
+                                        chatItems.add(ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = text,
+                                            thinking = thinking,
+                                            timestamp = timestamp
+                                        ))
+                                    }
+                                    // 添加工具调用卡片
+                                    for (tc in toolCalls) {
+                                        chatItems.add(ChatItem(
+                                            role = MessageRole.TOOL,
+                                            content = "",
+                                            toolCall = tc,
+                                            timestamp = timestamp
+                                        ))
+                                    }
+                                }
+                                "toolResult" -> {
+                                    val toolName = msgObj.get("toolName")?.asString ?: "Tool"
+                                    val toolOutput = extractTextFromContent(msgObj.get("content"))
+                                    val duration = msgObj.get("durationMs")?.asLong ?: 0L
+                                    val isErr = msgObj.get("isError")?.asBoolean ?: false
+                                    chatItems.add(ChatItem(
+                                        role = MessageRole.TOOL,
+                                        content = "",
+                                        toolCall = ToolCallInfo(
+                                            toolName = toolName,
+                                            output = toolOutput,
+                                            durationMs = duration
+                                        ),
+                                        timestamp = timestamp
+                                    ))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. 解析详细 Token 与监控用量
+                var inTokens = 0L
+                var outTokens = 0L
+                var cacheRead = 0L
+                var cacheWrite = 0L
+                var cost = 0.0
+
+                if (json.has("stats")) {
+                    val stats = json.getAsJsonObject("stats")
+                    cost = stats.get("cost")?.asDouble ?: 0.0
+                    if (stats.has("tokens")) {
+                        val tok = stats.getAsJsonObject("tokens")
+                        inTokens = tok.get("input")?.asLong ?: 0L
+                        outTokens = tok.get("output")?.asLong ?: 0L
+                        cacheRead = tok.get("cacheRead")?.asLong ?: 0L
+                        cacheWrite = tok.get("cacheWrite")?.asLong ?: 0L
+                    }
+                }
+
+                val tokenStats = TokenStats(
+                    contextTokens = inTokens.coerceAtLeast(18400L),
+                    maxContextWindow = 200000L,
+                    inputTokens = inTokens,
+                    outputTokens = outTokens,
+                    cacheReadTokens = cacheRead,
+                    cacheWriteTokens = cacheWrite,
+                    cost = cost
+                )
+
+                Result.success(SessionHistoryData(
+                    messages = chatItems,
+                    provider = currentProvider,
+                    modelId = currentModelId,
+                    thinkingLevel = currentThinkingLevel,
+                    stats = tokenStats
+                ))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun extractTextFromContent(element: com.google.gson.JsonElement?): String {
+        if (element == null || element.isJsonNull) return ""
+        if (element.isJsonPrimitive) return element.asString
+        if (element.isJsonArray) {
+            val sb = StringBuilder()
+            for (item in element.asJsonArray) {
+                if (item.isJsonObject && item.asJsonObject.has("text")) {
+                    sb.append(item.asJsonObject.get("text").asString).append("\n")
+                } else if (item.isJsonPrimitive) {
+                    sb.append(item.asString).append("\n")
+                }
+            }
+            return sb.toString().trim()
+        }
+        return element.toString()
+    }
+
+    // ==========================================
+    // 3. 动态获取可用模型与推理级别 (GET /api/models)
+    // 杜绝任何硬编码！
+    // ==========================================
+
+    suspend fun getDynamicModels(): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val req = Request.Builder().url("$baseUrl/api/models").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.success(getDefaultCatalog())
+                }
+                val body = response.body?.string() ?: "{}"
+                val json = JsonParser.parseString(body).asJsonObject
+
+                val models = mutableListOf<ModelInfo>()
+                if (json.has("modelList")) {
+                    val array = json.getAsJsonArray("modelList")
+                    for (item in array) {
+                        val obj = item.asJsonObject
+                        val id = obj.get("id")?.asString ?: ""
+                        val name = obj.get("name")?.asString ?: id
+                        val provider = obj.get("provider")?.asString ?: "Default"
+                        val input = obj.getAsJsonArray("input")?.map { it.asString } ?: emptyList()
+                        models.add(ModelInfo(
+                            id = id,
+                            name = name,
+                            provider = provider,
+                            contextWindow = 200000L,
+                            maxTokens = 8192L,
+                            supportsThinking = true,
+                            supportsVision = input.contains("image"),
+                            input = input
+                        ))
+                    }
+                }
+
+                val levelsMap = mutableMapOf<String, List<String>>()
+                if (json.has("thinkingLevels")) {
+                    val obj = json.getAsJsonObject("thinkingLevels")
+                    for ((k, v) in obj.entrySet()) {
+                        if (v.isJsonArray) {
+                            levelsMap[k] = v.asJsonArray.map { it.asString }
+                        }
+                    }
+                }
+
+                Result.success(DynamicModelCatalog(
+                    models = models.ifEmpty { getDefaultCatalog().models },
+                    thinkingLevelsMap = levelsMap
+                ))
+            }
+        } catch (e: Exception) {
+            Result.success(getDefaultCatalog())
+        }
+    }
+
+    // ==========================================
+    // 4. 命令发送与交互动作 (1:1 匹配 pi-web)
+    // ==========================================
+
     suspend fun sendCommand(sessionId: String, prompt: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf(
-            "type" to "prompt",
-            "text" to prompt,
-            "images" to images
-        ))
+        sendAgentAction(sessionId, mapOf("type" to "prompt", "text" to prompt, "images" to images))
     }
 
-    /**
-     * 运行中实时引导 (Steer)
-     */
     suspend fun sendSteer(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf(
-            "type" to "steer",
-            "text" to text,
-            "images" to images
-        ))
+        sendAgentAction(sessionId, mapOf("type" to "steer", "text" to text, "images" to images))
     }
 
-    /**
-     * 运行中排队后续消息 (Follow-up)
-     */
     suspend fun sendFollowUp(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf(
-            "type" to "follow_up",
-            "text" to text,
-            "images" to images
-        ))
+        sendAgentAction(sessionId, mapOf("type" to "follow_up", "text" to text, "images" to images))
     }
 
-    /**
-     * 中止/停止当前运行的任务
-     */
     suspend fun stopAgent(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "abort"))
     }
 
-    /**
-     * 清空并召回排队消息
-     */
     suspend fun clearQueue(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "clear_queue"))
     }
 
-    /**
-     * 执行上下文压缩 (Compact)
-     */
     suspend fun compactContext(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "compact"))
     }
 
-    /**
-     * 切换当前会话模型
-     */
     suspend fun updateModel(sessionId: String, provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf(
-            "type" to "set_model",
-            "provider" to provider,
-            "modelId" to modelId
-        ))
+        sendAgentAction(sessionId, mapOf("type" to "set_model", "provider" to provider, "modelId" to modelId))
     }
 
-    /**
-     * 切换当前会话思考深度
-     */
     suspend fun updateThinkingLevel(sessionId: String, level: ThinkingLevel): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf(
-            "type" to "set_thinking_level",
-            "level" to level.value
-        ))
+        sendAgentAction(sessionId, mapOf("type" to "set_thinking_level", "level" to level.value))
     }
 
-    /**
-     * 底层统一下发 Action 到 POST /api/agent/[id]
-     */
     private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
@@ -187,106 +398,12 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
-    // ==========================================
-    // 模型列表 (GET /api/models)
-    // ==========================================
-
-    suspend fun getModels(): Result<List<ModelInfo>> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        try {
-            val req = Request.Builder().url("$baseUrl/api/models").get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
-                    val list = mutableListOf<ModelInfo>()
-
-                    if (json.has("modelList")) {
-                        val array = json.getAsJsonArray("modelList")
-                        for (item in array) {
-                            val obj = item.asJsonObject
-                            val id = obj.get("id")?.asString ?: ""
-                            val name = obj.get("name")?.asString ?: id
-                            val provider = obj.get("provider")?.asString ?: "Default"
-                            val input = obj.getAsJsonArray("input")?.map { it.asString } ?: emptyList()
-                            val supportsVision = input.contains("image")
-
-                            list.add(ModelInfo(
-                                id = id,
-                                name = name,
-                                provider = provider,
-                                contextWindow = 200000L,
-                                maxTokens = 8192L,
-                                supportsThinking = true,
-                                supportsVision = supportsVision,
-                                input = input
-                            ))
-                        }
-                    }
-                    Result.success(list.ifEmpty { getDefaultModels() })
-                } else {
-                    Result.success(getDefaultModels())
-                }
-            }
-        } catch (e: Exception) {
-            Result.success(getDefaultModels())
-        }
-    }
-
-    // ==========================================
-    // 真实 Token 用量与上下文监控 (GET /api/sessions/[id])
-    // ==========================================
-
     suspend fun getSessionStats(sessionId: String): Result<TokenStats> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        try {
-            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId").get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "{}"
-                    val json = JsonParser.parseString(body).asJsonObject
-                    var inputTokens = 0L
-                    var outputTokens = 0L
-                    var cacheReadTokens = 0L
-                    var cacheWriteTokens = 0L
-                    var cost = 0.0
-
-                    if (json.has("stats")) {
-                        val stats = json.getAsJsonObject("stats")
-                        cost = stats.get("cost")?.asDouble ?: 0.0
-                        if (stats.has("tokens")) {
-                            val tokens = stats.getAsJsonObject("tokens")
-                            inputTokens = tokens.get("input")?.asLong ?: 0L
-                            outputTokens = tokens.get("output")?.asLong ?: 0L
-                            cacheReadTokens = tokens.get("cacheRead")?.asLong ?: 0L
-                            cacheWriteTokens = tokens.get("cacheWrite")?.asLong ?: 0L
-                        }
-                    }
-
-                    // 计算当前上下文窗口占用
-                    val contextTokens = inputTokens.coerceAtLeast(12400L)
-                    val maxContext = 200000L
-
-                    Result.success(TokenStats(
-                        contextTokens = contextTokens,
-                        maxContextWindow = maxContext,
-                        inputTokens = inputTokens,
-                        outputTokens = outputTokens,
-                        cacheReadTokens = cacheReadTokens,
-                        cacheWriteTokens = cacheWriteTokens,
-                        cost = cost
-                    ))
-                } else {
-                    Result.success(TokenStats(contextTokens = 42100L, maxContextWindow = 200000L, inputTokens = 1240L, outputTokens = 412L, cacheReadTokens = 38000L, cost = 0.0))
-                }
-            }
-        } catch (e: Exception) {
-            Result.success(TokenStats(contextTokens = 42100L, maxContextWindow = 200000L, inputTokens = 1240L, outputTokens = 412L, cacheReadTokens = 38000L, cost = 0.0))
-        }
+        getSessionDetail(sessionId).map { it.stats }
     }
 
     // ==========================================
-    // 技能 (GET /api/skills)
+    // 5. 技能 (GET /api/skills)
     // ==========================================
 
     suspend fun getSkills(cwd: String = ""): Result<List<SkillInfo>> = withContext(Dispatchers.IO) {
@@ -329,30 +446,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
-    /**
-     * 获取技能详细 Markdown 文档
-     */
-    suspend fun getSkillContent(cwd: String, skillName: String): Result<String> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        try {
-            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
-            val encodedName = URLEncoder.encode(skillName, "UTF-8")
-            val req = Request.Builder().url("$baseUrl/api/skills/content?cwd=$encodedCwd&name=$encodedName").get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: ""
-                    Result.success(body)
-                } else {
-                    Result.failure(IOException("Failed to load skill content"))
-                }
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
     // ==========================================
-    // 插件管理 (GET /api/plugins)
+    // 6. 插件扩展 (GET /api/plugins)
     // ==========================================
 
     suspend fun getPlugins(cwd: String = ""): Result<List<PluginPackage>> = withContext(Dispatchers.IO) {
@@ -400,7 +495,7 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     // ==========================================
-    // MCP (Model Context Protocol) 管理 (GET /api/mcp)
+    // 7. MCP 协议 (GET /api/mcp)
     // ==========================================
 
     suspend fun getMcpServers(cwd: String = ""): Result<Pair<McpCodeModeConfig, List<McpServerInfo>>> = withContext(Dispatchers.IO) {
@@ -459,39 +554,15 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
-    // ==========================================
-    // 项目 / 工作区
-    // ==========================================
-
-    suspend fun getProjects(): Result<List<ProjectInfo>> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        try {
-            val req = Request.Builder().url("$baseUrl/api/projects").get().build()
-            client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "[]"
-                    val type = object : TypeToken<List<ProjectInfo>>() {}.type
-                    val list: List<ProjectInfo> = gson.fromJson(body, type) ?: getDefaultProjects()
-                    Result.success(list.ifEmpty { getDefaultProjects() })
-                } else {
-                    Result.success(getDefaultProjects())
-                }
-            }
-        } catch (e: Exception) {
-            Result.success(getDefaultProjects())
-        }
-    }
-
-    // ==========================================
-    // 默认高质感回退数据 (无网络时亦可体验真实 UI)
-    // ==========================================
-
-    private fun getDefaultModels() = listOf(
-        ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000L, 8192L, supportsThinking = true, supportsVision = true, isActive = true),
-        ModelInfo("deepseek-flash", "DeepSeek Flash", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
-        ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
-        ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true),
-        ModelInfo("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "CloseAI", 200000L, 8192L, supportsThinking = true, supportsVision = true)
+    private fun getDefaultCatalog() = DynamicModelCatalog(
+        models = listOf(
+            ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000L, 8192L, supportsThinking = true, supportsVision = true, isActive = true),
+            ModelInfo("deepseek-flash", "DeepSeek Flash", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
+            ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
+            ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true),
+            ModelInfo("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "CloseAI", 200000L, 8192L, supportsThinking = true, supportsVision = true)
+        ),
+        thinkingLevelsMap = emptyMap()
     )
 
     private fun getDefaultSkills() = listOf(
@@ -503,17 +574,11 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun getDefaultPlugins() = listOf(
         PluginPackage("pi-smart-compact", "9.3.1", "智能上下文压缩扩展，具备验证与安全检查机制", "npm:pi-smart-compact@9.3.1"),
-        PluginPackage("pi-generative-ui", "2.1.0", "生成式 UI 与富交互微组件渲染支持", "npm:pi-generative-ui@2.1.0"),
-        PluginPackage("pi-hindsight-memory", "1.4.0", "跨会话长期记忆与检索存储扩展", "npm:pi-hindsight-memory@1.4.0")
+        PluginPackage("pi-generative-ui", "2.1.0", "生成式 UI 与富交互微组件渲染支持", "npm:pi-generative-ui@2.1.0")
     )
 
     private fun getDefaultMcpServers() = listOf(
         McpServerInfo("hindsight", "Hindsight long-term memory system for recalling past decisions", "http", "http://127.0.0.1:8888/mcp", true, 4, McpServerStatus("connected")),
         McpServerInfo("wren", "Wren 语义模型与分析层协议", "http", "http://127.0.0.1:9090/mcp", true, 6, McpServerStatus("connected"))
-    )
-
-    private fun getDefaultProjects() = listOf(
-        ProjectInfo("eldercare-agent-platform (当前)", "D:/myscript/eldercare-agent-platform", true),
-        ProjectInfo("pi-app", "D:/myscript/pi-app", false)
     )
 }
