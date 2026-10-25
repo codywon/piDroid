@@ -412,7 +412,7 @@ fun PluginsConfigTab(plugins: List<PluginPackage>) {
                             color = if (pkg.status == "loaded") TermiusGreen.copy(alpha = 0.15f) else TermiusTextMuted.copy(alpha = 0.15f)
                         ) {
                             Text(
-                                text = if (pkg.status == "loaded") "已加载" else pkg.status,
+                                text = if (pkg.status == "loaded") "已加载" else (pkg.status ?: "已加载"),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (pkg.status == "loaded") TermiusGreen else TermiusTextMuted,
                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -423,7 +423,7 @@ fun PluginsConfigTab(plugins: List<PluginPackage>) {
                     if (!pkg.description.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = pkg.description,
+                            text = pkg.description ?: "",
                             style = MaterialTheme.typography.bodySmall,
                             color = TermiusTextSecondary
                         )
@@ -432,7 +432,7 @@ fun PluginsConfigTab(plugins: List<PluginPackage>) {
                     if (!pkg.source.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = pkg.source,
+                            text = pkg.source ?: "",
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             color = TermiusTextMuted
