@@ -12,7 +12,7 @@ data class WorkspaceInfo(
     val isCurrent: Boolean = false
 ) {
     val displayName: String
-        get() = name.ifBlank { path.substringAfterLast('\\').substringAfterLast('/') }
+        get() = name.ifBlank { path.replace('\\', '/').substringAfterLast('/') }
 }
 
 data class ProjectInfo(
@@ -48,10 +48,13 @@ data class Session(
             ?: "任务: ${id.take(8)}"
 
     val workspacePath: String
-        get() = projectRoot?.takeIf { it.isNotBlank() }
-            ?: cwd?.takeIf { it.isNotBlank() }
-            ?: projectKey?.takeIf { it.isNotBlank() }
-            ?: "默认工作区"
+        get() {
+            val raw = projectRoot?.takeIf { it.isNotBlank() }
+                ?: cwd?.takeIf { it.isNotBlank() }
+                ?: projectKey?.takeIf { it.isNotBlank() }
+                ?: "默认工作区"
+            return raw.replace('\\', '/').trimEnd('/')
+        }
 
     val workspaceName: String
         get() {
