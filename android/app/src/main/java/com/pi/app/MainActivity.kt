@@ -29,10 +29,10 @@ import com.pi.app.ui.chat.ModelAndThinkingSheet
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
 import com.pi.app.ui.settings.GlobalSettingsScreen
-import com.pi.app.ui.updater.UpdateDialog
-import com.pi.app.updater.ApkInstaller
-import com.pi.app.updater.UpdateChecker
-import com.pi.app.updater.UpdateInfo
+import com.pi.app.ui.updater.AppUpdateDialog
+import com.pi.app.ui.updater.UpdateUiState
+import com.pi.app.updater.AppUpdateManager
+import com.pi.app.updater.UpdateCheckResult
 import com.pi.app.voice.SmartTtsManager
 import com.pi.app.voice.VoiceInputManager
 import com.pi.app.voice.VoiceInputState
@@ -50,8 +50,6 @@ class MainActivity : ComponentActivity() {
     private lateinit var hapticsAndNotify: PiHapticsAndNotify
 
     private lateinit var keepAliveManager: KeepAliveManager
-    private lateinit var updateChecker: UpdateChecker
-    private lateinit var apkInstaller: ApkInstaller
 
     private var sseJob: Job? = null
 
@@ -75,8 +73,6 @@ class MainActivity : ComponentActivity() {
         hapticsAndNotify = PiHapticsAndNotify(this)
 
         keepAliveManager = KeepAliveManager(this)
-        updateChecker = UpdateChecker(currentVersion = "1.0.0")
-        apkInstaller = ApkInstaller(this)
 
         // 初始化主题管理
         com.pi.app.ui.theme.ThemeManager.init(this)
@@ -143,11 +139,8 @@ class MainActivity : ComponentActivity() {
         var showGlobalSettings by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
 
-        // 应用内更新状态
-        var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-        var isDownloadingUpdate by remember { mutableStateOf(false) }
-        var downloadProgress by remember { mutableFloatStateOf(0f) }
-        var downloadedApkFile by remember { mutableStateOf<File?>(null) }
+        // 工业级应用内自动更新状态 (参考 Termius)
+        var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
 
         var currentSession by remember { mutableStateOf<Session?>(null) }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
@@ -178,12 +171,13 @@ class MainActivity : ComponentActivity() {
         var isRecording by remember { mutableStateOf(false) }
         var partialVoiceText by remember { mutableStateOf("") }
 
-        // 启动时自动检查更新
+        // 启动时静默检查更新 (非手动静默模式，若有更新则弹窗)
         LaunchedEffect(Unit) {
-            updateChecker.checkForUpdates().onSuccess { info ->
-                if (info.hasNewVersion) {
-                    updateInfo = info
+            when (val result = AppUpdateManager.checkUpdate(this@MainActivity, isManual = false)) {
+                is UpdateCheckResult.HasUpdate -> {
+                    updateUiState = UpdateUiState.HasUpdate(result.info)
                 }
+                else -> {}
             }
         }
 
@@ -612,34 +606,52 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 应用内平滑更新弹窗
-        updateInfo?.let { info ->
-            UpdateDialog(
-                updateInfo = info,
-                isDownloading = isDownloadingUpdate,
-                downloadProgress = downloadProgress,
-                isDownloaded = downloadedApkFile != null,
-                onStartDownload = {
-                    isDownloadingUpdate = true
-                    lifecycleScope.launch {
-                        apkInstaller.downloadApk(info.downloadUrl) { progress ->
-                            downloadProgress = progress
-                        }.onSuccess { file ->
-                            isDownloadingUpdate = false
-                            downloadedApkFile = file
-                            apkInstaller.installApk(file)
-                        }.onFailure { err ->
-                            isDownloadingUpdate = false
-                            Toast.makeText(this@MainActivity, "下载更新失败: ${err.message}", Toast.LENGTH_LONG).show()
-                        }
+        // 工业级应用内自动更新弹窗 (参考 Termius)
+        AppUpdateDialog(
+            state = updateUiState,
+            onStartDownload = { info ->
+                lifecycleScope.launch {
+                    updateUiState = UpdateUiState.Downloading(
+                        info = info,
+                        progress = 0f,
+                        downloadedBytes = 0L,
+                        totalBytes = info.fileSize,
+                        speedText = "连接镜像中...",
+                        channelName = "智能优选通道"
+                    )
+                    val result = AppUpdateManager.downloadApk(this@MainActivity, info) { progress, downloaded, total, speed, channel ->
+                        updateUiState = UpdateUiState.Downloading(info, progress, downloaded, total, speed, channel)
                     }
-                },
-                onInstall = {
-                    downloadedApkFile?.let { apkInstaller.installApk(it) }
-                },
-                onDismiss = { updateInfo = null }
-            )
-        }
+                    result.onSuccess { apkFile ->
+                        if (AppUpdateManager.canInstallPackages(this@MainActivity)) {
+                            updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
+                            AppUpdateManager.installApk(this@MainActivity, apkFile)
+                        } else {
+                            updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
+                        }
+                    }.onFailure { err ->
+                        updateUiState = UpdateUiState.Error(err.message ?: "下载失败", info)
+                    }
+                }
+            },
+            onInstall = { file ->
+                if (AppUpdateManager.canInstallPackages(this@MainActivity)) {
+                    AppUpdateManager.installApk(this@MainActivity, file)
+                } else {
+                    val currentInfo = (updateUiState as? UpdateUiState.ReadyToInstall)?.info
+                    if (currentInfo != null) {
+                        updateUiState = UpdateUiState.PermissionRequired(file, currentInfo)
+                    }
+                }
+            },
+            onIgnore = { tagName ->
+                AppUpdateManager.ignoreVersion(this@MainActivity, tagName)
+                updateUiState = UpdateUiState.Idle
+            },
+            onDismiss = {
+                updateUiState = UpdateUiState.Idle
+            }
+        )
     }
 
     override fun onDestroy() {

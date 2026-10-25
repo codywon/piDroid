@@ -1,5 +1,6 @@
 package com.pi.app.ui.settings
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,13 +18,22 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pi.app.data.model.*
 import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.theme.*
+import com.pi.app.ui.updater.AppUpdateDialog
+import com.pi.app.ui.updater.UpdateUiState
+import com.pi.app.updater.AppUpdateManager
+import com.pi.app.updater.UpdateCheckResult
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,12 +58,38 @@ fun GlobalSettingsScreen(
     onClose: () -> Unit
 ) {
     val theme = LocalAppTheme.current
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var selectedTab by remember { mutableStateOf(0) }
     val tabs = listOf("模型管理", "技能中心", "MCP协议", "插件扩展", "系统设置")
 
     var selectedSkillForDetail by remember { mutableStateOf<SkillInfo?>(null) }
     var editingSkillAlias by remember { mutableStateOf<SkillInfo?>(null) }
     var aliasInput by remember { mutableStateOf("") }
+
+    // Termius 工业级应用内更新状态
+    var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
+    var isCheckingUpdate by remember { mutableStateOf(false) }
+
+    // 从系统设置授权未知应用安装权限返回时自适应续接安装
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                if (updateUiState is UpdateUiState.PermissionRequired) {
+                    val permState = updateUiState as UpdateUiState.PermissionRequired
+                    if (AppUpdateManager.canInstallPackages(context)) {
+                        updateUiState = UpdateUiState.ReadyToInstall(permState.apkFile, permState.info)
+                        AppUpdateManager.installApk(context, permState.apkFile)
+                    }
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     Scaffold(
         containerColor = theme.background,
@@ -137,11 +173,79 @@ fun GlobalSettingsScreen(
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
-                    onDisconnect = onDisconnect
+                    onDisconnect = onDisconnect,
+                    isCheckingUpdate = isCheckingUpdate,
+                    onCheckUpdate = {
+                        if (isCheckingUpdate) return@GlobalSystemSettingsTab
+                        isCheckingUpdate = true
+                        Toast.makeText(context, "正在检查最新发布版本...", Toast.LENGTH_SHORT).show()
+                        coroutineScope.launch {
+                            when (val result = AppUpdateManager.checkUpdate(context, isManual = true)) {
+                                is UpdateCheckResult.HasUpdate -> {
+                                    updateUiState = UpdateUiState.HasUpdate(result.info)
+                                }
+                                is UpdateCheckResult.NoUpdate -> {
+                                    Toast.makeText(context, "当前已是最新版本 (v${result.currentVersion})", Toast.LENGTH_SHORT).show()
+                                }
+                                is UpdateCheckResult.Error -> {
+                                    Toast.makeText(context, "检查更新失败: ${result.message}", Toast.LENGTH_LONG).show()
+                                }
+                                else -> {}
+                            }
+                            isCheckingUpdate = false
+                        }
+                    }
                 )
             }
         }
     }
+
+    // 工业级应用内自动更新弹窗 (参考 Termius)
+    AppUpdateDialog(
+        state = updateUiState,
+        onStartDownload = { info ->
+            coroutineScope.launch {
+                updateUiState = UpdateUiState.Downloading(
+                    info = info,
+                    progress = 0f,
+                    downloadedBytes = 0L,
+                    totalBytes = info.fileSize,
+                    speedText = "连接镜像中...",
+                    channelName = "智能优选通道"
+                )
+                val result = AppUpdateManager.downloadApk(context, info) { progress, downloaded, total, speed, channel ->
+                    updateUiState = UpdateUiState.Downloading(info, progress, downloaded, total, speed, channel)
+                }
+                result.onSuccess { apkFile ->
+                    if (AppUpdateManager.canInstallPackages(context)) {
+                        updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
+                        AppUpdateManager.installApk(context, apkFile)
+                    } else {
+                        updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
+                    }
+                }.onFailure { err ->
+                    updateUiState = UpdateUiState.Error(err.message ?: "下载失败", info)
+                }
+            }
+        },
+        onInstall = { file ->
+            if (AppUpdateManager.canInstallPackages(context)) {
+                AppUpdateManager.installApk(context, file)
+            } else {
+                val currentInfo = (updateUiState as? UpdateUiState.ReadyToInstall)?.info
+                if (currentInfo != null) {
+                    updateUiState = UpdateUiState.PermissionRequired(file, currentInfo)
+                }
+            }
+        },
+        onIgnore = { tagName ->
+            AppUpdateManager.ignoreVersion(context, tagName)
+            updateUiState = UpdateUiState.Idle
+        },
+        onDismiss = {
+            updateUiState = UpdateUiState.Idle
+        }
+    )
 
     // 技能说明 Markdown 弹窗
     selectedSkillForDetail?.let { skill ->
@@ -722,9 +826,13 @@ fun GlobalSystemSettingsTab(
     serverUrl: String,
     authToken: String,
     deviceName: String,
-    onDisconnect: () -> Unit
+    onDisconnect: () -> Unit,
+    isCheckingUpdate: Boolean,
+    onCheckUpdate: () -> Unit
 ) {
     val theme = LocalAppTheme.current
+    val context = LocalContext.current
+    val currentVersion = remember { AppUpdateManager.getCurrentVersionName(context) }
     var hapticsEnabled by remember { mutableStateOf(true) }
     var autoTtsEnabled by remember { mutableStateOf(false) }
 
@@ -944,6 +1052,119 @@ fun GlobalSystemSettingsTab(
                         Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("断开配对并重新配置", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+
+        // ==========================================
+        // 关于与应用更新 (参考 Termius 架构)
+        // ==========================================
+        item {
+            InfoTitle(
+                title = "关于与软件更新",
+                infoDescription = "查看软件版本信息、检查最新发布版本并进行无缝平滑在线升级。",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
+        item {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "piDroid",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.textPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Surface(
+                                    color = theme.primary.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(4.dp)
+                                ) {
+                                    Text(
+                                        text = "v$currentVersion",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.primary,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "已注入全局统一签名 Key · 支持无缝覆盖安装",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textMuted
+                            )
+                        }
+
+                        Button(
+                            onClick = onCheckUpdate,
+                            enabled = !isCheckingUpdate,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = theme.primary,
+                                contentColor = if (theme.isDark) Color.Black else Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            if (isCheckingUpdate) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(14.dp),
+                                    color = if (theme.isDark) Color.Black else Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("检测中...", fontSize = 12.sp)
+                            } else {
+                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("检查更新", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.35f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("构建渠道", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
+                        Text(
+                            text = "GitHub Actions CI/CD (Official)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textSecondary
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("开源仓库", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
+                        Text(
+                            text = "github.com/codywon/piDroid",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.primary
+                        )
                     }
                 }
             }
