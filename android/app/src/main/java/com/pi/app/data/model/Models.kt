@@ -15,6 +15,12 @@ data class WorkspaceInfo(
         get() = name.ifBlank { path.substringAfterLast('\\').substringAfterLast('/') }
 }
 
+data class ProjectInfo(
+    val name: String,
+    val path: String,
+    val isCurrent: Boolean = false
+)
+
 /**
  * Pi 历史任务会话模型
  */

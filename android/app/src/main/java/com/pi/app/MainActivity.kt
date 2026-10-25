@@ -404,7 +404,6 @@ class MainActivity : ComponentActivity() {
                 ChatScreen(
                     sessionTitle = currentSession?.displayTitle ?: "任务控制台",
                     currentProject = currentProject,
-                    projects = emptyList(),
                     selectedModel = selectedModel,
                     thinkingLevel = currentThinkingLevel,
                     tokenStats = tokenStats,
@@ -423,7 +422,6 @@ class MainActivity : ComponentActivity() {
                         isSpeaking = false
                         loadSessions() // 返回时刷新会话
                     },
-                    onProjectSwitch = { /* 由顶部或首页管理 */ },
                     onOpenModelSheet = { showModelSheet = true },
                     onOpenCapabilities = { showGlobalSettings = true },
                     onCompactContext = {

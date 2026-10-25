@@ -34,7 +34,7 @@ import com.pi.app.ui.theme.*
 fun ChatScreen(
     sessionTitle: String,
     currentProject: String,
-    projects: List<ProjectInfo>,
+    projects: List<ProjectInfo> = emptyList(),
     selectedModel: ModelInfo,
     thinkingLevel: ThinkingLevel,
     tokenStats: TokenStats,
@@ -44,7 +44,7 @@ fun ChatScreen(
     isCompacting: Boolean = false,
     isSpeaking: Boolean = false,
     onBack: () -> Unit,
-    onProjectSwitch: (ProjectInfo) -> Unit,
+    onProjectSwitch: (ProjectInfo) -> Unit = {},
     onOpenModelSheet: () -> Unit,
     onOpenCapabilities: () -> Unit,
     onCompactContext: () -> Unit,
@@ -63,7 +63,6 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     var showHudDialog by remember { mutableStateOf(false) }
-    var showProjectDropdown by remember { mutableStateOf(false) }
 
     LaunchedEffect(messages.size, messages.lastOrNull()?.content) {
         if (messages.isNotEmpty()) {
@@ -87,13 +86,9 @@ fun ChatScreen(
                 ),
                 title = {
                     Column {
-                        // 顶部工作区切换
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.pointerInput(Unit) {
-                                detectTapGestures { showProjectDropdown = true }
-                            }
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(13.dp), tint = TermiusBlue)
+                            Spacer(modifier = Modifier.width(4.dp))
                             Text(
                                 text = currentProject.ifBlank { "默认工作区" },
                                 style = MaterialTheme.typography.titleMedium,
@@ -101,33 +96,8 @@ fun ChatScreen(
                                 maxLines = 1,
                                 color = TermiusTextPrimary
                             )
-                            Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = TermiusTextSecondary)
-
-                            DropdownMenu(
-                                expanded = showProjectDropdown,
-                                onDismissRequest = { showProjectDropdown = false },
-                                modifier = Modifier.background(TermiusSurface)
-                            ) {
-                                Text(
-                                    "工作区",
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = TermiusTextMuted
-                                )
-                                projects.forEach { proj ->
-                                    DropdownMenuItem(
-                                        text = { Text(proj.name, color = TermiusTextPrimary) },
-                                        leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null, tint = TermiusBlue) },
-                                        onClick = {
-                                            showProjectDropdown = false
-                                            onProjectSwitch(proj)
-                                        }
-                                    )
-                                }
-                            }
                         }
 
-                        // 状态与简要描述
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Surface(
                                 modifier = Modifier.size(6.dp),
@@ -136,9 +106,10 @@ fun ChatScreen(
                             ) {}
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = if (isAgentBusy) "Agent 正在执行..." else "${sessionTitle.take(16)} (就绪)",
+                                text = if (isAgentBusy) "Agent 正在执行..." else sessionTitle.take(24),
                                 style = MaterialTheme.typography.bodySmall,
-                                color = TermiusTextSecondary
+                                color = TermiusTextSecondary,
+                                maxLines = 1
                             )
                         }
                     }

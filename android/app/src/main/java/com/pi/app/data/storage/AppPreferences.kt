@@ -63,5 +63,7 @@ class AppPreferences(context: Context) {
         private const val KEY_AUTH_TOKEN = "key_auth_token"
         private const val KEY_DEVICE_NAME = "key_device_name"
         private const val KEY_AUTO_SPEAK = "key_auto_speak"
+        private const val KEY_DEFAULT_MODEL = "key_default_model"
+        private const val KEY_DEFAULT_THINKING = "key_default_thinking"
     }
 }
