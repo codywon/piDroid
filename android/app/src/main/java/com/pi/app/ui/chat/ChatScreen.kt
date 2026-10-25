@@ -27,6 +27,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.*
+import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -532,12 +533,12 @@ fun ChatMessageItem(
                     border = BorderStroke(1.dp, theme.outline),
                     modifier = Modifier.widthIn(max = 320.dp)
                 ) {
-                    Text(
-                        text = item.content,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = if (theme.isDark) Color.White else Color(0xFF0969DA),
-                        modifier = Modifier.padding(10.dp)
-                    )
+                    Box(modifier = Modifier.padding(10.dp)) {
+                        MarkdownRenderer(
+                            content = item.content,
+                            isUser = true
+                        )
+                    }
                 }
             }
         }
@@ -587,7 +588,7 @@ fun ChatMessageItem(
                     }
                 }
 
-                // 2. 正文回复
+                // 2. 正文回复（标准 CommonMark + GFM 富文本渲染引擎）
                 if (item.content.isNotBlank()) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -595,12 +596,12 @@ fun ChatMessageItem(
                         border = BorderStroke(1.dp, theme.outline),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(
-                            text = item.content,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = theme.textPrimary,
-                            modifier = Modifier.padding(12.dp)
-                        )
+                        Box(modifier = Modifier.padding(12.dp)) {
+                            MarkdownRenderer(
+                                content = item.content,
+                                isUser = false
+                            )
+                        }
                     }
                 }
             }
