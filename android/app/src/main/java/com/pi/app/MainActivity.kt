@@ -517,8 +517,8 @@ class MainActivity : ComponentActivity() {
                 updateInfo = info,
                 isDownloading = isDownloadingUpdate,
                 downloadProgress = downloadProgress,
-                onDismiss = { updateInfo = null },
-                onStartUpdate = {
+                isDownloaded = downloadedApkFile != null,
+                onStartDownload = {
                     isDownloadingUpdate = true
                     lifecycleScope.launch {
                         apkInstaller.downloadApk(info.downloadUrl) { progress ->
@@ -532,7 +532,11 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(this@MainActivity, "下载更新失败: ${err.message}", Toast.LENGTH_LONG).show()
                         }
                     }
-                }
+                },
+                onInstall = {
+                    downloadedApkFile?.let { apkInstaller.installApk(it) }
+                },
+                onDismiss = { updateInfo = null }
             )
         }
 
@@ -541,13 +545,13 @@ class MainActivity : ComponentActivity() {
                 initialUrl = prefs.serverUrl,
                 initialToken = prefs.authToken,
                 initialName = prefs.deviceName,
-                onDismiss = { showSettings = false },
-                onSave = { url, token, name ->
+                onConfirm = { url, token, name ->
                     showSettings = false
                     prefs.saveConnection(url, token, name)
                     loadSessions()
                     loadCapabilitiesAndModels()
-                }
+                },
+                onDismiss = { showSettings = false }
             )
         }
     }

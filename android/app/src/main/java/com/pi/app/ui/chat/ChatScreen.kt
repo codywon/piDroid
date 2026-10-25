@@ -565,6 +565,10 @@ fun ChatScreen(
     if (showHudDialog) {
         TokenStatsHudDialog(
             stats = tokenStats,
+            onCompactClick = {
+                showHudDialog = false
+                onCompactContext()
+            },
             onDismiss = { showHudDialog = false }
         )
     }

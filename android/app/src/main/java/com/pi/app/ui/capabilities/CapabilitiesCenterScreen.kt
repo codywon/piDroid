@@ -589,7 +589,7 @@ fun McpConfigTab(
 
                     if (!server.description.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(4.dp))
-                        Text(server.description, style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
+                        Text(server.description ?: "", style = MaterialTheme.typography.bodySmall, color = TermiusTextSecondary)
                     }
 
                     if (!server.url.isNullOrBlank()) {
