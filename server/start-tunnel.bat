@@ -8,5 +8,5 @@ if not exist node_modules (
     npm install
 )
 
-node gateway.js --tunnel
+node --no-deprecation gateway.js --tunnel
 pause

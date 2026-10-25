@@ -55,9 +55,16 @@ class PiApiClient(private val prefs: AppPreferences) {
             val req = Request.Builder().url("$baseUrl/api/sessions").get().build()
             client.newCall(req).execute().use { response ->
                 if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "[]"
+                    val body = response.body?.string() ?: "{}"
+                    val jsonElement = com.google.gson.JsonParser.parseString(body)
                     val type = object : TypeToken<List<Session>>() {}.type
-                    val list: List<Session> = gson.fromJson(body, type) ?: emptyList()
+                    val list: List<Session> = if (jsonElement.isJsonObject && jsonElement.asJsonObject.has("sessions")) {
+                        gson.fromJson(jsonElement.asJsonObject.get("sessions"), type) ?: emptyList()
+                    } else if (jsonElement.isJsonArray) {
+                        gson.fromJson(jsonElement, type) ?: emptyList()
+                    } else {
+                        emptyList()
+                    }
                     Result.success(list)
                 } else {
                     Result.failure(IOException("Failed to load sessions: ${response.code}"))

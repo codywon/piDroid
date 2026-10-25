@@ -213,10 +213,11 @@ fun SessionItemCard(session: Session, onClick: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = session.title ?: "任务: ${session.id.take(8)}",
+                    text = session.displayTitle,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
-                    color = TermiusTextPrimary
+                    color = TermiusTextPrimary,
+                    maxLines = 2
                 )
                 if (session.active) {
                     Surface(

@@ -5,13 +5,16 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const http = require('http');
 const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.GATEWAY_PORT || '4100', 10);
-const TARGET = process.env.PI_WEB_URL || 'http://127.0.0.1:3000';
+// pi-web 官方默认端口为 30141 (取自 π ≈ 3.141)
+const DEFAULT_TARGET = process.env.PI_WEB_URL || 'http://127.0.0.1:30141';
+let TARGET = DEFAULT_TARGET;
 const TOKEN_FILE = path.join(__dirname, '.token');
 
-// 解析命令行参数
+// 命令行参数解析
 const args = process.argv.slice(2);
 const autoTunnel = args.includes('--tunnel');
 let customUrlArg = null;
@@ -45,6 +48,29 @@ function getLocalIp() {
   return '127.0.0.1';
 }
 
+// 探测本地服务是否存活
+function checkServerAlive(targetUrl, timeout = 1000) {
+  return new Promise((resolve) => {
+    try {
+      const url = new URL(targetUrl);
+      const req = http.request({
+        hostname: url.hostname,
+        port: url.port,
+        path: '/api/sessions',
+        method: 'GET',
+        timeout: timeout
+      }, (res) => {
+        resolve(res.statusCode < 500);
+      });
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.end();
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
 const app = express();
 
 // 3. 安全鉴权中间件
@@ -75,23 +101,25 @@ app.get('/api/ping', authMiddleware, (req, res) => {
     status: 'ok',
     device: os.hostname(),
     platform: process.platform,
-    version: '1.2.0',
+    version: '1.3.1',
+    target: TARGET,
     timestamp: Date.now()
   });
 });
 
-// 4. 反向代理到本地 pi-web
+// 4. 反向代理到 pi-web
 const proxy = createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
   ws: true,
+  router: () => TARGET, // 动态支持更新后的目标端口
   on: {
     error: (err, req, res) => {
-      console.error('[Gateway Error] Proxy failed:', err.message);
+      console.error(`[Gateway Error] 无法连接到本地 pi-web (${TARGET}):`, err.message);
       if (!res.headersSent) {
         res.status(502).json({
           error: 'Bad Gateway',
-          message: `Cannot connect to pi-web at ${TARGET}. Is pi-web running?`
+          message: `无法连接到本地 pi-web (${TARGET})。请确认 pi-web 是否已在后台启动 (运行 pi-web 或 npx @agegr/pi-web)`
         });
       }
     }
@@ -100,20 +128,24 @@ const proxy = createProxyMiddleware({
 
 app.use('/', authMiddleware, proxy);
 
-function printBannerAndQr(connectHost) {
+function printBannerAndQr(connectHost, isPiWebRunning) {
   const localIp = getLocalIp();
   const hostName = os.hostname();
   const connectUri = `pidroid://connect?url=${encodeURIComponent(connectHost)}&token=${AUTH_TOKEN}&name=${encodeURIComponent(hostName)}`;
 
   console.log('\n======================================================');
-  console.log('       🛡️  piDroid 安全伴侣网关已就绪 (Gateway)       ');
+  console.log('       🛡️  piDroid 安全伴侣网关 (Termius 纯暗色体系)   ');
   console.log('======================================================');
-  console.log(`[本地地址]  http://127.0.0.1:${PORT}`);
+  console.log(`[本地监听]  http://127.0.0.1:${PORT}`);
   console.log(`[局域网直连] http://${localIp}:${PORT}`);
   if (connectHost.startsWith('https://')) {
     console.log(`[公网外网直连] ${connectHost}  🌐 (全球任何网络可用)`);
   }
-  console.log(`[目标 pi-web] ${TARGET}`);
+  if (isPiWebRunning) {
+    console.log(`[目标 pi-web] ${TARGET}  ✓ (连接正常)`);
+  } else {
+    console.log(`[目标 pi-web] ${TARGET}  ⚠️ (未检测到运行，请确认已运行 pi-web)`);
+  }
   console.log(`[访问密钥 Token] ${AUTH_TOKEN}`);
   console.log('------------------------------------------------------');
   console.log('📱 请用手机 App 打开【扫码配对】，对准下方二维码扫码：\n');
@@ -126,49 +158,61 @@ function printBannerAndQr(connectHost) {
   console.log('======================================================\n');
 }
 
-// 启动服务器
-app.listen(PORT, '0.0.0.0', () => {
-  const localIp = getLocalIp();
-  const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${PORT}`;
-
-  if (autoTunnel) {
-    console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
-    // 自动拉起 cloudflared
-    const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${PORT}`], {
-      shell: true
-    });
-
-    let detectedUrl = false;
-    const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
-
-    function handleOutput(data) {
-      if (detectedUrl) return;
-      const text = data.toString();
-      const match = text.match(regex);
-      if (match) {
-        detectedUrl = true;
-        const publicUrl = match[0];
-        printBannerAndQr(publicUrl);
-      }
-    }
-
-    tunnelProcess.stdout.on('data', handleOutput);
-    tunnelProcess.stderr.on('data', handleOutput);
-
-    tunnelProcess.on('error', (err) => {
-      console.warn('\n⚠️ 未找到 cloudflared 命令，自动回退到局域网直连模式。');
-      console.warn('💡 如需自动公网访问，请下载 cloudflared 并放入系统 PATH 中。');
-      printBannerAndQr(defaultHost);
-    });
-
-    // 10秒超时回退
-    setTimeout(() => {
-      if (!detectedUrl) {
-        printBannerAndQr(defaultHost);
-      }
-    }, 10000);
-
+// 自动探测并启动网关
+async function start() {
+  // 先检查 30141，再检查 3000
+  let isAlive = await checkServerAlive('http://127.0.0.1:30141');
+  if (isAlive) {
+    TARGET = 'http://127.0.0.1:30141';
   } else {
-    printBannerAndQr(defaultHost);
+    const is3000Alive = await checkServerAlive('http://127.0.0.1:3000');
+    if (is3000Alive) {
+      TARGET = 'http://127.0.0.1:3000';
+      isAlive = true;
+    }
   }
-});
+
+  app.listen(PORT, '0.0.0.0', () => {
+    const localIp = getLocalIp();
+    const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${PORT}`;
+
+    if (autoTunnel) {
+      console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
+      const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${PORT}`], {
+        shell: true
+      });
+
+      let detectedUrl = false;
+      const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
+
+      function handleOutput(data) {
+        if (detectedUrl) return;
+        const text = data.toString();
+        const match = text.match(regex);
+        if (match) {
+          detectedUrl = true;
+          const publicUrl = match[0];
+          printBannerAndQr(publicUrl, isAlive);
+        }
+      }
+
+      tunnelProcess.stdout.on('data', handleOutput);
+      tunnelProcess.stderr.on('data', handleOutput);
+
+      tunnelProcess.on('error', () => {
+        printBannerAndQr(defaultHost, isAlive);
+      });
+
+      setTimeout(() => {
+        if (!detectedUrl) {
+          printBannerAndQr(defaultHost, isAlive);
+        }
+      }, 10000);
+
+    } else {
+      printBannerAndQr(defaultHost, isAlive);
+    }
+  });
+}
+
+start();

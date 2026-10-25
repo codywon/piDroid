@@ -1,6 +1,6 @@
 @echo off
-title Pi Mobile Gateway
-echo Starting Pi Mobile Gateway...
+title piDroid Gateway
+echo Starting piDroid Companion Gateway...
 cd /d %~dp0
 
 if not exist node_modules (
@@ -8,5 +8,5 @@ if not exist node_modules (
     npm install
 )
 
-node gateway.js
+node --no-deprecation gateway.js
 pause

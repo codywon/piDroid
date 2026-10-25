@@ -7,14 +7,24 @@ import com.google.gson.annotations.SerializedName
  */
 data class Session(
     @SerializedName("id") val id: String,
+    @SerializedName("name") val name: String? = null,
     @SerializedName("title") val title: String? = null,
+    @SerializedName("firstMessage") val firstMessage: String? = null,
+    @SerializedName("cwd") val cwd: String? = null,
     @SerializedName("project") val project: String? = null,
-    @SerializedName("createdAt") val createdAt: Long = System.currentTimeMillis(),
-    @SerializedName("updatedAt") val updatedAt: Long = System.currentTimeMillis(),
+    @SerializedName("created") val created: String? = null,
+    @SerializedName("modified") val modified: String? = null,
+    @SerializedName("messageCount") val messageCount: Int = 0,
     @SerializedName("tokenUsage") val tokenUsage: Long = 0L,
     @SerializedName("cost") val cost: Double = 0.0,
     @SerializedName("active") val active: Boolean = false
-)
+) {
+    val displayTitle: String
+        get() = name?.takeIf { it.isNotBlank() }
+            ?: title?.takeIf { it.isNotBlank() }
+            ?: firstMessage?.take(30)
+            ?: "任务: ${id.take(8)}"
+}
 
 /**
  * 详细 Token 与上下文用量、缓存率监控
