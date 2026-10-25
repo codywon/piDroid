@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.WorkspaceInfo
+import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -38,11 +39,13 @@ fun SessionListScreen(
     onSessionClick: (Session) -> Unit,
     onScanClick: () -> Unit,
     onSettingsClick: () -> Unit,
-    onNewSessionClick: (workspacePath: String) -> Unit
+    onNewSessionClick: (workspacePath: String) -> Unit,
+    onManualConfigConfirm: (url: String, token: String, name: String) -> Unit = { _, _, _ -> }
 ) {
     val theme = LocalAppTheme.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+    var showManualDialog by remember { mutableStateOf(false) }
 
     // 按工作区项目路径归组
     val workspaces = remember(sessions) {
@@ -289,7 +292,9 @@ fun SessionListScreen(
                             Icon(
                                 Icons.Default.Computer,
                                 contentDescription = null,
-                                modifier = Modifier.size(56.dp),
+                                modifier = Modifier
+                                    .size(56.dp)
+                                    .clickable { showManualDialog = true },
                                 tint = theme.primary
                             )
                             Text(
@@ -336,6 +341,19 @@ fun SessionListScreen(
                 }
             }
         }
+    }
+
+    if (showManualDialog) {
+        ServerConfigDialog(
+            initialUrl = serverUrl.ifBlank { "http://10.0.2.2:4100" },
+            initialToken = "",
+            initialName = deviceName.ifBlank { "My PC" },
+            onConfirm = { url, token, name ->
+                showManualDialog = false
+                onManualConfigConfirm(url, token, name)
+            },
+            onDismiss = { showManualDialog = false }
+        )
     }
 }
 

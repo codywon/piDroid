@@ -2,6 +2,7 @@ package com.pi.app.ui.scanner
 
 import android.net.Uri
 import android.util.Log
+import androidx.activity.compose.BackHandler
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -37,6 +38,7 @@ fun QrScannerScreen(
     onScanSuccess: (url: String, token: String, name: String) -> Unit,
     onClose: () -> Unit
 ) {
+    BackHandler { onClose() }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isProcessing by remember { mutableStateOf(false) }

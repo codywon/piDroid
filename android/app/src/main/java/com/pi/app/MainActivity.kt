@@ -570,6 +570,18 @@ class MainActivity : ComponentActivity() {
                         currentProject = newSession.workspaceName
                         messages.clear()
                         startListeningEvents(newId)
+                    },
+                    onManualConfigConfirm = { url, token, name ->
+                        lifecycleScope.launch {
+                            apiClient.ping(url, token).onSuccess {
+                                prefs.saveConnection(url, token, name)
+                                Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
+                                loadSessions()
+                                loadCapabilitiesAndModels()
+                            }.onFailure {
+                                Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     }
                 )
             }
