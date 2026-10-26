@@ -2,12 +2,15 @@ package com.pi.app.updater
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
+import com.pi.app.data.storage.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -18,6 +21,7 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
@@ -33,7 +37,11 @@ data class UpdateInfo(
     val mirrorUrls: List<String>,
     val fileSize: Long,
     val publishedAt: String,
-    val isManual: Boolean = false
+    val isManual: Boolean = false,
+    /** Release 附带的 checksums.txt 地址；用于下载后校验 APK 的 SHA-256。 */
+    val checksumsUrl: String? = null,
+    /** GitHub asset 自带 digest（形如 sha256:...）；无 checksums.txt 时的兜底。 */
+    val expectedSha256: String? = null
 )
 
 /**
@@ -68,12 +76,28 @@ object AppUpdateManager {
     private const val KEY_IGNORED_TAG = "key_ignored_version_tag"
     private const val KEY_LAST_CHECK_TIME = "key_last_check_timestamp"
 
-    // 国内精选稳定高速 GitHub Release 下载加速镜像站
-    private val MIRROR_PREFIXES = listOf(
-        "https://ghfast.top/",
-        "https://github.moeyy.xyz/",
-        "https://ghproxy.net/",
-        "https://gh-proxy.com/"
+    /** CI 随 Release 一同发布的 sha256 清单文件名。 */
+    private const val CHECKSUMS_ASSET_NAME = "checksums.txt"
+
+    /** 低于此体积的下载结果不可能是有效 APK（多半是 404 错误页）。 */
+    private const val MIN_APK_BYTES = 3L * 1024 * 1024
+
+    private const val HEX_CHARS = "0123456789abcdef"
+    private val CHECKSUM_WHITESPACE = Regex("\\s+")
+
+    /** 第三方镜像源。默认不启用：仅当用户显式开启后才会参与下载竞速。 */
+    private data class MirrorSource(
+        val prefix: String,
+        val label: String,
+        /** 测速排序时的额外惩罚，用于给已知限速的公益镜像降权。 */
+        val speedPenaltyMs: Long = 0L
+    )
+
+    private val MIRROR_SOURCES = listOf(
+        MirrorSource("https://ghfast.top/", "国内极速专线 (ghfast)"),
+        MirrorSource("https://ghproxy.net/", "国内备用镜像 (ghproxy)"),
+        // 全网共用单连接限速严重，给 350ms 惩罚权重
+        MirrorSource("https://gh-proxy.com/", "公益兜底镜像 (gh-proxy)", speedPenaltyMs = 350L)
     )
 
     private val httpClient: OkHttpClient by lazy {
@@ -161,18 +185,33 @@ object AppUpdateManager {
             val assets = json.optJSONArray("assets")
             var targetDownloadUrl = ""
             var targetFileSize = 0L
+            var checksumsUrl: String? = null
+            var expectedSha256: String? = null
 
             if (assets != null) {
                 for (i in 0 until assets.length()) {
                     val asset = assets.optJSONObject(i) ?: continue
                     val assetName = asset.optString("name", "")
-                    if (assetName.endsWith(".apk", ignoreCase = true)) {
-                        if (assetName.contains("release", ignoreCase = true) || targetDownloadUrl.isEmpty()) {
-                            targetDownloadUrl = asset.optString("browser_download_url", "")
-                            targetFileSize = asset.optLong("size", 0L)
-                            if (assetName.contains("release", ignoreCase = true)) {
-                                break
-                            }
+
+                    // CI 随包发布的 sha256sum 清单
+                    if (assetName.equals(CHECKSUMS_ASSET_NAME, ignoreCase = true)) {
+                        checksumsUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() }
+                        continue
+                    }
+                    if (!assetName.endsWith(".apk", ignoreCase = true)) continue
+
+                    if (assetName.contains("release", ignoreCase = true) || targetDownloadUrl.isEmpty()) {
+                        targetDownloadUrl = asset.optString("browser_download_url", "")
+                        targetFileSize = asset.optLong("size", 0L)
+                        // GitHub 对较新上传的 asset 提供 "sha256:<hex>" 形式的 digest
+                        expectedSha256 = asset.optString("digest", "")
+                            .takeIf { it.startsWith("sha256:", ignoreCase = true) }
+                            ?.substringAfter(':')
+                            ?.trim()
+                            ?.lowercase(Locale.US)
+                            ?.takeIf { it.length == 64 && it.all { c -> c in "0123456789abcdef" } }
+                        if (assetName.contains("release", ignoreCase = true)) {
+                            break
                         }
                     }
                 }
@@ -182,7 +221,7 @@ object AppUpdateManager {
                 return@withContext UpdateCheckResult.Error("未在 Release 中找到适用的 APK 安装包")
             }
 
-            val mirrorUrls = MIRROR_PREFIXES.map { "$it$targetDownloadUrl" }
+            val mirrorUrls = MIRROR_SOURCES.map { it.prefix + targetDownloadUrl }
             val updateInfo = UpdateInfo(
                 tagName = tagName,
                 versionName = tagName.removePrefix("v").removePrefix("V"),
@@ -192,7 +231,9 @@ object AppUpdateManager {
                 mirrorUrls = mirrorUrls,
                 fileSize = targetFileSize,
                 publishedAt = publishedAt,
-                isManual = isManual
+                isManual = isManual,
+                checksumsUrl = checksumsUrl,
+                expectedSha256 = expectedSha256
             )
 
             setLastCheckTimestamp(context, System.currentTimeMillis())
@@ -239,7 +280,8 @@ object AppUpdateManager {
 
     data class DownloadChannel(
         val name: String,
-        val url: String
+        val url: String,
+        val speedPenaltyMs: Long = 0L
     )
 
     /**
@@ -258,13 +300,10 @@ object AppUpdateManager {
             targetFile.delete()
         }
 
-        val allCandidates = mutableListOf<DownloadChannel>().apply {
-            add(DownloadChannel("国内极速专线 (ghfast)", "https://ghfast.top/${info.downloadUrl}"))
-            add(DownloadChannel("国内高速镜像 (moeyy)", "https://github.moeyy.xyz/${info.downloadUrl}"))
-            add(DownloadChannel("国内备用镜像 (ghproxy)", "https://ghproxy.net/${info.downloadUrl}"))
-            add(DownloadChannel("官方直连 (GitHub Direct)", info.downloadUrl))
-            add(DownloadChannel("公益兜底镜像 (gh-proxy)", "https://gh-proxy.com/${info.downloadUrl}"))
-        }
+        val allCandidates = buildChannels(context, info)
+
+        // 发布方公布的 SHA-256 只解析一次，避免每个通道重试都重拉一遍清单
+        val expectedSha256 = resolveExpectedSha256(info)
 
         // 步骤 1：并发真实微块测速（1500ms），选出真实吞吐最快的通道
         val rankedChannels = rankChannelsBySpeed(allCandidates)
@@ -361,13 +400,35 @@ object AppUpdateManager {
                     }
                 }
 
-                // 完整性校验：下载后的文件必须大于 3MB（防止把 HTML 404 错误页当成 APK 保存）
-                if (tempFile.exists() && tempFile.length() > 3 * 1024 * 1024) {
-                    if (targetFile.exists()) targetFile.delete()
-                    if (tempFile.renameTo(targetFile)) {
-                        Log.d(TAG, "Download successfully completed from ${channel.name}, size=${targetFile.length()}")
-                        return@withContext Result.success(targetFile)
-                    }
+                // 完整性校验 0/3：体积下限过滤（防止把 HTML 404 错误页当成 APK 保存）
+                if (!tempFile.exists() || tempFile.length() <= MIN_APK_BYTES) {
+                    tempFile.delete()
+                    continue
+                }
+
+                // 完整性校验 1/3：SHA-256 与 Release 公布值比对，不匹配则丢弃并换通道
+                val hashProblem = verifyDownloadedHash(expectedSha256, tempFile)
+                if (hashProblem != null) {
+                    Log.e(TAG, "Integrity check failed on ${channel.name}: $hashProblem")
+                    tempFile.delete()
+                    lastException = SecurityException(hashProblem)
+                    continue
+                }
+
+                // 完整性校验 2/3：签名必须与已安装应用一致（防第三方镜像/中间人投放伪造包）
+                if (!verifyApkSignature(context, tempFile)) {
+                    Log.e(TAG, "APK signature mismatch on ${channel.name}, refusing to keep the file")
+                    tempFile.delete()
+                    lastException = SecurityException(
+                        "安装包签名校验未通过，已丢弃。为避免安装伪造包，请改用【浏览器下载】并到官方 Release 手动安装。"
+                    )
+                    continue
+                }
+
+                if (targetFile.exists()) targetFile.delete()
+                if (tempFile.renameTo(targetFile)) {
+                    Log.d(TAG, "Download completed from ${channel.name}, size=${targetFile.length()}")
+                    return@withContext Result.success(targetFile)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Download channel [${channel.name}] encounter issue: ${e.message}")
@@ -376,6 +437,174 @@ object AppUpdateManager {
         }
 
         Result.failure(lastException ?: Exception("所有加速下载镜像通道均无法访问，建议点击【改用 Chrome / 浏览器下载】"))
+    }
+
+    /**
+     * 候选下载通道：官方直连永远排第一。第三方镜像默认关闭，
+     * 仅当用户在设置里显式开启后才参与竞速。
+     */
+    private fun buildChannels(context: Context, info: UpdateInfo): List<DownloadChannel> {
+        val channels = mutableListOf(DownloadChannel("官方直连 (GitHub)", info.downloadUrl))
+        val mirrorsEnabled = AppPreferences(context).useUpdateMirrors
+        if (mirrorsEnabled) {
+            MIRROR_SOURCES.forEachIndexed { index, mirror ->
+                val url = info.mirrorUrls.getOrNull(index) ?: (mirror.prefix + info.downloadUrl)
+                channels.add(DownloadChannel(mirror.label, url, mirror.speedPenaltyMs))
+            }
+        }
+        return channels
+    }
+
+    /**
+     * 校验下载文件的 SHA-256。返回 null 表示通过，否则返回失败原因。
+     * 若 Release 既无 checksums.txt 也无 asset digest，则记录告警后放行，
+     * 仍由强制执行的签名校验兜底。
+     */
+    private fun verifyDownloadedHash(expected: String?, file: File): String? {
+        if (expected.isNullOrBlank()) {
+            Log.w(TAG, "No published SHA-256 for this release; relying on signature verification")
+            return null
+        }
+        val actual = sha256Hex(file) ?: return "无法计算安装包校验值"
+        if (!actual.equals(expected, ignoreCase = true)) {
+            return "安装包校验失败（期望 ${expected.take(16)}…，实际 ${actual.take(16)}…），文件可能已被篡改"
+        }
+        Log.d(TAG, "SHA-256 verified")
+        return null
+    }
+
+    /** 优先用 asset digest；缺失时拉取 checksums.txt 解析。 */
+    private fun resolveExpectedSha256(info: UpdateInfo): String? {
+        if (!info.expectedSha256.isNullOrBlank()) return info.expectedSha256
+        val url = info.checksumsUrl ?: return null
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "piDroid-Mobile-App")
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.w(TAG, "checksums.txt returned HTTP ${response.code}")
+                    return null
+                }
+                parseChecksums(response.body?.string(), info.downloadUrl.substringAfterLast('/'))
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch checksums.txt: ${e.message}")
+            null
+        }
+    }
+
+    /** 解析 `sha256sum` 输出（`<64hex>  <filename>`），只认文件名完全匹配的条目。 */
+    private fun parseChecksums(text: String?, targetFileName: String): String? {
+        if (text.isNullOrBlank() || targetFileName.isBlank()) return null
+        for (line in text.lineSequence()) {
+            val trimmed = line.trim()
+            if (trimmed.isEmpty()) continue
+            val parts = trimmed.split(CHECKSUM_WHITESPACE, limit = 2)
+            if (parts.size < 2) continue
+            val hash = parts[0].lowercase(Locale.US)
+            if (hash.length != 64 || !hash.all { it in "0123456789abcdef" }) continue
+            val fileName = parts[1].trim().removePrefix("*").substringAfterLast('/')
+            if (fileName == targetFileName) return hash
+        }
+        return null
+    }
+
+    private fun sha256Hex(file: File): String? = try {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var read: Int
+            while (input.read(buffer).also { read = it } != -1) {
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().toHex()
+    } catch (e: Exception) {
+        Log.e(TAG, "sha256Hex(file) failed", e)
+        null
+    }
+
+    private fun ByteArray.toHex(): String {
+        val out = StringBuilder(size * 2)
+        for (b in this) {
+            val v = b.toInt() and 0xFF
+            out.append(HEX_CHARS[v ushr 4]).append(HEX_CHARS[v and 0x0F])
+        }
+        return out.toString()
+    }
+
+    /**
+     * 校验待安装包与当前已安装应用的签名是否一致。
+     * 包名不符或证书集不符即拒绝——这是防止伪造更新包的最后一道闸门。
+     */
+    fun verifyApkSignature(context: Context, apkFile: File): Boolean {
+        if (!apkFile.exists() || apkFile.length() <= MIN_APK_BYTES) {
+            Log.e(TAG, "verifyApkSignature: file missing or too small")
+            return false
+        }
+        return try {
+            val pm = context.packageManager
+            val archive = readPackageArchiveInfo(pm, apkFile)
+            if (archive == null) {
+                Log.e(TAG, "verifyApkSignature: cannot read package archive")
+                return false
+            }
+            if (archive.packageName != context.packageName) {
+                Log.e(TAG, "verifyApkSignature: package ${archive.packageName} != ${context.packageName}")
+                return false
+            }
+            val apkCerts = archiveSigningFingerprints(archive)
+            @Suppress("DEPRECATION")
+            val installedCerts = pm
+                .getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+                .signatures
+                .signingFingerprints()
+            if (apkCerts.isEmpty() || installedCerts.isEmpty()) {
+                Log.e(TAG, "verifyApkSignature: no signing certificates available")
+                return false
+            }
+            apkCerts == installedCerts
+        } catch (e: Exception) {
+            Log.e(TAG, "verifyApkSignature failed", e)
+            false
+        }
+    }
+
+    private fun readPackageArchiveInfo(pm: PackageManager, apkFile: File): PackageInfo? {
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            PackageManager.GET_SIGNING_CERTIFICATES
+        } else {
+            @Suppress("DEPRECATION")
+            PackageManager.GET_SIGNATURES
+        }
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getPackageArchiveInfo(apkFile.absolutePath, flags)
+        }
+    }
+
+    private fun archiveSigningFingerprints(info: PackageInfo): Set<String> {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return info.signingInfo?.apkContentsSigners.signingFingerprints()
+        }
+        @Suppress("DEPRECATION")
+        return info.signatures.signingFingerprints()
+    }
+
+    private fun Array<Signature>?.signingFingerprints(): Set<String> {
+        if (this == null) return emptySet()
+        return mapNotNull { signature ->
+            try {
+                MessageDigest.getInstance("SHA-256").digest(signature.toByteArray()).toHex()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to hash a signing certificate", e)
+                null
+            }
+        }.toSet()
     }
 
     private suspend fun rankChannelsBySpeed(candidates: List<DownloadChannel>): List<DownloadChannel> = withContext(Dispatchers.IO) {
@@ -410,9 +639,7 @@ object AppUpdateManager {
                         false
                     }
                     val duration = System.currentTimeMillis() - start
-                    // gh-proxy.com 因全网共用单连接限速严重，增加 350ms 惩罚权重，优先让大带宽镜像排前
-                    val penalty = if (channel.url.contains("gh-proxy.com")) 350L else 0L
-                    Pair(channel, if (isAlive) (duration + penalty) else Long.MAX_VALUE)
+                    Pair(channel, if (isAlive) (duration + channel.speedPenaltyMs) else Long.MAX_VALUE)
                 }
             }.awaitAll()
 
@@ -490,10 +717,14 @@ object AppUpdateManager {
     }
 
     /**
-     * 调用系统安装器安装 APK
+     * 调用系统安装器安装 APK。启动安装器前强制验签，验不过则拒绝并返回 false。
      */
-    fun installApk(context: Context, apkFile: File) {
-        try {
+    fun installApk(context: Context, apkFile: File): Boolean {
+        if (!verifyApkSignature(context, apkFile)) {
+            Log.e(TAG, "installApk: signature verification failed, aborting install of ${apkFile.absolutePath}")
+            return false
+        }
+        return try {
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -505,8 +736,10 @@ object AppUpdateManager {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(intent)
+            true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch package installer", e)
+            false
         }
     }
 

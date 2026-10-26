@@ -31,6 +31,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pi.app.data.ServerDefaults
 import com.pi.app.data.model.*
+import com.pi.app.data.storage.AppPreferences
 import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.network.PiApiClient
 import com.pi.app.ui.components.InfoTitle
@@ -135,7 +136,12 @@ fun GlobalSettingsScreen(
                     val permState = updateUiState as UpdateUiState.PermissionRequired
                     if (AppUpdateManager.canInstallPackages(context)) {
                         updateUiState = UpdateUiState.ReadyToInstall(permState.apkFile, permState.info)
-                        AppUpdateManager.installApk(context, permState.apkFile)
+                        if (!AppUpdateManager.installApk(context, permState.apkFile)) {
+                            updateUiState = UpdateUiState.Error(
+                                "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                                permState.info
+                            )
+                        }
                     }
                 }
             }
@@ -336,7 +342,12 @@ fun GlobalSettingsScreen(
                 result.onSuccess { apkFile ->
                     if (AppUpdateManager.canInstallPackages(context)) {
                         updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
-                        AppUpdateManager.installApk(context, apkFile)
+                        if (!AppUpdateManager.installApk(context, apkFile)) {
+                            updateUiState = UpdateUiState.Error(
+                                "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                                info
+                            )
+                        }
                     } else {
                         updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
                     }
@@ -347,7 +358,12 @@ fun GlobalSettingsScreen(
         },
         onInstall = { file ->
             if (AppUpdateManager.canInstallPackages(context)) {
-                AppUpdateManager.installApk(context, file)
+                if (!AppUpdateManager.installApk(context, file)) {
+                    updateUiState = UpdateUiState.Error(
+                        "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                        (updateUiState as? UpdateUiState.ReadyToInstall)?.info
+                    )
+                }
             } else {
                 val currentInfo = (updateUiState as? UpdateUiState.ReadyToInstall)?.info
                 if (currentInfo != null) {
@@ -2712,6 +2728,38 @@ fun GlobalSystemSettingsTab(
                                 Text("检查更新", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
+                    }
+
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
+
+                    // 第三方镜像开关：默认关闭。开启后安装包可能经由第三方代理中转，
+                    // 虽然仍会做 SHA-256 与签名校验，但链路本身不再只经过 GitHub。
+                    var useMirrors by remember { mutableStateOf(AppPreferences(context).useUpdateMirrors) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "使用第三方加速镜像",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = theme.textPrimary
+                            )
+                            Text(
+                                "国内网络下可提升下载速度；安装包仍会校验 SHA-256 与签名",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textSecondary
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Switch(
+                            checked = useMirrors,
+                            onCheckedChange = { checked ->
+                                useMirrors = checked
+                                AppPreferences(context).useUpdateMirrors = checked
+                            }
+                        )
                     }
 
                     HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
