@@ -48,6 +48,10 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
         set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
 
+    var defaultProvider: String
+        get() = prefs.getString(KEY_DEFAULT_PROVIDER, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_DEFAULT_PROVIDER, value).apply()
+
     var defaultThinkingLevel: String
         get() = prefs.getString(KEY_DEFAULT_THINKING, "high") ?: "high"
         set(value) = prefs.edit().putString(KEY_DEFAULT_THINKING, value).apply()
@@ -247,6 +251,7 @@ class AppPreferences(context: Context) {
         private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
         private const val KEY_TASK_COMPLETED_NOTIFY = "key_task_completed_notify"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
+        private const val KEY_DEFAULT_PROVIDER = "key_default_provider"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
         private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"
         private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"

@@ -25,9 +25,16 @@ data class SessionHistoryData(
     val stats: TokenStats
 )
 
+data class DefaultModelRef(
+    val provider: String,
+    val modelId: String
+)
+
 data class DynamicModelCatalog(
     val models: List<ModelInfo>,
-    val thinkingLevelsMap: Map<String, List<String>>
+    val thinkingLevelsMap: Map<String, List<String>>,
+    val defaultModel: DefaultModelRef? = null,
+    val defaultThinkingLevel: String? = null
 )
 
 class PiApiClient(private val prefs: AppPreferences) {
@@ -1007,11 +1014,30 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
 
+                // 解析服务端当前默认模型与默认思考档位 (对标 pi-web /api/models 返回的 defaultModel)
+                var defaultModelRef: DefaultModelRef? = null
+                if (json.has("defaultModel") && json.get("defaultModel").isJsonObject) {
+                    val dObj = json.getAsJsonObject("defaultModel")
+                    val prov = dObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val mId = dObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    if (prov.isNotBlank() && mId.isNotBlank()) {
+                        defaultModelRef = DefaultModelRef(provider = prov, modelId = mId)
+                        prefs.defaultProvider = prov
+                        prefs.defaultModelId = mId
+                    }
+                }
+                val defaultThinking = json.get("defaultThinkingLevel")?.takeIf { !it.isJsonNull }?.asString
+                if (!defaultThinking.isNullOrBlank()) {
+                    prefs.defaultThinkingLevel = defaultThinking
+                }
+
                 // 同时拉取 /api/models-config (models.json) 与本地保存的模型参数覆盖，确保用户修改的 contextWindow 等参数100%生效且不回退
                 val serverModelsConfig = fetchServerModelsConfigObject(baseUrl)
                 val baseCatalog = DynamicModelCatalog(
                     models = models.ifEmpty { getDefaultCatalog().models },
-                    thinkingLevelsMap = levelsMap
+                    thinkingLevelsMap = levelsMap,
+                    defaultModel = defaultModelRef,
+                    defaultThinkingLevel = defaultThinking
                 )
                 Result.success(applyModelOverrides(baseCatalog, serverModelsConfig))
             }
@@ -3109,4 +3135,62 @@ data class CatalogPreset(
             Result.failure(e)
         }
     }
+
+    // ==========================================
+    // 3.1 设置全局默认模型与思考档位 (1:1 对标 pi-web 的 PUT /api/models/default)
+    // 持久化写入服务端的 ~/.pi/agent/settings.json
+    // ==========================================
+
+    suspend fun setDefaultModel(provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val bodyObj = JsonObject().apply {
+                addProperty("provider", provider)
+                addProperty("modelId", modelId)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/models/default")
+                .put(bodyObj.toString().toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    prefs.defaultProvider = provider
+                    prefs.defaultModelId = modelId
+                    Result.success(true)
+                } else {
+                    val errBody = resp.body?.string() ?: ""
+                    val msg = runCatching { JsonParser.parseString(errBody).asJsonObject.get("error").asString }.getOrNull() ?: "HTTP ${resp.code}"
+                    Result.failure(Exception(msg))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun setDefaultThinkingLevel(level: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        try {
+            val bodyObj = JsonObject().apply {
+                addProperty("thinkingLevel", level)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/models/default")
+                .put(bodyObj.toString().toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    prefs.defaultThinkingLevel = level
+                    Result.success(true)
+                } else {
+                    val errBody = resp.body?.string() ?: ""
+                    val msg = runCatching { JsonParser.parseString(errBody).asJsonObject.get("error").asString }.getOrNull() ?: "HTTP ${resp.code}"
+                    Result.failure(Exception(msg))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
 }

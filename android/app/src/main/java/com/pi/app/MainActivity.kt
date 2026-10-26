@@ -225,6 +225,8 @@ class MainActivity : ComponentActivity() {
         var isLoadingSessions by remember { mutableStateOf(false) }
 
         var dynamicCatalog by remember { mutableStateOf(DynamicModelCatalog(emptyList(), emptyMap())) }
+        var currentDefaultModelId by remember { mutableStateOf(prefs.defaultModelId) }
+        var currentDefaultProvider by remember { mutableStateOf(prefs.defaultProvider) }
         var selectedModel by remember {
             mutableStateOf(ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000, 8192, true, true))
         }
@@ -293,8 +295,14 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 apiClient.getDynamicModels().onSuccess { catalog ->
                     dynamicCatalog = catalog
-                    val savedModelId = prefs.defaultModelId
-                    val matched = catalog.models.firstOrNull { it.id == savedModelId }
+                    catalog.defaultModel?.let { def ->
+                        currentDefaultModelId = def.modelId
+                        currentDefaultProvider = def.provider
+                    }
+                    val targetId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
+                    val targetProv = catalog.defaultModel?.provider ?: prefs.defaultProvider
+                    val matched = catalog.models.firstOrNull { it.id == targetId && (targetProv.isBlank() || it.provider == targetProv) }
+                        ?: catalog.models.firstOrNull { it.id == targetId }
                         ?: catalog.models.firstOrNull()
                     matched?.let { selectedModel = it }
                 }
@@ -1551,6 +1559,8 @@ class MainActivity : ComponentActivity() {
                         availableModels = dynamicCatalog.models,
                         selectedModelId = selectedModel.id,
                         currentThinkingLevel = currentThinkingLevel,
+                        defaultModelId = currentDefaultModelId,
+                        defaultProvider = currentDefaultProvider,
                         onModelSelected = { model ->
                             selectedModel = model
                             currentSession?.let { sess ->
@@ -1566,6 +1576,19 @@ class MainActivity : ComponentActivity() {
                                 lifecycleScope.launch {
                                     apiClient.updateThinkingLevel(sess.id, level)
                                     Toast.makeText(this@MainActivity, "已切换思考级别: ${level.value}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        },
+                        onSetDefaultModel = { model ->
+                            currentDefaultModelId = model.id
+                            currentDefaultProvider = model.provider
+                            prefs.defaultModelId = model.id
+                            prefs.defaultProvider = model.provider
+                            lifecycleScope.launch {
+                                apiClient.setDefaultModel(model.provider, model.id).onSuccess {
+                                    Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "设置默认模型失败: ${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         },

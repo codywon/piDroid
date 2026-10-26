@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.6.1] - 2026-10-26
+
+### 🌟 默认模型与星标选择机制 1:1 源码级复刻 (Default Model Selection & PUT /api/models/default)
+- **打通服务端默认模型配置接口 (`PUT /api/models/default`)**：
+  - 1:1 对标 pi-web 原生协议，客户端一键设置默认模型与默认 Provider，持久化同步至 PC 端 `~/.pi/agent/settings.json`；
+  - 动态拉取模型列表时自动同步服务端当前默认模型与默认思考档位（`defaultModel` 与 `defaultThinkingLevel`）；
+- **模型与思考切换面板交互全方位对标**：
+  - **顶部新增“筛选模型...”即时搜索栏**：支持按模型名称、ID、Provider 进行即时模糊搜索过滤；
+  - **星标收藏/设为默认模型系统**：
+    - 当前默认模型高亮展示**琥珀金实心五角星 ★** 与专属“默认”徽章；
+    - 其它模型展示轻量**空心五角星 ☆**；
+    - 点击五角星：立即向网关发送 `PUT /api/models/default`，将该模型设为全局默认模型，新创建的任务会话将自动默认采用此模型；
+  - **双重状态清晰分离**：
+    - 左侧勾选 `✓`：代表当前会话正在使用的模型；
+    - 右侧星标 `★`：代表全局默认模型。
+
+---
+
 ## [1.6.0] - 2026-10-26
 
 ### 🎨 全局设置与模型管理 UI 体验全维度重构 (Model Management UI & Design Refactoring)
