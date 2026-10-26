@@ -1,6 +1,9 @@
 package com.pi.app.ui.settings
 
 import android.widget.Toast
+import android.content.ClipboardManager
+import android.content.ClipData
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -67,6 +70,15 @@ fun GlobalModelsConfigTab(
     var showDeleteProviderDialog by remember { mutableStateOf(false) }
     var showDeleteModelDialog by remember { mutableStateOf(false) }
     var showRawJsonDialog by remember { mutableStateOf(false) }
+
+    // 从 API 自动发现模型 (POST /api/models-config/discover 或 /v1/models)
+    var showDiscoverDialog by remember { mutableStateOf(false) }
+    var isDiscovering by remember { mutableStateOf(false) }
+    var discoverError by remember { mutableStateOf<String?>(null) }
+    var discoveredModels by remember { mutableStateOf<List<com.pi.app.network.DiscoveredModelItem>>(emptyList()) }
+    var discoverSearchQuery by remember { mutableStateOf("") }
+    var selectedDiscoverIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var isModelsExpanded by remember { mutableStateOf(false) }
     var rawJsonBuffer by remember { mutableStateOf("") }
 
     // 测试与自动填入状态
@@ -308,38 +320,56 @@ fun GlobalModelsConfigTab(
                     }
                 }
 
-                // 4. 当前选中 Provider 的快捷设置面板
+                // 4. 当前选中 Provider 的完整信息与管理面板 (Base URL 完整展示，不再截断)
                 if (currentProvider != null) {
                     item {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = theme.surfaceContainerLow),
-                            shape = RoundedCornerShape(8.dp),
+                            shape = RoundedCornerShape(10.dp),
                             border = BorderStroke(1.dp, theme.outline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                // 顶行：Provider 标识、协议徽标与操作按钮
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.CloudQueue,
+                                            contentDescription = null,
+                                            tint = theme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = "Provider: ${currentProvider.name}",
+                                            text = currentProvider.name,
                                             fontWeight = FontWeight.Bold,
-                                            fontSize = 12.5.sp,
+                                            fontSize = 14.sp,
                                             color = theme.textPrimary
                                         )
-                                        Text(
-                                            text = "接口协议: ${currentProvider.api}  |  Base URL: ${currentProvider.baseUrl.ifBlank { "默认" }}",
-                                            fontSize = 10.5.sp,
-                                            color = theme.textMuted,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = theme.primary.copy(alpha = 0.12f),
+                                            border = BorderStroke(0.5.dp, theme.primary.copy(alpha = 0.35f))
+                                        ) {
+                                            Text(
+                                                text = currentProvider.api.ifBlank { "openai-completions" },
+                                                fontSize = 9.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = theme.primary,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
 
-                                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                         OutlinedButton(
                                             onClick = { showEditProviderDialog = true },
                                             shape = RoundedCornerShape(6.dp),
@@ -347,13 +377,15 @@ fun GlobalModelsConfigTab(
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                             modifier = Modifier.height(26.dp)
                                         ) {
+                                            Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(11.dp))
+                                            Spacer(modifier = Modifier.width(3.dp))
                                             Text("配置", fontSize = 10.5.sp, color = theme.textPrimary)
                                         }
 
                                         OutlinedButton(
                                             onClick = { showDeleteProviderDialog = true },
                                             shape = RoundedCornerShape(6.dp),
-                                            border = BorderStroke(1.dp, Color(0xFFEF5350)),
+                                            border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.5f)),
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
                                             modifier = Modifier.height(26.dp)
                                         ) {
@@ -361,97 +393,283 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
                                 }
+
+                                // 第二行：完整的 Base URL 展示框 (解决省略截断痛点，支持一键复制)
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = theme.surfaceContainer,
+                                    border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.6f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
+                                    ) {
+                                        Text(
+                                            text = "Base URL",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = theme.textMuted,
+                                            modifier = Modifier.padding(end = 6.dp)
+                                        )
+                                        Text(
+                                            text = currentProvider.baseUrl.ifBlank { "(未指定自定义 Base URL，采用接口默认端点)" },
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            color = if (currentProvider.baseUrl.isNotBlank()) theme.textPrimary else theme.textMuted,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (currentProvider.baseUrl.isNotBlank()) {
+                                            IconButton(
+                                                onClick = {
+                                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                                    clipboard.setPrimaryClip(ClipData.newPlainText("Base URL", currentProvider.baseUrl))
+                                                    Toast.makeText(context, "已复制 Base URL", Toast.LENGTH_SHORT).show()
+                                                },
+                                                modifier = Modifier.size(22.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ContentCopy,
+                                                    contentDescription = "复制",
+                                                    modifier = Modifier.size(12.dp),
+                                                    tint = theme.textSecondary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // 第三行：API Key 安全掩码与状态提示
+                                val maskedKey = if (currentProvider.apiKey.isNotBlank()) {
+                                    if (currentProvider.apiKey.length > 8) {
+                                        "${currentProvider.apiKey.take(3)}••••••••${currentProvider.apiKey.takeLast(4)}"
+                                    } else "••••••••"
+                                } else "未配置 API Key"
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            text = "API Key: ",
+                                            fontSize = 10.5.sp,
+                                            color = theme.textMuted
+                                        )
+                                        Text(
+                                            text = maskedKey,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            color = if (currentProvider.apiKey.isNotBlank()) theme.textSecondary else Color(0xFFEF5350)
+                                        )
+                                    }
+
+                                    // 快捷操作：从 API 自动发现拉取模型按钮
+                                    FilledTonalButton(
+                                        onClick = {
+                                            showDiscoverDialog = true
+                                            isDiscovering = true
+                                            discoverError = null
+                                            selectedDiscoverIds = emptySet()
+                                            coroutineScope.launch {
+                                                apiClient.discoverProviderModels(
+                                                    providerName = currentProvider.name,
+                                                    baseUrl = currentProvider.baseUrl,
+                                                    apiKey = currentProvider.apiKey,
+                                                    api = currentProvider.api
+                                                ).onSuccess { res ->
+                                                    discoveredModels = res.models
+                                                    isDiscovering = false
+                                                }.onFailure { err ->
+                                                    discoverError = err.message
+                                                    isDiscovering = false
+                                                }
+                                            }
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(12.dp))
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text("从 API 发现模型", fontSize = 10.5.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // 5. 模型横向选择条 (带 T 思考徽标，末尾为 + 模型)
+                    // 5. 下属模型列表重构 (告别横向拖拽，采用 2 列精致网格 + 顶部双快捷按钮 + 超过6个折叠展开)
                     item {
-                        Text(
-                            text = "下属模型列表",
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = theme.textSecondary
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-
                         Row(
-                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            currentProvider.models.forEach { m ->
-                                val isSel = m.id == selectedModelId
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = if (isSel) theme.primary.copy(alpha = 0.18f) else theme.surfaceContainerLow,
-                                    border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
-                                    modifier = Modifier.clickable {
-                                        selectedModelId = m.id
+                            Text(
+                                text = "下属模型列表 (${currentProvider.models.size})",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = theme.textSecondary
+                            )
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                // 1) 从 API 自动发现模型
+                                OutlinedButton(
+                                    onClick = {
+                                        showDiscoverDialog = true
+                                        isDiscovering = true
+                                        discoverError = null
+                                        selectedDiscoverIds = emptySet()
+                                        coroutineScope.launch {
+                                            apiClient.discoverProviderModels(
+                                                providerName = currentProvider.name,
+                                                baseUrl = currentProvider.baseUrl,
+                                                apiKey = currentProvider.apiKey,
+                                                api = currentProvider.api
+                                            ).onSuccess { res ->
+                                                discoveredModels = res.models
+                                                isDiscovering = false
+                                            }.onFailure { err ->
+                                                discoverError = err.message
+                                                isDiscovering = false
+                                            }
+                                        }
+                                    },
+                                    border = BorderStroke(1.dp, theme.primary),
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(11.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("从 API 导入", fontSize = 10.5.sp, color = theme.primary, fontWeight = FontWeight.Bold)
+                                }
+
+                                // 2) 手动添加模型
+                                Button(
+                                    onClick = {
+                                        var newId = "custom-model"
+                                        var idx = 1
+                                        while (currentProvider.models.any { it.id == newId }) {
+                                            newId = "custom-model-$idx"
+                                            idx++
+                                        }
+                                        val newModel = ModelConfigItem(id = newId, name = newId, reasoning = true)
+                                        val updatedProv = currentProvider.copy(models = currentProvider.models + newModel)
+                                        providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
+                                        selectedModelId = newId
                                         testResultText = null
                                         isTestSuccess = null
-                                    }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = theme.surfaceContainerHigh, contentColor = theme.primary),
+                                    border = BorderStroke(1.dp, theme.outline),
+                                    shape = RoundedCornerShape(6.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                    modifier = Modifier.height(26.dp)
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
-                                    ) {
-                                        Text(
-                                            text = m.id,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isSel) theme.primary else theme.textPrimary
-                                        )
+                                    Icon(Icons.Default.Add, contentDescription = null, tint = theme.primary, modifier = Modifier.size(11.dp))
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Text("添加模型", fontSize = 10.5.sp, color = theme.primary)
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
 
-                                        // 优雅微型标签：推理思考 (小灯泡/大脑) 与视觉图标，告别深色突兀的竖条T
-                                        if (m.reasoning) {
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(
-                                                imageVector = Icons.Default.Psychology,
-                                                contentDescription = "支持推理思考",
-                                                modifier = Modifier.size(13.dp),
-                                                tint = if (isSel) theme.primary else Color(0xFF8B5CF6)
-                                            )
+                        // 2 列自适应网格排布 (移动端排版最舒适规整，彻底告别单行拉扯)
+                        val visibleModels = if (isModelsExpanded || currentProvider.models.size <= 6) {
+                            currentProvider.models
+                        } else {
+                            currentProvider.models.take(6)
+                        }
+
+                        val modelChunks = visibleModels.chunked(2)
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            modelChunks.forEach { pair ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    pair.forEach { m ->
+                                        val isSel = m.id == selectedModelId
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainerLow,
+                                            border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable {
+                                                    selectedModelId = m.id
+                                                    testResultText = null
+                                                    isTestSuccess = null
+                                                }
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = m.id,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isSel) theme.primary else theme.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+
+                                                if (m.reasoning) {
+                                                    Spacer(modifier = Modifier.width(3.dp))
+                                                    Icon(
+                                                        imageVector = Icons.Default.Psychology,
+                                                        contentDescription = "支持推理思考",
+                                                        modifier = Modifier.size(12.dp),
+                                                        tint = if (isSel) theme.primary else Color(0xFF8B5CF6)
+                                                    )
+                                                }
+                                                if (m.hasVision) {
+                                                    Spacer(modifier = Modifier.width(2.dp))
+                                                    Icon(
+                                                        imageVector = Icons.Default.Image,
+                                                        contentDescription = "支持多模态视觉",
+                                                        modifier = Modifier.size(11.dp),
+                                                        tint = if (isSel) theme.primary else theme.textMuted
+                                                    )
+                                                }
+                                            }
                                         }
-                                        if (m.hasVision) {
-                                            Spacer(modifier = Modifier.width(3.dp))
-                                            Icon(
-                                                imageVector = Icons.Default.Image,
-                                                contentDescription = "支持图片多模态",
-                                                modifier = Modifier.size(12.dp),
-                                                tint = if (isSel) theme.primary else theme.textMuted
-                                            )
-                                        }
+                                    }
+                                    if (pair.size == 1) {
+                                        Spacer(modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
 
-                            // + 模型 按钮
-                            Button(
-                                onClick = {
-                                    var newId = "custom-model"
-                                    var idx = 1
-                                    while (currentProvider.models.any { it.id == newId }) {
-                                        newId = "custom-model-$idx"
-                                        idx++
+                            // 超过 6 个模型时，提供精致的折叠与展开切换胶囊
+                            if (currentProvider.models.size > 6) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = theme.surfaceContainer,
+                                    border = BorderStroke(0.5.dp, theme.outline),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { isModelsExpanded = !isModelsExpanded }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(vertical = 5.dp),
+                                        horizontalArrangement = Arrangement.Center,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = if (isModelsExpanded) "收起模型列表 ▴" else "展开全部 ${currentProvider.models.size} 个模型 ▾",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = theme.primary
+                                        )
                                     }
-                                    val newModel = ModelConfigItem(id = newId, name = newId, reasoning = true)
-                                    val updatedProv = currentProvider.copy(models = currentProvider.models + newModel)
-                                    providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
-                                    selectedModelId = newId
-                                    testResultText = null
-                                    isTestSuccess = null
-                                },
-                                colors = ButtonDefaults.buttonColors(containerColor = theme.surfaceContainerHigh, contentColor = theme.primary),
-                                border = BorderStroke(1.dp, theme.outline),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = theme.primary, modifier = Modifier.size(12.dp))
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("模型", fontSize = 11.sp, color = theme.primary)
+                                }
                             }
                         }
                     }
@@ -1390,6 +1608,241 @@ fun GlobalModelsConfigTab(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteModelDialog = false }) {
+                    Text("取消", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
+    
+    // 弹窗 6：从 API 自动发现模型并批量选择添加 (对标 pi-web 的 POST /api/models-config/discover)
+    if (showDiscoverDialog && currentProvider != null) {
+        val existingModelIds = remember(currentProvider.models) { currentProvider.models.map { it.id }.toSet() }
+        val filteredDiscovered = remember(discoveredModels, discoverSearchQuery) {
+            if (discoverSearchQuery.isBlank()) discoveredModels
+            else {
+                val q = discoverSearchQuery.trim().lowercase()
+                discoveredModels.filter { it.id.lowercase().contains(q) || it.name.lowercase().contains(q) }
+            }
+        }
+        val unaddedFiltered = remember(filteredDiscovered, existingModelIds) {
+            filteredDiscovered.filterNot { existingModelIds.contains(it.id) }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showDiscoverDialog = false },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("从 API 发现模型", fontWeight = FontWeight.Bold, color = theme.textPrimary, fontSize = 15.sp)
+                    }
+                    IconButton(onClick = { showDiscoverDialog = false }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭", modifier = Modifier.size(16.dp), tint = theme.textSecondary)
+                    }
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "服务商: ${currentProvider.name} (${currentProvider.api})",
+                        fontSize = 11.sp,
+                        color = theme.textMuted
+                    )
+
+                    if (isDiscovering) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            CircularProgressIndicator(color = theme.primary, modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Text("正在向端点查询可用模型 (/v1/models)...", fontSize = 12.sp, color = theme.textSecondary)
+                        }
+                    } else if (discoverError != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFFEF4444).copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("查询失败", fontWeight = FontWeight.Bold, color = Color(0xFF991B1B), fontSize = 12.sp)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(discoverError ?: "", color = Color(0xFF991B1B), fontSize = 11.sp)
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutlinedButton(
+                                    onClick = {
+                                        isDiscovering = true
+                                        discoverError = null
+                                        coroutineScope.launch {
+                                            apiClient.discoverProviderModels(
+                                                providerName = currentProvider.name,
+                                                baseUrl = currentProvider.baseUrl,
+                                                apiKey = currentProvider.apiKey,
+                                                api = currentProvider.api
+                                            ).onSuccess { res ->
+                                                discoveredModels = res.models
+                                                isDiscovering = false
+                                            }.onFailure { err ->
+                                                discoverError = err.message
+                                                isDiscovering = false
+                                            }
+                                        }
+                                    },
+                                    modifier = Modifier.height(26.dp)
+                                ) {
+                                    Text("重试", fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    } else {
+                        // 搜索过滤栏与批量全选
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = theme.surfaceContainer,
+                                border = BorderStroke(1.dp, theme.outline),
+                                modifier = Modifier.weight(1f).height(32.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.padding(horizontal = 8.dp)
+                                ) {
+                                    Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.textMuted)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    androidx.compose.foundation.text.BasicTextField(
+                                        value = discoverSearchQuery,
+                                        onValueChange = { discoverSearchQuery = it },
+                                        singleLine = true,
+                                        textStyle = androidx.compose.ui.text.TextStyle(color = theme.textPrimary, fontSize = 11.5.sp),
+                                        cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.primary),
+                                        modifier = Modifier.weight(1f),
+                                        decorationBox = { inner ->
+                                            if (discoverSearchQuery.isEmpty()) Text("搜索拉取到的模型...", fontSize = 11.sp, color = theme.textMuted)
+                                            inner()
+                                        }
+                                    )
+                                    if (discoverSearchQuery.isNotEmpty()) {
+                                        IconButton(onClick = { discoverSearchQuery = "" }, modifier = Modifier.size(18.dp)) {
+                                            Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(11.dp))
+                                        }
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (unaddedFiltered.isNotEmpty() && selectedDiscoverIds.size == unaddedFiltered.size) "取消全选" else "全选未添加",
+                                fontSize = 11.sp,
+                                color = theme.primary,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.clickable {
+                                    if (selectedDiscoverIds.size == unaddedFiltered.size) {
+                                        selectedDiscoverIds = emptySet()
+                                    } else {
+                                        selectedDiscoverIds = unaddedFiltered.map { it.id }.toSet()
+                                    }
+                                }
+                            )
+                        }
+
+                        Text(
+                            text = "共发现 ${discoveredModels.size} 个模型 (${unaddedFiltered.size} 个未添加)",
+                            fontSize = 10.5.sp,
+                            color = theme.textMuted
+                        )
+
+                        // 模型多选列表
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            items(filteredDiscovered, key = { it.id }) { item ->
+                                val isAlreadyAdded = existingModelIds.contains(item.id)
+                                val isChecked = selectedDiscoverIds.contains(item.id)
+
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = if (isAlreadyAdded) theme.surfaceContainerLow.copy(alpha = 0.5f) else theme.surfaceContainer,
+                                    border = BorderStroke(0.5.dp, if (isChecked) theme.primary else theme.outline),
+                                    modifier = Modifier.fillMaxWidth().clickable(enabled = !isAlreadyAdded) {
+                                        selectedDiscoverIds = if (isChecked) selectedDiscoverIds - item.id else selectedDiscoverIds + item.id
+                                    }
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                    ) {
+                                        if (isAlreadyAdded) {
+                                            Surface(
+                                                shape = RoundedCornerShape(3.dp),
+                                                color = theme.surfaceContainerHigh
+                                            ) {
+                                                Text("已添加", fontSize = 9.sp, color = theme.textMuted, modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp))
+                                            }
+                                        } else {
+                                            Checkbox(
+                                                checked = isChecked,
+                                                onCheckedChange = { chk ->
+                                                    selectedDiscoverIds = if (chk) selectedDiscoverIds + item.id else selectedDiscoverIds - item.id
+                                                },
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = item.id,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.5.sp,
+                                            color = if (isAlreadyAdded) theme.textMuted else theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (selectedDiscoverIds.isEmpty()) return@Button
+                        val toAdd = selectedDiscoverIds.map { modelId ->
+                            val isReasoning = modelId.lowercase().let { it.contains("reason") || it.contains("r1") || it.contains("think") }
+                            val hasVision = modelId.lowercase().let { it.contains("vl") || it.contains("vision") || it.contains("4o") }
+                            ModelConfigItem(id = modelId, name = modelId, reasoning = isReasoning, hasVision = hasVision)
+                        }
+                        val updatedProv = currentProvider.copy(models = currentProvider.models + toAdd)
+                        providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
+                        selectedModelId = toAdd.first().id
+                        showDiscoverDialog = false
+                        Toast.makeText(context, "已成功批量添加 ${toAdd.size} 个模型，保存配置后即可生效！", Toast.LENGTH_SHORT).show()
+                    },
+                    enabled = selectedDiscoverIds.isNotEmpty(),
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
+                ) {
+                    Text("批量添加 (${selectedDiscoverIds.size})", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscoverDialog = false }) {
                     Text("取消", color = theme.textSecondary)
                 }
             }

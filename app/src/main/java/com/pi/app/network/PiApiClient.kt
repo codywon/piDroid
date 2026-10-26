@@ -25,6 +25,18 @@ data class SessionHistoryData(
     val stats: TokenStats
 )
 
+
+data class DiscoveredModelItem(
+    val id: String,
+    val name: String = "",
+    val description: String = ""
+)
+
+data class DiscoverModelsResult(
+    val models: List<DiscoveredModelItem>,
+    val endpoint: String = ""
+)
+
 data class DefaultModelRef(
     val provider: String,
     val modelId: String
@@ -3140,6 +3152,101 @@ data class CatalogPreset(
     // 3.1 设置全局默认模型与思考档位 (1:1 对标 pi-web 的 PUT /api/models/default)
     // 持久化写入服务端的 ~/.pi/agent/settings.json
     // ==========================================
+
+    
+    /**
+     * 1:1 对标 pi-web 的 POST /api/models-config/discover 接口：
+     * 从服务商端点自动拉取 /v1/models 可用模型列表，支持双引擎 (网关代理 + 客户端直连 fallback)
+     */
+    suspend fun discoverProviderModels(
+        providerName: String,
+        baseUrl: String,
+        apiKey: String,
+        api: String = "openai-completions"
+    ): Result<DiscoverModelsResult> = withContext(Dispatchers.IO) {
+        val serverUrl = prefs.serverUrl
+        // 尝试 1：优先通过网关 /api/models-config/discover 转发
+        if (serverUrl.isNotBlank()) {
+            try {
+                val reqBody = JsonObject().apply {
+                    addProperty("providerName", providerName)
+                    val provObj = JsonObject().apply {
+                        if (baseUrl.isNotBlank()) addProperty("baseUrl", baseUrl)
+                        if (apiKey.isNotBlank()) addProperty("apiKey", apiKey)
+                        if (api.isNotBlank()) addProperty("api", api)
+                    }
+                    add("provider", provObj)
+                }
+                val req = Request.Builder()
+                    .url("$serverUrl/api/models-config/discover")
+                    .post(reqBody.toString().toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string() ?: "{}"
+                        val json = JsonParser.parseString(body).asJsonObject
+                        val list = mutableListOf<DiscoveredModelItem>()
+                        if (json.has("models") && json.get("models").isJsonArray) {
+                            for (item in json.getAsJsonArray("models")) {
+                                if (!item.isJsonObject) continue
+                                val obj = item.asJsonObject
+                                val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
+                                if (id.isNotBlank()) {
+                                    list.add(DiscoveredModelItem(id = id, name = name))
+                                }
+                            }
+                        }
+                        if (list.isNotEmpty()) {
+                            val ep = json.get("endpoint")?.takeIf { !it.isJsonNull }?.asString ?: baseUrl
+                            return@withContext Result.success(DiscoverModelsResult(models = list, endpoint = ep))
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        }
+
+        // 尝试 2：客户端直接向上游发起 /v1/models 请求 (标准 OpenAI 协议 fallback)
+        if (baseUrl.isNotBlank()) {
+            try {
+                val cleanBase = baseUrl.trim().trimEnd('/')
+                val targetUrl = if (cleanBase.endsWith("/v1")) "$cleanBase/models" else if (cleanBase.endsWith("/models")) cleanBase else "$cleanBase/v1/models"
+                val reqBuilder = Request.Builder().url(targetUrl).get()
+                if (apiKey.isNotBlank()) {
+                    reqBuilder.addHeader("Authorization", "Bearer ${apiKey.trim()}")
+                }
+                val directClient = OkHttpClient.Builder()
+                    .connectTimeout(15, TimeUnit.SECONDS)
+                    .readTimeout(20, TimeUnit.SECONDS)
+                    .build()
+                directClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val body = resp.body?.string() ?: "{}"
+                        val json = JsonParser.parseString(body).asJsonObject
+                        val list = mutableListOf<DiscoveredModelItem>()
+                        if (json.has("data") && json.get("data").isJsonArray) {
+                            for (item in json.getAsJsonArray("data")) {
+                                if (!item.isJsonObject) continue
+                                val id = item.asJsonObject.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                if (id.isNotBlank()) {
+                                    list.add(DiscoveredModelItem(id = id, name = id))
+                                }
+                            }
+                        }
+                        if (list.isNotEmpty()) {
+                            return@withContext Result.success(DiscoverModelsResult(models = list, endpoint = targetUrl))
+                        }
+                    } else {
+                        return@withContext Result.failure(Exception("上游服务返回 HTTP ${resp.code}"))
+                    }
+                }
+            } catch (e: Exception) {
+                return@withContext Result.failure(Exception("拉取模型失败: ${e.message}"))
+            }
+        }
+
+        Result.failure(Exception("未能从提供商端点拉取到模型列表，请检查 Base URL 与 API Key"))
+    }
 
     suspend fun setDefaultModel(provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl

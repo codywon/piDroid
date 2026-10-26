@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.6.2] - 2026-10-26
+
+### 🚀 模型供应商 Base URL 完整展示、下属模型网格折叠与 API 自动发现批量添加 (Provider Management & Discover API)
+- **模型供应商 Base URL 完整展示与一键快捷复制**：
+  - 彻底解决此前单行被 `TextOverflow.Ellipsis` 粗暴截断无法看清后面路径的问题；
+  - 采用极客工业风 Surface 独立展示框，完整显示 Base URL 全貌，未配置时贴心提示“未指定自定义 Base URL，采用接口默认端点”；
+  - 提供快捷复制按钮，轻触即可将 Base URL 拷贝至剪贴板；
+- **下属模型列表交互大盘全面升级 (自适应 2 列精致网格 + 折叠收起)**：
+  - 告别此前单行横向拖拽（添加按钮被丢在队伍最末端）的不便交互；
+  - 顶部常驻快捷双操作：【⚡ 从 API 导入】与【+ 添加模型】，触手可及；
+  - 下方排布为移动端自适应 2 列芯片网格，清晰呈现每个模型的 ID 与推理思考/多模态视觉小图标；
+  - 超过 6 个模型时支持一键优雅折叠/展开，既保留大盘掌控力，又避免占满整个页面；
+- **1:1 源码级复刻 pi-web 模型自动发现功能 (`POST /api/models-config/discover` & `/v1/models`)**：
+  - 接入服务端 `POST /api/models-config/discover` 端点，上游自动向提供商端点拉取模型列表；
+  - 同时支持客户端直连 `/v1/models` 或 `/models` 作为高可用 Fallback；
+  - 弹出精致的 API 发现模型管理窗：
+    - 支持即时搜索过滤拉取到的模型；
+    - 智能排重：已添加的模型自动置灰并标注“已添加”徽章；
+    - 支持“全选未添加”与勾选多选；
+    - 一键批量导入至当前 Provider，并智能推断推理与视觉特性，保存即刻生效。
+
+---
+
 ## [1.6.1] - 2026-10-26
 
 ### 🌟 默认模型与星标选择机制 1:1 源码级复刻 (Default Model Selection & PUT /api/models/default)
