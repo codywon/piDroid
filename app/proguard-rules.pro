@@ -3,6 +3,12 @@
 #
 # 原则：保留「靠反射按名字访问」的东西，其余全部交给 R8 压缩与混淆。
 # 任何新增的、由 Gson 反射反序列化的类都必须登记到下面的 model 保留区。
+#
+# 已审计的反射面（2026-10）：
+#   - Gson 反射目标仅 TypeToken<List<Session>>，Session 在 data.model 内，已被整包保留
+#   - 无 Class.forName / getDeclaredField / getDeclaredMethod
+#   - Manifest 组件：MainActivity、PiForegroundService、FileProvider 均已 keep
+# 若后续新增反射目标，请同步更新本节与 app/build.gradle.kts 的审计注释。
 # ---------------------------------------------------------------------------
 
 # 保留注解与泛型签名（Gson 依赖 Signature 属性还原泛型）

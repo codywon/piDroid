@@ -4,6 +4,20 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+/**
+ * R8 逆送开关。默认开启压缩与混淆。
+ *
+ * 审计结论（代码层面的反射面）：
+ *  - 唯一的 Gson 反射反序列化目标是 TypeToken<List<Session>>，Session 位于
+ *    com.pi.app.data.model，已被 proguard-rules.pro 整体保留；
+ *  - 全工程无 Class.forName / getDeclaredField / getDeclaredMethod；
+ *  - Manifest 声明的三个组件（MainActivity / PiForegroundService /
+ *    FileProvider）均已显式 keep。
+ * 因此 R8 风险可控。但若某次依赖升级引入了默认规则覆盖不到的反射，
+ * 可先用 ./gradlew assembleRelease -Ppidroid.minify=false 出货，再排查。
+ */
+val minifyRelease = (project.findProperty("pidroid.minify") as String?)?.toBoolean() ?: true
+
 android {
     namespace = "com.pi.app"
     compileSdk = 35
@@ -48,8 +62,8 @@ android {
             }
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = minifyRelease
+            isShrinkResources = minifyRelease
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
