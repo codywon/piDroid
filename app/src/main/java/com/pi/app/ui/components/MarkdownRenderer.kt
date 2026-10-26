@@ -1388,10 +1388,16 @@ private fun parseMermaidNodeToken(
     return Triple(trimmed, cleanMermaidNodeLabel(trimmed), false)
 }
 
+/** Mermaid 节点标签开头的 `A(` / `B[[` 形式的前缀。原在函数内每次重建。 */
+private val MERMAID_LABEL_PREFIX_REGEX = Regex("""^[A-Za-z0-9_]+\s*(\(\(|\[\[|\[\(|\(\[|\[|\(|\{)""")
+
+/** 与之对应的尾部闭合符号。 */
+private val MERMAID_LABEL_SUFFIX_REGEX = Regex("""(\)\)|\]\]|\)\]|\]\)|\]|\)|\})$""")
+
 private fun cleanMermaidNodeLabel(raw: String): String {
     return raw
-        .replace(Regex("""^[A-Za-z0-9_]+\s*(\(\(|\[\[|\[\(|\(\[|\[|\(|\{)"""), "")
-        .replace(Regex("""(\)\)|\]\]|\)\]|\]\)|\]|\)|\})$"""), "")
+        .replace(MERMAID_LABEL_PREFIX_REGEX, "")
+        .replace(MERMAID_LABEL_SUFFIX_REGEX, "")
         .removeSurrounding("\"")
         .trim()
         .ifBlank { raw.trim() }

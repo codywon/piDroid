@@ -24,16 +24,46 @@ if (urlIndex !== -1 && args[urlIndex + 1]) {
 }
 
 // 1. 获取或生成安全 Auth Token
+// 文件权限收紧为 0600：token 等同于网关的全部权限，不该让同机其他用户读到。
+// 内容为空或过短（历史上被截断过）时直接重建，避免出现空 token 被当成合法凭证。
+const TOKEN_MIN_LENGTH = 20;
+
+function writeTokenFile(token) {
+  fs.writeFileSync(TOKEN_FILE, token, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.chmodSync(TOKEN_FILE, 0o600);
+  } catch (e) {
+    // Windows 等不支持 POSIX 权限的文件系统上忽略
+  }
+}
+
 function getOrCreateToken() {
   if (fs.existsSync(TOKEN_FILE)) {
-    return fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+    const existing = fs.readFileSync(TOKEN_FILE, 'utf8').trim();
+    if (existing.length >= TOKEN_MIN_LENGTH) return existing;
+    console.warn('[Gateway] 已有 token 文件为空或过短，将重新生成');
   }
   const newToken = 'pi_' + crypto.randomBytes(16).toString('hex');
-  fs.writeFileSync(TOKEN_FILE, newToken, 'utf8');
+  writeTokenFile(newToken);
   return newToken;
 }
 
 const AUTH_TOKEN = getOrCreateToken();
+
+/** 恒定时间比较，避免通过响应耗时逐字节猜出 token。 */
+function safeTokenEquals(provided, expected) {
+  if (typeof provided !== 'string' || typeof expected !== 'string') return false;
+  if (expected.length === 0) return false;
+  const a = Buffer.from(provided, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  // 长度不同直接否决（长度本身不是秘密），timingSafeEqual 要求等长
+  if (a.length !== b.length) return false;
+  try {
+    return crypto.timingSafeEqual(a, b);
+  } catch (e) {
+    return false;
+  }
+}
 
 // 2. 获取本机局域网 IP
 function getLocalIp() {
@@ -74,6 +104,11 @@ function checkServerAlive(targetUrl, timeout = 1000) {
 const app = express();
 
 // 3. 安全鉴权中间件
+// 允许把 token 放在查询串里的路径：只有 SSE 事件流。浏览器 EventSource 无法
+// 设置请求头，是唯一确实需要它的场景。其余请求一律要求 Authorization 头，
+// 以免 token 落进反向代理 / CDN / Cloudflare Tunnel 的访问日志。
+const QUERY_TOKEN_PATH_PATTERN = /\/events$/;
+
 function authMiddleware(req, res, next) {
   let token = null;
 
@@ -82,11 +117,14 @@ function authMiddleware(req, res, next) {
     token = authHeader.substring(7).trim();
   }
 
-  if (!token && req.query && req.query.token) {
-    token = req.query.token;
+  if (!token && req.query && typeof req.query.token === 'string') {
+    const reqPath = req.path || req.url || '';
+    if (QUERY_TOKEN_PATH_PATTERN.test(reqPath)) {
+      token = req.query.token;
+    }
   }
 
-  if (!token || token !== AUTH_TOKEN) {
+  if (!safeTokenEquals(token, AUTH_TOKEN)) {
     return res.status(401).json({
       error: 'Unauthorized',
       message: 'Invalid or missing authentication token.'
@@ -96,12 +134,34 @@ function authMiddleware(req, res, next) {
   next();
 }
 
+/**
+ * 网关自报的版本号直接取自 Android 工程的 versionName，
+ * 避免出现「安装包是 1.6.4、网关自称 1.3.2」这种对不上的情况。
+ */
+function readAppVersion() {
+  try {
+    const gradleText = fs.readFileSync(
+      path.join(__dirname, '..', 'app', 'build.gradle.kts'), 'utf8');
+    const matched = gradleText.match(/versionName\s*=\s*"([^"]+)"/);
+    if (matched) return matched[1];
+  } catch (e) {
+    // 非仓库布局（例如只拷贝了 server/）时退回 package.json
+  }
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version;
+  } catch (e) {
+    return 'unknown';
+  }
+}
+
+const APP_VERSION = readAppVersion();
+
 app.get('/api/ping', authMiddleware, (req, res) => {
   res.json({
     status: 'ok',
     device: os.hostname(),
     platform: process.platform,
-    version: '1.3.2',
+    version: APP_VERSION,
     target: TARGET,
     timestamp: Date.now()
   });
@@ -175,7 +235,10 @@ function autoHealLocalModelsJson() {
       console.log('[Gateway] 已自动修复 ~/.pi/agent/models.json 中的模型覆盖配置结构');
     }
   } catch (e) {
-    // 忽略本地文件不存在或无权限情况
+    // 文件不存在是正常情况；其余错误需要留痕，否则 models.json 没被修好时无从排查
+    if (e && e.code !== 'ENOENT') {
+      console.warn('[Gateway] 自动修复 models.json 失败:', e.message);
+    }
   }
 }
 

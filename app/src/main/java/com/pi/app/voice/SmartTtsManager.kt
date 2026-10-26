@@ -53,28 +53,38 @@ class SmartTtsManager(context: Context) : TextToSpeech.OnInitListener {
         var processed = text
 
         // 1. 移除 ```...``` 代码块
-        processed = processed.replace(Regex("```[\\s\\S]*?```"), " [代码块已省略] ")
+        processed = processed.replace(CODE_BLOCK_REGEX, " [代码块已省略] ")
 
         // 2. 移除 `inline code`
-        processed = processed.replace(Regex("`[^`]+`"), "")
+        processed = processed.replace(INLINE_CODE_REGEX, "")
 
         // 3. 移除 Markdown 链接 [text](url) -> text
-        processed = processed.replace(Regex("\\[([^\\]]+)\\]\\([^\\)]+\\)"), "$1")
+        processed = processed.replace(MD_LINK_REGEX, "$1")
 
         // 4. 移除 Markdown 标题符 (#, ##, *)
-        processed = processed.replace(Regex("[#*_>~]"), "")
+        processed = processed.replace(MD_MARKER_REGEX, "")
 
         // 5. 压缩多余空白
-        processed = processed.replace(Regex("\\s+"), " ").trim()
+        processed = processed.replace(WHITESPACE_REGEX, " ").trim()
 
         // 6. 如果文本过长（超过 300 字），提取前两句和末尾关键句
         if (processed.length > 300) {
-            val sentences = processed.split(Regex("[。！？\n]")).filter { it.isNotBlank() }
+            val sentences = processed.split(SENTENCE_SPLIT_REGEX).filter { it.isNotBlank() }
             if (sentences.size > 3) {
                 return "${sentences.take(2).joinToString("。")}。总结：${sentences.last()}。"
             }
         }
 
         return processed
+    }
+
+    private companion object {
+        // 这些正则原先写在 extractSpokenSummary 内部，每播报一次就要重新编译 6 次。
+        val CODE_BLOCK_REGEX = Regex("```[\\s\\S]*?```")
+        val INLINE_CODE_REGEX = Regex("`[^`]+`")
+        val MD_LINK_REGEX = Regex("\\[([^\\]]+)\\]\\([^\\)]+\\)")
+        val MD_MARKER_REGEX = Regex("[#*_>~]")
+        val WHITESPACE_REGEX = Regex("\\s+")
+        val SENTENCE_SPLIT_REGEX = Regex("[。！？\n]")
     }
 }
