@@ -281,6 +281,16 @@ fun SessionListScreen(
                         sessions.count { pinnedSessionIds.contains(it.id) }
                     }
 
+                    val sortedWorkspaces = remember(workspaces, pinnedWorkspaces, wsOrder) {
+                        workspaces.sortedWith(
+                            compareByDescending<WorkspaceInfo> { pinnedWorkspaces.contains(it.path) }
+                                .thenBy { ws ->
+                                    val idx = wsOrder.indexOf(ws.path)
+                                    if (idx != -1) idx else Int.MAX_VALUE
+                                }
+                        )
+                    }
+
                     Text(
                         text = "项目工作区 (${workspaces.size})",
                         style = MaterialTheme.typography.labelSmall,
@@ -356,16 +366,7 @@ fun SessionListScreen(
                             }
                         }
 
-                        // 🌟 工作区项目排序列表：置顶排在前面，内部根据用户偏好排序
-                        val sortedWorkspaces = remember(workspaces, pinnedWorkspaces, wsOrder) {
-                            workspaces.sortedWith(
-                                compareByDescending<WorkspaceInfo> { pinnedWorkspaces.contains(it.path) }
-                                    .thenBy { ws ->
-                                        val idx = wsOrder.indexOf(ws.path)
-                                        if (idx != -1) idx else Int.MAX_VALUE
-                                    }
-                            )
-                        }
+
 
                         items(sortedWorkspaces, key = { it.path }) { ws ->
                             val isSelected = ws.path == selectedWorkspacePath
