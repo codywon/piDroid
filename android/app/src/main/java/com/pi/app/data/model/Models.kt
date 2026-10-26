@@ -241,13 +241,13 @@ data class McpServerInfo(
     @SerializedName("description") val description: String? = null,
     @SerializedName("transport") val transport: String? = "http",
     @SerializedName("url") val url: String? = null,
+    @SerializedName("enabled") val enabled: Boolean = true,
+    @SerializedName("toolExposureCount") val toolExposureCount: Int = 0,
+    @SerializedName("status") val statusObj: McpServerStatus? = null,
     @SerializedName("command") val command: String? = null,
     @SerializedName("args") val args: List<String>? = null,
     @SerializedName("env") val env: Map<String, String>? = null,
-    @SerializedName("scope") val scope: String? = "global",
-    @SerializedName("enabled") val enabled: Boolean = true,
-    @SerializedName("toolExposureCount") val toolExposureCount: Int = 0,
-    @SerializedName("status") val statusObj: McpServerStatus? = null
+    @SerializedName("scope") val scope: String? = "global"
 ) {
     val isConnected: Boolean
         get() = statusObj?.state == "connected" || enabled

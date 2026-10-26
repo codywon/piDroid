@@ -1879,8 +1879,26 @@ class PiApiClient(private val prefs: AppPreferences) {
     )
 
     private fun getDefaultMcpServers() = listOf(
-        McpServerInfo("hindsight", "Hindsight long-term memory system for recalling past decisions", "http", "http://127.0.0.1:8888/mcp", true, 4, McpServerStatus("connected")),
-        McpServerInfo("wren", "Wren 语义模型与分析层协议", "http", "http://127.0.0.1:9090/mcp", true, 6, McpServerStatus("connected"))
+        McpServerInfo(
+            name = "hindsight",
+            description = "Hindsight long-term memory system for recalling past decisions",
+            transport = "http",
+            url = "http://127.0.0.1:8888/mcp",
+            enabled = true,
+            toolExposureCount = 4,
+            statusObj = McpServerStatus("connected"),
+            scope = "global"
+        ),
+        McpServerInfo(
+            name = "wren",
+            description = "Wren 语义模型与分析层协议",
+            transport = "http",
+            url = "http://127.0.0.1:9090/mcp",
+            enabled = true,
+            toolExposureCount = 6,
+            statusObj = McpServerStatus("connected"),
+            scope = "global"
+        )
     )
 
     suspend fun getAgentRunningState(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
