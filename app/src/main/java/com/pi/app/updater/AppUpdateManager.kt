@@ -214,9 +214,7 @@ object AppUpdateManager {
         for (line in lines) {
             val trimmed = line.trim()
             if (trimmed.startsWith("#") && (trimmed.contains("下载") || trimmed.contains("安装") || trimmed.contains("首发版本"))) {
-                if (trimmed.contains("下载") || trimmed.contains("安装")) {
-                    skipSection = true
-                }
+                skipSection = true
                 continue
             }
             if (skipSection) {
@@ -226,13 +224,17 @@ object AppUpdateManager {
                     continue
                 }
             }
-            if (trimmed.contains("直接下载下方附件") || trimmed.startsWith("Full Changelog")) {
+            if (trimmed.contains("直接下载下方附件") ||
+                trimmed.startsWith("Full Changelog", ignoreCase = true) ||
+                trimmed.startsWith("**Full Changelog**", ignoreCase = true) ||
+                trimmed.contains("compare/v")
+            ) {
                 continue
             }
             filtered.add(line)
         }
         val result = filtered.joinToString("\n").trim()
-        return result.ifBlank { raw }
+        return result.ifBlank { raw.trim() }
     }
 
     data class DownloadChannel(

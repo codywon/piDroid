@@ -1377,15 +1377,41 @@ class PiApiClient(private val prefs: AppPreferences) {
     // ==========================================
 
     suspend fun sendCommand(sessionId: String, prompt: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "prompt", "text" to prompt, "images" to images))
+        val payload = mutableMapOf<String, Any>(
+            "type" to "prompt",
+            "message" to prompt,
+            "text" to prompt
+        )
+        if (images.isNotEmpty()) {
+            payload["images"] = images
+        }
+        sendAgentAction(sessionId, payload)
     }
 
     suspend fun sendSteer(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "steer", "text" to text, "images" to images))
+        val payload = mutableMapOf<String, Any>(
+            "type" to "prompt",
+            "streamingBehavior" to "steer",
+            "message" to text,
+            "text" to text
+        )
+        if (images.isNotEmpty()) {
+            payload["images"] = images
+        }
+        sendAgentAction(sessionId, payload)
     }
 
     suspend fun sendFollowUp(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "follow_up", "text" to text, "images" to images))
+        val payload = mutableMapOf<String, Any>(
+            "type" to "prompt",
+            "streamingBehavior" to "followUp",
+            "message" to text,
+            "text" to text
+        )
+        if (images.isNotEmpty()) {
+            payload["images"] = images
+        }
+        sendAgentAction(sessionId, payload)
     }
 
     suspend fun stopAgent(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -1414,7 +1440,12 @@ class PiApiClient(private val prefs: AppPreferences) {
             val body = gson.toJson(payload).toRequestBody(jsonMediaType)
             val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
             client.newCall(req).execute().use { response ->
-                Result.success(response.isSuccessful)
+                if (!response.isSuccessful) {
+                    val errBody = response.body?.string() ?: ""
+                    Result.failure(IOException("Server HTTP ${response.code}: $errBody"))
+                } else {
+                    Result.success(true)
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -2670,7 +2701,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         cwd: String,
         provider: String? = null,
         modelId: String? = null,
-        thinkingLevel: ThinkingLevel? = null
+        thinkingLevel: ThinkingLevel? = null,
+        toolNames: List<String>? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
@@ -2686,6 +2718,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
             if (thinkingLevel != null && thinkingLevel != ThinkingLevel.OFF) {
                 payload["thinkingLevel"] = thinkingLevel.value
+            }
+            if (toolNames != null) {
+                payload["toolNames"] = toolNames
             }
             val req = Request.Builder()
                 .url("${baseUrl}/api/agent/new")
@@ -2713,6 +2748,89 @@ class PiApiClient(private val prefs: AppPreferences) {
     /**
      * 调用大模型结合任务上下文智能生成会话标题 (对标 pi-web POST /api/sessions/{id}/auto-name)
      */
+    /**
+     * 动态切换当前会话内置工具权限 (对标 pi-web POST /api/agent/[id] {"type":"set_tools","toolNames":[...]})
+     */
+    suspend fun setSessionTools(sessionId: String, toolNames: List<String>?): Result<SetToolsResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+        try {
+            val payload = mutableMapOf<String, Any>("type" to "set_tools")
+            if (toolNames != null) {
+                payload["toolNames"] = toolNames
+            }
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    Result.failure(IOException("Server HTTP ${resp.code}: $bodyStr"))
+                } else {
+                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val dataObj = json?.getAsJsonObject("data")
+                    val newSid = dataObj?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString ?: sessionId
+                    val recreated = dataObj?.get("recreated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    Result.success(SetToolsResult(sessionId = newSid, recreated = recreated))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 删除指定会话 (1:1 对标 pi-web POST /api/sessions/delete {"ids":[sessionId]})
+     */
+    suspend fun deleteSessions(sessionIds: List<String>): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionIds.isEmpty()) return@withContext Result.success(true)
+        try {
+            val payload = mapOf("ids" to sessionIds)
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/sessions/delete").post(body).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val errBody = resp.body?.string() ?: ""
+                    Result.failure(IOException("Server HTTP ${resp.code}: $errBody"))
+                } else {
+                    Result.success(true)
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 从指定会话分叉出新的分支任务 (1:1 对标 pi-web POST /api/sessions/[id]/fork)
+     */
+    suspend fun forkSession(sessionId: String): Result<ForkSessionResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+        try {
+            val body = "".toRequestBody(null)
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/fork").post(body).build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    Result.failure(IOException("Server HTTP ${resp.code}: $bodyStr"))
+                } else {
+                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val newSid = json?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString
+                        ?: return@withContext Result.failure(IOException("未返回有效的分叉会话ID"))
+                    val path = json.get("path")?.takeIf { !it.isJsonNull }?.asString
+                    val name = json.get("name")?.takeIf { !it.isJsonNull }?.asString
+                    Result.success(ForkSessionResult(sessionId = newSid, path = path, name = name))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun autoGenerateSessionTitle(sessionId: String): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))

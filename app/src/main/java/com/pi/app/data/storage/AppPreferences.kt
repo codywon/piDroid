@@ -47,6 +47,10 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_DEFAULT_THINKING, "high") ?: "high"
         set(value) = prefs.edit().putString(KEY_DEFAULT_THINKING, value).apply()
 
+    var defaultToolPreset: String
+        get() = prefs.getString(KEY_DEFAULT_TOOL_PRESET, "full") ?: "full"
+        set(value) = prefs.edit().putString(KEY_DEFAULT_TOOL_PRESET, value).apply()
+
     fun getSkillAlias(skillName: String): String? {
         return prefs.getString("alias_$skillName", null)
     }
@@ -82,6 +86,39 @@ class AppPreferences(context: Context) {
         }
         prefs.edit().putStringSet(KEY_PINNED_SESSIONS, current).apply()
         return willPin
+    }
+
+    // 会话归档管理 (对标 pi-web 侧边栏底部已归档体系)
+    fun getArchivedSessionIds(): Set<String> {
+        return prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()
+    }
+
+    fun isSessionArchived(sessionId: String): Boolean {
+        return getArchivedSessionIds().contains(sessionId)
+    }
+
+    fun toggleArchiveSession(sessionId: String): Boolean {
+        val current = getArchivedSessionIds().toMutableSet()
+        val willArchive = !current.contains(sessionId)
+        if (willArchive) {
+            current.add(sessionId)
+        } else {
+            current.remove(sessionId)
+        }
+        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, current).apply()
+        return willArchive
+    }
+
+    fun removeSessionLocalData(sessionId: String) {
+        val currentPinned = getPinnedSessionIds().toMutableSet()
+        currentPinned.remove(sessionId)
+        val currentArchived = getArchivedSessionIds().toMutableSet()
+        currentArchived.remove(sessionId)
+        prefs.edit()
+            .putStringSet(KEY_PINNED_SESSIONS, currentPinned)
+            .putStringSet(KEY_ARCHIVED_SESSIONS, currentArchived)
+            .remove("session_title_$sessionId")
+            .apply()
     }
 
     // 会话自定义与自动生成标题
@@ -205,7 +242,9 @@ class AppPreferences(context: Context) {
         private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
+        private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"
         private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"
+        private const val KEY_ARCHIVED_SESSIONS = "key_archived_sessions"
         private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     }

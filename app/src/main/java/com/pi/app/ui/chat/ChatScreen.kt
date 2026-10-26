@@ -57,6 +57,7 @@ import com.pi.app.ui.components.LocalMediaGatewayConfig
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
+import com.pi.app.data.model.ToolPreset
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -106,6 +107,8 @@ fun ChatScreen(
     onSendFollowUp: (String) -> Unit,
     onClearQueue: () -> Unit,
     onApproveTool: (approved: Boolean) -> Unit,
+    currentToolPreset: ToolPreset = ToolPreset.FULL,
+    onToolPresetChange: (ToolPreset) -> Unit = {},
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
     CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
@@ -118,6 +121,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
+    var showToolPresetSheet by remember { mutableStateOf(false) }
 
     // 图片与文件附件选择器
     val attachments = remember { mutableStateListOf<ChatAttachment>() }
@@ -352,7 +356,7 @@ fun ChatScreen(
 
                 val canSend = inputText.isNotBlank() || attachments.isNotEmpty()
 
-                // 2. 附着在输入框上边沿上方的控制栏（最佳实践：释放输入框内部宽度，避免按钮挤占文本空间）
+                // 2. 附着在输入框上边沿上方的控制栏（弹性两端布局，模型自适应截断，工具权限与圆圈图标和谐统一，永不变形）
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -360,19 +364,23 @@ fun ChatScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    // 左侧：模型+思考档位胶囊芯片 + 圆形压缩上下文图标按钮
+                    // 左侧：模型+思考档位胶囊芯片 + 权限预设胶囊芯片 (弹性自适应排布)
                     Row(
+                        modifier = Modifier.weight(1f, fill = false),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        // 模型与思考档位胶囊芯片
                         Surface(
                             shape = CircleShape,
                             color = theme.surfaceContainer,
                             border = BorderStroke(1.dp, theme.outline),
-                            modifier = Modifier.clickable { onOpenModelSheet() }
+                            modifier = Modifier
+                                .weight(1f, fill = false)
+                                .clickable { onOpenModelSheet() }
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
@@ -381,14 +389,16 @@ fun ChatScreen(
                                     modifier = Modifier.size(13.dp),
                                     tint = theme.primary
                                 )
-                                Spacer(modifier = Modifier.width(5.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "${selectedModel.displayName.take(18)} · ${thinkingLevel.value}",
+                                    text = "${selectedModel.displayName} · ${thinkingLevel.value}",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,
                                     maxLines = 1,
-                                    color = theme.textPrimary
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = theme.textPrimary,
+                                    modifier = Modifier.weight(1f, fill = false)
                                 )
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Icon(
@@ -400,7 +410,44 @@ fun ChatScreen(
                             }
                         }
 
-                        // 圆圈 + 压缩图标按钮
+                        // 权限切换胶囊芯片 (1:1 对标 pi-web 的 [wrench] full)
+                        Surface(
+                            shape = CircleShape,
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.clickable { showToolPresetSheet = true }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Build,
+                                    contentDescription = "权限模式",
+                                    modifier = Modifier.size(11.dp),
+                                    tint = Color(0xFFEAB308)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = currentToolPreset.displayName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = theme.textPrimary
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(6.dp))
+
+                    // 右侧：统一带圈图标按键区 (压缩、引导、后续，统一28dp圆圈，紧凑精致，永不畸变换行)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        // 1. 圆圈 + 压缩图标按钮
                         Surface(
                             shape = CircleShape,
                             color = theme.surfaceContainer,
@@ -426,57 +473,61 @@ fun ChatScreen(
                                 }
                             }
                         }
-                    }
 
-                    // 右侧：任务运行中展示精简“引导 / 后续”胶囊按钮（不占用下方输入框宽度）
-                    if (isAgentBusy) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
+                        // 2. 任务执行中的带圈动作按键（仅在 isAgentBusy 时呈现）
+                        if (isAgentBusy) {
+                            // 引导 (Steer) 圆圈图标按键
                             Surface(
                                 shape = CircleShape,
-                                color = if (canSend) theme.primary else theme.surfaceContainerHigh,
+                                color = if (canSend) theme.primary else theme.surfaceContainer,
                                 border = BorderStroke(
-                                    0.8.dp,
+                                    1.dp,
                                     if (canSend) theme.primary else theme.outline
                                 ),
-                                modifier = Modifier.clickable(enabled = canSend) {
-                                    userJumpedToHistory = false
-                                    val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                    onSendSteer(fullMsg)
-                                    inputText = ""
-                                }
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clickable(enabled = canSend) {
+                                        userJumpedToHistory = false
+                                        val fullMsg = buildMessageWithAttachments(inputText.trim())
+                                        onSendSteer(fullMsg)
+                                        inputText = ""
+                                    }
                             ) {
-                                Text(
-                                    text = "➔ 引导",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (canSend) Color.White else theme.textMuted,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                                )
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.NearMe,
+                                        contentDescription = "实时引导 (Steer)",
+                                        modifier = Modifier.size(14.dp),
+                                        tint = if (canSend) Color.White else theme.textMuted
+                                    )
+                                }
                             }
 
+                            // 后续 (Follow-up) 圆圈图标按键
                             Surface(
                                 shape = CircleShape,
-                                color = theme.surfaceContainerHigh,
-                                border = BorderStroke(0.8.dp, if (canSend) theme.primary.copy(alpha = 0.6f) else theme.outline),
-                                modifier = Modifier.clickable(enabled = canSend) {
-                                    userJumpedToHistory = false
-                                    val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                    onSendFollowUp(fullMsg)
-                                    inputText = ""
-                                }
+                                color = if (canSend) theme.surfaceContainerHigh else theme.surfaceContainer,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (canSend) theme.primary.copy(alpha = 0.8f) else theme.outline
+                                ),
+                                modifier = Modifier
+                                    .size(28.dp)
+                                    .clickable(enabled = canSend) {
+                                        userJumpedToHistory = false
+                                        val fullMsg = buildMessageWithAttachments(inputText.trim())
+                                        onSendFollowUp(fullMsg)
+                                        inputText = ""
+                                    }
                             ) {
-                                Text(
-                                    text = "↑ 后续",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = if (canSend) theme.textPrimary else theme.textMuted,
-                                    modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp)
-                                )
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.PlaylistAdd,
+                                        contentDescription = "后续排队 (Follow-up)",
+                                        modifier = Modifier.size(15.dp),
+                                        tint = if (canSend) theme.primary else theme.textMuted
+                                    )
+                                }
                             }
                         }
                     }
@@ -579,7 +630,7 @@ fun ChatScreen(
                             ) {
                                 if (inputText.isEmpty()) {
                                     Text(
-                                        text = if (isAgentBusy) "输入指令后点上方 引导 / 后续..." else "向 Agent 发送指令...",
+                                        text = if (isAgentBusy) "输入指令后点击上方引导/排队图标..." else "向 Agent 发送指令...",
                                         color = theme.textMuted,
                                         fontSize = 14.sp,
                                         maxLines = 1,
@@ -1096,6 +1147,17 @@ fun ChatScreen(
                 }
             }
         }
+    }
+
+    // 权限模式与工具预设选择面板 (对标 pi-web)
+    if (showToolPresetSheet) {
+        ToolPresetBottomSheet(
+            currentPreset = currentToolPreset,
+            onPresetSelected = { preset ->
+                onToolPresetChange(preset)
+            },
+            onDismissRequest = { showToolPresetSheet = false }
+        )
     }
 
     if (showHudDialog) {

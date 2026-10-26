@@ -38,6 +38,8 @@ import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
 
+const val PINNED_WORKSPACE_KEY = "__global_pinned__"
+
 private enum class SessionStatusFilter {
     ALL,
     RUNNING,
@@ -95,8 +97,13 @@ fun SessionListScreen(
     sessions: List<Session>,
     isLoading: Boolean,
     pinnedSessionIds: Set<String> = emptySet(),
+    archivedSessionIds: Set<String> = emptySet(),
     customTitles: Map<String, String> = emptyMap(),
     onTogglePinSession: (String) -> Unit = {},
+    onToggleArchiveSession: (String) -> Unit = {},
+    onRenameSession: (sessionId: String, newTitle: String) -> Unit = { _, _ -> },
+    onForkSession: (Session) -> Unit = {},
+    onDeleteSession: (String) -> Unit = {},
     onRefresh: () -> Unit,
     onSessionClick: (Session) -> Unit,
     onScanClick: () -> Unit,
@@ -114,6 +121,10 @@ fun SessionListScreen(
     var showAddWorkspaceDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
+    var renamingSession by remember { mutableStateOf<Session?>(null) }
+    var renameInputText by remember { mutableStateOf("") }
+    var deletingSession by remember { mutableStateOf<Session?>(null) }
+    var isArchivedExpanded by remember { mutableStateOf(false) }
 
     // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
     val workspaces = remember(sessions, customWorkspaces) {
@@ -144,12 +155,20 @@ fun SessionListScreen(
         mutableStateOf(workspaces.firstOrNull()?.path ?: "")
     }
 
-    // 当前选定工作区下的任务列表（正在运行的任务自动置顶，随后按时间排列）
-    val currentWorkspaceSessions = remember(sessions, selectedWorkspacePath) {
-        val base = if (selectedWorkspacePath.isBlank()) {
-            sessions
-        } else {
-            sessions.filter { it.workspacePath == selectedWorkspacePath }
+    val isPinnedWorkspaceSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY
+
+    // 当前选定工作区下的任务列表（若是全局置顶专区，则跨工作区聚合所有已置顶任务）
+    val currentWorkspaceSessions = remember(sessions, selectedWorkspacePath, pinnedSessionIds) {
+        val base = when {
+            selectedWorkspacePath == PINNED_WORKSPACE_KEY -> {
+                sessions.filter { pinnedSessionIds.contains(it.id) }
+            }
+            selectedWorkspacePath.isBlank() -> {
+                sessions
+            }
+            else -> {
+                sessions.filter { it.workspacePath == selectedWorkspacePath }
+            }
         }
         base.sortedWith(
             compareByDescending<Session> { it.awaitingInput }
@@ -184,7 +203,11 @@ fun SessionListScreen(
     }
 
     val currentWorkspaceName = remember(workspaces, selectedWorkspacePath) {
-        workspaces.firstOrNull { it.path == selectedWorkspacePath }?.displayName ?: "全部工作区"
+        if (selectedWorkspacePath == PINNED_WORKSPACE_KEY) {
+            "🌟 常用置顶"
+        } else {
+            workspaces.firstOrNull { it.path == selectedWorkspacePath }?.displayName ?: "全部工作区"
+        }
     }
 
     ModalNavigationDrawer(
@@ -239,8 +262,90 @@ fun SessionListScreen(
                     }
 
                     Spacer(modifier = Modifier.height(10.dp))
+
+                    // 🌟 跨工作区置顶专区 (1:1 对标 pi-web 左侧抽屉顶部 Pinned 专区)
+                    val globalPinnedCount = remember(sessions, pinnedSessionIds) {
+                        sessions.count { pinnedSessionIds.contains(it.id) }
+                    }
+                    val isPinnedSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (isPinnedSelected) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                        border = BorderStroke(
+                            if (isPinnedSelected) 1.5.dp else 1.dp,
+                            if (isPinnedSelected) Color(0xFFEAB308) else theme.outline.copy(alpha = 0.6f)
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selectedWorkspacePath = PINNED_WORKSPACE_KEY
+                                coroutineScope.launch { drawerState.close() }
+                            }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(30.dp)
+                                    .background(Color(0xFFEAB308).copy(alpha = 0.16f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.PushPin,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp),
+                                    tint = Color(0xFFEAB308)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "常用置顶 (Pinned)",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isPinnedSelected) theme.textPrimary else theme.textSecondary
+                                )
+                                Text(
+                                    text = "跨工作区聚合 · ${globalPinnedCount} 个置顶会话",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = theme.textMuted
+                                )
+                            }
+                            if (sessions.any { pinnedSessionIds.contains(it.id) && it.active }) {
+                                PiWebRunningSpinner(size = 12.dp)
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            Surface(
+                                shape = CircleShape,
+                                color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHighest,
+                                modifier = Modifier.padding(start = 4.dp)
+                            ) {
+                                Text(
+                                    text = "$globalPinnedCount",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary,
+                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     HorizontalDivider(color = theme.outline)
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    Text(
+                        text = "项目工作区 (${workspaces.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = theme.textMuted,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
 
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -426,7 +531,14 @@ fun SessionListScreen(
             floatingActionButton = {
                 if (isConfigured) {
                     FloatingActionButton(
-                        onClick = { onNewSessionClick(selectedWorkspacePath) },
+                        onClick = {
+                            val targetPath = if (selectedWorkspacePath == PINNED_WORKSPACE_KEY) {
+                                workspaces.firstOrNull()?.path ?: ""
+                            } else {
+                                selectedWorkspacePath
+                            }
+                            onNewSessionClick(targetPath)
+                        },
                         containerColor = theme.primary,
                         contentColor = Color.White,
                         shape = CircleShape
@@ -618,19 +730,31 @@ fun SessionListScreen(
                     } else if (filteredSessions.isEmpty()) {
                         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                             Text(
-                                text = when (statusFilter) {
-                                    SessionStatusFilter.RUNNING -> "当前没有正在运行的任务"
-                                    SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
-                                    SessionStatusFilter.ALL -> "当前工作区暂无历史任务"
+                                text = when {
+                                    selectedWorkspacePath == PINNED_WORKSPACE_KEY -> "暂无置顶任务。在任意工作区点击会话卡片右侧的图钉，即可将任务置顶到此处。"
+                                    statusFilter == SessionStatusFilter.RUNNING -> "当前没有正在运行的任务"
+                                    statusFilter == SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
+                                    else -> "当前工作区暂无历史任务"
                                 },
                                 color = theme.textMuted,
                                 style = MaterialTheme.typography.bodyMedium
                             )
                         }
                     } else {
-                        val (pinnedList, normalList) = remember(filteredSessions, pinnedSessionIds) {
-                            filteredSessions.partition { pinnedSessionIds.contains(it.id) }
+                        // 会话分组：如果在置顶专区则全量展示置顶项；若在普通项目区，则将已归档会话分离到末尾折叠区
+                        val isPinnedZone = selectedWorkspacePath == PINNED_WORKSPACE_KEY
+                        val (archivedSessions, activeSessions) = remember(filteredSessions, archivedSessionIds, isPinnedZone) {
+                            if (isPinnedZone) {
+                                emptyList<Session>() to filteredSessions
+                            } else {
+                                filteredSessions.partition { archivedSessionIds.contains(it.id) }
+                            }
                         }
+
+                        val (pinnedList, normalList) = remember(activeSessions, pinnedSessionIds) {
+                            activeSessions.partition { pinnedSessionIds.contains(it.id) }
+                        }
+
                         LazyColumn(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -645,12 +769,12 @@ fun SessionListScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.primary)
+                                        Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color(0xFFEAB308))
                                         Text(
                                             text = "置顶任务 (${pinnedList.size})",
                                             style = MaterialTheme.typography.labelSmall,
                                             fontWeight = FontWeight.Bold,
-                                            color = theme.primary
+                                            color = Color(0xFFEAB308)
                                         )
                                     }
                                 }
@@ -658,8 +782,16 @@ fun SessionListScreen(
                                     SessionCard(
                                         session = session,
                                         isPinned = true,
+                                        isArchived = archivedSessionIds.contains(session.id),
                                         customTitle = customTitles[session.id],
                                         onTogglePin = { onTogglePinSession(session.id) },
+                                        onRename = {
+                                            renamingSession = session
+                                            renameInputText = customTitles[session.id] ?: session.displayTitle
+                                        },
+                                        onFork = { onForkSession(session) },
+                                        onToggleArchive = { onToggleArchiveSession(session.id) },
+                                        onDelete = { deletingSession = session },
                                         onClick = { onSessionClick(session) }
                                     )
                                 }
@@ -678,14 +810,88 @@ fun SessionListScreen(
                                     }
                                 }
                             }
-                            items(if (pinnedList.isNotEmpty()) normalList else filteredSessions, key = { it.id }) { session ->
+
+                            items(if (pinnedList.isNotEmpty()) normalList else activeSessions, key = { it.id }) { session ->
                                 SessionCard(
                                     session = session,
                                     isPinned = pinnedSessionIds.contains(session.id),
+                                    isArchived = archivedSessionIds.contains(session.id),
                                     customTitle = customTitles[session.id],
                                     onTogglePin = { onTogglePinSession(session.id) },
+                                    onRename = {
+                                        renamingSession = session
+                                        renameInputText = customTitles[session.id] ?: session.displayTitle
+                                    },
+                                    onFork = { onForkSession(session) },
+                                    onToggleArchive = { onToggleArchiveSession(session.id) },
+                                    onDelete = { deletingSession = session },
                                     onClick = { onSessionClick(session) }
                                 )
+                            }
+
+                            // 🗃️ 已归档会话折叠区域 (1:1 对标 pi-web 侧边栏底部 Archived 专区)
+                            if (archivedSessions.isNotEmpty()) {
+                                item(key = "section_archived_toggle") {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = theme.surfaceContainer,
+                                        border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.5f)),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(top = 10.dp)
+                                            .clickable { isArchivedExpanded = !isArchivedExpanded }
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    Icons.Default.Archive,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(15.dp),
+                                                    tint = theme.textMuted
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Text(
+                                                    text = "已归档任务 (${archivedSessions.size})",
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = theme.textSecondary
+                                                )
+                                            }
+                                            Icon(
+                                                imageVector = if (isArchivedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = if (isArchivedExpanded) "收起" else "展开",
+                                                modifier = Modifier.size(18.dp),
+                                                tint = theme.textSecondary
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if (isArchivedExpanded) {
+                                    items(archivedSessions, key = { "archived_${it.id}" }) { session ->
+                                        SessionCard(
+                                            session = session,
+                                            isPinned = pinnedSessionIds.contains(session.id),
+                                            isArchived = true,
+                                            customTitle = customTitles[session.id],
+                                            onTogglePin = { onTogglePinSession(session.id) },
+                                            onRename = {
+                                                renamingSession = session
+                                                renameInputText = customTitles[session.id] ?: session.displayTitle
+                                            },
+                                            onFork = { onForkSession(session) },
+                                            onToggleArchive = { onToggleArchiveSession(session.id) },
+                                            onDelete = { deletingSession = session },
+                                            onClick = { onSessionClick(session) }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -722,6 +928,77 @@ fun SessionListScreen(
                     if (startSessionNow) {
                         onNewSessionClick(finalPath)
                     }
+                }
+            }
+        )
+    }
+
+    // ✏️ 重命名会话对话框
+    renamingSession?.let { sess ->
+        AlertDialog(
+            onDismissRequest = { renamingSession = null },
+            title = { Text("重命名会话", fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text(
+                        "为任务设置易于辨识的备注名称：",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = theme.textMuted
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = renameInputText,
+                        onValueChange = { renameInputText = it },
+                        singleLine = true,
+                        placeholder = { Text(sess.displayTitle) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        val clean = renameInputText.trim()
+                        if (clean.isNotBlank()) {
+                            onRenameSession(sess.id, clean)
+                        }
+                        renamingSession = null
+                    }
+                ) {
+                    Text("保存", fontWeight = FontWeight.Bold, color = theme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renamingSession = null }) {
+                    Text("取消", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
+    // 🗑️ 删除会话确认对话框
+    deletingSession?.let { sess ->
+        AlertDialog(
+            onDismissRequest = { deletingSession = null },
+            title = { Text("删除任务会话", fontWeight = FontWeight.Bold, color = Color(0xFFDC2626)) },
+            text = {
+                Text("确定要彻底删除任务「${customTitles[sess.id] ?: sess.displayTitle}」吗？
+删除后任务上下文与历史记录将无法恢复。")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeleteSession(sess.id)
+                        deletingSession = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                ) {
+                    Text("确认删除", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { deletingSession = null }) {
+                    Text("取消", color = theme.textSecondary)
                 }
             }
         )
@@ -1024,11 +1301,17 @@ private fun FilterPill(
 fun SessionCard(
     session: Session,
     isPinned: Boolean = false,
+    isArchived: Boolean = false,
     customTitle: String? = null,
     onTogglePin: () -> Unit = {},
+    onRename: () -> Unit = {},
+    onFork: () -> Unit = {},
+    onToggleArchive: () -> Unit = {},
+    onDelete: () -> Unit = {},
     onClick: () -> Unit
 ) {
     val theme = LocalAppTheme.current
+    var showMenu by remember { mutableStateOf(false) }
     val timeRaw = session.modified ?: session.created ?: ""
     val dateStr = remember(timeRaw) {
         if (timeRaw.length >= 16) {
@@ -1186,15 +1469,115 @@ fun SessionCard(
                         }
                     }
 
-                    // 置顶快捷操作图标
-                    Icon(
-                        imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
-                        contentDescription = if (isPinned) "取消置顶" else "置顶任务",
-                        tint = if (isPinned) theme.primary else theme.textMuted.copy(alpha = 0.55f),
-                        modifier = Modifier
-                            .size(15.dp)
-                            .clickable { onTogglePin() }
-                    )
+                    if (isPinned) {
+                        Icon(
+                            imageVector = Icons.Default.PushPin,
+                            contentDescription = "已置顶",
+                            tint = Color(0xFFEAB308),
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+
+                    Box {
+                        IconButton(
+                            onClick = { showMenu = true },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "更多操作",
+                                tint = theme.textSecondary,
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(if (isPinned) "取消置顶" else "置顶", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.PushPin,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = if (isPinned) Color(0xFFEAB308) else theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onTogglePin()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("重命名", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Edit,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onRename()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text("分叉", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.AltRoute,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onFork()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(if (isArchived) "取消归档" else "归档", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.Archive,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onToggleArchive()
+                                }
+                            )
+
+                            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                            DropdownMenuItem(
+                                text = { Text("删除...", color = Color(0xFFDC2626), style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.DeleteOutline,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = Color(0xFFDC2626)
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onDelete()
+                                }
+                            )
+                        }
+                    }
                 }
             }
 

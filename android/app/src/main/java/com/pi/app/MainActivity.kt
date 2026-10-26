@@ -167,6 +167,9 @@ class MainActivity : ComponentActivity() {
         var currentThinkingLevel by remember {
             mutableStateOf(ThinkingLevel.fromValue(prefs.defaultThinkingLevel))
         }
+        var currentToolPreset by remember {
+            mutableStateOf(ToolPreset.fromId(prefs.defaultToolPreset))
+        }
 
         var currentProject by remember { mutableStateOf("默认工作区") }
         var tokenStats by remember {
@@ -190,6 +193,7 @@ class MainActivity : ComponentActivity() {
         var hapticsEnabled by remember { mutableStateOf(prefs.hapticsEnabled) }
         var completionSoundEnabled by remember { mutableStateOf(prefs.completionSoundEnabled) }
         var pinnedSessionIds by remember { mutableStateOf(prefs.getPinnedSessionIds()) }
+        var archivedSessionIds by remember { mutableStateOf(prefs.getArchivedSessionIds()) }
         var customTitles by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
         var customWorkspaces by remember { mutableStateOf(prefs.getCustomWorkspaces()) }
 
@@ -1347,7 +1351,13 @@ class MainActivity : ComponentActivity() {
                             startListeningEvents(sid, initialBusy = true)
                         }
                         lifecycleScope.launch {
-                            apiClient.sendCommand(sid, prompt)
+                            apiClient.sendCommand(sid, prompt).onFailure { err ->
+                                isAgentBusy = false
+                                agentPhaseLabel = null
+                                keepAliveManager.releaseWakeLock()
+                                syncPersistentForegroundService(isBusy = false, project = currentProject)
+                                Toast.makeText(this@MainActivity, "指令发送失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     },
                     onSendSteer = { steerText ->
@@ -1355,6 +1365,8 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             apiClient.sendSteer(currentSession!!.id, steerText).onSuccess {
                                 Toast.makeText(this@MainActivity, "已下发引导指令", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "引导下发失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -1363,6 +1375,9 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             apiClient.sendFollowUp(currentSession!!.id, followText).onSuccess {
                                 Toast.makeText(this@MainActivity, "已排入后续任务队列", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                queuedMessages.removeAll { it.text == followText }
+                                Toast.makeText(this@MainActivity, "排入队列失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -1377,6 +1392,25 @@ class MainActivity : ComponentActivity() {
                     onApproveTool = { approved ->
                         lifecycleScope.launch {
                             apiClient.sendApproval(currentSession!!.id, approved)
+                        }
+                    },
+                    currentToolPreset = currentToolPreset,
+                    onToolPresetChange = { preset ->
+                        currentToolPreset = preset
+                        prefs.defaultToolPreset = preset.id
+                        currentSession?.let { sess ->
+                            lifecycleScope.launch {
+                                apiClient.setSessionTools(sess.id, preset.toolNames).onSuccess { res ->
+                                    if (res.recreated && res.sessionId != sess.id) {
+                                        val updatedSession = sess.copy(id = res.sessionId)
+                                        currentSession = updatedSession
+                                        startListeningEvents(res.sessionId)
+                                    }
+                                    Toast.makeText(this@MainActivity, "已切换权限模式: ${preset.displayName}", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "权限切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
                         }
                     }
                 )
@@ -1418,6 +1452,7 @@ class MainActivity : ComponentActivity() {
                     sessions = sessions,
                     isLoading = isLoadingSessions,
                     pinnedSessionIds = pinnedSessionIds,
+                    archivedSessionIds = archivedSessionIds,
                     customTitles = customTitles,
                     onTogglePinSession = { sid ->
                         val pinned = prefs.togglePinSession(sid)
@@ -1427,6 +1462,53 @@ class MainActivity : ComponentActivity() {
                             if (pinned) "已置顶任务" else "已取消置顶",
                             Toast.LENGTH_SHORT
                         ).show()
+                    },
+                    onToggleArchiveSession = { sid ->
+                        val archived = prefs.toggleArchiveSession(sid)
+                        archivedSessionIds = prefs.getArchivedSessionIds()
+                        Toast.makeText(
+                            this@MainActivity,
+                            if (archived) "已归档任务" else "已取消归档",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    },
+                    onRenameSession = { sid, newTitle ->
+                        prefs.saveSessionCustomTitle(sid, newTitle)
+                        customTitles = customTitles + (sid to newTitle)
+                        Toast.makeText(this@MainActivity, "已重命名会话", Toast.LENGTH_SHORT).show()
+                    },
+                    onForkSession = { session ->
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在分叉任务分支...", Toast.LENGTH_SHORT).show()
+                            apiClient.forkSession(session.id).onSuccess { res ->
+                                Toast.makeText(this@MainActivity, "已成功分叉出新会话！", Toast.LENGTH_SHORT).show()
+                                loadSessions(silent = true)
+                                val forkedSession = Session(
+                                    id = res.sessionId,
+                                    name = res.name ?: "${session.displayTitle} · 分叉",
+                                    cwd = session.cwd,
+                                    active = false
+                                )
+                                openSessionWithHistory(forkedSession)
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "分叉失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    onDeleteSession = { sid ->
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在删除会话...", Toast.LENGTH_SHORT).show()
+                            apiClient.deleteSessions(listOf(sid)).onSuccess {
+                                prefs.removeSessionLocalData(sid)
+                                pinnedSessionIds = prefs.getPinnedSessionIds()
+                                archivedSessionIds = prefs.getArchivedSessionIds()
+                                customTitles = customTitles - sid
+                                sessions = sessions.filter { it.id != sid }
+                                Toast.makeText(this@MainActivity, "会话已彻底删除", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "删除失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     },
                     onRefresh = { loadSessions() },
                     onSessionClick = { session ->
