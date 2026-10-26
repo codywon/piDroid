@@ -281,7 +281,7 @@ class MainActivity : ComponentActivity() {
                     val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content
                     val fallbackTitle = if (!firstUserMsg.isNullOrBlank()) {
                         val clean = firstUserMsg.lines().firstOrNull { it.isNotBlank() }?.trim() ?: firstUserMsg.trim()
-                        clean.take(24).replace(Regex("[#*`>\[\]]"), "")
+                        clean.take(24).filter { it !in "#*`>[]" }
                     } else null
 
                     if (!fallbackTitle.isNullOrBlank()) {
@@ -1446,9 +1446,9 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(this@MainActivity, "正在当前工作区创建新任务...", Toast.LENGTH_SHORT).show()
                             val createResult = apiClient.createRemoteSessionInWorkspace(
                                 cwd = targetCwd,
-                                provider = activeModel?.provider,
-                                modelId = activeModel?.id,
-                                thinkingLevel = activeThinkingLevel
+                                provider = selectedModel.provider,
+                                modelId = selectedModel.id,
+                                thinkingLevel = currentThinkingLevel
                             )
                             createResult.onSuccess { realSessionId ->
                                 val newSession = Session(
