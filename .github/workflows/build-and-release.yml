@@ -35,21 +35,30 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Grant Execute Permission to gradlew
-        run: |
-          chmod +x gradlew || true
-          chmod +x android/gradlew || true
+        run: chmod +x gradlew
 
-      - name: Build Release APK with Global Keystore
+      - name: Decode Release Keystore
         env:
-          KEYSTORE_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
-          KEY_ALIAS: pidroid
-          KEY_PASSWORD: ***REMOVED-ROTATED-PASSWORD***
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          if [ -f "./gradlew" ]; then
-            ./gradlew assembleRelease --stacktrace
-          else
-            cd android && ./gradlew assembleRelease --stacktrace
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Missing repository secret KEYSTORE_BASE64. Release signing cannot proceed."
+            exit 1
           fi
+          mkdir -p keystore
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > keystore/release.jks
+
+      - name: Build Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::error::Missing signing secrets (KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD)."
+            exit 1
+          fi
+          ./gradlew assembleRelease --stacktrace
 
       - name: Prepare APK Artifact
         id: prepare_apk
@@ -59,8 +68,7 @@ jobs:
             VERSION="${{ github.event.inputs.version_tag }}"
           fi
           
-          # 寻找构建出的 release apk (兼容根目录 app/build 和 android/app/build)
-          APK_PATH=$(find . -name "*.apk" | grep -i "release" | head -n 1)
+          APK_PATH=$(find ./app/build -name "*.apk" | grep -i "release" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "Error: No release APK found!"
             exit 1
@@ -70,6 +78,10 @@ jobs:
           cp "$APK_PATH" "$TARGET_NAME"
           echo "apk_path=$TARGET_NAME" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          # 发布 checksums.txt 供应用内更新做完整性校验
+          sha256sum "$TARGET_NAME" > checksums.txt
+          echo "checksums=checksums.txt" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact to GitHub Actions Run
         uses: actions/upload-artifact@v4
@@ -109,5 +121,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: ${{ steps.prepare_apk.outputs.apk_path }}
+          files: |
+            ${{ steps.prepare_apk.outputs.apk_path }}
+            ${{ steps.prepare_apk.outputs.checksums }}
           body_path: ${{ steps.release_notes.outputs.notes_file }}
