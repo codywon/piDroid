@@ -1556,9 +1556,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                 if (!parsedList.isNullOrEmpty()) {
                     return@withContext Result.success(parsedList)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // 逐个候选 URL 回退属正常流程；全部失败才会回退到内置示例数据，
+                // 这里必须留痕，否则「接口挂了」会伪装成「加载成功」。
+                Log.w("PiApiClient", "技能接口候选 URL 失败: ${e.message}")
             }
         }
+        Log.w("PiApiClient", "加载技能列表失败，回退到内置示例数据")
         Result.success(getDefaultSkills())
     }
 
@@ -1616,9 +1620,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                 if (!parsedList.isNullOrEmpty()) {
                     return@withContext Result.success(parsedList)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w("PiApiClient", "插件接口候选 URL 失败: ${e.message}")
             }
         }
+        Log.w("PiApiClient", "加载插件列表失败，回退到内置示例数据")
         Result.success(getDefaultPlugins())
     }
 
@@ -1941,7 +1947,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             val emptyBody = "{}".toRequestBody(jsonMediaType)
             val req = Request.Builder().url("$baseUrl/api/models/refresh").post(emptyBody).build()
             client.newCall(req).execute().close()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // 刷新失败仍返回当前目录，但要说清「这次刷新没生效」
+            Log.w("PiApiClient", "刷新模型目录失败，返回本地已缓存目录: ${e.message}")
         }
         getDynamicModels()
     }
@@ -2214,7 +2222,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     if (!loadedText.isNullOrBlank()) {
                         return@withContext Result.success(loadedText)
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.w("PiApiClient", "读取 SKILL.md 候选路径失败: ${e.message}")
                 }
             }
         }
@@ -3144,7 +3153,9 @@ data class CatalogPreset(
                         }
                     }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.w("PiApiClient", "上游 /api/models/discover 失败，转直连 fallback: ${e.message}")
+            }
         }
 
         // 尝试 2：客户端直接向上游发起 /v1/models 请求 (标准 OpenAI 协议 fallback)
