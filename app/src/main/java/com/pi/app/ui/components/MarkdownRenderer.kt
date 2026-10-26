@@ -173,6 +173,94 @@ object CjkMarkdownNormalizer {
 /**
  * 现代标准 CommonMark AST 富文本、公式、流程图、脑图、统计图表与表格渲染器
  */
+
+/**
+ * 扩展与 Parser 建为单例：解析器构造包含扩展初始化，不能在每个流式 token
+ * 到达时重建（原先它在 remember(content) 内部，等于每来一个 token 都新建一套）。
+ */
+private val MARKDOWN_EXTENSIONS = listOf(
+    TablesExtension.create(),
+    StrikethroughExtension.create(),
+    AutolinkExtension.create()
+)
+
+private val MARKDOWN_PARSER: Parser by lazy {
+    Parser.builder().extensions(MARKDOWN_EXTENSIONS).build()
+}
+
+/** 超过此长度才做块级切分；短消息整体解析更省事，也避开跨块引用定义的差异。 */
+private const val BLOCK_CACHE_MIN_CHARS = 1200
+
+/** 这些多行 HTML 容器可能跨空行包裹内容，出现时整篇解析，不切分。 */
+private val MULTILINE_HTML_CONTAINER = Regex(
+    "<(details|summary|table|thead|tbody|div|section|script|style|pre|textarea)\\b",
+    RegexOption.IGNORE_CASE
+)
+private val BLOCK_FENCE_MARKER = Regex("^ {0,3}(`{3,}|~{3,})")
+private val BLOCK_LIST_ITEM = Regex("^(?:[*+-]|\\d{1,9}[.)])(?:[ \\t]|$)")
+private val BLOCK_INLINE_CODE = Regex("`[^`]*`")
+private val BLOCK_FRONT_MATTER_OPEN = Regex("^---[ \\t]*\\r?$")
+
+/**
+ * 把规范化后的 Markdown 按「顶层块边界」切开。
+ *
+ * 只有同时满足以下条件才切：空行之后、从第 0 列开始、不是列表项、不在代码围栏内、
+ * 不在块公式内。这样已完成的块在重组时字节不变，能命中 [remember] 缓存，
+ * 流式输出只需重解析末尾变化的那一块——否则每个 token 都要重解析整篇，是 O(n²)。
+ *
+ * 代价：跨块的链接引用定义（`[ref]: url`）不再共享。LLM 输出中极少出现，
+ * 且短消息走整篇解析路径。
+ */
+internal fun splitTopLevelMarkdownBlocks(markdown: String): List<String> {
+    if (markdown.isEmpty()) return emptyList()
+    if (MULTILINE_HTML_CONTAINER.containsMatchIn(markdown)) return listOf(markdown)
+
+    val lines = markdown.split('\n')
+    if (lines.isNotEmpty() && BLOCK_FRONT_MATTER_OPEN.matches(lines[0])) return listOf(markdown)
+
+    val blocks = mutableListOf<String>()
+    var current = mutableListOf<String>()
+    var fence: Pair<Char, Int>? = null
+    var inMath = false
+    var afterBlank = false
+
+    for (line in lines) {
+        val blank = line.isBlank()
+        if (afterBlank && !blank && fence == null && !inMath && current.isNotEmpty() &&
+            !line.startsWith(" ") && !line.startsWith("\t") && !BLOCK_LIST_ITEM.containsMatchIn(line)
+        ) {
+            blocks.add(current.joinToString("\n") + "\n")
+            current = mutableListOf()
+        }
+        current.add(line)
+
+        val fenceMatch = BLOCK_FENCE_MARKER.find(line)
+        if (fenceMatch != null) {
+            val marker = fenceMatch.groupValues[1][0]
+            val size = fenceMatch.groupValues[1].length
+            val open = fence
+            if (open == null) {
+                fence = marker to size
+            } else if (marker == open.first && size >= open.second) {
+                fence = null
+            }
+        } else if (fence == null) {
+            // 行内代码里的 $$ 不算块公式界符
+            val prose = BLOCK_INLINE_CODE.replace(line, "")
+            var odd = false
+            var idx = prose.indexOf("$$")
+            while (idx >= 0) {
+                odd = !odd
+                idx = prose.indexOf("$$", idx + 2)
+            }
+            if (odd) inMath = !inMath
+        }
+        afterBlank = blank
+    }
+    if (current.isNotEmpty()) blocks.add(current.joinToString("\n"))
+    return blocks.ifEmpty { listOf(markdown) }
+}
+
 @Composable
 fun MarkdownRenderer(
     content: String,
@@ -181,15 +269,13 @@ fun MarkdownRenderer(
 ) {
     if (content.isBlank()) return
 
-    val document = remember(content) {
+    val blocks = remember(content) {
         val normalized = CjkMarkdownNormalizer.normalize(content)
-        val extensions = listOf(
-            TablesExtension.create(),
-            StrikethroughExtension.create(),
-            AutolinkExtension.create()
-        )
-        val parser = Parser.builder().extensions(extensions).build()
-        parser.parse(normalized)
+        if (normalized.length >= BLOCK_CACHE_MIN_CHARS) {
+            splitTopLevelMarkdownBlocks(normalized)
+        } else {
+            listOf(normalized)
+        }
     }
 
     SelectionContainer {
@@ -197,12 +283,21 @@ fun MarkdownRenderer(
             modifier = modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            var childNode = document.firstChild
-            while (childNode != null) {
-                RenderAstBlockNode(node = childNode, isUser = isUser)
-                childNode = childNode.next
+            blocks.forEach { block ->
+                MarkdownBlock(block, isUser)
             }
         }
+    }
+}
+
+/** 一个顶层块。只在此块文本变化时重解析，流式输出时其余块命中缓存。 */
+@Composable
+private fun MarkdownBlock(markdown: String, isUser: Boolean) {
+    val document = remember(markdown) { MARKDOWN_PARSER.parse(markdown) }
+    var childNode = document.firstChild
+    while (childNode != null) {
+        RenderAstBlockNode(node = childNode, isUser = isUser)
+        childNode = childNode.next
     }
 }
 
