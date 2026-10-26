@@ -182,7 +182,7 @@ fun ChatScreen(
             var finalAnsIdx: Int? = null
             for (i in turnSlice.indices.reversed()) {
                 val m = turnSlice[i]
-                if (m.role == MessageRole.ASSISTANT && m.content.isNotBlank()) {
+                if (m.role == MessageRole.AGENT && m.content.isNotBlank()) {
                     finalAns = m
                     finalAnsIdx = uIdx + 1 + i
                     break
@@ -203,16 +203,14 @@ fun ChatScreen(
 
             var toolCount = 0
             turnSlice.forEach { m ->
-                if (m.role == MessageRole.TOOL) {
+                if (m.role == MessageRole.TOOL || m.toolCall != null) {
                     toolCount++
-                } else if (!m.toolCalls.isNullOrEmpty()) {
-                    toolCount += m.toolCalls.size
                 }
             }
 
             val endTime = (finalAns ?: processItems.lastOrNull() ?: userMsg).timestamp
             val durationMs = if (endTime > userMsg.timestamp) endTime - userMsg.timestamp else null
-            val headings = extractAssistantOutline(finalAns?.content ?: processItems.lastOrNull { it.role == MessageRole.ASSISTANT }?.content)
+            val headings = extractAssistantOutline(finalAns?.content ?: processItems.lastOrNull { it.role == MessageRole.AGENT }?.content)
 
             TurnOutline(
                 turnNumber = turnNum,

@@ -315,42 +315,9 @@ private fun ImageThumbnailCard(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 90.dp, max = 260.dp)
-                                .clip(RoundedCornerShape(6.dp))
+                                .clip(RoundedCornerShape(8.dp))
+                                .border(BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.35f)), RoundedCornerShape(8.dp))
                         )
-                        // 右下角精致悬浮放大提示角标
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = Color.Black.copy(alpha = 0.62f),
-                            border = BorderStroke(0.5.dp, Color.White.copy(alpha = 0.2f)),
-                            modifier = Modifier
-                                .align(Alignment.BottomEnd)
-                                .padding(6.dp)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.ZoomIn,
-                                    contentDescription = "点击查看大图",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
-                                )
-                                Text(
-                                    text = buildString {
-                                        if (!resolutionLabel.isNullOrBlank()) {
-                                            append(resolutionLabel)
-                                            append(" · ")
-                                        }
-                                        append("查看大图")
-                                    },
-                                    fontSize = 10.sp,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
                     }
                 }
                 isLoading -> {

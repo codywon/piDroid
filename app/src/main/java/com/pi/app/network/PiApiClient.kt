@@ -1383,12 +1383,26 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
 
-        // 2. 再应用用户在 App 内保存的持久化覆盖配置（确保即使修改内置模型参数也 100% 永久生效）
+        // 2. 收集服务端当前所有合法的 Provider 集合 (不区分大小写)
+        val validProviders = mutableSetOf<String>()
+        if (serverConfig != null && serverConfig.has("providers") && serverConfig.get("providers").isJsonObject) {
+            validProviders.addAll(serverConfig.getAsJsonObject("providers").keySet().map { it.lowercase() })
+        }
+        merged.forEach { validProviders.add(it.provider.lowercase()) }
+
+        // 3. 应用用户在 App 内部针对具体模型保存的持久化配置
         val localOverrides = prefs.getModelOverrides()
         for ((_, ov) in localOverrides) {
             val idx = merged.indexOfFirst {
                 it.provider.equals(ov.provider, ignoreCase = true) && it.id.equals(ov.modelId, ignoreCase = true)
             }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(ov.modelId, ignoreCase = true) }
+
+            // 如果该模型所属的 Provider 根本不在当前服务端的有效列表中 (已被用户在模型管理中彻底删除)，
+            // 坚决不复活孤儿模型，并同步从本地清除该已失效的持久化条目，消除幽灵模型
+            if (validProviders.isNotEmpty() && !validProviders.contains(ov.provider.lowercase())) {
+                prefs.removeModelOverride(ov.provider, ov.modelId)
+                continue
+            }
 
             val inputs = if (ov.supportsVision) listOf("text", "image") else listOf("text")
             if (idx >= 0) {
@@ -1404,24 +1418,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     baseUrl = ov.baseUrl.takeIf { it.isNotBlank() } ?: old.baseUrl,
                     apiType = ov.apiType.takeIf { it.isNotBlank() } ?: old.apiType
                 )
-            } else if (ov.baseUrl.isNotBlank()) {
-                merged.add(
-                    ModelInfo(
-                        id = ov.modelId,
-                        name = ov.name.ifBlank { ov.modelId },
-                        provider = ov.provider,
-                        contextWindow = ov.contextWindow,
-                        maxTokens = ov.maxTokens,
-                        supportsThinking = ov.reasoning,
-                        supportsVision = ov.supportsVision,
-                        input = inputs,
-                        baseUrl = ov.baseUrl,
-                        apiType = ov.apiType
-                    )
-                )
             }
         }
-
         return catalog.copy(models = merged)
     }
 
@@ -1768,8 +1766,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000L, 8192L, supportsThinking = true, supportsVision = true, isActive = true),
             ModelInfo("deepseek-flash", "DeepSeek Flash", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
             ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
-            ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true),
-            ModelInfo("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking", "CloseAI", 200000L, 8192L, supportsThinking = true, supportsVision = true)
+            ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true)
         ),
         thinkingLevelsMap = emptyMap()
     )

@@ -1570,6 +1570,13 @@ fun GlobalModelsConfigTab(
                         providers = remaining
                         selectedProviderName = remaining.firstOrNull()?.name
                         selectedModelId = remaining.firstOrNull()?.models?.firstOrNull()?.id
+                        // 同步彻底清理本地持久化中该 Provider 的全部孤儿模型缓存
+                        val allOv = prefs.getModelOverrides()
+                        for ((_, ov) in allOv) {
+                            if (ov.provider.equals(currentProvider.name, ignoreCase = true)) {
+                                prefs.removeModelOverride(ov.provider, ov.modelId)
+                            }
+                        }
                         showDeleteProviderDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
@@ -1599,6 +1606,7 @@ fun GlobalModelsConfigTab(
                         val updatedProv = currentProvider.copy(models = updatedModels)
                         providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
                         selectedModelId = updatedModels.firstOrNull()?.id
+                        prefs.removeModelOverride(currentProvider.name, currentModel.id)
                         showDeleteModelDialog = false
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
