@@ -1372,6 +1372,7 @@ class MainActivity : ComponentActivity() {
                 val activeCustomTitle = customTitles[activeSessionId] ?: prefs.getSessionCustomTitle(activeSessionId)
                 val isPinned = pinnedSessionIds.contains(activeSessionId)
                 ChatScreen(
+                    sessionId = activeSessionId,
                     sessionTitle = activeCustomTitle ?: currentSession?.displayTitle ?: "任务控制台",
                     currentProject = currentProject,
                     selectedModel = selectedModel,

@@ -35,6 +35,7 @@ import androidx.compose.material3.*
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.runtime.*
+import com.pi.app.data.storage.AppPreferences
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -62,6 +63,7 @@ import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.data.model.ToolPreset
 import com.pi.app.ui.theme.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -83,6 +85,7 @@ data class PromptTimelineEntry(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(
+    sessionId: String = "",
     sessionTitle: String,
     currentProject: String,
     projects: List<ProjectInfo> = emptyList(),
@@ -121,7 +124,18 @@ fun ChatScreen(
 
     val theme = LocalAppTheme.current
     val context = LocalContext.current
-    var inputText by remember { mutableStateOf("") }
+    // 未发送的内容按会话持久化：切换深色模式、改系统字号、被系统回收进程后，
+    // 输入框里的文字不会消失（这些场景都会重建 Activity，remember 里的状态会清零）。
+    val draftPrefs = remember(context) { AppPreferences(context) }
+    var inputText by remember(sessionId) {
+        mutableStateOf(if (sessionId.isBlank()) "" else draftPrefs.getSessionDraft(sessionId))
+    }
+    LaunchedEffect(sessionId, inputText) {
+        if (sessionId.isBlank()) return@LaunchedEffect
+        // 防抖：连续打字时不要每个字符都写一次 SharedPreferences
+        delay(400)
+        draftPrefs.saveSessionDraft(sessionId, inputText)
+    }
     val listState = rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }

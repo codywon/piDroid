@@ -147,6 +147,7 @@ class AppPreferences(context: Context) {
             .putStringSet(KEY_PINNED_SESSIONS, currentPinned)
             .putStringSet(KEY_ARCHIVED_SESSIONS, currentArchived)
             .remove("session_title_$sessionId")
+            .remove("draft_$sessionId")
             .apply()
     }
 
