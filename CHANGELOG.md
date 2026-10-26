@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.6.7] - 2026-10-27
+
+### ⚡ 性能优化、状态持久化与安全更新闭环 (Performance, Persistence & Security)
+- **草稿持久化与状态抗杀能力**：
+  - 输入框草稿按会话 ID 自动记忆与防丢，切换会话或 Activity 重建（如旋转屏幕、系统回收内存）输入文字永不丢失；
+  - 会话当前选中态与历史消息分页窗口改用 `rememberSaveable`，进程重建后不再异常被打回会话列表首页；
+- **Markdown 流式渲染性能提速**：
+  - Markdown 解析器单例化 + 引入块级缓存（Block-level cache），彻底消除流式打字与大消息渲染时的 $O(n^2)$ 重复解析开销，长文本滚动更加丝滑流畅；
+- **安装更新链双重校验安全闭环**：
+  - 生产发布签名密钥移入 GitHub Secrets 保管，Release 构建严格验证；
+  - 应用内更新链路强制校验发布包 SHA-256 完整性清单与签名证书指纹，双重闸门防篡改；
+- **网络层排障可观测性增强**：
+  - 网络层回退降级逻辑不再静默吞掉真实网络异常，错误日志清晰留痕；
+  - 下载看门狗与调优参数具名化，重试策略更加稳健。
+
+---
+
 ## [1.6.6] - 2026-10-27
 
 ### 🧭 提问时间轴导轨与侧边大纲抽屉交互重构 (Minimap Rail & Slide Drawer)
