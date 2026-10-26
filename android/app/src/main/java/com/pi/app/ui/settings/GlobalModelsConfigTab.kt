@@ -319,7 +319,7 @@ fun GlobalModelsConfigTab(
                                     val isSel = currentDefaultThinkingLevel == level
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
-                                        color = if (isSel) theme.surface else Color.Transparent,
+                                        color = if (isSel) theme.surfaceContainerLow else Color.Transparent,
                                         border = if (isSel) BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.4f)) else null,
                                         shadowElevation = if (isSel) 1.dp else 0.dp,
                                         modifier = Modifier
