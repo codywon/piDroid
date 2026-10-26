@@ -123,6 +123,11 @@ data class TokenStats(
             }
         }
 
+        fun formatCacheCompact(cacheRead: Long): String {
+            if (cacheRead <= 0L) return "0 cache R"
+            return "${formatTokenCompact(cacheRead)} cache R"
+        }
+
         fun formatTokenCompact(tokens: Long): String {
             if (tokens <= 0L) return "0"
             return when {

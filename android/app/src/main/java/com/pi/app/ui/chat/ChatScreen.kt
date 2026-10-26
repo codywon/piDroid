@@ -109,6 +109,7 @@ fun ChatScreen(
     onApproveTool: (approved: Boolean) -> Unit,
     currentToolPreset: ToolPreset = ToolPreset.FULL,
     onToolPresetChange: (ToolPreset) -> Unit = {},
+    onForkFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
     CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
@@ -348,7 +349,16 @@ fun ChatScreen(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.primary,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable { onClearQueue() }
+                                modifier = Modifier.clickable {
+                                    val lastMsg = queuedMessages.lastOrNull()
+                                    if (lastMsg != null) {
+                                        inputText = if (inputText.isBlank()) lastMsg.text else "$inputText\n${lastMsg.text}"
+                                        onClearQueue()
+                                        android.widget.Toast.makeText(context, "已撤回排队消息并恢复至输入框", android.widget.Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        onClearQueue()
+                                    }
+                                }
                             )
                         }
                     }
@@ -698,26 +708,28 @@ fun ChatScreen(
                     }
                 }
 
-                // 4. 底部极简图标化指标栏（小图标 + 百分比/精简数值 + 竖杠 | 分隔，点击弹出完整 HUD 详情）
+                // 4. 底部极简图标化指标栏（对标 pi-web：缓存 Token 自动换算 + 输入输出 + 右侧 * 压缩 按钮）
                 val percent = (tokenStats.contextUsagePercent * 100).toInt().coerceIn(0, 100)
-                val hitRate = tokenStats.cacheHitRate.toInt().coerceIn(0, 100)
                 val inTokens = TokenStats.formatTokenCompact(tokenStats.inputTokens)
                 val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
+                val cacheTokensStr = TokenStats.formatCacheCompact(tokenStats.cacheReadTokens)
+                val isNearThreshold = percent >= 70
                 val ctxColor = when {
                     percent >= 90 -> Color(0xFFCF222E)
-                    percent >= 75 -> Color(0xFFD29922)
+                    percent >= 70 -> Color(0xFFD29922)
                     else -> theme.textSecondary
                 }
 
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 24.dp, vertical = 4.dp)
-                        .clickable { showHudDialog = true },
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
+                    // 指标组 (点击弹出完整 HUD 详情)
                     Row(
+                        modifier = Modifier.clickable { showHudDialog = true },
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -737,104 +749,73 @@ fun ChatScreen(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.SemiBold,
-                                color = ctxColor,
-                                maxLines = 1,
-                                softWrap = false
+                                color = ctxColor
                             )
                         }
 
+                        Text(text = "·", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = theme.outline)
+
+                        // 2) 输入与输出 Token
                         Text(
-                            text = "|",
+                            text = "$inTokens in · $outTokens out",
                             fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            color = theme.outline
+                            fontSize = 10.5.sp,
+                            color = theme.textSecondary
                         )
 
-                        // 2) 输入 Token (上箭头小图标 + 数值)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowUpward,
-                                contentDescription = "输入 Token",
-                                modifier = Modifier.size(10.5.dp),
-                                tint = theme.textMuted
-                            )
-                            Text(
-                                text = inTokens,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
-                                color = theme.textSecondary,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
+                        Text(text = "·", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = theme.outline)
 
-                        Text(
-                            text = "|",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            color = theme.outline
-                        )
-
-                        // 3) 输出 Token (下箭头小图标 + 数值)
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.ArrowDownward,
-                                contentDescription = "输出 Token",
-                                modifier = Modifier.size(10.5.dp),
-                                tint = theme.textMuted
-                            )
-                            Text(
-                                text = outTokens,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
-                                color = theme.textSecondary,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-
-                        Text(
-                            text = "|",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.sp,
-                            color = theme.outline
-                        )
-
-                        // 4) 缓存命中率 (闪电小图标 + 百分比)
+                        // 3) 缓存读取 Token (自动换算单位，如 58.9k cache R)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Bolt,
-                                contentDescription = "缓存命中率",
+                                contentDescription = "缓存读取",
                                 modifier = Modifier.size(11.dp),
-                                tint = theme.primary.copy(alpha = 0.85f)
+                                tint = if (tokenStats.cacheReadTokens > 0) Color(0xFF60A5FA) else theme.textMuted
                             )
                             Text(
-                                text = "$hitRate%",
+                                text = cacheTokensStr,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 10.5.sp,
-                                color = theme.textSecondary,
-                                maxLines = 1,
-                                softWrap = false
+                                color = if (tokenStats.cacheReadTokens > 0) theme.textPrimary else theme.textMuted
                             )
                         }
                     }
 
-                    // 右侧详情提示小图标（点击查看完整 HUD 弹窗）
-                    Icon(
-                        Icons.Default.Info,
-                        contentDescription = "查看 Token 详情",
-                        modifier = Modifier.size(12.dp),
-                        tint = theme.textMuted
-                    )
+                    // 右侧：对标 pi-web 的 [* 压缩] 按钮 (达 70% 自动高亮提醒)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (isNearThreshold) Color(0xFFD29922).copy(alpha = 0.15f) else theme.surfaceContainer,
+                        border = BorderStroke(1.dp, if (isNearThreshold) Color(0xFFD29922) else theme.outline),
+                        modifier = Modifier.clickable { onCompactContext() }
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        ) {
+                            if (isCompacting) {
+                                CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("压缩中...", fontSize = 10.sp, color = theme.primary)
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Compress,
+                                    contentDescription = "压缩",
+                                    modifier = Modifier.size(11.dp),
+                                    tint = if (isNearThreshold) Color(0xFFD29922) else theme.textSecondary
+                                )
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text(
+                                    text = if (isNearThreshold) "需压缩" else "压缩",
+                                    fontSize = 10.sp,
+                                    color = if (isNearThreshold) Color(0xFFD29922) else theme.textSecondary
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1055,7 +1036,17 @@ fun ChatScreen(
                         item = item,
                         showModelHeader = showModelHeader,
                         defaultModelName = selectedModel.displayName,
-                        onApproveTool = onApproveTool
+                        onApproveTool = onApproveTool,
+                        onEditFromHere = { text ->
+                            inputText = text
+                            coroutineScope.launch {
+                                listState.animateScrollToItem(messages.size)
+                            }
+                            android.widget.Toast.makeText(context, "已填入输入框，修改后可直接发送", android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                        onForkFromHere = { userItem ->
+                            onForkFromMessage?.invoke(userItem)
+                        }
                     )
                 }
 
@@ -1557,7 +1548,9 @@ fun ChatMessageItem(
     item: ChatItem,
     showModelHeader: Boolean = false,
     defaultModelName: String = "",
-    onApproveTool: (approved: Boolean) -> Unit
+    onApproveTool: (approved: Boolean) -> Unit,
+    onEditFromHere: ((String) -> Unit)? = null,
+    onForkFromHere: ((ChatItem) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     var isThinkingExpanded by remember { mutableStateOf(false) }
@@ -1583,9 +1576,12 @@ fun ChatMessageItem(
                 // 对标 pi-web MessageView.tsx & globals.css (--user-bg: #EFF6FF / #232C3F, border: rgba(59,130,246,0.22), color: var(--text))
                 val userBubbleBg = if (theme.isDark) Color(0xFF232C3F) else Color(0xFFEFF6FF)
                 val userBubbleBorder = Color(0xFF3B82F6).copy(alpha = if (theme.isDark) 0.28f else 0.22f)
-                Row(
+                val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
+                val context = androidx.compose.ui.platform.LocalContext.current
+
+                Column(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    horizontalArrangement = Arrangement.End
+                    horizontalAlignment = Alignment.End
                 ) {
                     Surface(
                         shape = RoundedCornerShape(12.dp),
@@ -1606,6 +1602,69 @@ fun ChatMessageItem(
                             if (item.mediaList.isNotEmpty()) {
                                 MediaAttachmentGallery(mediaList = item.mediaList)
                             }
+                        }
+                    }
+
+                    // 1:1 对标 pi-web 用户消息底部的操作工具条 (复制 · 从此处编辑 · 新会话 · 时间戳)
+                    Row(
+                        modifier = Modifier.padding(top = 3.dp, end = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 1. 复制按钮
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    clipboardManager.setText(androidx.compose.ui.text.AnnotatedString(item.content))
+                                    android.widget.Toast.makeText(context, "已复制消息内容", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.ContentCopy, contentDescription = "复制", modifier = Modifier.size(11.dp), tint = theme.textMuted)
+                            Text("复制", fontSize = 10.5.sp, color = theme.textMuted)
+                        }
+
+                        // 2. 从此处编辑按钮
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    onEditFromHere?.invoke(item.content)
+                                }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.Edit, contentDescription = "从此处编辑", modifier = Modifier.size(11.dp), tint = theme.textMuted)
+                            Text("从此处编辑", fontSize = 10.5.sp, color = theme.textMuted)
+                        }
+
+                        // 3. 新会话按钮
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickable {
+                                    onForkFromHere?.invoke(item)
+                                }
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Icon(Icons.Default.CallSplit, contentDescription = "新会话", modifier = Modifier.size(11.dp), tint = theme.textMuted)
+                            Text("新会话", fontSize = 10.5.sp, color = theme.textMuted)
+                        }
+
+                        // 4. 时间戳 (如 14:17)
+                        val timeStr = remember(item.timestamp) {
+                            try {
+                                java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(item.timestamp))
+                            } catch (_: Exception) { "" }
+                        }
+                        if (timeStr.isNotBlank()) {
+                            Text(text = timeStr, fontSize = 10.sp, color = theme.textMuted)
                         }
                     }
                 }

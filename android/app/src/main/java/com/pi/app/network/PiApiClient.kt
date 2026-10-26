@@ -2972,6 +2972,36 @@ data class CatalogPreset(
     /**
      * 从指定会话分叉出新的分支任务 (1:1 对标 pi-web POST /api/sessions/[id]/fork)
      */
+
+    /**
+     * 测试指定 MCP 服务节点连通性 (1:1 对标 pi-web POST /api/mcp/test)
+     */
+    suspend fun testMcpServer(name: String, config: JsonObject, scope: String = "global"): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = JsonObject().apply {
+                addProperty("name", name)
+                addProperty("scope", scope)
+                add("config", config)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/mcp/test")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    val bodyStr = resp.body?.string() ?: ""
+                    Result.failure(IOException("HTTP ${resp.code}: $bodyStr"))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun forkSession(sessionId: String): Result<ForkSessionResult> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))

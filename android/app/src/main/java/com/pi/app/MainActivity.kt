@@ -199,6 +199,7 @@ class MainActivity : ComponentActivity() {
 
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
+        var hasAutoCompactedForCurrentThreshold by remember { mutableStateOf(false) }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
         var isAutoRetrying by remember { mutableStateOf(false) }
@@ -484,6 +485,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 tokenStats = hist.stats
+                if (hist.stats.contextUsagePercent >= 0.70f && !isCompacting && !hasAutoCompactedForCurrentThreshold) {
+                    hasAutoCompactedForCurrentThreshold = true
+                    lifecycleScope.launch {
+                        Toast.makeText(this@MainActivity, "上下文已达 70%，自动触发智能压缩...", Toast.LENGTH_SHORT).show()
+                        isCompacting = true
+                        apiClient.compactContext(sessionId)
+                        isCompacting = false
+                    }
+                } else if (hist.stats.contextUsagePercent < 0.60f) {
+                    hasAutoCompactedForCurrentThreshold = false
+                }
                 if (restoreModelMeta) {
                     dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
                         selectedModel = it
@@ -1393,6 +1405,29 @@ class MainActivity : ComponentActivity() {
                     onApproveTool = { approved ->
                         lifecycleScope.launch {
                             apiClient.sendApproval(currentSession!!.id, approved)
+                        }
+                    },
+                    onForkFromMessage = { userItem ->
+                        val currentSid = currentSession?.id ?: return@ChatScreen
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在从此处创建新会话分支...", Toast.LENGTH_SHORT).show()
+                            apiClient.forkSession(currentSid).onSuccess { forkRes ->
+                                loadSessions(silent = true)
+                                val forkedSession = Session(
+                                    id = forkRes.sessionId,
+                                    name = forkRes.name ?: "分支任务",
+                                    cwd = currentSession?.cwd,
+                                    project = currentSession?.project,
+                                    projectRoot = currentSession?.projectRoot
+                                )
+                                currentSession = forkedSession
+                                messages.clear()
+                                startListeningEvents(forkRes.sessionId)
+                                loadSessionMessages(forkRes.sessionId)
+                                Toast.makeText(this@MainActivity, "已切换至新会话分支！", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "创建新会话失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
                         }
                     },
                     currentToolPreset = currentToolPreset,
