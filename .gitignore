@@ -27,3 +27,5 @@ dist/
 
 # Note: android/keystore/release.jks is intentionally committed to allow
 # global reproducible builds and seamless version upgrades (overwrite installation).
+
+scratch/

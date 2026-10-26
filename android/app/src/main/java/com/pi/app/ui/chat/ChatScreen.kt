@@ -19,6 +19,7 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -155,20 +156,76 @@ fun ChatScreen(
         return if (rawText.isBlank()) attachHeader else "$rawText\n\n$attachHeader"
     }
 
-    // 提取所有用户提问节点，用于右侧 pi-web 风格提问时间轴导航
-    val userPrompts = remember(messages.size, messages.lastOrNull()?.id) {
-        var order = 0
-        messages.mapIndexedNotNull { index, item ->
-            if (item.role == MessageRole.USER) {
-                order++
-                PromptTimelineEntry(
-                    orderNumber = order,
-                    messageIndex = index,
-                    id = item.id,
-                    content = item.content.replace('\n', ' ').trim(),
-                    timestamp = item.timestamp
-                )
-            } else null
+    // 1:1 对标 pi-web：将整场会话的消息按用户提问构建回合大纲列表 (TurnOutline)
+    val allTurns = remember(
+        messages.size,
+        messages.lastOrNull()?.id,
+        messages.lastOrNull()?.content?.length,
+        messages.lastOrNull()?.thinking?.length,
+        isAgentBusy
+    ) {
+        val userIndices = mutableListOf<Int>()
+        messages.forEachIndexed { i, m ->
+            if (m.role == MessageRole.USER) {
+                userIndices.add(i)
+            }
+        }
+
+        userIndices.mapIndexed { turnIdx, uIdx ->
+            val turnNum = turnIdx + 1
+            val userMsg = messages[uIdx]
+            val nextUIdx = if (turnIdx + 1 < userIndices.size) userIndices[turnIdx + 1] else messages.size
+            val turnSlice = messages.subList(uIdx + 1, nextUIdx)
+
+            // 从后往前找最后一个具有文本内容的 assistant 消息作为最终回答
+            var finalAns: ChatItem? = null
+            var finalAnsIdx: Int? = null
+            for (i in turnSlice.indices.reversed()) {
+                val m = turnSlice[i]
+                if (m.role == MessageRole.ASSISTANT && m.content.isNotBlank()) {
+                    finalAns = m
+                    finalAnsIdx = uIdx + 1 + i
+                    break
+                }
+            }
+
+            // 如果处于最后一轮且正在运行，且最后一条是工具调用或在流式生成，按 pi-web 规范视作中间过程
+            val isCurrentRunning = (turnIdx == userIndices.lastIndex) && isAgentBusy
+
+            val processItems = if (finalAns != null && (!isCurrentRunning || finalAnsIdx != messages.lastIndex)) {
+                val pEnd = finalAnsIdx!! - (uIdx + 1)
+                turnSlice.subList(0, pEnd)
+            } else {
+                finalAns = null
+                finalAnsIdx = null
+                turnSlice
+            }
+
+            var toolCount = 0
+            turnSlice.forEach { m ->
+                if (m.role == MessageRole.TOOL) {
+                    toolCount++
+                } else if (!m.toolCalls.isNullOrEmpty()) {
+                    toolCount += m.toolCalls.size
+                }
+            }
+
+            val endTime = (finalAns ?: processItems.lastOrNull() ?: userMsg).timestamp
+            val durationMs = if (endTime > userMsg.timestamp) endTime - userMsg.timestamp else null
+            val headings = extractAssistantOutline(finalAns?.content ?: processItems.lastOrNull { it.role == MessageRole.ASSISTANT }?.content)
+
+            TurnOutline(
+                turnNumber = turnNum,
+                userIndex = uIdx,
+                userMessage = userMsg,
+                toolCount = toolCount,
+                assistantIndex = finalAnsIdx,
+                assistantHeadings = headings,
+                processItems = processItems,
+                finalAnswerItem = finalAns,
+                durationMs = durationMs,
+                isRunning = isCurrentRunning
+            )
         }
     }
 
@@ -187,6 +244,13 @@ fun ChatScreen(
     }
     val hasHiddenHistory = windowStartIndex > 0
     val showOriginBanner = !hasHiddenHistory && messages.size > 6
+
+    val turnsBefore = remember(allTurns, windowStartIndex) {
+        if (windowStartIndex <= 0) 0 else allTurns.count { it.userIndex < windowStartIndex }
+    }
+    val visibleTurns = remember(allTurns, windowStartIndex) {
+        if (windowStartIndex <= 0) allTurns else allTurns.filter { it.userIndex >= windowStartIndex }
+    }
 
     // 监听软键盘 (IME) 弹出高度：当软键盘弹起时，自动将底部输入框与最新对话内容整体往上推，防止遮挡
     val density = LocalDensity.current
@@ -827,7 +891,7 @@ fun ChatScreen(
                 state = listState,
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(start = 12.dp, end = if (userPrompts.isNotEmpty()) 26.dp else 12.dp),
+                    .padding(start = 12.dp, end = if (allTurns.isNotEmpty()) 32.dp else 12.dp),
                 contentPadding = PaddingValues(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -1022,30 +1086,97 @@ fun ChatScreen(
                     }
                 }
 
-                val windowedSlice = if (windowStartIndex == 0) messages else messages.subList(windowStartIndex, messages.size)
-                itemsIndexed(windowedSlice, key = { _, it -> it.id }) { sliceIdx, item ->
-                    val globalIdx = windowStartIndex + sliceIdx
-                    val prevItem = messages.getOrNull(globalIdx - 1)
-                    val showModelHeader = item.role != MessageRole.USER &&
-                        !item.modelName.isNullOrBlank() &&
-                        (prevItem == null || prevItem.role == MessageRole.USER || prevItem.usageSummary != null)
+                // 若首个提问前有系统前置消息 (例如欢饮语)
+                val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: messages.size
+                if (firstUserIdx > windowStartIndex) {
+                    val leadingSlice = messages.subList(windowStartIndex, firstUserIdx.coerceAtMost(messages.size))
+                    items(leadingSlice, key = { it.id }) { item ->
+                        ChatMessageItem(
+                            item = item,
+                            showModelHeader = false,
+                            defaultModelName = selectedModel.displayName,
+                            onApproveTool = onApproveTool,
+                            onEditFromHere = { text ->
+                                inputText = text
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(messages.size)
+                                }
+                            },
+                            onForkFromHere = onForkFromMessage
+                        )
+                    }
+                }
 
-                    ChatMessageItem(
-                        item = item,
-                        showModelHeader = showModelHeader,
-                        defaultModelName = selectedModel.displayName,
-                        onApproveTool = onApproveTool,
-                        onEditFromHere = { text ->
-                            inputText = text
-                            coroutineScope.launch {
-                                listState.animateScrollToItem(messages.size)
+                // 遍历渲染当前可见窗口内的每个回合 (对标 pi-web ProcessDetailsGroup 与最终回答)
+                visibleTurns.forEach { turn ->
+                    // 1. 用户提问
+                    item(key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}") {
+                        ChatMessageItem(
+                            item = turn.userMessage,
+                            showModelHeader = false,
+                            defaultModelName = selectedModel.displayName,
+                            onApproveTool = onApproveTool,
+                            onEditFromHere = { text ->
+                                inputText = text
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(messages.size)
+                                }
+                                android.widget.Toast.makeText(context, "已填入输入框，修改后可直接发送", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            onForkFromHere = { userItem ->
+                                onForkFromMessage?.invoke(userItem)
                             }
-                            android.widget.Toast.makeText(context, "已填入输入框，修改后可直接发送", android.widget.Toast.LENGTH_SHORT).show()
-                        },
-                        onForkFromHere = { userItem ->
-                            onForkFromMessage?.invoke(userItem)
+                        )
+                    }
+
+                    // 2. 过程折叠组 (ProcessDetailsGroup: > 4 条消息 · 4 次工具调用 · 耗时 2m 13s)
+                    if (turn.processItems.isNotEmpty()) {
+                        item(key = "turn_${turn.turnNumber}_process") {
+                            ProcessDetailsGroup(
+                                messageCount = turn.processItems.size,
+                                toolCallCount = turn.toolCount,
+                                durationMs = turn.durationMs,
+                                defaultExpanded = turn.isRunning || turn.finalAnswerItem == null
+                            ) {
+                                turn.processItems.forEach { procItem ->
+                                    ChatMessageItem(
+                                        item = procItem,
+                                        showModelHeader = false,
+                                        defaultModelName = selectedModel.displayName,
+                                        onApproveTool = onApproveTool,
+                                        onEditFromHere = { text ->
+                                            inputText = text
+                                            coroutineScope.launch {
+                                                listState.animateScrollToItem(messages.size)
+                                            }
+                                        },
+                                        onForkFromHere = onForkFromMessage
+                                    )
+                                }
+                            }
                         }
-                    )
+                    }
+
+                    // 3. 助手最终答复 (Final Answer)
+                    if (turn.finalAnswerItem != null) {
+                        val ans = turn.finalAnswerItem
+                        val showModelHeader = !ans.modelName.isNullOrBlank()
+                        item(key = "turn_${turn.turnNumber}_ans_${ans.id}") {
+                            ChatMessageItem(
+                                item = ans,
+                                showModelHeader = showModelHeader,
+                                defaultModelName = selectedModel.displayName,
+                                onApproveTool = onApproveTool,
+                                onEditFromHere = { text ->
+                                    inputText = text
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(messages.size)
+                                    }
+                                },
+                                onForkFromHere = onForkFromMessage
+                            )
+                        }
+                    }
                 }
 
                 // 对标 pi-web ChatWindow.tsx：当 Agent 正在运行或等待模型响应时，底部展示脉冲状态文字（如 "正在等待模型..."）
@@ -1062,38 +1193,90 @@ fun ChatScreen(
                 }
             }
 
-            // ── 对标 pi-web 右侧用户提问快捷时间轴 (Prompt Timeline Rail) ──
-            if (userPrompts.isNotEmpty()) {
-                val topHeaderOffset = if (hasHiddenHistory || showOriginBanner) 1 else 0
+            // ── 1:1 对标 pi-web 右侧时间轴导轨与历次提问大纲抽屉 (ChatMinimap) ──
+            if (allTurns.isNotEmpty()) {
                 val firstVisible by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-                val currentGlobalFirstIdx = windowStartIndex + (firstVisible - topHeaderOffset).coerceAtLeast(0)
-                val activePromptOrder = remember(currentGlobalFirstIdx, userPrompts) {
-                    userPrompts.lastOrNull { it.messageIndex <= currentGlobalFirstIdx + 2 }?.orderNumber
-                        ?: userPrompts.first().orderNumber
+                val activeTurnNumber = remember(firstVisible, visibleTurns) {
+                    if (visibleTurns.isEmpty()) 1
+                    else {
+                        val approxIdx = (firstVisible - (if (hasHiddenHistory || showOriginBanner) 1 else 0)).coerceAtLeast(0)
+                        val turnAtPos = visibleTurns.getOrNull(approxIdx.coerceIn(0, visibleTurns.lastIndex))?.turnNumber
+                            ?: visibleTurns.last().turnNumber
+                        turnAtPos
+                    }
                 }
 
-                PiWebPromptTimelineRail(
-                    prompts = userPrompts,
-                    activeOrderNumber = activePromptOrder,
-                    onJumpToPrompt = { entry ->
-                        userJumpedToHistory = entry.orderNumber < userPrompts.size
+                PiWebChatMinimap(
+                    turns = allTurns,
+                    activeTurnNumber = activeTurnNumber,
+                    turnsBefore = turnsBefore,
+                    onLoadEarlier = {
+                        val oldStart = windowStartIndex
+                        val newVisible = (visibleWindowCount + 50).coerceAtMost(messages.size)
+                        val newStart = (messages.size - newVisible).coerceAtLeast(0)
+                        val addedCount = (oldStart - newStart).coerceAtLeast(0)
+                        userJumpedToHistory = true
+                        visibleWindowCount = newVisible
+                        if (newStart == 0) {
+                            isAllHistoryExpanded = true
+                            onRefreshSession()
+                        }
                         coroutineScope.launch {
-                            if (entry.messageIndex < windowStartIndex) {
-                                visibleWindowCount = (messages.size - entry.messageIndex + 15).coerceAtLeast(visibleWindowCount)
+                            kotlinx.coroutines.yield()
+                            listState.scrollToItem(addedCount.coerceAtLeast(0))
+                        }
+                    },
+                    onJumpToUserMessage = { turn ->
+                        userJumpedToHistory = turn.turnNumber < allTurns.size
+                        coroutineScope.launch {
+                            if (turn.userIndex < windowStartIndex) {
+                                visibleWindowCount = (messages.size - turn.userIndex + 15).coerceAtLeast(visibleWindowCount)
                                 if (messages.size - visibleWindowCount <= 0) {
                                     isAllHistoryExpanded = true
                                 }
                                 kotlinx.coroutines.yield()
                             }
-                            val newStart = if (isAllHistoryExpanded) 0 else (messages.size - visibleWindowCount).coerceAtLeast(0)
-                            val headerOffset = if (newStart > 0 || messages.size > 6) 1 else 0
-                            val targetLazyIdx = (entry.messageIndex - newStart + headerOffset).coerceAtLeast(0)
-                            listState.animateScrollToItem(targetLazyIdx)
+                            val turnIdxInVisible = visibleTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            if (turnIdxInVisible >= 0) {
+                                val headerOffset = if (windowStartIndex > 0 || messages.size > 6) 1 else 0
+                                var itemOffset = headerOffset
+                                for (i in 0 until turnIdxInVisible) {
+                                    val t = visibleTurns[i]
+                                    itemOffset += 1
+                                    if (t.processItems.isNotEmpty()) itemOffset += 1
+                                    if (t.finalAnswerItem != null) itemOffset += 1
+                                }
+                                listState.animateScrollToItem(itemOffset.coerceAtLeast(0))
+                            }
                         }
                     },
-                    modifier = Modifier
-                        .align(Alignment.CenterEnd)
-                        .padding(end = 3.dp)
+                    onJumpToAssistant = { turn ->
+                        userJumpedToHistory = turn.turnNumber < allTurns.size
+                        coroutineScope.launch {
+                            if (turn.userIndex < windowStartIndex) {
+                                visibleWindowCount = (messages.size - turn.userIndex + 15).coerceAtLeast(visibleWindowCount)
+                                if (messages.size - visibleWindowCount <= 0) {
+                                    isAllHistoryExpanded = true
+                                }
+                                kotlinx.coroutines.yield()
+                            }
+                            val turnIdxInVisible = visibleTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            if (turnIdxInVisible >= 0) {
+                                val headerOffset = if (windowStartIndex > 0 || messages.size > 6) 1 else 0
+                                var itemOffset = headerOffset
+                                for (i in 0 until turnIdxInVisible) {
+                                    val t = visibleTurns[i]
+                                    itemOffset += 1
+                                    if (t.processItems.isNotEmpty()) itemOffset += 1
+                                    if (t.finalAnswerItem != null) itemOffset += 1
+                                }
+                                itemOffset += 1 // user msg
+                                if (turn.processItems.isNotEmpty()) itemOffset += 1 // process
+                                listState.animateScrollToItem(itemOffset.coerceAtLeast(0))
+                            }
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
 
@@ -1105,7 +1288,7 @@ fun ChatScreen(
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = if (userPrompts.isNotEmpty()) 28.dp else 16.dp, bottom = 12.dp)
+                    .padding(end = if (allTurns.isNotEmpty()) 36.dp else 16.dp, bottom = 12.dp)
             ) {
                 Surface(
                     shape = CircleShape,
@@ -1162,351 +1345,6 @@ fun ChatScreen(
     }
 }
 
-/**
- * 对标 pi-web 右侧用户提问快捷时间轴：
- * - 右侧竖条展示所有用户提问刻度点，高亮当前视野所在提问
- * - 点击或上下滑动刻度条可实时预览用户当时提出了什么问题，并一键跳转至对应对话位置
- * - 点击顶部提问数徽章可展开完整提问目录抽屉
- */
-@Composable
-fun PiWebPromptTimelineRail(
-    prompts: List<PromptTimelineEntry>,
-    activeOrderNumber: Int,
-    onJumpToPrompt: (PromptTimelineEntry) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val theme = LocalAppTheme.current
-    var previewEntry by remember { mutableStateOf<PromptTimelineEntry?>(null) }
-    var showPromptListDrawer by remember { mutableStateOf(false) }
-    var railHeightPx by remember { mutableIntStateOf(1) }
-
-    val visibleTicks = remember(prompts) {
-        if (prompts.size <= 16) prompts
-        else {
-            val step = (prompts.size.toFloat() / 15f)
-            (0 until 15).map { i -> prompts[(i * step).toInt().coerceIn(0, prompts.lastIndex)] }
-                .distinctBy { it.orderNumber } + listOf(prompts.last())
-        }.distinctBy { it.orderNumber }
-    }
-
-    Row(
-        modifier = modifier,
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.End
-    ) {
-        // 1. 悬浮预览气泡卡片：当点击或滑动时间轴节点时展示该次用户提问详情与跳转按钮
-        AnimatedVisibility(
-            visible = previewEntry != null && !showPromptListDrawer,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            previewEntry?.let { entry ->
-                val timeStr = remember(entry.timestamp) {
-                    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(entry.timestamp))
-                }
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = theme.surfaceContainerHigh,
-                    border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.5f)),
-                    shadowElevation = 4.dp,
-                    modifier = Modifier
-                        .padding(end = 8.dp)
-                        .widthIn(min = 180.dp, max = 260.dp)
-                        .clickable {
-                            onJumpToPrompt(entry)
-                            previewEntry = null
-                        }
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Surface(
-                                    color = theme.primary.copy(alpha = 0.16f),
-                                    shape = RoundedCornerShape(4.dp)
-                                ) {
-                                    Text(
-                                        text = "提问 #${entry.orderNumber}",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                        color = theme.primary,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                    )
-                                }
-                                Text(
-                                    text = timeStr,
-                                    fontSize = 10.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = theme.textMuted
-                                )
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = "跳转 ➔",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = theme.primary
-                                )
-                                Icon(
-                                    imageVector = Icons.Default.Close,
-                                    contentDescription = "关闭预览",
-                                    tint = theme.textMuted,
-                                    modifier = Modifier
-                                        .size(13.dp)
-                                        .clickable { previewEntry = null }
-                                )
-                            }
-                        }
-
-                        Text(
-                            text = entry.content,
-                            fontSize = 12.sp,
-                            color = theme.textPrimary,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            lineHeight = 16.sp
-                        )
-                    }
-                }
-            }
-        }
-
-        // 2. 展开式全量提问时间轴面板
-        AnimatedVisibility(
-            visible = showPromptListDrawer,
-            enter = fadeIn(),
-            exit = fadeOut()
-        ) {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerHigh,
-                border = BorderStroke(1.dp, theme.outline),
-                shadowElevation = 6.dp,
-                modifier = Modifier
-                    .padding(end = 8.dp)
-                    .width(250.dp)
-                    .heightIn(max = 320.dp)
-            ) {
-                Column(modifier = Modifier.padding(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = "用户提问时间轴 (${prompts.size})",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = theme.textPrimary
-                        )
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "收起",
-                            tint = theme.textMuted,
-                            modifier = Modifier
-                                .size(15.dp)
-                                .clickable { showPromptListDrawer = false }
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(6.dp))
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Column(
-                        modifier = Modifier.verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(5.dp)
-                    ) {
-                        prompts.forEach { item ->
-                            val isCurrent = item.orderNumber == activeOrderNumber
-                            val tStr = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(item.timestamp))
-                            Surface(
-                                shape = RoundedCornerShape(7.dp),
-                                color = if (isCurrent) theme.primary.copy(alpha = 0.14f) else theme.surfaceContainerLow,
-                                border = BorderStroke(0.7.dp, if (isCurrent) theme.primary else theme.outline),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        onJumpToPrompt(item)
-                                        showPromptListDrawer = false
-                                    }
-                            ) {
-                                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(19.dp)
-                                                    .background(
-                                                        if (isCurrent) theme.primary else theme.surfaceContainer,
-                                                        CircleShape
-                                                    ),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = "${item.orderNumber}",
-                                                    style = TextStyle(
-                                                        fontSize = 9.sp,
-                                                        fontFamily = FontFamily.Monospace,
-                                                        fontWeight = FontWeight.Bold,
-                                                        color = if (isCurrent) Color.White else theme.textSecondary,
-                                                        platformStyle = PlatformTextStyle(includeFontPadding = false),
-                                                        textAlign = TextAlign.Center
-                                                    )
-                                                )
-                                            }
-                                            Text(
-                                                text = "提问 #${item.orderNumber}",
-                                                fontSize = 10.5.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
-                                                color = if (isCurrent) theme.primary else theme.textSecondary
-                                            )
-                                        }
-                                        Text(
-                                            text = tStr,
-                                            fontSize = 9.5.sp,
-                                            fontFamily = FontFamily.Monospace,
-                                            color = theme.textMuted
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.height(3.dp))
-                                    Text(
-                                        text = item.content,
-                                        fontSize = 11.5.sp,
-                                        color = theme.textPrimary,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 3. 右侧紧凑刻度导航轨 (支持点击与手指上下滑动实时预览跳转)
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = theme.surfaceContainerLow.copy(alpha = 0.88f),
-            border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.7f)),
-            modifier = Modifier.width(20.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(5.dp)
-            ) {
-                // 顶部提问总数按钮：点击展开/收起完整提问列表 (圆形居中数字)
-                Surface(
-                    shape = CircleShape,
-                    color = if (showPromptListDrawer) theme.primary else theme.primary.copy(alpha = 0.16f),
-                    modifier = Modifier
-                        .size(17.dp)
-                        .clickable {
-                            showPromptListDrawer = !showPromptListDrawer
-                            previewEntry = null
-                        }
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = "${prompts.size}",
-                            style = TextStyle(
-                                fontSize = 8.5.sp,
-                                fontFamily = FontFamily.Monospace,
-                                fontWeight = FontWeight.Bold,
-                                color = if (showPromptListDrawer) Color.White else theme.primary,
-                                platformStyle = PlatformTextStyle(includeFontPadding = false),
-                                textAlign = TextAlign.Center
-                            )
-                        )
-                    }
-                }
-
-                // 刻度轨道：支持上下滑动预览 + 点击节点预览并跳转
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onSizeChanged { railHeightPx = it.height.coerceAtLeast(1) }
-                        .pointerInput(visibleTicks) {
-                            detectVerticalDragGestures(
-                                onDragStart = { offset ->
-                                    val idx = ((offset.y / railHeightPx.toFloat()) * visibleTicks.size)
-                                        .toInt()
-                                        .coerceIn(0, visibleTicks.lastIndex)
-                                    previewEntry = visibleTicks[idx]
-                                },
-                                onVerticalDrag = { change, _ ->
-                                    change.consume()
-                                    val idx = ((change.position.y / railHeightPx.toFloat()) * visibleTicks.size)
-                                        .toInt()
-                                        .coerceIn(0, visibleTicks.lastIndex)
-                                    previewEntry = visibleTicks[idx]
-                                },
-                                onDragEnd = {
-                                    previewEntry?.let { onJumpToPrompt(it) }
-                                }
-                            )
-                        },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    visibleTicks.forEach { tick ->
-                        val isCurrent = tick.orderNumber == activeOrderNumber
-                        val isPreviewed = previewEntry?.orderNumber == tick.orderNumber
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(12.dp)
-                                .pointerInput(tick) {
-                                    detectTapGestures(
-                                        onTap = {
-                                            if (previewEntry?.orderNumber == tick.orderNumber) {
-                                                onJumpToPrompt(tick)
-                                                previewEntry = null
-                                            } else {
-                                                previewEntry = tick
-                                                onJumpToPrompt(tick)
-                                            }
-                                        }
-                                    )
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .width(if (isCurrent || isPreviewed) 12.dp else 7.dp)
-                                    .height(if (isCurrent || isPreviewed) 3.5.dp else 2.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(
-                                        when {
-                                            isPreviewed -> Color(0xFFF59E0B)
-                                            isCurrent -> theme.primary
-                                            else -> theme.textMuted.copy(alpha = 0.55f)
-                                        }
-                                    )
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
 
 /**
  * 对标 pi-web ChatWindow.tsx 的底部脉冲等待状态提示 ("正在等待模型...")
