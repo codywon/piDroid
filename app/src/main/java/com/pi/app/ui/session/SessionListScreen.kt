@@ -319,7 +319,7 @@ fun SessionListScreen(
                             }
                             Surface(
                                 shape = CircleShape,
-                                color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHighest,
+                                color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHigh,
                                 modifier = Modifier.padding(start = 4.dp)
                             ) {
                                 Text(
@@ -982,8 +982,7 @@ fun SessionListScreen(
             onDismissRequest = { deletingSession = null },
             title = { Text("删除任务会话", fontWeight = FontWeight.Bold, color = Color(0xFFDC2626)) },
             text = {
-                Text("确定要彻底删除任务「${customTitles[sess.id] ?: sess.displayTitle}」吗？
-删除后任务上下文与历史记录将无法恢复。")
+                Text("确定要彻底删除任务「${customTitles[sess.id] ?: sess.displayTitle}」吗？\n删除后任务上下文与历史记录将无法恢复。")
             },
             confirmButton = {
                 Button(
