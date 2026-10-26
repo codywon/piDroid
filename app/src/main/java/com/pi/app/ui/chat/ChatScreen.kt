@@ -35,6 +35,7 @@ import androidx.compose.material3.*
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.pi.app.data.storage.AppPreferences
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -242,12 +243,16 @@ fun ChatScreen(
     }
 
     // 记录用户是否正在通过时间轴或手动上翻回看历史，避免后台轮询或流式输出强制拉回底部打断阅读
-    var userJumpedToHistory by remember(sessionTitle) { mutableStateOf(false) }
+    //
+    // 以下四个状态用 rememberSaveable：rememberLazyListState 自身会把滚动位置存进
+    // SavedState，而窗口大小若不留存、Activity 重建后回退到 50 条，就会出现
+    // "列表恢复到很深的索引、但只渲染了 50 条"的错位跳动。
+    var userJumpedToHistory by rememberSaveable(sessionTitle) { mutableStateOf(false) }
 
     // 针对超长会话的分页按需加载窗口：默认首屏渲染最近 50 条记录；支持向上追加 50 条或一键展开全部完整历史
-    var visibleWindowCount by remember(sessionTitle) { mutableIntStateOf(50) }
-    var isAllHistoryExpanded by remember(sessionTitle) { mutableStateOf(false) }
-    var hasInitialScrolled by remember(sessionTitle) { mutableStateOf(false) }
+    var visibleWindowCount by rememberSaveable(sessionTitle) { mutableStateOf(50) }
+    var isAllHistoryExpanded by rememberSaveable(sessionTitle) { mutableStateOf(false) }
+    var hasInitialScrolled by rememberSaveable(sessionTitle) { mutableStateOf(false) }
 
     val windowStartIndex = if (isAllHistoryExpanded) {
         0

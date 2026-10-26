@@ -12,6 +12,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -221,7 +222,11 @@ class MainActivity : ComponentActivity() {
         // 应用内自动更新状态
         var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
 
-        var currentSession by remember { mutableStateOf<Session?>(null) }
+        // 用 SessionSaver 保存：Activity 重建（切深色模式 / 改系统字号 / 进程被回收）
+        // 后仍停留在原会话，而不是被踢回列表页。
+        var currentSession by rememberSaveable(stateSaver = SessionSaver) {
+            mutableStateOf<Session?>(null)
+        }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         var isLoadingSessions by remember { mutableStateOf(false) }
 
