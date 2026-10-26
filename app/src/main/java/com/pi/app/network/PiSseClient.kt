@@ -313,7 +313,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                                 val argsElem = tcObj?.get("arguments")
                                 val preview = extractPreview(argsElem)
                                 val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
-                                val pathMedia = extractMediaFromToolArgs(tName, preview, argsElem)
+                                val pathMedia = MediaAttachmentParsing.fromToolArgs(tName, preview, argsElem)
                                 listOf(
                                     AgentSseEvent(
                                         type = "tool_call_ready",
@@ -347,7 +347,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val argsElem = obj.get("args") ?: obj.get("arguments") ?: obj.get("input")
                     val preview = extractPreview(argsElem)
                     val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
-                    val pathMedia = extractMediaFromToolArgs(tName, preview, argsElem)
+                    val pathMedia = MediaAttachmentParsing.fromToolArgs(tName, preview, argsElem)
                     listOf(
                         AgentSseEvent(
                             type = "tool_execution_start",
@@ -551,58 +551,8 @@ class PiSseClient(private val prefs: AppPreferences) {
                 }
             }
         }
-        if (!outputText.isNullOrBlank() && outputText.contains("<svg", ignoreCase = true) && outputText.contains("</svg>", ignoreCase = true)) {
-            val svgMatch = Regex("""<svg[\s\S]*?</svg>""", RegexOption.IGNORE_CASE).find(outputText)
-            if (svgMatch != null) {
-                list.add(
-                    MediaAttachment(
-                        kind = MediaKind.SVG,
-                        mimeType = "image/svg+xml",
-                        svgOrCode = svgMatch.value,
-                        title = "SVG 矢量图"
-                    )
-                )
-            }
-        }
+        MediaAttachmentParsing.firstInlineSvg(outputText)?.let { list.add(it) }
         return list
     }
 
-    private fun extractMediaFromToolArgs(toolName: String, preview: String?, argsElem: JsonElement?): List<MediaAttachment> {
-        val rawPath = preview?.takeIf { it.isNotBlank() } ?: run {
-            if (argsElem != null && argsElem.isJsonObject) {
-                val obj = argsElem.asJsonObject
-                (obj.get("path") ?: obj.get("file_path") ?: obj.get("filePath"))
-                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
-            } else null
-        } ?: return emptyList()
-
-        val cleanPath = rawPath.trim().removeSurrounding("\"").removeSurrounding("'")
-        val lower = cleanPath.lowercase()
-        val isReadOrFileTool = toolName.lowercase() in setOf("read", "view_file", "read_file", "write", "write_file", "open")
-        if (!isReadOrFileTool && !lower.endsWith(".png") && !lower.endsWith(".jpg") && !lower.endsWith(".jpeg") &&
-            !lower.endsWith(".webp") && !lower.endsWith(".gif") && !lower.endsWith(".svg") && !lower.endsWith(".pdf")
-        ) {
-            return emptyList()
-        }
-
-        val (kind, mime) = when {
-            lower.endsWith(".png") -> MediaKind.IMAGE to "image/png"
-            lower.endsWith(".jpg") || lower.endsWith(".jpeg") -> MediaKind.IMAGE to "image/jpeg"
-            lower.endsWith(".webp") -> MediaKind.IMAGE to "image/webp"
-            lower.endsWith(".gif") -> MediaKind.IMAGE to "image/gif"
-            lower.endsWith(".bmp") -> MediaKind.IMAGE to "image/bmp"
-            lower.endsWith(".svg") -> MediaKind.SVG to "image/svg+xml"
-            lower.endsWith(".pdf") -> MediaKind.PDF to "application/pdf"
-            else -> return emptyList()
-        }
-
-        return listOf(
-            MediaAttachment(
-                kind = kind,
-                mimeType = mime,
-                filePath = cleanPath,
-                title = cleanPath.substringAfterLast('/').substringAfterLast('\\')
-            )
-        )
-    }
 }
