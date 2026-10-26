@@ -39,6 +39,11 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_COMPLETION_SOUND_ENABLED, true)
         set(value) = prefs.edit().putBoolean(KEY_COMPLETION_SOUND_ENABLED, value).apply()
 
+    // 任务完成独立弹出通知开关：默认关闭 (常驻通知栏已有实时统计、状态、声音与震动；开启后附带精确任务名称)
+    var taskCompletedNotifyEnabled: Boolean
+        get() = prefs.getBoolean(KEY_TASK_COMPLETED_NOTIFY, false)
+        set(value) = prefs.edit().putBoolean(KEY_TASK_COMPLETED_NOTIFY, value).apply()
+
     var defaultModelId: String
         get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
         set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
@@ -240,6 +245,7 @@ class AppPreferences(context: Context) {
         private const val KEY_PERSISTENT_NOTIFY = "key_persistent_notify"
         private const val KEY_HAPTICS_ENABLED = "key_haptics_enabled"
         private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
+        private const val KEY_TASK_COMPLETED_NOTIFY = "key_task_completed_notify"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
         private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"

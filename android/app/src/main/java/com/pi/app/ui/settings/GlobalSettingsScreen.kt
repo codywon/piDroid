@@ -87,6 +87,8 @@ fun GlobalSettingsScreen(
     onRequestIgnoreBattery: () -> Unit,
     persistentNotifyEnabled: Boolean = true,
     onTogglePersistentNotify: (Boolean) -> Unit = {},
+    taskCompletedNotifyEnabled: Boolean = false,
+    onToggleTaskCompletedNotify: (Boolean) -> Unit = {},
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     onTestHaptics: () -> Unit = {},
@@ -275,6 +277,8 @@ fun GlobalSettingsScreen(
                     onRequestIgnoreBattery = onRequestIgnoreBattery,
                     persistentNotifyEnabled = persistentNotifyEnabled,
                     onTogglePersistentNotify = onTogglePersistentNotify,
+                    taskCompletedNotifyEnabled = taskCompletedNotifyEnabled,
+                    onToggleTaskCompletedNotify = onToggleTaskCompletedNotify,
                     hapticsEnabled = hapticsEnabled,
                     onToggleHaptics = onToggleHaptics,
                     onTestHaptics = onTestHaptics,
@@ -2152,6 +2156,8 @@ fun GlobalSystemSettingsTab(
     onRequestIgnoreBattery: () -> Unit,
     persistentNotifyEnabled: Boolean = true,
     onTogglePersistentNotify: (Boolean) -> Unit = {},
+    taskCompletedNotifyEnabled: Boolean = false,
+    onToggleTaskCompletedNotify: (Boolean) -> Unit = {},
     hapticsEnabled: Boolean = true,
     onToggleHaptics: (Boolean) -> Unit = {},
     onTestHaptics: () -> Unit = {},
@@ -2418,6 +2424,39 @@ fun GlobalSystemSettingsTab(
                         Switch(
                             checked = persistentNotifyEnabled,
                             onCheckedChange = onTogglePersistentNotify,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF2EA043),
+                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
+
+                    // 1.1 任务完成独立弹窗通知
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("任务完成独立弹窗通知", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
+                                UnifiedStatusBadge(
+                                    text = if (taskCompletedNotifyEnabled) "已开启" else "默认关闭",
+                                    isActive = taskCompletedNotifyEnabled
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "默认关闭（常驻栏状态、大盘统计与音效/震动已实时感知）；开启后在任务完成时额外弹出附带任务标题的通知卡片",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textMuted
+                            )
+                        }
+                        Switch(
+                            checked = taskCompletedNotifyEnabled,
+                            onCheckedChange = onToggleTaskCompletedNotify,
                             colors = SwitchDefaults.colors(
                                 checkedThumbColor = Color(0xFF2EA043),
                                 checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)

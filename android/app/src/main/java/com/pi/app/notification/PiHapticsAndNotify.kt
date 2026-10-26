@@ -2,7 +2,9 @@ package com.pi.app.notification
 
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.RingtoneManager
@@ -13,6 +15,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import com.pi.app.MainActivity
 import com.pi.app.data.storage.AppPreferences
 
 class PiHapticsAndNotify(private val context: Context) {
@@ -127,9 +130,48 @@ class PiHapticsAndNotify(private val context: Context) {
     }
 
     /**
-     * 更新后台长任务通知（静默更新通知文本，震动与提示音统一由 vibrateTaskCompleted / playTaskCompletedSound 控制）
+     * 任务完成独立弹出通知（仅在 prefs.taskCompletedNotifyEnabled 开启时发送，避免与常驻通知栏重复堆叠）
+     * 明确携带任务会话名称与项目信息，杜绝无名盲盒通知
+     */
+    fun notifyTaskCompleted(
+        sessionTitle: String,
+        project: String = "默认项目",
+        sessionId: String? = null
+    ) {
+        if (!prefs.taskCompletedNotifyEnabled) return
+        try {
+            val clickIntent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                if (!sessionId.isNullOrBlank()) {
+                    putExtra("target_session_id", sessionId)
+                }
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                context,
+                0,
+                clickIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+            )
+
+            val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle("✓ 任务已完成 · $sessionTitle")
+                .setContentText("项目: $project · 所有步骤已执行完毕")
+                .setContentIntent(pendingIntent)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setOnlyAlertOnce(true)
+                .setAutoCancel(true)
+
+            notificationManager.notify(NOTIFICATION_ID, builder.build())
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * 更新后台长任务通知（仅在 prefs.taskCompletedNotifyEnabled 开启时发送，默认优先常驻前台服务通知）
      */
     fun updateTaskNotification(title: String, content: String, isFinished: Boolean = false) {
+        if (!prefs.taskCompletedNotifyEnabled) return
         try {
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_notify_sync)

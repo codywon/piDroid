@@ -33,8 +33,11 @@ class PiForegroundService : Service() {
 
         val title = intent?.getStringExtra(EXTRA_TITLE) ?: "piDroid · 网关守护运行中"
         val content = intent?.getStringExtra(EXTRA_CONTENT) ?: "保持长连接与后台实时同步..."
+        val subText = intent?.getStringExtra(EXTRA_SUB_TEXT)
+        val bigText = intent?.getStringExtra(EXTRA_BIG_TEXT)
+        val targetSessionId = intent?.getStringExtra(EXTRA_TARGET_SESSION_ID)
 
-        val notification = buildNotification(title, content)
+        val notification = buildNotification(title, content, subText, bigText, targetSessionId)
         isRunning = true
 
         try {
@@ -63,9 +66,18 @@ class PiForegroundService : Service() {
         super.onDestroy()
     }
 
-    private fun buildNotification(title: String, content: String): Notification {
+    private fun buildNotification(
+        title: String,
+        content: String,
+        subText: String? = null,
+        bigText: String? = null,
+        targetSessionId: String? = null
+    ): Notification {
         val clickIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (!targetSessionId.isNullOrBlank()) {
+                putExtra("target_session_id", targetSessionId)
+            }
         }
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -74,7 +86,7 @@ class PiForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentTitle(title)
             .setContentText(content)
@@ -85,7 +97,16 @@ class PiForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-            .build()
+
+        if (!subText.isNullOrBlank()) {
+            builder.setSubText(subText)
+        }
+
+        if (!bigText.isNullOrBlank()) {
+            builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+        }
+
+        return builder.build()
     }
 
     private fun createNotificationChannel() {
@@ -112,6 +133,9 @@ class PiForegroundService : Service() {
         const val ACTION_STOP = "ACTION_STOP_KEEP_ALIVE"
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_CONTENT = "extra_content"
+        const val EXTRA_SUB_TEXT = "extra_sub_text"
+        const val EXTRA_BIG_TEXT = "extra_big_text"
+        const val EXTRA_TARGET_SESSION_ID = "extra_target_session_id"
 
         @Volatile
         var isRunning: Boolean = false
@@ -120,13 +144,58 @@ class PiForegroundService : Service() {
         fun start(
             context: Context,
             title: String = "piDroid · 网关守护已就绪",
-            content: String = "长连接保活与实时同步运行中"
+            content: String = "长连接保活与实时同步运行中",
+            subText: String? = null,
+            bigText: String? = null,
+            targetSessionId: String? = null
         ) {
             try {
+                // 如果前台服务已经在运行，直接利用 NotificationManager 静默无缝刷新通知，避免闪烁
+                if (isRunning) {
+                    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                    if (manager != null) {
+                        val clickIntent = Intent(context, MainActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                            if (!targetSessionId.isNullOrBlank()) {
+                                putExtra("target_session_id", targetSessionId)
+                            }
+                        }
+                        val pendingIntent = PendingIntent.getActivity(
+                            context,
+                            0,
+                            clickIntent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
+                        )
+                        val builder = NotificationCompat.Builder(context, CHANNEL_ID)
+                            .setSmallIcon(android.R.drawable.stat_notify_sync)
+                            .setContentTitle(title)
+                            .setContentText(content)
+                            .setContentIntent(pendingIntent)
+                            .setOngoing(true)
+                            .setOnlyAlertOnce(true)
+                            .setShowWhen(true)
+                            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
+                            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+
+                        if (!subText.isNullOrBlank()) {
+                            builder.setSubText(subText)
+                        }
+                        if (!bigText.isNullOrBlank()) {
+                            builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+                        }
+                        manager.notify(NOTIFICATION_ID, builder.build())
+                        return
+                    }
+                }
+
                 val intent = Intent(context, PiForegroundService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_TITLE, title)
                     putExtra(EXTRA_CONTENT, content)
+                    putExtra(EXTRA_SUB_TEXT, subText)
+                    putExtra(EXTRA_BIG_TEXT, bigText)
+                    putExtra(EXTRA_TARGET_SESSION_ID, targetSessionId)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)

@@ -48,6 +48,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var keepAliveManager: KeepAliveManager
 
     private var sseJob: Job? = null
+    private var cachedSessions: List<Session> = emptyList()
+    private var pendingTargetSessionId: String? = null
+    private var lastFinishedTaskTitle: String? = null
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -88,19 +91,76 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun syncPersistentForegroundService(isBusy: Boolean, project: String, phase: String? = null) {
+    private fun syncPersistentForegroundService(
+        isBusy: Boolean,
+        project: String = "默认工作区",
+        phase: String? = null,
+        sessionTitle: String? = null,
+        lastFinishedTask: String? = null,
+        sessionId: String? = null
+    ) {
         if (!prefs.isConfigured) {
             PiForegroundService.stop(this)
             return
         }
         if (prefs.persistentNotifyEnabled || isBusy) {
-            val title = if (isBusy) "piDroid · 智能任务执行中" else "piDroid · 网关常驻守护中"
-            val content = if (isBusy) {
-                "项目: $project | ${phase ?: "正在流式同步执行..."}"
-            } else {
-                "主机: ${prefs.deviceName.ifBlank { prefs.serverUrl }} | 随时接收远程指令"
+            if (!lastFinishedTask.isNullOrBlank()) {
+                lastFinishedTaskTitle = lastFinishedTask
             }
-            PiForegroundService.start(this, title = title, content = content)
+            val totalSessions = cachedSessions.size
+            val activeSessionsCount = cachedSessions.count { it.active }
+            val runningCount = if (isBusy) maxOf(1, activeSessionsCount) else activeSessionsCount
+            val completedCount = maxOf(0, totalSessions - runningCount)
+            val devName = prefs.deviceName.ifBlank { prefs.serverUrl.substringAfter("://").substringBefore(":") }.ifBlank { "Remote PC" }
+            val activeTitle = sessionTitle ?: lastFinishedTaskTitle ?: "智能任务"
+
+            val title: String
+            val content: String
+            val subText: String
+            val bigText: String
+
+            if (isBusy) {
+                title = "⚡ 智能任务执行中 · $activeTitle"
+                content = phase ?: "正在流式执行推理与工具调用..."
+                subText = "$runningCount 项运行 / $completedCount 项完成"
+                bigText = buildString {
+                    appendLine("● 当前任务: $activeTitle")
+                    appendLine("● 工作空间: $project")
+                    appendLine("● 实时进度: ${phase ?: "正在执行流式推理与工具调用..."}")
+                    appendLine("● 任务统计: $runningCount 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
+                    append("● 远程主机: $devName (网关长连接正常)")
+                }
+            } else if (!lastFinishedTaskTitle.isNullOrBlank()) {
+                title = "✓ 任务已完成 · $lastFinishedTaskTitle"
+                content = "主机: $devName | 所有步骤执行完毕，长连接就绪"
+                subText = "0 运行 / $completedCount 完成"
+                bigText = buildString {
+                    appendLine("✓ 最近完成: $lastFinishedTaskTitle")
+                    appendLine("● 工作空间: $project")
+                    appendLine("● 当前状态: 空闲待命中，随时响应远程指令")
+                    appendLine("● 任务统计: 0 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
+                    append("● 远程主机: $devName")
+                }
+            } else {
+                title = if (totalSessions > 0) "piDroid 常驻守护中 · $completedCount 项任务就绪" else "piDroid · 网关常驻守护中"
+                content = "主机: $devName | 保持长连接与后台实时对账"
+                subText = if (totalSessions > 0) "$completedCount 项就绪" else "守护中"
+                bigText = buildString {
+                    appendLine("● 网关状态: 实时长连接正常，数据增量同步中")
+                    appendLine("● 当前工作空间: $project")
+                    appendLine("● 任务统计: 0 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
+                    append("● 远程主机: $devName")
+                }
+            }
+
+            PiForegroundService.start(
+                context = this,
+                title = title,
+                content = content,
+                subText = subText,
+                bigText = bigText,
+                targetSessionId = sessionId
+            )
         } else {
             PiForegroundService.stop(this)
         }
@@ -110,6 +170,10 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleDeepLink(intent)
+        val targetSessionId = intent.getStringExtra("target_session_id")
+        if (!targetSessionId.isNullOrBlank()) {
+            pendingTargetSessionId = targetSessionId
+        }
     }
 
     private fun handleDeepLink(intent: Intent?) {
@@ -190,6 +254,7 @@ class MainActivity : ComponentActivity() {
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
         var persistentNotifyEnabled by remember { mutableStateOf(prefs.persistentNotifyEnabled) }
+        var taskCompletedNotifyEnabled by remember { mutableStateOf(prefs.taskCompletedNotifyEnabled) }
         var hapticsEnabled by remember { mutableStateOf(prefs.hapticsEnabled) }
         var completionSoundEnabled by remember { mutableStateOf(prefs.completionSoundEnabled) }
         var pinnedSessionIds by remember { mutableStateOf(prefs.getPinnedSessionIds()) }
@@ -255,9 +320,18 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 apiClient.getSessions().onSuccess {
                     sessions = it
+                    cachedSessions = it
                     pinnedSessionIds = prefs.getPinnedSessionIds()
                     customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                     isGatewayOnline = true
+                    syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
+                    if (pendingTargetSessionId != null) {
+                        val target = it.firstOrNull { s -> s.id == pendingTargetSessionId }
+                        if (target != null) {
+                            pendingTargetSessionId = null
+                            openSessionWithHistory(target)
+                        }
+                    }
                 }.onFailure {
                     isGatewayOnline = false
                     if (!silent) {
@@ -348,7 +422,23 @@ class MainActivity : ComponentActivity() {
                 if (prefs.completionSoundEnabled) {
                     hapticsAndNotify.playTaskCompletedSound()
                 }
-                hapticsAndNotify.updateTaskNotification("Pi 任务已完成", "所有步骤已执行完毕", isFinished = true)
+                val finishedTitle = currentSession?.name?.ifBlank { null } ?: "当前任务"
+                lastFinishedTaskTitle = finishedTitle
+                // 仅在用户显式开启任务完成独立通知时发送，默认关闭避免堆叠打扰
+                if (prefs.taskCompletedNotifyEnabled) {
+                    hapticsAndNotify.notifyTaskCompleted(
+                        sessionTitle = finishedTitle,
+                        project = currentProject,
+                        sessionId = sessionId
+                    )
+                }
+                // 立即更新常驻通知栏展示刚完成的任务与统计大盘
+                syncPersistentForegroundService(
+                    isBusy = false,
+                    project = currentProject,
+                    lastFinishedTask = finishedTitle,
+                    sessionId = sessionId
+                )
             }
 
             for (i in messages.indices) {
@@ -1210,6 +1300,11 @@ class MainActivity : ComponentActivity() {
                         persistentNotifyEnabled = enabled
                         prefs.persistentNotifyEnabled = enabled
                         syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
+                    },
+                    taskCompletedNotifyEnabled = taskCompletedNotifyEnabled,
+                    onToggleTaskCompletedNotify = { enabled ->
+                        taskCompletedNotifyEnabled = enabled
+                        prefs.taskCompletedNotifyEnabled = enabled
                         Toast.makeText(
                             this@MainActivity,
                             if (enabled) "已开启常驻通知栏保活守护" else "已关闭常驻通知栏（仅在任务运行时启动前台服务）",
