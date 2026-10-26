@@ -2387,6 +2387,172 @@ class PiApiClient(private val prefs: AppPreferences) {
     /**
      * 读取网关 models.json 原始配置 JSON (GET /api/models-config，自动清理污染字段)
      */
+
+data class ModelTestResult(
+    val ok: Boolean,
+    val latencyMs: Long? = null,
+    val status: Int? = null,
+    val responseText: String? = null,
+    val error: String? = null
+)
+
+data class CatalogPreset(
+    val name: String? = null,
+    val reasoning: Boolean? = null,
+    val input: List<String>? = null,
+    val contextWindow: Long? = null,
+    val maxTokens: Long? = null,
+    val costInput: Double? = null,
+    val costOutput: Double? = null,
+    val costCacheRead: Double? = null,
+    val costCacheWrite: Double? = null
+)
+
+    /**
+     * 直接获取 models.json 顶层 JsonObject（包含 providers 映射，1:1 对标 pi-web models-config）
+     */
+    suspend fun getModelsConfigObject(): Result<JsonObject> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = true)
+                ?: return@withContext Result.failure(IOException("读取 models.json 失败"))
+            Result.success(fetched.config)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 保存 models.json 顶层 JsonObject 并触发服务端刷新 (PUT /api/models-config + POST /api/models/refresh)
+     */
+    suspend fun saveModelsConfigObject(configObj: JsonObject): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val cloned = configObj.deepCopy()
+            sanitizeAndHealModelsConfig(cloned)
+            val existingEnvelope = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
+            val wrapped = existingEnvelope?.wrappedInConfigKey ?: false
+            val ok = putModelsConfigToServer(baseUrl, cloned, wrapped)
+            if (!ok) {
+                return@withContext Result.failure(IOException("保存 models.json 失败"))
+            }
+            Result.success(true)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 测试指定 Provider 下的模型连通性 (POST /api/models-config/test)
+     */
+    suspend fun testModelConfig(
+        providerName: String,
+        providerObj: JsonObject,
+        modelObj: JsonObject
+    ): Result<ModelTestResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = JsonObject().apply {
+                addProperty("providerName", providerName.trim())
+                add("provider", providerObj)
+                add("model", modelObj)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/models-config/test")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: ""
+                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                if (json == null) {
+                    return@withContext Result.success(
+                        ModelTestResult(
+                            ok = false,
+                            status = resp.code,
+                            error = "HTTP ${resp.code}: $bodyStr"
+                        )
+                    )
+                }
+                val ok = json.get("ok")?.asBoolean ?: false
+                val latencyMs = json.get("latencyMs")?.asLong
+                val status = json.get("status")?.asInt ?: resp.code
+                val responseText = json.get("responseText")?.asString
+                val error = json.get("error")?.asString
+                Result.success(
+                    ModelTestResult(
+                        ok = ok,
+                        latencyMs = latencyMs,
+                        status = status,
+                        responseText = responseText,
+                        error = error
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 从 models.dev 自动补全模型规格与价格推荐 (GET /api/models-config/catalog)
+     */
+    suspend fun getCatalogModelPreset(
+        modelId: String,
+        providerName: String,
+        baseUrlParam: String = ""
+    ): Result<CatalogPreset?> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val encQ = java.net.URLEncoder.encode(modelId, "UTF-8")
+            val encProv = java.net.URLEncoder.encode(providerName, "UTF-8")
+            val encBase = java.net.URLEncoder.encode(baseUrlParam, "UTF-8")
+            val url = "$baseUrl/api/models-config/catalog?q=$encQ&provider=$encProv&baseUrl=$encBase"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("HTTP ${resp.code}"))
+                }
+                val bodyStr = resp.body?.string() ?: ""
+                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.success(null)
+                val rec = json.getAsJsonObject("recommendation") ?: return@withContext Result.success(null)
+                val preset = rec.getAsJsonObject("preset") ?: return@withContext Result.success(null)
+
+                val name = preset.get("name")?.asString
+                val reasoning = preset.get("reasoning")?.asBoolean
+                val inputArr = preset.getAsJsonArray("input")?.mapNotNull { if (it.isJsonPrimitive) it.asString else null }
+                val contextWindow = preset.get("contextWindow")?.asLong
+                val maxTokens = preset.get("maxTokens")?.asLong
+
+                val cost = preset.getAsJsonObject("cost")
+                val costInput = cost?.get("input")?.asDouble
+                val costOutput = cost?.get("output")?.asDouble
+                val costCacheRead = cost?.get("cacheRead")?.asDouble
+                val costCacheWrite = cost?.get("cacheWrite")?.asDouble
+
+                Result.success(
+                    CatalogPreset(
+                        name = name,
+                        reasoning = reasoning,
+                        input = inputArr,
+                        contextWindow = contextWindow,
+                        maxTokens = maxTokens,
+                        costInput = costInput,
+                        costOutput = costOutput,
+                        costCacheRead = costCacheRead,
+                        costCacheWrite = costCacheWrite
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun getModelsRawConfig(): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))

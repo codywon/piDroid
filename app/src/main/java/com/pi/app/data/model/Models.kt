@@ -1,5 +1,9 @@
 package com.pi.app.data.model
 
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
+import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.google.gson.annotations.SerializedName
 import java.text.NumberFormat
 import java.util.Locale
@@ -383,4 +387,339 @@ data class AgentSseEvent(
 
     val effectiveCommand: String?
         get() = command ?: input
+}
+
+/**
+ * 思考等级映射状态 (7 档：off, minimal, low, medium, high, xhigh, max)
+ */
+enum class ThinkingLevelMode {
+    DEFAULT,   // 默认 (不在 map 中，跟随系统默认)
+    DISABLED,  // 禁用 (map 中存 false)
+    CUSTOM     // 自定义 (map 中存自定义字符串，如 "none", "xhigh", "max")
+}
+
+data class ThinkingLevelItem(
+    val levelKey: String, // "off", "minimal", "low", "medium", "high", "xhigh", "max"
+    val mode: ThinkingLevelMode = ThinkingLevelMode.DEFAULT,
+    val customValue: String = ""
+)
+
+/**
+ * 自定义 Header 键值对
+ */
+data class HeaderEntry(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val key: String = "",
+    val value: String = ""
+)
+
+/**
+ * 1:1 对标 pi-web 的单个模型配置实体
+ */
+data class ModelConfigItem(
+    val id: String,
+    val name: String = "",
+    val reasoning: Boolean = false,
+    val hasVision: Boolean = false,
+    val contextWindow: Long = 200000L,
+    val maxTokens: Long = 8192L,
+    val costInput: Double = 0.0,
+    val costOutput: Double = 0.0,
+    val costCacheRead: Double = 0.0,
+    val costCacheWrite: Double = 0.0,
+    val apiOverride: String = "", // 空代表默认/跟随 Provider
+    val headers: List<HeaderEntry> = emptyList(),
+    val deepSeekThinkingCompat: Boolean = false,
+    val developerRole: Boolean = false,
+    val thinkingLevel: String = "",
+    val thinkingLevelMap: List<ThinkingLevelItem> = defaultThinkingLevelMap()
+) {
+    companion object {
+        fun defaultThinkingLevelMap(): List<ThinkingLevelItem> = listOf(
+            ThinkingLevelItem("off"),
+            ThinkingLevelItem("minimal"),
+            ThinkingLevelItem("low"),
+            ThinkingLevelItem("medium"),
+            ThinkingLevelItem("high"),
+            ThinkingLevelItem("xhigh"),
+            ThinkingLevelItem("max")
+        )
+    }
+}
+
+/**
+ * 1:1 对标 pi-web 的 Provider 配置实体
+ */
+data class ProviderConfigItem(
+    val name: String,
+    val baseUrl: String = "",
+    val apiKey: String = "",
+    val api: String = "openai-completions",
+    val headers: List<HeaderEntry> = emptyList(),
+    val models: List<ModelConfigItem> = emptyList()
+)
+
+/**
+ * models-config 与 JSON 双向解析转换器 (纯正对标 pi-web models.json 规范)
+ */
+object ModelConfigConverter {
+
+    private val STANDARD_LEVELS = listOf("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+    fun parseProvidersConfig(rootObj: JsonObject): List<ProviderConfigItem> {
+        val providersObj = if (rootObj.has("providers") && rootObj.get("providers").isJsonObject) {
+            rootObj.getAsJsonObject("providers")
+        } else {
+            rootObj
+        }
+
+        val resultList = mutableListOf<ProviderConfigItem>()
+        for (providerKey in providersObj.keySet()) {
+            val pElement = providersObj.get(providerKey)
+            if (!pElement.isJsonObject) continue
+            val pObj = pElement.asJsonObject
+
+            val baseUrl = pObj.get("baseUrl")?.asString ?: ""
+            val apiKey = pObj.get("apiKey")?.asString ?: ""
+            val api = pObj.get("api")?.asString ?: "openai-completions"
+
+            // 解析 Provider 级别的 headers
+            val pHeaders = mutableListOf<HeaderEntry>()
+            if (pObj.has("headers") && pObj.get("headers").isJsonObject) {
+                val hObj = pObj.getAsJsonObject("headers")
+                for (hKey in hObj.keySet()) {
+                    pHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey)?.asString ?: ""))
+                }
+            }
+
+            // 解析 Provider 下属的 models
+            val modelsList = mutableListOf<ModelConfigItem>()
+            if (pObj.has("models") && pObj.get("models").isJsonArray) {
+                val modelsArr = pObj.getAsJsonArray("models")
+                for (mElement in modelsArr) {
+                    if (!mElement.isJsonObject) continue
+                    val mObj = mElement.asJsonObject
+                    val mId = mObj.get("id")?.asString?.trim() ?: continue
+                    if (mId.isEmpty()) continue
+
+                    val mName = mObj.get("name")?.asString ?: ""
+                    val reasoning = mObj.get("reasoning")?.asBoolean ?: false
+
+                    val hasVision = if (mObj.has("input") && mObj.get("input").isJsonArray) {
+                        mObj.getAsJsonArray("input").any { it.isJsonPrimitive && it.asString == "image" }
+                    } else false
+
+                    val contextWindow = mObj.get("contextWindow")?.asLong ?: 200000L
+                    val maxTokens = mObj.get("maxTokens")?.asLong ?: 8192L
+
+                    // 价格
+                    var costInput = 0.0
+                    var costOutput = 0.0
+                    var costCacheRead = 0.0
+                    var costCacheWrite = 0.0
+                    if (mObj.has("cost") && mObj.get("cost").isJsonObject) {
+                        val costObj = mObj.getAsJsonObject("cost")
+                        costInput = costObj.get("input")?.asDouble ?: 0.0
+                        costOutput = costObj.get("output")?.asDouble ?: 0.0
+                        costCacheRead = costObj.get("cacheRead")?.asDouble ?: 0.0
+                        costCacheWrite = costObj.get("cacheWrite")?.asDouble ?: 0.0
+                    }
+
+                    // api override
+                    val apiOverride = mObj.get("api")?.asString ?: ""
+
+                    // headers
+                    val mHeaders = mutableListOf<HeaderEntry>()
+                    if (mObj.has("headers") && mObj.get("headers").isJsonObject) {
+                        val hObj = mObj.getAsJsonObject("headers")
+                        for (hKey in hObj.keySet()) {
+                            mHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey)?.asString ?: ""))
+                        }
+                    }
+
+                    // 兼容性
+                    var deepSeekThinking = false
+                    var developerRole = false
+                    if (mObj.has("compat") && mObj.get("compat").isJsonObject) {
+                        val compatObj = mObj.getAsJsonObject("compat")
+                        deepSeekThinking = compatObj.get("supportsThinking")?.asBoolean ?: false
+                        developerRole = compatObj.get("developerRole")?.asBoolean ?: false
+                    }
+
+                    val thinkingLevel = mObj.get("thinkingLevel")?.asString ?: ""
+
+                    // 思考等级映射
+                    val levelMapItems = mutableListOf<ThinkingLevelItem>()
+                    val rawLevelMap = if (mObj.has("thinkingLevelMap") && mObj.get("thinkingLevelMap").isJsonObject) {
+                        mObj.getAsJsonObject("thinkingLevelMap")
+                    } else null
+
+                    for (lvl in STANDARD_LEVELS) {
+                        if (rawLevelMap != null && rawLevelMap.has(lvl)) {
+                            val elem = rawLevelMap.get(lvl)
+                            if (elem.isJsonPrimitive) {
+                                val prim = elem.asJsonPrimitive
+                                if (prim.isBoolean && !prim.asBoolean) {
+                                    levelMapItems.add(ThinkingLevelItem(lvl, ThinkingLevelMode.DISABLED, ""))
+                                } else if (prim.isString) {
+                                    levelMapItems.add(ThinkingLevelItem(lvl, ThinkingLevelMode.CUSTOM, prim.asString))
+                                } else {
+                                    levelMapItems.add(ThinkingLevelItem(lvl, ThinkingLevelMode.DEFAULT, ""))
+                                }
+                            } else {
+                                levelMapItems.add(ThinkingLevelItem(lvl, ThinkingLevelMode.DEFAULT, ""))
+                            }
+                        } else {
+                            levelMapItems.add(ThinkingLevelItem(lvl, ThinkingLevelMode.DEFAULT, ""))
+                        }
+                    }
+
+                    modelsList.add(
+                        ModelConfigItem(
+                            id = mId,
+                            name = mName,
+                            reasoning = reasoning,
+                            hasVision = hasVision,
+                            contextWindow = contextWindow,
+                            maxTokens = maxTokens,
+                            costInput = costInput,
+                            costOutput = costOutput,
+                            costCacheRead = costCacheRead,
+                            costCacheWrite = costCacheWrite,
+                            apiOverride = apiOverride,
+                            headers = mHeaders,
+                            deepSeekThinkingCompat = deepSeekThinking,
+                            developerRole = developerRole,
+                            thinkingLevel = thinkingLevel,
+                            thinkingLevelMap = levelMapItems
+                        )
+                    )
+                }
+            }
+
+            resultList.add(
+                ProviderConfigItem(
+                    name = providerKey,
+                    baseUrl = baseUrl,
+                    apiKey = apiKey,
+                    api = api,
+                    headers = pHeaders,
+                    models = modelsList
+                )
+            )
+        }
+        return resultList
+    }
+
+    fun serializeProvidersConfig(providers: List<ProviderConfigItem>, existingRoot: JsonObject? = null): JsonObject {
+        val root = existingRoot?.deepCopy() ?: JsonObject()
+        val providersObj = JsonObject()
+
+        for (provider in providers) {
+            val pKey = provider.name.trim()
+            if (pKey.isEmpty()) continue
+
+            val pObj = JsonObject()
+            if (provider.baseUrl.isNotBlank()) pObj.addProperty("baseUrl", provider.baseUrl.trim())
+            if (provider.apiKey.isNotBlank()) pObj.addProperty("apiKey", provider.apiKey.trim())
+            if (provider.api.isNotBlank()) pObj.addProperty("api", provider.api.trim())
+
+            // Provider 级别 headers
+            val validPHeaders = provider.headers.filter { it.key.isNotBlank() }
+            if (validPHeaders.isNotEmpty()) {
+                val hObj = JsonObject()
+                for (h in validPHeaders) {
+                    hObj.addProperty(h.key.trim(), h.value)
+                }
+                pObj.add("headers", hObj)
+            }
+
+            // models
+            val modelsArr = JsonArray()
+            for (m in provider.models) {
+                val mId = m.id.trim()
+                if (mId.isEmpty()) continue
+
+                val mObj = JsonObject()
+                mObj.addProperty("id", mId)
+                if (m.name.isNotBlank()) mObj.addProperty("name", m.name.trim())
+                if (m.reasoning) mObj.addProperty("reasoning", true)
+
+                // input
+                val inputArr = JsonArray()
+                inputArr.add("text")
+                if (m.hasVision) {
+                    inputArr.add("image")
+                }
+                mObj.add("input", inputArr)
+
+                // contextWindow & maxTokens 真实写入！
+                mObj.addProperty("contextWindow", m.contextWindow)
+                mObj.addProperty("maxTokens", m.maxTokens)
+
+                // 价格 (cost)
+                val costObj = JsonObject().apply {
+                    addProperty("input", m.costInput)
+                    addProperty("output", m.costOutput)
+                    addProperty("cacheRead", m.costCacheRead)
+                    addProperty("cacheWrite", m.costCacheWrite)
+                }
+                mObj.add("cost", costObj)
+
+                // api override
+                if (m.apiOverride.isNotBlank() && m.apiOverride != "none" && m.apiOverride != "— 默认 / none —") {
+                    mObj.addProperty("api", m.apiOverride.trim())
+                }
+
+                // headers
+                val validMHeaders = m.headers.filter { it.key.isNotBlank() }
+                if (validMHeaders.isNotEmpty()) {
+                    val hObj = JsonObject()
+                    for (h in validMHeaders) {
+                        hObj.addProperty(h.key.trim(), h.value)
+                    }
+                    mObj.add("headers", hObj)
+                }
+
+                // compat
+                val compatObj = JsonObject()
+                if (m.deepSeekThinkingCompat) compatObj.addProperty("supportsThinking", true)
+                if (m.developerRole) compatObj.addProperty("developerRole", true)
+                if (compatObj.size() > 0) {
+                    mObj.add("compat", compatObj)
+                }
+
+                if (m.thinkingLevel.isNotBlank()) {
+                    mObj.addProperty("thinkingLevel", m.thinkingLevel.trim())
+                }
+
+                // thinkingLevelMap
+                val levelMapObj = JsonObject()
+                for (item in m.thinkingLevelMap) {
+                    when (item.mode) {
+                        ThinkingLevelMode.DISABLED -> levelMapObj.addProperty(item.levelKey, false)
+                        ThinkingLevelMode.CUSTOM -> {
+                            if (item.customValue.isNotBlank()) {
+                                levelMapObj.addProperty(item.levelKey, item.customValue.trim())
+                            }
+                        }
+                        ThinkingLevelMode.DEFAULT -> {} // 不写入
+                    }
+                }
+                if (levelMapObj.size() > 0) {
+                    mObj.add("thinkingLevelMap", levelMapObj)
+                }
+
+                modelsArr.add(mObj)
+            }
+
+            pObj.add("models", modelsArr)
+            providersObj.add(pKey, pObj)
+        }
+
+        root.add("providers", providersObj)
+        // 移除可能造成破坏的顶层残留
+        root.remove("config")
+        return root
+    }
 }

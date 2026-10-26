@@ -962,6 +962,7 @@ class MainActivity : ComponentActivity() {
             }
             showGlobalSettings -> {
                 GlobalSettingsScreen(
+                    apiClient = apiClient,
                     models = dynamicCatalog.models,
                     currentDefaultModelId = prefs.defaultModelId,
                     currentDefaultThinkingLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),

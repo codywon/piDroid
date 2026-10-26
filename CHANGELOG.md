@@ -2,6 +2,28 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.5.5] - 2026-10-26
+
+### 🔔 任务完成音效 1:1 复刻 (Web Audio PCM Synthesizer)
+- **移植 pi-web 原生正弦波双音合成算法**：彻底抛弃受手机静音/通知拦截限制的单音 `ToneGenerator`，在 Android 端以 44100Hz 16-bit PCM 预合成 `[523.25, 659.25]` Hz（C5 与 E5）双正弦音，配合 0.02s 渐入与指数衰减包络，100% 还原 Web Audio 悦耳的“叮咚”任务完成提示音；
+- **媒体流直通发声与多重安全兜底**：采用 `AudioTrack` 媒体流通道输出，彻底避免国产 ROM 对应用系统通知音的静音误拦截；当媒体音量完全为零时自动以系统通知铃声兜底。
+
+### ⚙️ 模型管理系统深度重构与 1:1 对标 pi-web (Full Model Management Suite)
+- **根治 200000 / 8192 上下文与最大输出固化缺陷**：全面打通 `GET /api/models-config` 与 `PUT /api/models-config`，直连网关原始 `models.json` 树结构；读写真实参数，不再受轻量 `/api/models` 字段缺失导致的硬编码默认值覆盖；
+- **全套 Provider 与模型管理体验**：
+  - **Provider 管理**：水平滑动胶囊导航、添加 Provider 弹窗、当前 Provider 属性编辑（Base URL、API Key、接口协议 `api`、删除 Provider）；
+  - **模型胶囊列表**：水平滑动切换、带原生 `T` 思考标签标识徽章、末尾快捷 `+ 模型` 按钮；
+  - **模型编辑面板 (完全复刻 pi-web 视觉与结构)**：
+    - Header：模型标题、`[测试]` 按钮（直连 `POST /api/models-config/test` 显示延迟与状态）、`[移除]` 按钮；
+    - 基础属性：`ID *`、`Name`，以及 `[填入模型信息]`（直连 models.dev 推荐自动补全）；
+    - 能力开关：`☑ 推理 / 思考`、`☑ 图片输入`；
+    - 规格与价格：`上下文窗口 (tokens)`（真实读写）、`最大输出 tokens`、4 列并排价格（输入/输出/缓存读/缓存写）；
+    - 折叠高级设置：思考等级设置、`API 覆盖` 下拉单选、自定义 Headers 动态键值对增删、兼容性复选框（`DeepSeek 思考兼容`、`使用 developer role 传递系统提示词`）；
+    - 思考等级映射 (`thinkingLevelMap`)：7 档列表（`off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`），带彩色标识圆点与 3 段切换单选（Default / Disabled / Custom），选中 Custom 实时展开输入框；
+  - **底部吸底常驻保存栏**：一键将整棵 Provider 树持久化至网关并触发 `/api/models/refresh` 实时生效。
+
+---
+
 ## [1.5.4] - 2026-10-26
 
 ### 🎨 界面与排版深度优化 (UI/UX Refinements)

@@ -31,6 +31,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pi.app.data.model.*
 import com.pi.app.keepalive.KeepAliveManager
+import com.pi.app.network.PiApiClient
 import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.PiDroidLogo
@@ -45,6 +46,7 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlobalSettingsScreen(
+    apiClient: PiApiClient? = null,
     models: List<ModelInfo>,
     currentDefaultModelId: String,
     currentDefaultThinkingLevel: ThinkingLevel,
@@ -196,19 +198,30 @@ fun GlobalSettingsScreen(
             }
 
             when (selectedTab) {
-                0 -> GlobalModelsTab(
-                    models = models,
-                    currentDefaultModelId = currentDefaultModelId,
-                    currentDefaultThinkingLevel = currentDefaultThinkingLevel,
-                    onSetDefaultModel = onSetDefaultModel,
-                    onSetDefaultThinkingLevel = onSetDefaultThinkingLevel,
-                    onRefreshModels = onRefreshModels,
-                    onSaveProviderApiKey = onSaveProviderApiKey,
-                    onSaveCustomModel = onSaveCustomModel,
-                    onDeleteModel = onDeleteModel,
-                    onLoadModelsRawConfig = onLoadModelsRawConfig,
-                    onSaveModelsRawConfig = onSaveModelsRawConfig
-                )
+                0 -> {
+                    if (apiClient != null) {
+                        GlobalModelsConfigTab(
+                            apiClient = apiClient,
+                            currentDefaultThinkingLevel = currentDefaultThinkingLevel,
+                            onSetDefaultThinkingLevel = onSetDefaultThinkingLevel,
+                            onModelsConfigChanged = onRefreshModels
+                        )
+                    } else {
+                        GlobalModelsTab(
+                            models = models,
+                            currentDefaultModelId = currentDefaultModelId,
+                            currentDefaultThinkingLevel = currentDefaultThinkingLevel,
+                            onSetDefaultModel = onSetDefaultModel,
+                            onSetDefaultThinkingLevel = onSetDefaultThinkingLevel,
+                            onRefreshModels = onRefreshModels,
+                            onSaveProviderApiKey = onSaveProviderApiKey,
+                            onSaveCustomModel = onSaveCustomModel,
+                            onDeleteModel = onDeleteModel,
+                            onLoadModelsRawConfig = onLoadModelsRawConfig,
+                            onSaveModelsRawConfig = onSaveModelsRawConfig
+                        )
+                    }
+                }
                 1 -> GlobalSkillsTab(
                     skills = skills,
                     onToggleSkill = onToggleSkill,

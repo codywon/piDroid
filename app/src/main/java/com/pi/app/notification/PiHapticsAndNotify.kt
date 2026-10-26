@@ -89,26 +89,11 @@ class PiHapticsAndNotify(private val context: Context) {
      */
     fun playTaskCompletedSound(force: Boolean = false) {
         if (!force && !prefs.completionSoundEnabled) return
-        try {
-            val toneGen = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 75)
-            toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 180)
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                runCatching { toneGen.release() }
-            }, 260L)
-        } catch (_: Exception) {
-            try {
-                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                val ringtone = RingtoneManager.getRingtone(context, uri)
-                ringtone?.play()
-            } catch (_: Exception) {
-            }
-        }
+        PiSoundSynthesizer.play(context)
     }
 
     /**
-     * 需要审批危险命令触觉反馈：警示长震
-     */
-    fun vibrateApprovalRequired() {
+     * fun vibrateApprovalRequired() {
         if (!prefs.hapticsEnabled) return
         val vib = vibrator ?: return
         if (!vib.hasVibrator()) return
