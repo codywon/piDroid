@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.5.9] - 2026-10-26
+
+### 🎨 会话窗口底栏排版与全面屏适配体验优化 (Bottom Bar Metrics & Curved Screen Optimization)
+- **移除底栏重复的压缩按钮**：
+  - 输入框上方已具备专属且功能完善的上下文压缩按钮（带 70% 阈值亮黄预警与转圈动效），彻底移除底部状态栏右侧重复的 `[* 压缩]` 胶囊组件，释放出近 80dp 的横向排版空间；
+- **扩大全面屏左右安全边距（20dp）**：
+  - 将底部栏水平 padding 从 `14dp` 拓展至 `20dp`，从根源上杜绝现代 Android 手机物理大圆角屏幕和曲面屏对左侧数据指标（如上下文 `DataUsage` 图标）的裁切遮挡；
+- **4 核心指标匀称呼吸感排布**：
+  - 采用 `Arrangement.SpaceBetween` 左右通透排布 4 个关键数据指标：
+    1. **上下文占用**：`Icons.Default.DataUsage` + `$percent%`（超 70% 警示琥珀黄、超 90% 高危珊瑚红）；
+    2. **输入 Tokens**：`↑ $inTokens in`（箭头弱化辅助对比）；
+    3. **输出 Tokens**：`↓ $outTokens out`；
+    4. **缓存读取量**：`Icons.Default.Bolt` + `$cacheTokensStr`（如 `58.9k cache R`，天蓝色闪电高亮）；
+  - 底部指标整条可点击一键唤醒 Token HUD 对话框，查看全面详细的统计大盘。
+
+---
+
 ## [1.5.8] - 2026-10-26
 
 ### 📊 通知中心与大盘体验重构 (Smart Foreground Notification & Task Counter)

@@ -708,32 +708,31 @@ fun ChatScreen(
                     }
                 }
 
-                // 4. 底部极简图标化指标栏（对标 pi-web：缓存 Token 自动换算 + 输入输出 + 右侧 * 压缩 按钮）
+                // 4. 底部极简指标栏（4 个核心参数合理分布，左右安全边距避免圆角屏遮挡，点击呼出 HUD）
                 val percent = (tokenStats.contextUsagePercent * 100).toInt().coerceIn(0, 100)
                 val inTokens = TokenStats.formatTokenCompact(tokenStats.inputTokens)
                 val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
                 val cacheTokensStr = TokenStats.formatCacheCompact(tokenStats.cacheReadTokens)
-                val isNearThreshold = percent >= 70
                 val ctxColor = when {
                     percent >= 90 -> Color(0xFFCF222E)
                     percent >= 70 -> Color(0xFFD29922)
                     else -> theme.textSecondary
                 }
 
-                Row(
+                Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 14.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                        .clickable { showHudDialog = true },
+                    color = Color.Transparent
                 ) {
-                    // 指标组 (点击弹出完整 HUD 详情)
                     Row(
-                        modifier = Modifier.clickable { showHudDialog = true },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        // 1) 上下文占用百分比 (图标 + 百分比)
+                        // 1) 上下文占用 (图标 + 百分比)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
@@ -741,79 +740,76 @@ fun ChatScreen(
                             Icon(
                                 imageVector = Icons.Default.DataUsage,
                                 contentDescription = "上下文占用",
-                                modifier = Modifier.size(11.dp),
+                                modifier = Modifier.size(12.dp),
                                 tint = ctxColor
                             )
                             Text(
                                 text = "$percent%",
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = ctxColor
                             )
                         }
 
-                        Text(text = "·", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = theme.outline)
-
-                        // 2) 输入与输出 Token
-                        Text(
-                            text = "$inTokens in · $outTokens out",
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.5.sp,
-                            color = theme.textSecondary
-                        )
-
-                        Text(text = "·", fontFamily = FontFamily.Monospace, fontSize = 10.sp, color = theme.outline)
-
-                        // 3) 缓存读取 Token (自动换算单位，如 58.9k cache R)
+                        // 2) 输入 Token (↑ in)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
+                            Text(
+                                text = "↑",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textMuted
+                            )
+                            Text(
+                                text = "$inTokens in",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = theme.textSecondary
+                            )
+                        }
+
+                        // 3) 输出 Token (↓ out)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                        ) {
+                            Text(
+                                text = "↓",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textMuted
+                            )
+                            Text(
+                                text = "$outTokens out",
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp,
+                                color = theme.textSecondary
+                            )
+                        }
+
+                        // 4) 缓存读取 Token (闪电图标 + 自动换算，如 58.9k cache R)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.Default.Bolt,
                                 contentDescription = "缓存读取",
-                                modifier = Modifier.size(11.dp),
+                                modifier = Modifier.size(12.dp),
                                 tint = if (tokenStats.cacheReadTokens > 0) Color(0xFF60A5FA) else theme.textMuted
                             )
                             Text(
                                 text = cacheTokensStr,
                                 fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
+                                fontSize = 11.sp,
+                                fontWeight = if (tokenStats.cacheReadTokens > 0) FontWeight.Medium else FontWeight.Normal,
                                 color = if (tokenStats.cacheReadTokens > 0) theme.textPrimary else theme.textMuted
                             )
-                        }
-                    }
-
-                    // 右侧：对标 pi-web 的 [* 压缩] 按钮 (达 70% 自动高亮提醒)
-                    Surface(
-                        shape = RoundedCornerShape(6.dp),
-                        color = if (isNearThreshold) Color(0xFFD29922).copy(alpha = 0.15f) else theme.surfaceContainer,
-                        border = BorderStroke(1.dp, if (isNearThreshold) Color(0xFFD29922) else theme.outline),
-                        modifier = Modifier.clickable { onCompactContext() }
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        ) {
-                            if (isCompacting) {
-                                CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("压缩中...", fontSize = 10.sp, color = theme.primary)
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Compress,
-                                    contentDescription = "压缩",
-                                    modifier = Modifier.size(11.dp),
-                                    tint = if (isNearThreshold) Color(0xFFD29922) else theme.textSecondary
-                                )
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text(
-                                    text = if (isNearThreshold) "需压缩" else "压缩",
-                                    fontSize = 10.sp,
-                                    color = if (isNearThreshold) Color(0xFFD29922) else theme.textSecondary
-                                )
-                            }
                         }
                     }
                 }
