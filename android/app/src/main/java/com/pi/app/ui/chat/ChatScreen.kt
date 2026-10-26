@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.*
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.DisableSelection
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -1905,12 +1907,14 @@ fun PiWebThinkingCard(
                     Spacer(modifier = Modifier.height(6.dp))
                     HorizontalDivider(color = theme.outline.copy(alpha = 0.4f), thickness = 0.5.dp)
                     Spacer(modifier = Modifier.height(6.dp))
-                    Text(
-                        text = thinking.trim(),
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp,
-                        color = theme.textSecondary
-                    )
+                    SelectionContainer {
+                        Text(
+                            text = thinking.trim(),
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            color = theme.textSecondary
+                        )
+                    }
                 }
             }
         }

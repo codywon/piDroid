@@ -1475,7 +1475,15 @@ class MainActivity : ComponentActivity() {
                                 agentPhaseLabel = null
                                 keepAliveManager.releaseWakeLock()
                                 syncPersistentForegroundService(isBusy = false, project = currentProject)
-                                Toast.makeText(this@MainActivity, "指令发送失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                val errText = err.message ?: "网络或服务端异常"
+                                messages.add(
+                                    ChatItem(
+                                        role = MessageRole.AGENT,
+                                        content = "⚠️ 指令发送失败: $errText",
+                                        isStreaming = false
+                                    )
+                                )
+                                Toast.makeText(this@MainActivity, "指令发送失败: $errText", Toast.LENGTH_LONG).show()
                             }
                         }
                     },

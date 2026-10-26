@@ -684,17 +684,32 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
 
                     val startIndexForTurn = chatItems.size
+                    val errMsg = msgObj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
+                        ?: (if (msgObj.get("stopReason")?.takeIf { !it.isJsonNull }?.asString == "error") "上游模型异常中断" else null)
+
                     if (text.isNotBlank() || !thinking.isNullOrBlank() || assistantMedia.isNotEmpty()) {
                         val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
+                        val fullContent = if (!errMsg.isNullOrBlank() && !text.contains(errMsg)) {
+                            (text + "\n\n⚠️ 模型服务异常: $errMsg").trim()
+                        } else text
                         chatItems.add(ChatItem(
                             id = "hist_${sessionId}_${chatItems.size}_agent",
                             role = MessageRole.AGENT,
-                            content = text,
+                            content = fullContent,
                             thinking = thinking,
                             thinkingDurationSec = estSec,
                             mediaList = assistantMedia,
                             modelName = msgModelName,
                             usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
+                            timestamp = timestamp
+                        ))
+                    } else if (!errMsg.isNullOrBlank() && toolCalls.isEmpty()) {
+                        // 彻底解决上游报错且内容为空时静默吞掉的问题 (如 HTTP 422 developer 角色拒收报错)
+                        chatItems.add(ChatItem(
+                            id = "hist_${sessionId}_${chatItems.size}_error",
+                            role = MessageRole.AGENT,
+                            content = "⚠️ 模型服务异常:\n$errMsg",
+                            modelName = msgModelName,
                             timestamp = timestamp
                         ))
                     }

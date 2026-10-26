@@ -5,6 +5,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -32,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.RemoteBrowseData
 import com.pi.app.data.model.RemoteDirEntry
+import android.widget.Toast
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.WorkspaceInfo
 import com.pi.app.ui.settings.ServerConfigDialog
@@ -88,6 +91,7 @@ fun PiWebRunningSpinner(
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SessionListScreen(
     deviceName: String,
@@ -119,6 +123,13 @@ fun SessionListScreen(
     val coroutineScope = rememberCoroutineScope()
     var showManualDialog by remember { mutableStateOf(false) }
     var showAddWorkspaceDialog by remember { mutableStateOf(false) }
+    var selectedMenuWorkspace by remember { mutableStateOf<Workspace?>(null) }
+    var showRenameWsDialog by remember { mutableStateOf<Workspace?>(null) }
+    var renameWsInput by remember { mutableStateOf("") }
+    var showDeleteAllSessionsDialog by remember { mutableStateOf<Workspace?>(null) }
+    var showArchivedSessionsDialog by remember { mutableStateOf<Workspace?>(null) }
+    var pinnedWorkspaces by remember { mutableStateOf(prefs.getPinnedWorkspaces()) }
+    var wsOrder by remember { mutableStateOf(prefs.getWorkspaceOrder()) }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
     var renamingSession by remember { mutableStateOf<Session?>(null) }
@@ -225,6 +236,7 @@ fun SessionListScreen(
                         .statusBarsPadding()
                         .padding(16.dp)
                 ) {
+                    // 🌟 顶栏：标题 + 右侧新增项目 [+] 小图标 + 关闭按钮 (释放顶部宝贵高度)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -243,25 +255,24 @@ fun SessionListScreen(
                                 color = theme.textMuted
                             )
                         }
-                        IconButton(onClick = { coroutineScope.launch { drawerState.close() } }) {
-                            Icon(Icons.Default.Close, contentDescription = "关闭", tint = theme.textSecondary)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { showAddWorkspaceDialog = true },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = "新建/添加项目", tint = theme.primary, modifier = Modifier.size(20.dp))
+                            }
+                            Spacer(modifier = Modifier.width(2.dp))
+                            IconButton(
+                                onClick = { coroutineScope.launch { drawerState.close() } },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "关闭", tint = theme.textSecondary, modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-                    Button(
-                        onClick = { showAddWorkspaceDialog = true },
-                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                        shape = RoundedCornerShape(8.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.CreateNewFolder, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("添加 / 新建远程项目目录", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     val globalPinnedCount = remember(sessions, pinnedSessionIds) {
                         sessions.count { pinnedSessionIds.contains(it.id) }
@@ -342,33 +353,53 @@ fun SessionListScreen(
                             }
                         }
 
-                        items(workspaces) { ws ->
+                        // 🌟 工作区项目排序列表：置顶排在前面，内部根据用户偏好排序
+                        val sortedWorkspaces = remember(workspaces, pinnedWorkspaces, wsOrder) {
+                            workspaces.sortedWith(
+                                compareByDescending<Workspace> { pinnedWorkspaces.contains(it.path) }
+                                    .thenBy { ws ->
+                                        val idx = wsOrder.indexOf(ws.path)
+                                        if (idx != -1) idx else Int.MAX_VALUE
+                                    }
+                            )
+                        }
+
+                        items(sortedWorkspaces, key = { it.path }) { ws ->
                             val isSelected = ws.path == selectedWorkspacePath
+                            val isPinned = pinnedWorkspaces.contains(ws.path)
+                            val customName = prefs.getWorkspaceCustomName(ws.path)
+                            val displayName = customName ?: ws.displayName
+
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
                                 color = if (isSelected) theme.primary.copy(alpha = 0.14f) else Color.Transparent,
                                 border = if (isSelected) BorderStroke(1.dp, theme.primary) else null,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable {
-                                        selectedWorkspacePath = ws.path
-                                        coroutineScope.launch { drawerState.close() }
-                                    }
+                                    .combinedClickable(
+                                        onClick = {
+                                            selectedWorkspacePath = ws.path
+                                            coroutineScope.launch { drawerState.close() }
+                                        },
+                                        onLongClick = {
+                                            selectedMenuWorkspace = ws
+                                        }
+                                    )
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.Folder,
+                                        imageVector = if (isPinned) Icons.Default.PushPin else Icons.Default.Folder,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
-                                        tint = if (isSelected) theme.primary else theme.textSecondary
+                                        tint = if (isPinned) Color(0xFFEAB308) else (if (isSelected) theme.primary else theme.textSecondary)
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
-                                            text = ws.displayName,
+                                            text = displayName,
                                             style = MaterialTheme.typography.bodyMedium,
                                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                             color = if (isSelected) theme.primary else theme.textPrimary,
@@ -407,7 +438,7 @@ fun SessionListScreen(
                                                 )
                                             }
                                         }
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
                                     }
 
                                     Surface(
@@ -421,8 +452,55 @@ fun SessionListScreen(
                                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                         )
                                     }
+
+                                    // 快捷操作图标 (点击也可直接呼出项目维护菜单)
+                                    IconButton(
+                                        onClick = { selectedMenuWorkspace = ws },
+                                        modifier = Modifier.size(26.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreVert,
+                                            contentDescription = "项目操作",
+                                            modifier = Modifier.size(15.dp),
+                                            tint = theme.textMuted
+                                        )
+                                    }
                                 }
                             }
+                        }
+
+                        // 🌟 底部常驻轻量入口：打开 / 添加其他项目 (1:1 对标 pi-web 底部架构)
+                        item(key = "workspace_add_bottom_item") {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = Color.Transparent,
+                                border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.6f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showAddWorkspaceDialog = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.CreateNewFolder,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                        tint = theme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "打开 / 添加其他项目...",
+                                        fontSize = 11.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = theme.primary
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
                         }
                     }
                 }
@@ -951,7 +1029,464 @@ fun SessionListScreen(
         )
     }
 
-    if (showAddWorkspaceDialog) {
+
+    // ==========================================
+    // 🌟 对标 pi-web 源码级实现：工作区项目长按维护操作面板
+    // ==========================================
+    if (selectedMenuWorkspace != null) {
+        val targetWs = selectedMenuWorkspace!!
+        val isPinned = pinnedWorkspaces.contains(targetWs.path)
+        val customName = prefs.getWorkspaceCustomName(targetWs.path)
+        val wsDisplayName = customName ?: targetWs.displayName
+
+        ModalBottomSheet(
+            onDismissRequest = { selectedMenuWorkspace = null },
+            containerColor = theme.surfaceContainerLow,
+            dragHandle = { BottomSheetDefaults.DragHandle() }
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .navigationBarsPadding(),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                // 头部：项目名称与全路径
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = theme.primary.copy(alpha = 0.12f),
+                        border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.35f)),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Default.Folder, contentDescription = null, tint = theme.primary, modifier = Modifier.size(20.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = wsDisplayName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
+                            if (isPinned) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Icon(Icons.Default.PushPin, contentDescription = "已置顶", tint = Color(0xFFEAB308), modifier = Modifier.size(13.dp))
+                            }
+                        }
+                        Text(
+                            text = targetWs.path,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // 板块 1：核心属性与快速进入
+                // 1. 置顶项目 / 取消置顶项目
+                WorkspaceMenuActionItem(
+                    icon = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
+                    iconTint = if (isPinned) Color(0xFFEAB308) else theme.primary,
+                    title = if (isPinned) "取消置顶项目" else "置顶项目",
+                    subtitle = if (isPinned) "从大盘顶部移除常驻优先排列" else "固定在工作区项目列表最顶端",
+                    onClick = {
+                        val willPin = prefs.togglePinWorkspace(targetWs.path)
+                        pinnedWorkspaces = prefs.getPinnedWorkspaces()
+                        selectedMenuWorkspace = null
+                        Toast.makeText(context, if (willPin) "已置顶该项目" else "已取消置顶", Toast.LENGTH_SHORT).show()
+                    }
+                )
+
+                // 2. 重命名项目别名...
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.Edit,
+                    iconTint = theme.textPrimary,
+                    title = "重命名项目名称...",
+                    subtitle = if (customName != null) "当前别名: $customName (支持一键恢复)" else "为项目设置更友好的专属显示名称",
+                    onClick = {
+                        renameWsInput = wsDisplayName
+                        showRenameWsDialog = targetWs
+                        selectedMenuWorkspace = null
+                    }
+                )
+
+                // 3. 在新会话中打开
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.OpenInNew,
+                    iconTint = theme.primary,
+                    title = "在新会话中打开",
+                    subtitle = "切换至该工作区并直接开启新的任务会话",
+                    onClick = {
+                        selectedWorkspacePath = targetWs.path
+                        selectedMenuWorkspace = null
+                        coroutineScope.launch {
+                            drawerState.close()
+                            onNewSessionClick(targetWs.path)
+                        }
+                    }
+                )
+
+                HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // 板块 2：排序微调 (上移 / 下移)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = theme.surfaceContainer,
+                        border = BorderStroke(0.6.dp, theme.outline),
+                        modifier = Modifier.weight(1f).clickable {
+                            val currentList = workspaces.map { it.path }.toMutableList()
+                            val idx = currentList.indexOf(targetWs.path)
+                            if (idx > 0) {
+                                java.util.Collections.swap(currentList, idx, idx - 1)
+                                prefs.saveWorkspaceOrder(currentList)
+                                wsOrder = currentList
+                                Toast.makeText(context, "已上移项目", Toast.LENGTH_SHORT).show()
+                            }
+                            selectedMenuWorkspace = null
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("上移项目", fontSize = 11.5.sp, color = theme.textPrimary)
+                        }
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = theme.surfaceContainer,
+                        border = BorderStroke(0.6.dp, theme.outline),
+                        modifier = Modifier.weight(1f).clickable {
+                            val currentList = workspaces.map { it.path }.toMutableList()
+                            val idx = currentList.indexOf(targetWs.path)
+                            if (idx >= 0 && idx < currentList.lastIndex) {
+                                java.util.Collections.swap(currentList, idx, idx + 1)
+                                prefs.saveWorkspaceOrder(currentList)
+                                wsOrder = currentList
+                                Toast.makeText(context, "已下移项目", Toast.LENGTH_SHORT).show()
+                            }
+                            selectedMenuWorkspace = null
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("下移项目", fontSize = 11.5.sp, color = theme.textPrimary)
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(2.dp))
+
+                // 板块 3：会话生命周期与清理维护 (对标 pi-web)
+                val projectSessions = remember(sessions, targetWs) {
+                    sessions.filter { it.cwd == targetWs.path || it.project == targetWs.displayName }
+                }
+                val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
+                val olderSessions = remember(projectSessions) {
+                    projectSessions.filter { !it.active && (it.updatedAt != null && it.updatedAt < weekAgo || it.timestamp < weekAgo) && !prefs.isSessionArchived(it.id) }
+                }
+                val archivedCount = remember(projectSessions) {
+                    projectSessions.count { prefs.isSessionArchived(it.id) }
+                }
+
+                // 4. 归档 7 天前的会话 · N
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.Archive,
+                    iconTint = if (olderSessions.isNotEmpty()) theme.primary else theme.textMuted,
+                    title = "归档 7 天前的会话 · ${olderSessions.size}",
+                    subtitle = if (olderSessions.isNotEmpty()) "一键批量沉淀已逾一周的 ${olderSessions.size} 个历史会话" else "暂无超过 7 天的未归档历史会话",
+                    enabled = olderSessions.isNotEmpty(),
+                    onClick = {
+                        olderSessions.forEach { prefs.toggleArchiveSession(it.id) }
+                        selectedMenuWorkspace = null
+                        Toast.makeText(context, "已成功归档 ${olderSessions.size} 个 7 天前会话", Toast.LENGTH_SHORT).show()
+                    }
+                )
+
+                // 5. 查看已归档会话 · N
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.FolderZip,
+                    iconTint = if (archivedCount > 0) Color(0xFF8B5CF6) else theme.textMuted,
+                    title = "查看已归档会话 · $archivedCount",
+                    subtitle = if (archivedCount > 0) "浏览该项目已沉淀的 $archivedCount 个归档会话，支持一键恢复" else "该项目暂无归档会话",
+                    enabled = archivedCount > 0,
+                    onClick = {
+                        showArchivedSessionsDialog = targetWs
+                        selectedMenuWorkspace = null
+                    }
+                )
+
+                // 6. 删除全部会话... (危险红色警告操作)
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.DeleteForever,
+                    iconTint = Color(0xFFEF4444),
+                    title = "删除全部会话... · ${projectSessions.size}",
+                    subtitle = "删除所有历史会话（正在运行的会话会自动保留）",
+                    titleColor = Color(0xFFEF4444),
+                    enabled = projectSessions.isNotEmpty(),
+                    onClick = {
+                        showDeleteAllSessionsDialog = targetWs
+                        selectedMenuWorkspace = null
+                    }
+                )
+            }
+        }
+    }
+
+    // 弹窗 A：重命名项目别名对话框 (支持恢复默认名称)
+    if (showRenameWsDialog != null) {
+        val target = showRenameWsDialog!!
+        AlertDialog(
+            onDismissRequest = { showRenameWsDialog = null },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Text("重命名项目名称", fontWeight = FontWeight.Bold, color = theme.textPrimary, fontSize = 16.sp)
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("路径: ${target.path}", fontSize = 11.sp, color = theme.textMuted, fontFamily = FontFamily.Monospace)
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = theme.surfaceContainer,
+                        border = BorderStroke(1.dp, theme.outline),
+                        modifier = Modifier.fillMaxWidth().height(42.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.CenterStart, modifier = Modifier.padding(horizontal = 10.dp)) {
+                            BasicTextField(
+                                value = renameWsInput,
+                                onValueChange = { renameWsInput = it },
+                                singleLine = true,
+                                textStyle = TextStyle(color = theme.textPrimary, fontSize = 13.sp),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.primary),
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        prefs.saveWorkspaceCustomName(target.path, renameWsInput.trim())
+                        showRenameWsDialog = null
+                        Toast.makeText(context, "已更新项目名称", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
+                ) {
+                    Text("保存别名", color = Color.White)
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (prefs.getWorkspaceCustomName(target.path) != null) {
+                        TextButton(
+                            onClick = {
+                                prefs.saveWorkspaceCustomName(target.path, null)
+                                showRenameWsDialog = null
+                                Toast.makeText(context, "已恢复项目默认名称", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("恢复默认", color = Color(0xFFEF4444))
+                        }
+                    }
+                    TextButton(onClick = { showRenameWsDialog = null }) {
+                        Text("取消", color = theme.textSecondary)
+                    }
+                }
+            }
+        )
+    }
+
+    // 弹窗 B：删除全部会话二次危险确认对话框 (对标 pi-web)
+    if (showDeleteAllSessionsDialog != null) {
+        val target = showDeleteAllSessionsDialog!!
+        val projectSessions = remember(sessions, target) {
+            sessions.filter { it.cwd == target.path || it.project == target.displayName }
+        }
+        val runningSessions = remember(projectSessions) { projectSessions.filter { it.active } }
+        val toDeleteSessions = remember(projectSessions) { projectSessions.filterNot { it.active } }
+
+        AlertDialog(
+            onDismissRequest = { showDeleteAllSessionsDialog = null },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("删除 ${target.displayName} 的全部会话", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444), fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "此操作不可逆！置顶和已归档的历史会话均将被永久删除。",
+                        fontSize = 12.sp,
+                        color = theme.textPrimary
+                    )
+                    if (runningSessions.isNotEmpty()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFF22C55E).copy(alpha = 0.12f),
+                            border = BorderStroke(0.8.dp, Color(0xFF22C55E).copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "💡 正在运行中的 ${runningSessions.size} 个活跃会话会被完整保留。",
+                                fontSize = 11.5.sp,
+                                color = Color(0xFF16A34A),
+                                modifier = Modifier.padding(8.dp)
+                            )
+                        }
+                    }
+                    Text(
+                        text = "即将永久删除 ${toDeleteSessions.size} 个会话。",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.textMuted
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val count = toDeleteSessions.size
+                        toDeleteSessions.forEach { s ->
+                            onDeleteSession(s.id)
+                        }
+                        showDeleteAllSessionsDialog = null
+                        Toast.makeText(context, "已删除 $count 个历史会话" + (if (runningSessions.isNotEmpty()) "，保留 ${runningSessions.size} 个运行中会话" else ""), Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
+                ) {
+                    Text("确认删除 (${toDeleteSessions.size})", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteAllSessionsDialog = null }) {
+                    Text("取消", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
+    // 弹窗 C：查看与管理项目已归档会话弹窗
+    if (showArchivedSessionsDialog != null) {
+        val target = showArchivedSessionsDialog!!
+        val archivedList = remember(sessions, target) {
+            sessions.filter { (it.cwd == target.path || it.project == target.displayName) && prefs.isSessionArchived(it.id) }
+        }
+
+        AlertDialog(
+            onDismissRequest = { showArchivedSessionsDialog = null },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.FolderZip, contentDescription = null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("${target.displayName} 已归档会话 (${archivedList.size})", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = theme.textPrimary)
+                    }
+                    IconButton(onClick = { showArchivedSessionsDialog = null }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.Close, contentDescription = "关闭", modifier = Modifier.size(16.dp))
+                    }
+                }
+            },
+            text = {
+                if (archivedList.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                        Text("暂无归档会话", color = theme.textMuted, fontSize = 12.sp)
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(archivedList, key = { it.id }) { s ->
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = theme.surfaceContainer,
+                                border = BorderStroke(0.6.dp, theme.outline),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = s.name ?: s.id.take(8),
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = FontWeight.Medium,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = "ID: ${s.id.take(12)}...",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.textMuted,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.sp
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    OutlinedButton(
+                                        onClick = {
+                                            prefs.toggleArchiveSession(s.id)
+                                            Toast.makeText(context, "已恢复会话「${s.name ?: s.id.take(6)}」", Toast.LENGTH_SHORT).show()
+                                        },
+                                        shape = RoundedCornerShape(6.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                                        modifier = Modifier.height(26.dp)
+                                    ) {
+                                        Icon(Icons.Default.Unarchive, contentDescription = null, modifier = Modifier.size(11.dp))
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text("恢复", fontSize = 10.5.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showArchivedSessionsDialog = null }) {
+                    Text("关闭", color = theme.primary)
+                }
+            }
+        )
+    }
+
+        if (showAddWorkspaceDialog) {
         RemoteWorkspaceDialog(
             initialPath = selectedWorkspacePath,
             onBrowseRemoteDir = onBrowseRemoteDir,
@@ -1686,6 +2221,58 @@ fun SessionCard(
                         color = theme.textMuted,
                         maxLines = 1,
                         softWrap = false
+                    )
+                }
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun WorkspaceMenuActionItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String? = null,
+    iconTint: Color = MaterialTheme.colorScheme.primary,
+    titleColor: Color = LocalAppTheme.current.textPrimary,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = if (enabled) Color.Transparent else theme.surfaceContainerLow.copy(alpha = 0.5f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = enabled, onClick = onClick)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (enabled) iconTint else theme.textMuted,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = if (enabled) titleColor else theme.textMuted
+                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontSize = 10.5.sp,
+                        color = theme.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }

@@ -241,6 +241,55 @@ class AppPreferences(context: Context) {
         prefs.edit().clear().apply()
     }
 
+
+    // 工作区项目置顶管理 (对标 pi-web 项目置顶)
+    fun getPinnedWorkspaces(): Set<String> {
+        return prefs.getStringSet(KEY_PINNED_WORKSPACES, emptySet()) ?: emptySet()
+    }
+
+    fun isWorkspacePinned(path: String): Boolean {
+        return getPinnedWorkspaces().contains(path.trim())
+    }
+
+    fun togglePinWorkspace(path: String): Boolean {
+        val current = getPinnedWorkspaces().toMutableSet()
+        val clean = path.trim()
+        val willPin = !current.contains(clean)
+        if (willPin) {
+            current.add(clean)
+        } else {
+            current.remove(clean)
+        }
+        prefs.edit().putStringSet(KEY_PINNED_WORKSPACES, current).apply()
+        return willPin
+    }
+
+    // 工作区自定义友好别名 (对标 pi-web rename-project & reset-project-name)
+    fun getWorkspaceCustomName(path: String): String? {
+        return prefs.getString("ws_name_${path.trim()}", null)?.takeIf { it.isNotBlank() }
+    }
+
+    fun saveWorkspaceCustomName(path: String, name: String?) {
+        val clean = path.trim()
+        if (name.isNullOrBlank()) {
+            prefs.edit().remove("ws_name_$clean").apply()
+        } else {
+            prefs.edit().putString("ws_name_$clean", name.trim()).apply()
+        }
+    }
+
+    // 工作区自定义排序 (对标 pi-web move-up / move-down)
+    fun getWorkspaceOrder(): List<String> {
+        val raw = prefs.getString(KEY_WORKSPACE_ORDER, "") ?: ""
+        if (raw.isBlank()) return emptyList()
+        return raw.split(";").filter { it.isNotBlank() }
+    }
+
+    fun saveWorkspaceOrder(order: List<String>) {
+        val raw = order.joinToString(";")
+        prefs.edit().putString(KEY_WORKSPACE_ORDER, raw).apply()
+    }
+
     companion object {
         private const val KEY_SERVER_URL = "key_server_url"
         private const val KEY_AUTH_TOKEN = "key_auth_token"
@@ -256,7 +305,9 @@ class AppPreferences(context: Context) {
         private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"
         private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"
         private const val KEY_ARCHIVED_SESSIONS = "key_archived_sessions"
-        private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
+            private const val KEY_PINNED_WORKSPACES = "pinned_workspaces"
+    private const val KEY_WORKSPACE_ORDER = "workspace_order"
+    private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     }
 }
