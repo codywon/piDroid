@@ -44,6 +44,26 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_TASK_COMPLETED_NOTIFY, false)
         set(value) = prefs.edit().putBoolean(KEY_TASK_COMPLETED_NOTIFY, value).apply()
 
+    // 应用更新是否允许使用第三方加速镜像：默认关闭。
+    // 开启后安装包会经由第三方代理中转，存在被投毒风险（虽仍会做 SHA-256 与签名校验）。
+    var useUpdateMirrors: Boolean
+        get() = prefs.getBoolean(KEY_USE_UPDATE_MIRRORS, false)
+        set(value) = prefs.edit().putBoolean(KEY_USE_UPDATE_MIRRORS, value).apply()
+
+    // 输入框草稿：按会话隔离保存，防止旋转/切主题/进程回收后丢失未发送内容
+    fun getSessionDraft(sessionId: String): String {
+        if (sessionId.isBlank()) return ""
+        return prefs.getString("draft_$sessionId", "") ?: ""
+    }
+
+    fun saveSessionDraft(sessionId: String, text: String) {
+        if (sessionId.isBlank()) return
+        val key = "draft_$sessionId"
+        prefs.edit().apply {
+            if (text.isBlank()) remove(key) else putString(key, text)
+        }.apply()
+    }
+
     var defaultModelId: String
         get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
         set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
@@ -299,6 +319,7 @@ class AppPreferences(context: Context) {
         private const val KEY_HAPTICS_ENABLED = "key_haptics_enabled"
         private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
         private const val KEY_TASK_COMPLETED_NOTIFY = "key_task_completed_notify"
+        private const val KEY_USE_UPDATE_MIRRORS = "key_use_update_mirrors"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_PROVIDER = "key_default_provider"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"

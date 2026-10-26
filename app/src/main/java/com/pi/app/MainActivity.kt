@@ -1757,7 +1757,12 @@ class MainActivity : ComponentActivity() {
                     result.onSuccess { apkFile ->
                         if (AppUpdateManager.canInstallPackages(this@MainActivity)) {
                             updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
-                            AppUpdateManager.installApk(this@MainActivity, apkFile)
+                            if (!AppUpdateManager.installApk(this@MainActivity, apkFile)) {
+                                updateUiState = UpdateUiState.Error(
+                                    "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                                    info
+                                )
+                            }
                         } else {
                             updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
                         }
@@ -1768,7 +1773,13 @@ class MainActivity : ComponentActivity() {
             },
             onInstall = { file ->
                 if (AppUpdateManager.canInstallPackages(this@MainActivity)) {
-                    AppUpdateManager.installApk(this@MainActivity, file)
+                    if (!AppUpdateManager.installApk(this@MainActivity, file)) {
+                        val currentInfo = (updateUiState as? UpdateUiState.ReadyToInstall)?.info
+                        updateUiState = UpdateUiState.Error(
+                            "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                            currentInfo
+                        )
+                    }
                 } else {
                     val currentInfo = (updateUiState as? UpdateUiState.ReadyToInstall)?.info
                     if (currentInfo != null) {
