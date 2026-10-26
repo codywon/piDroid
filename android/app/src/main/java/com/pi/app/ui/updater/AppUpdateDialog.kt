@@ -321,7 +321,32 @@ fun AppUpdateDialog(
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(14.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            TextButton(
+                                onClick = { AppUpdateManager.openInBrowser(context, state.info.downloadUrl) },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.OpenInBrowser,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = theme.primary
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "改用 Chrome / 浏览器下载",
+                                    fontSize = 12.sp,
+                                    color = theme.primary,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = "正在通过多路国内镜像智能选路下载，完成后将自动呼起系统无缝覆盖安装。",
                             fontSize = 11.sp,

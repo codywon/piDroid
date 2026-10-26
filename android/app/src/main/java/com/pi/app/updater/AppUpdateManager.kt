@@ -68,12 +68,12 @@ object AppUpdateManager {
     private const val KEY_IGNORED_TAG = "key_ignored_version_tag"
     private const val KEY_LAST_CHECK_TIME = "key_last_check_timestamp"
 
-    // 国内知名稳定开源 GitHub Release 下载加速镜像站
+    // 国内精选稳定高速 GitHub Release 下载加速镜像站
     private val MIRROR_PREFIXES = listOf(
         "https://ghfast.top/",
-        "https://ghp.ci/",
-        "https://gh-proxy.com/",
-        "https://ghproxy.net/"
+        "https://github.moeyy.xyz/",
+        "https://ghproxy.net/",
+        "https://gh-proxy.com/"
     )
 
     private val httpClient: OkHttpClient by lazy {
@@ -243,7 +243,7 @@ object AppUpdateManager {
     )
 
     /**
-     * 高速流式下载 APK，支持通道并发竞速测速、低速熔断自动换线与实时速率计算
+     * 高速流式下载 APK，支持真实微块测速优选、HTTP 206 断点无感续传、低速熔断自动换线与实时速率计算
      */
     suspend fun downloadApk(
         context: Context,
@@ -252,44 +252,65 @@ object AppUpdateManager {
     ): Result<File> = withContext(Dispatchers.IO) {
         val updateDir = File(context.cacheDir, "updates").apply { mkdirs() }
         val targetFile = File(updateDir, "piDroid-update.apk")
+        val tempFile = File(updateDir, "piDroid-update.apk.tmp")
+
         if (targetFile.exists()) {
             targetFile.delete()
         }
 
         val allCandidates = mutableListOf<DownloadChannel>().apply {
-            add(DownloadChannel("官方直连 (GitHub Direct)", info.downloadUrl))
-            add(DownloadChannel("国内极速镜像 (ghfast)", "https://ghfast.top/${info.downloadUrl}"))
-            add(DownloadChannel("国内极速镜像 (ghp.ci)", "https://ghp.ci/${info.downloadUrl}"))
-            add(DownloadChannel("国内加速镜像 (gh-proxy)", "https://gh-proxy.com/${info.downloadUrl}"))
+            add(DownloadChannel("国内极速专线 (ghfast)", "https://ghfast.top/${info.downloadUrl}"))
+            add(DownloadChannel("国内高速镜像 (moeyy)", "https://github.moeyy.xyz/${info.downloadUrl}"))
             add(DownloadChannel("国内备用镜像 (ghproxy)", "https://ghproxy.net/${info.downloadUrl}"))
+            add(DownloadChannel("官方直连 (GitHub Direct)", info.downloadUrl))
+            add(DownloadChannel("公益兜底镜像 (gh-proxy)", "https://gh-proxy.com/${info.downloadUrl}"))
         }
 
-        // 步骤 1：轻量并发测速竞速（1200ms），选出响应最快的通道排在首位
+        // 步骤 1：并发真实微块测速（1500ms），选出真实吞吐最快的通道
         val rankedChannels = rankChannelsBySpeed(allCandidates)
         var lastException: Exception? = null
 
         for (channel in rankedChannels) {
             try {
                 Log.d(TAG, "Attempting download from optimal channel [${channel.name}]: ${channel.url}")
-                val request = Request.Builder()
+                val existingBytes = if (tempFile.exists()) tempFile.length() else 0L
+                val isResume = existingBytes > 0 && (info.fileSize <= 0 || existingBytes < info.fileSize)
+
+                val reqBuilder = Request.Builder()
                     .url(channel.url)
                     .header("User-Agent", "Mozilla/5.0 (Linux; Android) piDroid-App")
-                    .build()
 
-                val response = httpClient.newCall(request).execute()
+                if (isResume) {
+                    reqBuilder.header("Range", "bytes=$existingBytes-")
+                    Log.d(TAG, "Resuming download from $existingBytes bytes on ${channel.name}")
+                }
+
+                val response = httpClient.newCall(reqBuilder.build()).execute()
                 if (!response.isSuccessful) {
                     response.close()
                     continue
                 }
 
+                val code = response.code
+                val isPartial = isResume && code == 206
+                val append = isPartial
+                val actualExistingBytes = if (append) existingBytes else 0L
+                if (!append && tempFile.exists()) {
+                    tempFile.delete()
+                }
+
                 val body = response.body ?: continue
-                val contentLength = if (body.contentLength() > 0) body.contentLength() else info.fileSize
+                val totalBytes = if (append) {
+                    actualExistingBytes + body.contentLength()
+                } else {
+                    if (body.contentLength() > 0) body.contentLength() else info.fileSize
+                }
 
                 body.byteStream().use { input ->
-                    FileOutputStream(targetFile).use { output ->
+                    FileOutputStream(tempFile, append).use { output ->
                         val buffer = ByteArray(64 * 1024)
                         var bytesRead: Int
-                        var totalRead = 0L
+                        var totalRead = actualExistingBytes
                         var lastProgressUiTime = 0L
                         var speedSampleStartTime = System.currentTimeMillis()
                         var speedSampleBytes = 0L
@@ -303,13 +324,14 @@ object AppUpdateManager {
 
                             val now = System.currentTimeMillis()
 
-                            // 低速熔断看门狗：前 4 秒如果平均速度低于 120 KB/s，主动断开当前通道换更快的通道
+                            // 低速熔断看门狗：前 4 秒如果平均速度低于 100 KB/s，主动断开当前通道换下一个（断点续传不丢进度）
                             val elapsedSec = (now - connectionStartTime) / 1000.0
-                            if (elapsedSec >= 4.0 && totalRead < contentLength * 0.9) {
-                                val avgSpeedKb = (totalRead / 1024.0) / elapsedSec
-                                if (avgSpeedKb < 120.0) {
-                                    Log.w(TAG, "Watchdog triggered: speed ${avgSpeedKb.toInt()} KB/s < 120 KB/s on ${channel.name}")
-                                    throw IOException("当前通道连接速率过低 (${avgSpeedKb.toInt()} KB/s)，自动切换更优镜像通道")
+                            if (elapsedSec >= 4.0 && totalRead < totalBytes * 0.95) {
+                                val currentChannelDownloaded = totalRead - actualExistingBytes
+                                val avgSpeedKb = (currentChannelDownloaded / 1024.0) / elapsedSec
+                                if (avgSpeedKb < 100.0) {
+                                    Log.w(TAG, "Watchdog triggered: avg speed ${avgSpeedKb.toInt()} KB/s < 100 KB/s on ${channel.name}")
+                                    throw IOException("当前通道连接速率过低 (${avgSpeedKb.toInt()} KB/s)，平滑断点切换下一通道...")
                                 }
                             }
 
@@ -323,15 +345,15 @@ object AppUpdateManager {
                             }
 
                             // 刷新 UI 进度（约 120ms 一次）
-                            if (now - lastProgressUiTime >= 120 || totalRead == contentLength) {
+                            if (now - lastProgressUiTime >= 120 || totalRead == totalBytes) {
                                 lastProgressUiTime = now
-                                val progress = if (contentLength > 0) {
-                                    (totalRead.toFloat() / contentLength.toFloat()).coerceIn(0f, 1f)
+                                val progress = if (totalBytes > 0) {
+                                    (totalRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
                                 } else {
                                     0f
                                 }
                                 withContext(Dispatchers.Main) {
-                                    onProgress(progress, totalRead, contentLength, currentSpeedText, channel.name)
+                                    onProgress(progress, totalRead, totalBytes, currentSpeedText, channel.name)
                                 }
                             }
                         }
@@ -340,20 +362,20 @@ object AppUpdateManager {
                 }
 
                 // 完整性校验：下载后的文件必须大于 3MB（防止把 HTML 404 错误页当成 APK 保存）
-                if (targetFile.exists() && targetFile.length() > 3 * 1024 * 1024) {
-                    Log.d(TAG, "Download successfully completed from ${channel.name}, size=${targetFile.length()}")
-                    return@withContext Result.success(targetFile)
-                } else {
-                    targetFile.delete()
+                if (tempFile.exists() && tempFile.length() > 3 * 1024 * 1024) {
+                    if (targetFile.exists()) targetFile.delete()
+                    if (tempFile.renameTo(targetFile)) {
+                        Log.d(TAG, "Download successfully completed from ${channel.name}, size=${targetFile.length()}")
+                        return@withContext Result.success(targetFile)
+                    }
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "Download channel [${channel.name}] failed: ${e.message}")
+                Log.w(TAG, "Download channel [${channel.name}] encounter issue: ${e.message}")
                 lastException = e
-                if (targetFile.exists()) targetFile.delete()
             }
         }
 
-        Result.failure(lastException ?: Exception("所有加速下载镜像通道均无法访问，建议点击【用浏览器下载】"))
+        Result.failure(lastException ?: Exception("所有加速下载镜像通道均无法访问，建议点击【改用 Chrome / 浏览器下载】"))
     }
 
     private suspend fun rankChannelsBySpeed(candidates: List<DownloadChannel>): List<DownloadChannel> = withContext(Dispatchers.IO) {
@@ -362,25 +384,39 @@ object AppUpdateManager {
                 async {
                     val start = System.currentTimeMillis()
                     val isAlive = try {
+                        // 使用 GET 并带 Range: bytes=0-4095 测试真实小分块拉取能力（杜绝纯 HEAD 握手假象与 405 拦截）
                         val req = Request.Builder()
                             .url(channel.url)
-                            .head()
+                            .header("Range", "bytes=0-4095")
                             .header("User-Agent", "Mozilla/5.0 (Linux; Android) piDroid-App")
                             .build()
                         val client = httpClient.newBuilder()
-                            .connectTimeout(1200, TimeUnit.MILLISECONDS)
-                            .readTimeout(1200, TimeUnit.MILLISECONDS)
+                            .connectTimeout(1500, TimeUnit.MILLISECONDS)
+                            .readTimeout(1500, TimeUnit.MILLISECONDS)
                             .build()
-                        client.newCall(req).execute().use { it.isSuccessful }
+                        val resp = client.newCall(req).execute()
+                        val code = resp.code
+                        val success = resp.isSuccessful && (code == 200 || code == 206)
+                        if (success) {
+                            resp.body?.byteStream()?.use { stream ->
+                                val buf = ByteArray(4096)
+                                stream.read(buf) // 真实读取接收数据流
+                            }
+                        } else {
+                            resp.close()
+                        }
+                        success
                     } catch (_: Exception) {
                         false
                     }
                     val duration = System.currentTimeMillis() - start
-                    Pair(channel, if (isAlive) duration else Long.MAX_VALUE)
+                    // gh-proxy.com 因全网共用单连接限速严重，增加 350ms 惩罚权重，优先让大带宽镜像排前
+                    val penalty = if (channel.url.contains("gh-proxy.com")) 350L else 0L
+                    Pair(channel, if (isAlive) (duration + penalty) else Long.MAX_VALUE)
                 }
             }.awaitAll()
 
-            // 测速成功的优先按延迟从低到高排列，超时的放在最后
+            // 测速成功的优先按真实耗时从低到高排列，超时的放在最后
             scoredList.sortedBy { it.second }.map { it.first }
         } catch (_: Exception) {
             candidates
@@ -396,9 +432,26 @@ object AppUpdateManager {
     }
 
     /**
-     * 调用系统外部浏览器下载 APK（逃生通道）
+     * 智能调用外部浏览器下载 APK（逃生通道）
+     * 优先定向调起 Google Chrome 浏览器，规避国产 ROM 应用商店拦截；若未安装 Chrome 则调起系统默认浏览器。
      */
     fun openInBrowser(context: Context, url: String) {
+        // 先尝试定向拉起 Google Chrome
+        try {
+            val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                setPackage("com.android.chrome")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            val pm = context.packageManager
+            if (chromeIntent.resolveActivity(pm) != null) {
+                context.startActivity(chromeIntent)
+                return
+            }
+        } catch (_: Exception) {
+            // Chrome 未安装或受限，平滑降级
+        }
+
+        // 降级为系统标准默认浏览器
         try {
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)

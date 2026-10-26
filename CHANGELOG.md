@@ -2,6 +2,16 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.5.3] - 2026-10-26
+
+### 🚀 下载引擎重构与加速优化 (Download & Updater)
+- **真实微块吞吐测速 (Range 4KB GET)**：废除易受伪造延迟欺骗的轻量 HEAD 探测，改为真实拉取 4KB 二进制数据块，精确测量各镜像站的真实首包延迟与传输带宽；
+- **国内高速镜像池洗牌与大带宽置顶**：优先接入 `ghfast.top`、`github.moeyy.xyz`、`ghproxy.net` 等专为 Release 加速的大带宽节点，将公用限速严重的 `gh-proxy.com` 调整至备用兜底位；
+- **HTTP 206 断点无感续传**：实现完整的 HTTP Range 断点续传机制，当下游网络波动触发自动换线时，直接从已下载字节位置平滑接续，进度只增不退，告别重头再来的卡顿；
+- **定向唤起 Google Chrome 纯净下载**：更新下载界面提供极简的【改用 Chrome / 浏览器下载】通道，优先定向调起 Chrome 极速下载，彻底规避国产手机厂商自带浏览器的弹窗干扰与应用商店劫持。
+
+---
+
 ## [1.5.2] - 2026-10-26
 
 ### 🛠️ 核心修复 (Bug Fixes)
