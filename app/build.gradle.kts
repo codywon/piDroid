@@ -12,8 +12,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 21
-        versionName = "1.6.5"
+        versionCode = 22
+        versionName = "1.6.6"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -28,14 +28,15 @@ android {
                 keyPassword = "android"
             }
         }
+        // 发布签名完全由环境变量提供，不再内置任何默认密码。
+        // 缺少 keystore/密码时 AGP 的 validateSigning 会直接失败，
+        // 而不是静默产出一个未签名的 APK。配置方法见 docs/SIGNING.md。
         create("release") {
             val keystoreFile = file("${rootDir}/keystore/release.jks")
-            if (keystoreFile.exists()) {
-                storeFile = keystoreFile
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "***REMOVED-ROTATED-PASSWORD***"
-                keyAlias = System.getenv("KEY_ALIAS") ?: "pidroid"
-                keyPassword = System.getenv("KEY_PASSWORD") ?: "***REMOVED-ROTATED-PASSWORD***"
-            }
+            storeFile = keystoreFile.takeIf { it.exists() }
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS") ?: "pidroid"
+            keyPassword = System.getenv("KEY_PASSWORD")
         }
     }
 
@@ -47,7 +48,8 @@ android {
             }
         }
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

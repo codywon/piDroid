@@ -25,7 +25,12 @@ captures/
 *.aab
 dist/
 
-# Note: android/keystore/release.jks is intentionally committed to allow
-# global reproducible builds and seamless version upgrades (overwrite installation).
+# Note: 签名密钥已改为不入库。
+# 历史上的 keystore/release.jks 与明文密码已泄露并作废，新密钥请按
+# docs/SIGNING.md 在本地生成，密码只放在环境变量与 CI Secrets 里。
+keystore/
+*.jks
+*.keystore
+debug.keystore
 
 scratch/
