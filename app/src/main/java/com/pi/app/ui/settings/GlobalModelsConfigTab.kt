@@ -76,7 +76,7 @@ fun GlobalModelsConfigTab(
     var isCatalogFilling by remember { mutableStateOf(false) }
 
     // 折叠高级设置状态
-    var isAdvancedExpanded by remember { mutableStateOf(true) }
+    var isAdvancedExpanded by remember { mutableStateOf(false) }
 
     // 辅助函数：加载服务端配置
     fun loadConfigFromServer() {
@@ -404,22 +404,24 @@ fun GlobalModelsConfigTab(
                                             color = if (isSel) theme.primary else theme.textPrimary
                                         )
 
+                                        // 优雅微型标签：推理思考 (小灯泡/大脑) 与视觉图标，告别深色突兀的竖条T
                                         if (m.reasoning) {
-                                            Spacer(modifier = Modifier.width(5.dp))
-                                            Surface(
-                                                shape = RoundedCornerShape(3.dp),
-                                                color = Color(0xFF1E3A8A).copy(alpha = 0.65f),
-                                                border = BorderStroke(0.5.dp, Color(0xFF60A5FA))
-                                            ) {
-                                                Text(
-                                                    text = "T",
-                                                    fontSize = 8.5.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    color = Color(0xFF93C5FD),
-                                                    modifier = Modifier.padding(horizontal = 3.dp, vertical = 0.5.dp)
-                                                )
-                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Psychology,
+                                                contentDescription = "支持推理思考",
+                                                modifier = Modifier.size(13.dp),
+                                                tint = if (isSel) theme.primary else Color(0xFF8B5CF6)
+                                            )
+                                        }
+                                        if (m.hasVision) {
+                                            Spacer(modifier = Modifier.width(3.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Image,
+                                                contentDescription = "支持图片多模态",
+                                                modifier = Modifier.size(12.dp),
+                                                tint = if (isSel) theme.primary else theme.textMuted
+                                            )
                                         }
                                     }
                                 }
@@ -543,43 +545,59 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
 
-                                    // 测试结果显示行
+                                    // 测试结果通知条：清爽现代风格，自适应高对比度森林绿/绯红，带图标与毫秒延迟
                                     if (testResultText != null) {
+                                        val isSuccess = isTestSuccess == true
+                                        val bgClr = if (isSuccess) Color(0xFF10B981).copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f)
+                                        val borderClr = if (isSuccess) Color(0xFF10B981).copy(alpha = 0.35f) else Color(0xFFEF4444).copy(alpha = 0.35f)
+                                        val textClr = if (isSuccess) Color(0xFF065F46) else Color(0xFF991B1B)
+
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = if (isTestSuccess == true) Color(0xFF1B5E20).copy(alpha = 0.25f) else Color(0xFFB71C1C).copy(alpha = 0.25f),
-                                            border = BorderStroke(1.dp, if (isTestSuccess == true) Color(0xFF4CAF50) else Color(0xFFE57373)),
+                                            color = bgClr,
+                                            border = BorderStroke(1.dp, borderClr),
                                             modifier = Modifier.fillMaxWidth()
                                         ) {
-                                            Text(
-                                                text = testResultText ?: "",
-                                                fontSize = 11.sp,
-                                                color = if (isTestSuccess == true) Color(0xFF81C784) else Color(0xFFEF9A9A),
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp)
-                                            )
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(14.dp),
+                                                    tint = if (isSuccess) Color(0xFF059669) else Color(0xFFDC2626)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = testResultText ?: "",
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = textClr
+                                                )
+                                            }
                                         }
                                     }
 
-                                    // 基础项：ID * 与 Name
+                                    // 基础项：ID * 与 Name (紧凑 36dp 高度单行输入框，独立标签在上方，彻底告别原先 56dp 巨型方框)
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        OutlinedTextField(
+                                        ModelInputField(
                                             value = currentModel.id,
                                             onValueChange = { newId -> updateCurrentModel { it.copy(id = newId) } },
-                                            label = { Text("ID *", fontSize = 11.sp, color = theme.textSecondary) },
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                            singleLine = true,
+                                            label = "ID *",
+                                            placeholder = "如 deepseek-flash",
+                                            isMonospace = true,
                                             modifier = Modifier.weight(1f)
                                         )
 
-                                        OutlinedTextField(
+                                        ModelInputField(
                                             value = currentModel.name,
                                             onValueChange = { newName -> updateCurrentModel { it.copy(name = newName) } },
-                                            label = { Text("Name", fontSize = 11.sp, color = theme.textSecondary) },
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.sp),
-                                            singleLine = true,
+                                            label = "Name",
+                                            placeholder = "如 DeepSeek V4 Flash",
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
@@ -678,128 +696,162 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
 
-                                    // 模型规格：上下文窗口 与 最大输出 tokens (真实读写)
+                                    // 模型规格：上下文窗口 与 最大输出 tokens (带单位后缀与 Monospace 数值，高度 36dp)
                                     Text("模型规格", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = theme.textSecondary)
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        OutlinedTextField(
+                                        ModelInputField(
                                             value = currentModel.contextWindow.toString(),
                                             onValueChange = { str ->
                                                 val v = str.filter { it.isDigit() }.toLongOrNull() ?: 0L
                                                 updateCurrentModel { it.copy(contextWindow = v) }
                                             },
-                                            label = { Text("上下文窗口 (tokens)", fontSize = 10.5.sp, color = theme.textSecondary) },
+                                            label = "上下文窗口",
+                                            trailingUnit = "tokens",
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                            singleLine = true,
+                                            isMonospace = true,
                                             modifier = Modifier.weight(1f)
                                         )
 
-                                        OutlinedTextField(
+                                        ModelInputField(
                                             value = currentModel.maxTokens.toString(),
                                             onValueChange = { str ->
                                                 val v = str.filter { it.isDigit() }.toLongOrNull() ?: 0L
                                                 updateCurrentModel { it.copy(maxTokens = v) }
                                             },
-                                            label = { Text("最大输出 tokens", fontSize = 10.5.sp, color = theme.textSecondary) },
+                                            label = "最大输出",
+                                            trailingUnit = "tokens",
                                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 12.sp),
-                                            singleLine = true,
+                                            isMonospace = true,
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
 
-                                    // 每百万 TOKENS 价格 (4 列紧凑输入)
+                                    // 每百万 TOKENS 价格 ($) (采用 2x2 网格，宽度充足舒展，彻底告别单行 4 个正方形大坑)
                                     Text("每百万 TOKENS 价格 ($)", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = theme.textSecondary)
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                    ) {
-                                        OutlinedTextField(
-                                            value = currentModel.costInput.toString(),
-                                            onValueChange = { str ->
-                                                val v = str.toDoubleOrNull() ?: 0.0
-                                                updateCurrentModel { it.copy(costInput = v) }
-                                            },
-                                            label = { Text("输入", fontSize = 9.5.sp) },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            ModelInputField(
+                                                value = currentModel.costInput.toString(),
+                                                onValueChange = { str ->
+                                                    val v = str.toDoubleOrNull() ?: 0.0
+                                                    updateCurrentModel { it.copy(costInput = v) }
+                                                },
+                                                label = "输入价格",
+                                                leadingText = "$",
+                                                trailingUnit = "/M",
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                isMonospace = true,
+                                                height = 34.dp,
+                                                modifier = Modifier.weight(1f)
+                                            )
 
-                                        OutlinedTextField(
-                                            value = currentModel.costOutput.toString(),
-                                            onValueChange = { str ->
-                                                val v = str.toDoubleOrNull() ?: 0.0
-                                                updateCurrentModel { it.copy(costOutput = v) }
-                                            },
-                                            label = { Text("输出", fontSize = 9.5.sp) },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                            ModelInputField(
+                                                value = currentModel.costOutput.toString(),
+                                                onValueChange = { str ->
+                                                    val v = str.toDoubleOrNull() ?: 0.0
+                                                    updateCurrentModel { it.copy(costOutput = v) }
+                                                },
+                                                label = "输出价格",
+                                                leadingText = "$",
+                                                trailingUnit = "/M",
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                isMonospace = true,
+                                                height = 34.dp,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
 
-                                        OutlinedTextField(
-                                            value = currentModel.costCacheRead.toString(),
-                                            onValueChange = { str ->
-                                                val v = str.toDoubleOrNull() ?: 0.0
-                                                updateCurrentModel { it.copy(costCacheRead = v) }
-                                            },
-                                            label = { Text("缓存读", fontSize = 9.5.sp) },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            ModelInputField(
+                                                value = currentModel.costCacheRead.toString(),
+                                                onValueChange = { str ->
+                                                    val v = str.toDoubleOrNull() ?: 0.0
+                                                    updateCurrentModel { it.copy(costCacheRead = v) }
+                                                },
+                                                label = "缓存读取",
+                                                leadingText = "$",
+                                                trailingUnit = "/M",
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                isMonospace = true,
+                                                height = 34.dp,
+                                                modifier = Modifier.weight(1f)
+                                            )
 
-                                        OutlinedTextField(
-                                            value = currentModel.costCacheWrite.toString(),
-                                            onValueChange = { str ->
-                                                val v = str.toDoubleOrNull() ?: 0.0
-                                                updateCurrentModel { it.copy(costCacheWrite = v) }
-                                            },
-                                            label = { Text("缓存写", fontSize = 9.5.sp) },
-                                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
-                                            singleLine = true,
-                                            modifier = Modifier.weight(1f)
-                                        )
+                                            ModelInputField(
+                                                value = currentModel.costCacheWrite.toString(),
+                                                onValueChange = { str ->
+                                                    val v = str.toDoubleOrNull() ?: 0.0
+                                                    updateCurrentModel { it.copy(costCacheWrite = v) }
+                                                },
+                                                label = "缓存写入",
+                                                leadingText = "$",
+                                                trailingUnit = "/M",
+                                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                                                isMonospace = true,
+                                                height = 34.dp,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        }
                                     }
 
                                     HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
 
-                                    // 高级设置 (可折叠卡片)
-                                    Row(
+                                    // 高级设置 (折叠卡片，默认收起，带状态微标与专属背景)
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = theme.surfaceContainer,
+                                        border = BorderStroke(1.dp, theme.outline),
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable { isAdvancedExpanded = !isAdvancedExpanded }
-                                            .padding(vertical = 4.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Column {
-                                            Text(
-                                                text = "高级设置",
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = theme.textPrimary
-                                            )
-                                            Text(
-                                                text = "思考等级: ${currentModel.thinkingLevel.ifBlank { "默认" }}",
-                                                fontSize = 10.5.sp,
-                                                color = theme.textMuted
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Tune,
+                                                    contentDescription = null,
+                                                    tint = theme.primary,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(8.dp))
+                                                Column {
+                                                    Text(
+                                                        text = "高级设置",
+                                                        style = MaterialTheme.typography.labelMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = theme.textPrimary
+                                                    )
+                                                    val customMapCount = currentModel.thinkingLevelMap.count { it.mode != ThinkingLevelMode.DEFAULT }
+                                                    val statusDesc = if (customMapCount > 0) "思考等级已定制 ($customMapCount 项) · API: ${currentModel.apiOverride.ifBlank { "默认" }}" else "思考: 默认 · API: ${currentModel.apiOverride.ifBlank { "默认" }}"
+                                                    Text(
+                                                        text = statusDesc,
+                                                        fontSize = 10.5.sp,
+                                                        color = theme.textMuted
+                                                    )
+                                                }
+                                            }
+
+                                            Icon(
+                                                imageVector = if (isAdvancedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                                contentDescription = null,
+                                                tint = theme.textSecondary
                                             )
                                         }
-
-                                        Icon(
-                                            imageVector = if (isAdvancedExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                                            contentDescription = null,
-                                            tint = theme.textSecondary
-                                        )
                                     }
 
                                     AnimatedVisibility(visible = isAdvancedExpanded) {
@@ -1024,19 +1076,42 @@ fun GlobalModelsConfigTab(
                                                         }
                                                     }
 
-                                                    // 若 Custom 激活，展示自定义映射值输入框
+                                                    // 若 Custom 激活，展示与左侧胶囊严格等高 (26dp) 的紧凑微输入框，告别 56dp 突兀大白方框
                                                     if (item.mode == ThinkingLevelMode.CUSTOM) {
-                                                        OutlinedTextField(
-                                                            value = item.customValue,
-                                                            onValueChange = { cv ->
-                                                                val updatedMap = currentModel.thinkingLevelMap.toMutableList()
-                                                                updatedMap[lvlIdx] = item.copy(customValue = cv)
-                                                                updateCurrentModel { it.copy(thinkingLevelMap = updatedMap) }
-                                                            },
-                                                            textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 11.sp),
-                                                            singleLine = true,
-                                                            modifier = Modifier.weight(1f)
-                                                        )
+                                                        Surface(
+                                                            shape = RoundedCornerShape(6.dp),
+                                                            color = theme.surfaceContainer,
+                                                            border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.5f)),
+                                                            modifier = Modifier.weight(1f).height(26.dp)
+                                                        ) {
+                                                            Row(
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                modifier = Modifier.padding(horizontal = 8.dp)
+                                                            ) {
+                                                                androidx.compose.foundation.text.BasicTextField(
+                                                                    value = item.customValue,
+                                                                    onValueChange = { cv ->
+                                                                        val updatedMap = currentModel.thinkingLevelMap.toMutableList()
+                                                                        updatedMap[lvlIdx] = item.copy(customValue = cv)
+                                                                        updateCurrentModel { it.copy(thinkingLevelMap = updatedMap) }
+                                                                    },
+                                                                    singleLine = true,
+                                                                    textStyle = androidx.compose.ui.text.TextStyle(
+                                                                        fontFamily = FontFamily.Monospace,
+                                                                        fontSize = 11.sp,
+                                                                        color = theme.textPrimary
+                                                                    ),
+                                                                    cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.primary),
+                                                                    modifier = Modifier.fillMaxWidth(),
+                                                                    decorationBox = { inner ->
+                                                                        if (item.customValue.isEmpty()) {
+                                                                            Text("映射值", fontSize = 10.sp, color = theme.textMuted)
+                                                                        }
+                                                                        inner()
+                                                                    }
+                                                                )
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -1361,5 +1436,93 @@ fun GlobalModelsConfigTab(
                 }
             }
         )
+    }
+}
+
+
+/**
+ * 紧凑型极客表单输入框组件：
+ * 具有独立顶部 Label、高度可控 (默认 36dp)、单行居中、支持单位后缀与等宽字体，
+ * 解决移动端 Material 3 OutlinedTextField 默认 56dp 高度撑爆排版的问题。
+ */
+@Composable
+private fun ModelInputField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String? = null,
+    placeholder: String = "",
+    modifier: Modifier = Modifier,
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
+    singleLine: Boolean = true,
+    isMonospace: Boolean = false,
+    readOnly: Boolean = false,
+    leadingText: String? = null,
+    trailingUnit: String? = null,
+    height: androidx.compose.ui.unit.Dp = 36.dp
+) {
+    val theme = LocalAppTheme.current
+    Column(modifier = modifier) {
+        if (!label.isNullOrBlank()) {
+            Text(
+                text = label,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Medium,
+                color = theme.textSecondary,
+                modifier = Modifier.padding(bottom = 3.dp)
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(6.dp),
+            color = theme.surfaceContainer,
+            border = BorderStroke(1.dp, theme.outline),
+            modifier = Modifier.fillMaxWidth().height(height)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 10.dp)
+            ) {
+                if (leadingText != null) {
+                    Text(
+                        text = leadingText,
+                        fontSize = 11.5.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.textMuted,
+                        modifier = Modifier.padding(end = 4.dp)
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    readOnly = readOnly,
+                    singleLine = singleLine,
+                    keyboardOptions = keyboardOptions,
+                    textStyle = androidx.compose.ui.text.TextStyle(
+                        color = theme.textPrimary,
+                        fontSize = 12.sp,
+                        fontFamily = if (isMonospace) FontFamily.Monospace else FontFamily.Default
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(theme.primary),
+                    modifier = Modifier.weight(1f),
+                    decorationBox = { innerTextField ->
+                        if (value.isEmpty() && placeholder.isNotEmpty()) {
+                            Text(
+                                text = placeholder,
+                                color = theme.textMuted,
+                                fontSize = 11.5.sp
+                            )
+                        }
+                        innerTextField()
+                    }
+                )
+                if (trailingUnit != null) {
+                    Text(
+                        text = trailingUnit,
+                        fontSize = 10.5.sp,
+                        color = theme.textMuted,
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
+        }
     }
 }
