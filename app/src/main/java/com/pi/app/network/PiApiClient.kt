@@ -1,5 +1,6 @@
 package com.pi.app.network
 
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -1627,7 +1628,7 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getMcpServers(cwd: String = ""): Result<Pair<McpCodeModeConfig, List<McpServerInfo>>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+        if (baseUrl.isBlank()) return@withContext Result.success(Pair(McpCodeModeConfig(), emptyList()))
         val validCwd = sanitizeCwd(cwd)
         val urlsToTry = if (validCwd.isNotBlank()) {
             val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
@@ -1704,7 +1705,12 @@ class PiApiClient(private val prefs: AppPreferences) {
             } catch (_: Exception) {
             }
         }
-        Result.success(Pair(McpCodeModeConfig(), getDefaultMcpServers()))
+        // 这里曾经回退到一份写死的「hindsight / wren 已连接」列表：URL 指向
+        // 127.0.0.1（在手机上等于手机自己），status 却是 connected，toolExposureCount
+        // 也是编的。任何一次网络抖动都会让界面显示出一台根本不存在的健康服务，
+        // 比直接显示「加载失败」糟糕得多。改为返回空列表。
+        Log.w("PiApiClient", "加载 MCP 配置失败，返回空列表（不再伪造默认服务器）")
+        Result.success(Pair(McpCodeModeConfig(), emptyList()))
     }
 
     private fun getDefaultCatalog() = DynamicModelCatalog(
@@ -1872,29 +1878,6 @@ class PiApiClient(private val prefs: AppPreferences) {
     private fun getDefaultPlugins() = listOf(
         PluginPackage("pi-smart-compact", "9.3.1", "智能上下文压缩扩展，具备验证与安全检查机制", "npm:pi-smart-compact@9.3.1"),
         PluginPackage("pi-generative-ui", "2.1.0", "生成式 UI 与富交互微组件渲染支持", "npm:pi-generative-ui@2.1.0")
-    )
-
-    private fun getDefaultMcpServers() = listOf(
-        McpServerInfo(
-            name = "hindsight",
-            description = "Hindsight long-term memory system for recalling past decisions",
-            transport = "http",
-            url = "http://127.0.0.1:8888/mcp",
-            enabled = true,
-            toolExposureCount = 4,
-            statusObj = McpServerStatus("connected"),
-            scope = "global"
-        ),
-        McpServerInfo(
-            name = "wren",
-            description = "Wren 语义模型与分析层协议",
-            transport = "http",
-            url = "http://127.0.0.1:9090/mcp",
-            enabled = true,
-            toolExposureCount = 6,
-            statusObj = McpServerStatus("connected"),
-            scope = "global"
-        )
     )
 
     suspend fun getAgentRunningState(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {

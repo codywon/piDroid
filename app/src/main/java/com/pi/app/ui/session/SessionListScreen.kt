@@ -36,6 +36,7 @@ import com.pi.app.data.model.RemoteBrowseData
 import com.pi.app.data.model.RemoteDirEntry
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.WorkspaceInfo
@@ -1022,7 +1023,7 @@ fun SessionListScreen(
 
     if (showManualDialog) {
         ServerConfigDialog(
-            initialUrl = serverUrl.ifBlank { "http://10.0.2.2:4100" },
+            initialUrl = serverUrl.ifBlank { ServerDefaults.gatewayUrlHint },
             initialToken = "",
             initialName = deviceName.ifBlank { "My PC" },
             onConfirm = { url, token, name ->

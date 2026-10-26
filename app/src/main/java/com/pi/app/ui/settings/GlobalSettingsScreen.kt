@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.pi.app.data.ServerDefaults
 import com.pi.app.data.model.*
 import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.network.PiApiClient
@@ -550,7 +551,7 @@ fun GlobalSettingsScreen(
 
     if (showServerConfigDialog) {
         ServerConfigDialog(
-            initialUrl = serverUrl.ifBlank { "http://192.168.1.100:4100" },
+            initialUrl = serverUrl.ifBlank { ServerDefaults.gatewayUrlHint },
             initialToken = authToken,
             initialName = deviceName.ifBlank { "My PC" },
             onConfirm = { url, token, name ->

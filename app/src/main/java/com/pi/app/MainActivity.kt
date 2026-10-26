@@ -17,6 +17,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.pi.app.data.model.*
+import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
 import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.keepalive.PiForegroundService
@@ -1048,7 +1049,7 @@ class MainActivity : ComponentActivity() {
 
         if (showManualConfigDialog) {
             com.pi.app.ui.settings.ServerConfigDialog(
-                initialUrl = prefs.serverUrl.ifBlank { "http://192.168.1.100:4100" },
+                initialUrl = prefs.serverUrl.ifBlank { ServerDefaults.gatewayUrlHint },
                 initialToken = prefs.authToken,
                 initialName = prefs.deviceName.ifBlank { "My PC" },
                 onConfirm = { url, token, name ->
