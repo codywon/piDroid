@@ -82,6 +82,24 @@ object AppUpdateManager {
     /** 低于此体积的下载结果不可能是有效 APK（多半是 404 错误页）。 */
     private const val MIN_APK_BYTES = 3L * 1024 * 1024
 
+    // ---- 下载调优参数 ----------------------------------------------------
+    /** 读写缓冲区大小（字节）：下载落盘与 APK 哈希校验共用。 */
+    private const val IO_BUFFER_BYTES = 64 * 1024
+    /** 低速看门狗的观察窗口（秒）：连上后在这个窗口内评估平均速率。 */
+    private const val WATCHDOG_WINDOW_SECONDS = 4.0
+    /** 看门狗速率下限（KB/s），低于它认为该通道不可用、平滑换线。 */
+    private const val WATCHDOG_MIN_SPEED_KBPS = 100.0
+    /** 已下载超过该比例后不再判速率，避免尾部小文件被误判为慢速。 */
+    private const val WATCHDOG_PROGRESS_GUARD = 0.95
+    /** 瞬时速率采样间隔（秒）。 */
+    private const val SPEED_SAMPLE_INTERVAL_SECONDS = 0.4
+    /** 进度回调最小间隔（毫秒），避免刷爆 UI 线程。 */
+    private const val PROGRESS_UI_INTERVAL_MS = 120L
+    /** 测速探测的超时（毫秒）。 */
+    private const val RANK_PROBE_TIMEOUT_MS = 1500L
+    /** 测速探测拉取的分块大小（字节）。 */
+    private const val RANK_PROBE_CHUNK_BYTES = 4096
+
     private const val HEX_CHARS = "0123456789abcdef"
     private val CHECKSUM_WHITESPACE = Regex("\\s+")
 
@@ -347,7 +365,7 @@ object AppUpdateManager {
 
                 body.byteStream().use { input ->
                     FileOutputStream(tempFile, append).use { output ->
-                        val buffer = ByteArray(64 * 1024)
+                        val buffer = ByteArray(IO_BUFFER_BYTES)
                         var bytesRead: Int
                         var totalRead = actualExistingBytes
                         var lastProgressUiTime = 0L
@@ -365,10 +383,12 @@ object AppUpdateManager {
 
                             // 低速熔断看门狗：前 4 秒如果平均速度低于 100 KB/s，主动断开当前通道换下一个（断点续传不丢进度）
                             val elapsedSec = (now - connectionStartTime) / 1000.0
-                            if (elapsedSec >= 4.0 && totalRead < totalBytes * 0.95) {
+                            if (elapsedSec >= WATCHDOG_WINDOW_SECONDS &&
+                                totalRead < totalBytes * WATCHDOG_PROGRESS_GUARD
+                            ) {
                                 val currentChannelDownloaded = totalRead - actualExistingBytes
                                 val avgSpeedKb = (currentChannelDownloaded / 1024.0) / elapsedSec
-                                if (avgSpeedKb < 100.0) {
+                                if (avgSpeedKb < WATCHDOG_MIN_SPEED_KBPS) {
                                     Log.w(TAG, "Watchdog triggered: avg speed ${avgSpeedKb.toInt()} KB/s < 100 KB/s on ${channel.name}")
                                     throw IOException("当前通道连接速率过低 (${avgSpeedKb.toInt()} KB/s)，平滑断点切换下一通道...")
                                 }
@@ -376,7 +396,7 @@ object AppUpdateManager {
 
                             // 采样计算瞬时下载速度（每 400ms 刷新一次速度值）
                             val sampleElapsedSec = (now - speedSampleStartTime) / 1000.0
-                            if (sampleElapsedSec >= 0.4) {
+                            if (sampleElapsedSec >= SPEED_SAMPLE_INTERVAL_SECONDS) {
                                 val bytesPerSec = (speedSampleBytes / sampleElapsedSec).toLong()
                                 currentSpeedText = formatSpeed(bytesPerSec)
                                 speedSampleBytes = 0L
@@ -384,7 +404,7 @@ object AppUpdateManager {
                             }
 
                             // 刷新 UI 进度（约 120ms 一次）
-                            if (now - lastProgressUiTime >= 120 || totalRead == totalBytes) {
+                            if (now - lastProgressUiTime >= PROGRESS_UI_INTERVAL_MS || totalRead == totalBytes) {
                                 lastProgressUiTime = now
                                 val progress = if (totalBytes > 0) {
                                     (totalRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
@@ -514,7 +534,7 @@ object AppUpdateManager {
     private fun sha256Hex(file: File): String? = try {
         val digest = MessageDigest.getInstance("SHA-256")
         file.inputStream().use { input ->
-            val buffer = ByteArray(64 * 1024)
+            val buffer = ByteArray(IO_BUFFER_BYTES)
             var read: Int
             while (input.read(buffer).also { read = it } != -1) {
                 digest.update(buffer, 0, read)
@@ -613,22 +633,22 @@ object AppUpdateManager {
                 async {
                     val start = System.currentTimeMillis()
                     val isAlive = try {
-                        // 使用 GET 并带 Range: bytes=0-4095 测试真实小分块拉取能力（杜绝纯 HEAD 握手假象与 405 拦截）
+                        // 用带 Range 的 GET 真实拉一小块，杜绝纯 HEAD 握手的假象与 405 拦截
                         val req = Request.Builder()
                             .url(channel.url)
-                            .header("Range", "bytes=0-4095")
+                            .header("Range", "bytes=0-${RANK_PROBE_CHUNK_BYTES - 1}")
                             .header("User-Agent", "Mozilla/5.0 (Linux; Android) piDroid-App")
                             .build()
                         val client = httpClient.newBuilder()
-                            .connectTimeout(1500, TimeUnit.MILLISECONDS)
-                            .readTimeout(1500, TimeUnit.MILLISECONDS)
+                            .connectTimeout(RANK_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+                            .readTimeout(RANK_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                             .build()
                         val resp = client.newCall(req).execute()
                         val code = resp.code
                         val success = resp.isSuccessful && (code == 200 || code == 206)
                         if (success) {
                             resp.body?.byteStream()?.use { stream ->
-                                val buf = ByteArray(4096)
+                                val buf = ByteArray(RANK_PROBE_CHUNK_BYTES)
                                 stream.read(buf) // 真实读取接收数据流
                             }
                         } else {
