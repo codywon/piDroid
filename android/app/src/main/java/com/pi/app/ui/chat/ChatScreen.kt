@@ -1207,39 +1207,31 @@ fun ChatScreen(
                 PiWebChatMinimap(
                     turns = allTurns,
                     activeTurnNumber = activeTurnNumber,
-                    turnsBefore = turnsBefore,
+                    hasHiddenHistory = hasHiddenHistory,
                     onLoadEarlier = {
-                        val oldStart = windowStartIndex
-                        val newVisible = (visibleWindowCount + 50).coerceAtMost(messages.size)
-                        val newStart = (messages.size - newVisible).coerceAtLeast(0)
-                        val addedCount = (oldStart - newStart).coerceAtLeast(0)
                         userJumpedToHistory = true
-                        visibleWindowCount = newVisible
-                        if (newStart == 0) {
-                            isAllHistoryExpanded = true
-                            onRefreshSession()
-                        }
+                        isAllHistoryExpanded = true
+                        visibleWindowCount = messages.size + 5000
+                        onRefreshSession()
                         coroutineScope.launch {
                             kotlinx.coroutines.yield()
-                            listState.scrollToItem(addedCount.coerceAtLeast(0))
+                            listState.scrollToItem(0)
                         }
                     },
                     onJumpToUserMessage = { turn ->
                         userJumpedToHistory = turn.turnNumber < allTurns.size
                         coroutineScope.launch {
                             if (turn.userIndex < windowStartIndex) {
-                                visibleWindowCount = (messages.size - turn.userIndex + 15).coerceAtLeast(visibleWindowCount)
-                                if (messages.size - visibleWindowCount <= 0) {
-                                    isAllHistoryExpanded = true
-                                }
+                                isAllHistoryExpanded = true
+                                visibleWindowCount = messages.size + 5000
                                 kotlinx.coroutines.yield()
                             }
-                            val turnIdxInVisible = visibleTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
-                            if (turnIdxInVisible >= 0) {
-                                val headerOffset = if (windowStartIndex > 0 || messages.size > 6) 1 else 0
-                                var itemOffset = headerOffset
-                                for (i in 0 until turnIdxInVisible) {
-                                    val t = visibleTurns[i]
+                            val allTurnsList = allTurns
+                            val turnIdx = allTurnsList.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            if (turnIdx >= 0) {
+                                var itemOffset = if (messages.size > 6) 1 else 0
+                                for (i in 0 until turnIdx) {
+                                    val t = allTurnsList[i]
                                     itemOffset += 1
                                     if (t.processItems.isNotEmpty()) itemOffset += 1
                                     if (t.finalAnswerItem != null) itemOffset += 1
@@ -1252,29 +1244,26 @@ fun ChatScreen(
                         userJumpedToHistory = turn.turnNumber < allTurns.size
                         coroutineScope.launch {
                             if (turn.userIndex < windowStartIndex) {
-                                visibleWindowCount = (messages.size - turn.userIndex + 15).coerceAtLeast(visibleWindowCount)
-                                if (messages.size - visibleWindowCount <= 0) {
-                                    isAllHistoryExpanded = true
-                                }
+                                isAllHistoryExpanded = true
+                                visibleWindowCount = messages.size + 5000
                                 kotlinx.coroutines.yield()
                             }
-                            val turnIdxInVisible = visibleTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
-                            if (turnIdxInVisible >= 0) {
-                                val headerOffset = if (windowStartIndex > 0 || messages.size > 6) 1 else 0
-                                var itemOffset = headerOffset
-                                for (i in 0 until turnIdxInVisible) {
-                                    val t = visibleTurns[i]
+                            val allTurnsList = allTurns
+                            val turnIdx = allTurnsList.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            if (turnIdx >= 0) {
+                                var itemOffset = if (messages.size > 6) 1 else 0
+                                for (i in 0 until turnIdx) {
+                                    val t = allTurnsList[i]
                                     itemOffset += 1
                                     if (t.processItems.isNotEmpty()) itemOffset += 1
                                     if (t.finalAnswerItem != null) itemOffset += 1
                                 }
-                                itemOffset += 1 // user msg
-                                if (turn.processItems.isNotEmpty()) itemOffset += 1 // process
+                                itemOffset += 1 // 越过用户提问到达助手回复
                                 listState.animateScrollToItem(itemOffset.coerceAtLeast(0))
                             }
                         }
                     },
-                    modifier = Modifier.align(Alignment.CenterEnd)
+                    modifier = Modifier.matchParentSize()
                 )
             }
 

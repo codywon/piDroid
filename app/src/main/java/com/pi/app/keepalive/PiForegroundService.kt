@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.pi.app.MainActivity
 
@@ -54,8 +55,10 @@ class PiForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
-        } catch (_: Exception) {
-            // 防止极少数 ROM 后台启动限制抛异常崩溃
+        } catch (e: Exception) {
+            // 少数 ROM 会因后台启动限制拒绝 startForeground。不能让它崩溃，
+            // 但必须留下痕迹：保活静默失效时用户只会觉得「后台老是被杀」。
+            Log.e(TAG, "startForeground rejected by the system; keep-alive is not active", e)
         }
 
         return START_STICKY
@@ -127,6 +130,7 @@ class PiForegroundService : Service() {
     }
 
     companion object {
+        private const val TAG = "PiForegroundService"
         const val CHANNEL_ID = "pi_keepalive_persistent_channel"
         const val NOTIFICATION_ID = 2002
         const val ACTION_START = "ACTION_START_KEEP_ALIVE"
@@ -202,7 +206,8 @@ class PiForegroundService : Service() {
                 } else {
                     context.startService(intent)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start the foreground keep-alive service", e)
             }
         }
 
@@ -212,7 +217,8 @@ class PiForegroundService : Service() {
                     action = ACTION_STOP
                 }
                 context.startService(intent)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to stop the foreground keep-alive service", e)
             }
         }
     }
