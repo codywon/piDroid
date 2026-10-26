@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.RemoteBrowseData
 import com.pi.app.data.model.RemoteDirEntry
 import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
+import com.pi.app.data.storage.AppPreferences
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.WorkspaceInfo
 import com.pi.app.ui.settings.ServerConfigDialog
@@ -90,7 +92,6 @@ fun PiWebRunningSpinner(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun SessionListScreen(
@@ -118,16 +119,18 @@ fun SessionListScreen(
     onBrowseRemoteDir: suspend (String) -> RemoteBrowseData? = { null },
     onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) }
 ) {
+    val context = LocalContext.current
+    val prefs = remember(context) { AppPreferences(context) }
     val theme = LocalAppTheme.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     var showManualDialog by remember { mutableStateOf(false) }
     var showAddWorkspaceDialog by remember { mutableStateOf(false) }
-    var selectedMenuWorkspace by remember { mutableStateOf<Workspace?>(null) }
-    var showRenameWsDialog by remember { mutableStateOf<Workspace?>(null) }
+    var selectedMenuWorkspace by remember { mutableStateOf<WorkspaceInfo?>(null) }
+    var showRenameWsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameWsInput by remember { mutableStateOf("") }
-    var showDeleteAllSessionsDialog by remember { mutableStateOf<Workspace?>(null) }
-    var showArchivedSessionsDialog by remember { mutableStateOf<Workspace?>(null) }
+    var showDeleteAllSessionsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
+    var showArchivedSessionsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var pinnedWorkspaces by remember { mutableStateOf(prefs.getPinnedWorkspaces()) }
     var wsOrder by remember { mutableStateOf(prefs.getWorkspaceOrder()) }
     var searchQuery by remember { mutableStateOf("") }
@@ -356,7 +359,7 @@ fun SessionListScreen(
                         // 🌟 工作区项目排序列表：置顶排在前面，内部根据用户偏好排序
                         val sortedWorkspaces = remember(workspaces, pinnedWorkspaces, wsOrder) {
                             workspaces.sortedWith(
-                                compareByDescending<Workspace> { pinnedWorkspaces.contains(it.path) }
+                                compareByDescending<WorkspaceInfo> { pinnedWorkspaces.contains(it.path) }
                                     .thenBy { ws ->
                                         val idx = wsOrder.indexOf(ws.path)
                                         if (idx != -1) idx else Int.MAX_VALUE
@@ -1033,8 +1036,9 @@ fun SessionListScreen(
     // ==========================================
     // 🌟 对标 pi-web 源码级实现：工作区项目长按维护操作面板
     // ==========================================
-    if (selectedMenuWorkspace != null) {
-        val targetWs = selectedMenuWorkspace!!
+    val menuWsTarget = selectedMenuWorkspace
+    if (menuWsTarget != null) {
+        val targetWs = menuWsTarget
         val isPinned = pinnedWorkspaces.contains(targetWs.path)
         val customName = prefs.getWorkspaceCustomName(targetWs.path)
         val wsDisplayName = customName ?: targetWs.displayName
@@ -1204,11 +1208,15 @@ fun SessionListScreen(
 
                 // 板块 3：会话生命周期与清理维护 (对标 pi-web)
                 val projectSessions = remember(sessions, targetWs) {
-                    sessions.filter { it.cwd == targetWs.path || it.project == targetWs.displayName }
+                    sessions.filter { it.workspacePath == targetWs.path || it.cwd == targetWs.path || it.project == targetWs.displayName }
                 }
                 val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
-                val olderSessions = remember(projectSessions) {
-                    projectSessions.filter { !it.active && (it.updatedAt != null && it.updatedAt < weekAgo || it.timestamp < weekAgo) && !prefs.isSessionArchived(it.id) }
+                val olderSessions = remember(projectSessions, weekAgo) {
+                    projectSessions.filter { s ->
+                        if (s.active || prefs.isSessionArchived(s.id)) return@filter false
+                        val t = parseSessionTimeMillis(s.modified ?: s.created)
+                        t in 1..<weekAgo
+                    }
                 }
                 val archivedCount = remember(projectSessions) {
                     projectSessions.count { prefs.isSessionArchived(it.id) }
@@ -1259,8 +1267,9 @@ fun SessionListScreen(
     }
 
     // 弹窗 A：重命名项目别名对话框 (支持恢复默认名称)
-    if (showRenameWsDialog != null) {
-        val target = showRenameWsDialog!!
+    val renameTarget = showRenameWsDialog
+    if (renameTarget != null) {
+        val target = renameTarget
         AlertDialog(
             onDismissRequest = { showRenameWsDialog = null },
             containerColor = theme.surfaceContainerLow,
@@ -1323,10 +1332,11 @@ fun SessionListScreen(
     }
 
     // 弹窗 B：删除全部会话二次危险确认对话框 (对标 pi-web)
-    if (showDeleteAllSessionsDialog != null) {
-        val target = showDeleteAllSessionsDialog!!
+    val deleteTarget = showDeleteAllSessionsDialog
+    if (deleteTarget != null) {
+        val target = deleteTarget
         val projectSessions = remember(sessions, target) {
-            sessions.filter { it.cwd == target.path || it.project == target.displayName }
+            sessions.filter { it.workspacePath == target.path || it.cwd == target.path || it.project == target.displayName }
         }
         val runningSessions = remember(projectSessions) { projectSessions.filter { it.active } }
         val toDeleteSessions = remember(projectSessions) { projectSessions.filterNot { it.active } }
@@ -1395,10 +1405,11 @@ fun SessionListScreen(
     }
 
     // 弹窗 C：查看与管理项目已归档会话弹窗
-    if (showArchivedSessionsDialog != null) {
-        val target = showArchivedSessionsDialog!!
+    val archiveTarget = showArchivedSessionsDialog
+    if (archiveTarget != null) {
+        val target = archiveTarget
         val archivedList = remember(sessions, target) {
-            sessions.filter { (it.cwd == target.path || it.project == target.displayName) && prefs.isSessionArchived(it.id) }
+            sessions.filter { (it.workspacePath == target.path || it.cwd == target.path || it.project == target.displayName) && prefs.isSessionArchived(it.id) }
         }
 
         AlertDialog(
@@ -2279,3 +2290,24 @@ private fun WorkspaceMenuActionItem(
         }
     }
 }
+
+private fun parseSessionTimeMillis(timeStr: String?): Long {
+    if (timeStr.isNullOrBlank()) return 0L
+    timeStr.toLongOrNull()?.let { return it }
+    return try {
+        java.time.Instant.parse(timeStr).toEpochMilli()
+    } catch (_: Exception) {
+        try {
+            java.time.OffsetDateTime.parse(timeStr).toInstant().toEpochMilli()
+        } catch (_: Exception) {
+            try {
+                val cleaned = timeStr.replace("T", " ").take(19)
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
+                sdf.parse(cleaned)?.time ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+        }
+    }
+}
+
