@@ -2668,39 +2668,75 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     suspend fun createRemoteSessionInWorkspace(
         cwd: String,
-        provider: String,
-        modelId: String,
-        thinkingLevel: ThinkingLevel
+        provider: String? = null,
+        modelId: String? = null,
+        thinkingLevel: ThinkingLevel? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (cwd.isBlank()) return@withContext Result.failure(Exception("工作区路径不能为空"))
         try {
-            val payload = mapOf(
+            val payload = mutableMapOf<String, Any>(
                 "cwd" to cwd,
-                "type" to "ensure_session",
-                "provider" to provider,
-                "modelId" to modelId,
-                "thinkingLevel" to thinkingLevel.value
+                "type" to "ensure_session"
             )
+            if (!provider.isNullOrBlank() && !modelId.isNullOrBlank()) {
+                payload["provider"] = provider
+                payload["modelId"] = modelId
+            }
+            if (thinkingLevel != null && thinkingLevel != ThinkingLevel.OFF) {
+                payload["thinkingLevel"] = thinkingLevel.value
+            }
             val req = Request.Builder()
-                .url("$baseUrl/api/agent/new")
+                .url("${baseUrl}/api/agent/new")
                 .post(gson.toJson(payload).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
                 if (resp.isSuccessful) {
-                    val body = resp.body?.string() ?: "{}"
-                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
                     val sid = json?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString
                         ?: json?.get("id")?.takeIf { !it.isJsonNull }?.asString
                     if (!sid.isNullOrBlank()) {
                         return@withContext Result.success(sid)
                     }
                 }
-                Result.failure(IOException("Failed to initialize remote session (${resp.code})"))
+                val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                    ?: "创建新任务失败 (${resp.code})"
+                Result.failure(IOException(err))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 调用大模型结合任务上下文智能生成会话标题 (对标 pi-web POST /api/sessions/{id}/auto-name)
+     */
+    suspend fun autoGenerateSessionTitle(sessionId: String): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+        try {
+            val req = Request.Builder()
+                .url("${baseUrl}/api/sessions/${sessionId}/auto-name")
+                .post("{}".toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                if (resp.isSuccessful) {
+                    val title = json?.get("title")?.takeIf { !it.isJsonNull }?.asString
+                    if (!title.isNullOrBlank()) {
+                        return@withContext Result.success(title)
+                    }
+                }
+                val errorMsg = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                    ?: "大模型生成标题响应异常 (${resp.code})"
+                Result.failure(IOException(errorMsg))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 }
-

@@ -265,17 +265,36 @@ class MainActivity : ComponentActivity() {
 
         fun autoGenerateTitleForSession(sessionId: String) {
             lifecycleScope.launch {
-                val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content
-                val titleCandidate = if (!firstUserMsg.isNullOrBlank()) {
-                    val clean = firstUserMsg.lines().firstOrNull { it.isNotBlank() }?.trim() ?: firstUserMsg.trim()
-                    clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
-                } else {
-                    "任务 " + SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date())
-                }
-                if (titleCandidate.isNotBlank()) {
-                    prefs.saveSessionCustomTitle(sessionId, titleCandidate)
-                    customTitles = customTitles + (sessionId to titleCandidate)
-                    Toast.makeText(this@MainActivity, "已生成标题: $titleCandidate", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "正在调用大模型分析任务上下文并生成标题...", Toast.LENGTH_SHORT).show()
+                val result = apiClient.autoGenerateSessionTitle(sessionId)
+                result.onSuccess { generatedTitle ->
+                    if (generatedTitle.isNotBlank()) {
+                        prefs.saveSessionCustomTitle(sessionId, generatedTitle)
+                        customTitles = customTitles + (sessionId to generatedTitle)
+                        if (currentSession?.id == sessionId) {
+                            currentSession = currentSession?.copy(name = generatedTitle)
+                        }
+                        Toast.makeText(this@MainActivity, "✨ 大模型已生成标题: ${generatedTitle}", Toast.LENGTH_SHORT).show()
+                        loadSessions(silent = true)
+                    }
+                }.onFailure { err ->
+                    val firstUserMsg = messages.firstOrNull { it.role == MessageRole.USER }?.content
+                    val fallbackTitle = if (!firstUserMsg.isNullOrBlank()) {
+                        val clean = firstUserMsg.lines().firstOrNull { it.isNotBlank() }?.trim() ?: firstUserMsg.trim()
+                        clean.take(24).replace(Regex("[#*`>\[\]]"), "")
+                    } else null
+
+                    if (!fallbackTitle.isNullOrBlank()) {
+                        prefs.saveSessionCustomTitle(sessionId, fallbackTitle)
+                        customTitles = customTitles + (sessionId to fallbackTitle)
+                        if (currentSession?.id == sessionId) {
+                            currentSession = currentSession?.copy(name = fallbackTitle)
+                        }
+                        Toast.makeText(this@MainActivity, "上下文不足，已使用提要: ${fallbackTitle}", Toast.LENGTH_SHORT).show()
+                        loadSessions(silent = true)
+                    } else {
+                        Toast.makeText(this@MainActivity, "生成标题失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                    }
                 }
             }
         }
@@ -1416,17 +1435,37 @@ class MainActivity : ComponentActivity() {
                     onScanClick = { isScanning = true },
                     onSettingsClick = { showGlobalSettings = true },
                     onNewSessionClick = { wsPath ->
-                        val newId = "session_" + System.currentTimeMillis()
-                        val newSession = Session(
-                            id = newId,
-                            name = "新任务会话",
-                            cwd = wsPath.ifBlank { "D:/myscript/eldercare-agent-platform" },
-                            active = true
-                        )
-                        currentSession = newSession
-                        currentProject = newSession.workspaceName
-                        messages.clear()
-                        startListeningEvents(newId)
+                        lifecycleScope.launch {
+                            val targetCwd = wsPath.ifBlank {
+                                currentSession?.cwd ?: sessions.firstOrNull()?.cwd ?: ""
+                            }
+                            if (targetCwd.isBlank()) {
+                                Toast.makeText(this@MainActivity, "请先选择或添加有效的工作区目录", Toast.LENGTH_SHORT).show()
+                                return@launch
+                            }
+                            Toast.makeText(this@MainActivity, "正在当前工作区创建新任务...", Toast.LENGTH_SHORT).show()
+                            val createResult = apiClient.createRemoteSessionInWorkspace(
+                                cwd = targetCwd,
+                                provider = activeModel?.provider,
+                                modelId = activeModel?.id,
+                                thinkingLevel = activeThinkingLevel
+                            )
+                            createResult.onSuccess { realSessionId ->
+                                val newSession = Session(
+                                    id = realSessionId,
+                                    name = "新任务会话",
+                                    cwd = targetCwd,
+                                    active = true
+                                )
+                                currentSession = newSession
+                                currentProject = newSession.workspaceName
+                                messages.clear()
+                                startListeningEvents(realSessionId)
+                                loadSessions(silent = true)
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "创建新任务失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     },
                     onManualConfigConfirm = { url, token, name ->
                         connectToServer(url, token, name)
