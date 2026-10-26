@@ -93,7 +93,9 @@ class PiHapticsAndNotify(private val context: Context) {
     }
 
     /**
-     * fun vibrateApprovalRequired() {
+     * 等待人工审批触觉反馈：警示长振
+     */
+    fun vibrateApprovalRequired() {
         if (!prefs.hapticsEnabled) return
         val vib = vibrator ?: return
         if (!vib.hasVibrator()) return

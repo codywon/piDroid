@@ -261,6 +261,7 @@ fun GlobalSettingsScreen(
                     mcpConfig = mcpConfig,
                     onUpdateMcpCodeMode = onUpdateMcpCodeMode,
                     mcpServers = mcpServers,
+                    apiClient = apiClient,
                     onAddMcpServer = onAddMcpServer,
                     onManageMcpServer = onManageMcpServer
                 )
@@ -1379,17 +1380,22 @@ fun GlobalSkillsTab(
 fun GlobalMcpTab(
     mcpConfig: McpCodeModeConfig,
     mcpServers: List<McpServerInfo>,
+    apiClient: PiApiClient? = null,
     onAddMcpServer: (name: String, transport: String, endpoint: String, description: String, scope: String) -> Unit = { _, _, _, _, _ -> },
     onManageMcpServer: (action: String, name: String) -> Unit = { _, _ -> },
     onUpdateMcpCodeMode: (mode: String, scriptMode: Boolean, tokenBudget: Int) -> Unit = { _, _, _ -> }
 ) {
     val theme = LocalAppTheme.current
+    val coroutineScope = rememberCoroutineScope()
     var codeMode by remember(mcpConfig.mode) { mutableStateOf(mcpConfig.mode) }
     var scriptMode by remember(mcpConfig.scriptMode) { mutableStateOf(mcpConfig.scriptMode) }
     var tokenBudget by remember(mcpConfig.tokenBudget) { mutableStateOf(mcpConfig.tokenBudget) }
     var showAddMcpDialog by remember { mutableStateOf(false) }
     var editingMcpServer by remember { mutableStateOf<McpServerInfo?>(null) }
     var showBudgetDialog by remember { mutableStateOf(false) }
+    var testingServerName by remember { mutableStateOf<String?>(null) }
+    var testResultDialog by remember { mutableStateOf<Pair<String, McpTestToolResult>?>(null) }
+    var testErrorDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(12.dp),
@@ -1563,18 +1569,47 @@ fun GlobalMcpTab(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                             TextButton(
                                 onClick = {
+                                    if (apiClient != null) {
+                                        testingServerName = server.name
+                                        coroutineScope.launch {
+                                            val res = apiClient.testMcpServer(
+                                                name = server.name,
+                                                scope = server.scope ?: "global"
+                                            )
+                                            testingServerName = null
+                                            res.onSuccess { info ->
+                                                testResultDialog = server.name to info
+                                            }.onFailure { err ->
+                                                testErrorDialog = server.name to (err.message ?: "未知错误")
+                                            }
+                                        }
+                                    }
+                                },
+                                enabled = testingServerName == null && apiClient != null,
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                            ) {
+                                if (testingServerName == server.name) {
+                                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("测试中", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                } else {
+                                    Text("⚡测试", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                }
+                            }
+                            TextButton(
+                                onClick = {
                                     editingMcpServer = server
                                     showAddMcpDialog = true
                                 },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                             ) {
-                                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(13.dp), tint = theme.primary)
+                                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(12.dp), tint = theme.primary)
                                 Spacer(modifier = Modifier.width(2.dp))
                                 Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.primary)
                             }
                             TextButton(
                                 onClick = { onManageMcpServer("remove", server.name) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
                             ) {
                                 Text("移除", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCF222E))
                             }
@@ -1749,6 +1784,83 @@ fun GlobalMcpTab(
             }
         )
     }
+
+    // MCP 测试成功对话框
+    testResultDialog?.let { (name, info) ->
+        AlertDialog(
+            onDismissRequest = { testResultDialog = null },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = Color(0xFF2EA043), modifier = Modifier.size(8.dp)) {}
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("MCP 节点测试通过: $name", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(info.message, style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
+                    if (info.tools.isNotEmpty()) {
+                        Text("导出工具列表 (${info.tools.size} 个):", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = theme.textPrimary)
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = theme.background,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 160.dp)
+                        ) {
+                            LazyColumn(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                items(info.tools) { toolName ->
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("•", color = theme.primary, modifier = Modifier.padding(end = 6.dp))
+                                        Text(toolName, fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = theme.textPrimary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { testResultDialog = null }) {
+                    Text("确定", color = theme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
+    // MCP 测试失败对话框
+    testErrorDialog?.let { (name, err) ->
+        AlertDialog(
+            onDismissRequest = { testErrorDialog = null },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Surface(shape = CircleShape, color = Color(0xFFCF222E), modifier = Modifier.size(8.dp)) {}
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("MCP 节点连通失败: $name", color = Color(0xFFCF222E), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                }
+            },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("网关向该 MCP 服务发出探测时返回了错误：", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = theme.background,
+                        border = BorderStroke(1.dp, Color(0xFFCF222E).copy(alpha = 0.4f)),
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
+                    ) {
+                        Text(err, color = Color(0xFFCF222E), fontSize = 11.5.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { testErrorDialog = null }) {
+                    Text("关闭", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
 }
 
 // ==========================================

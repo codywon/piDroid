@@ -1420,10 +1420,7 @@ class MainActivity : ComponentActivity() {
                                     project = currentSession?.project,
                                     projectRoot = currentSession?.projectRoot
                                 )
-                                currentSession = forkedSession
-                                messages.clear()
-                                startListeningEvents(forkRes.sessionId)
-                                loadSessionMessages(forkRes.sessionId)
+                                openSessionWithHistory(forkedSession)
                                 Toast.makeText(this@MainActivity, "已切换至新会话分支！", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
                                 Toast.makeText(this@MainActivity, "创建新会话失败: ${err.message}", Toast.LENGTH_LONG).show()

@@ -2974,27 +2974,65 @@ data class CatalogPreset(
      */
 
     /**
-     * 测试指定 MCP 服务节点连通性 (1:1 对标 pi-web POST /api/mcp/test)
+     * 测试指定 MCP 服务节点连通性 (1:1 源码级对标 pi-web POST /api/mcp/test)
+     * 返回结构化工具解析结果及详细信息
      */
-    suspend fun testMcpServer(name: String, config: JsonObject, scope: String = "global"): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun testMcpServer(
+        name: String,
+        scope: String = "global",
+        cwd: String? = null,
+        config: JsonObject? = null
+    ): Result<McpTestToolResult> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val payload = JsonObject().apply {
                 addProperty("name", name)
                 addProperty("scope", scope)
-                add("config", config)
+                if (!cwd.isNullOrBlank()) {
+                    addProperty("cwd", cwd)
+                }
+                if (config != null && config.size() > 0) {
+                    add("config", config)
+                }
             }
             val req = Request.Builder()
                 .url("$baseUrl/api/mcp/test")
                 .post(gson.toJson(payload).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: ""
                 if (resp.isSuccessful) {
-                    Result.success(true)
+                    val root = try {
+                        com.google.gson.JsonParser.parseString(bodyStr).asJsonObject
+                    } catch (_: Exception) {
+                        JsonObject()
+                    }
+                    val resultObj = if (root.has("result") && root.get("result").isJsonObject) {
+                        root.getAsJsonObject("result")
+                    } else root
+                    val toolNames = mutableListOf<String>()
+                    if (resultObj.has("tools") && resultObj.get("tools").isJsonArray) {
+                        val arr = resultObj.getAsJsonArray("tools")
+                        for (item in arr) {
+                            if (item.isJsonObject) {
+                                val tName = item.asJsonObject.get("name")?.asString
+                                if (!tName.isNullOrBlank()) toolNames.add(tName)
+                            } else if (item.isJsonPrimitive) {
+                                toolNames.add(item.asString)
+                            }
+                        }
+                    }
+                    Result.success(
+                        McpTestToolResult(
+                            success = true,
+                            message = if (toolNames.isNotEmpty()) "连通成功，共发现 ${toolNames.size} 个工具" else "连通成功，未发现导出工具",
+                            toolCount = toolNames.size,
+                            tools = toolNames
+                        )
+                    )
                 } else {
-                    val bodyStr = resp.body?.string() ?: ""
-                    Result.failure(IOException("HTTP ${resp.code}: $bodyStr"))
+                    Result.failure(IOException("连通失败 (HTTP ${resp.code}): $bodyStr"))
                 }
             }
         } catch (e: Exception) {

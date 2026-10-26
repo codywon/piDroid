@@ -159,7 +159,7 @@ fun GlobalModelsConfigTab(
         if (isLoading) {
             Column(
                 modifier = Modifier.fillMaxSize().padding(24.dp),
-                horizontalAlignment = Alignment.CenterVertically,
+                horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
                 CircularProgressIndicator(color = theme.primary, modifier = Modifier.size(36.dp))
@@ -1055,7 +1055,7 @@ fun GlobalModelsConfigTab(
                         ) {
                             Column(
                                 modifier = Modifier.padding(20.dp),
-                                horizontalAlignment = Alignment.CenterVertically
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 Text("未配置任何提供商", color = theme.textSecondary, fontSize = 13.sp)
                                 Spacer(modifier = Modifier.height(10.dp))
