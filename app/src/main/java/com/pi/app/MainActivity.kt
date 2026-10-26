@@ -325,13 +325,6 @@ class MainActivity : ComponentActivity() {
                     customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                     isGatewayOnline = true
                     syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
-                    if (pendingTargetSessionId != null) {
-                        val target = it.firstOrNull { s -> s.id == pendingTargetSessionId }
-                        if (target != null) {
-                            pendingTargetSessionId = null
-                            openSessionWithHistory(target)
-                        }
-                    }
                 }.onFailure {
                     isGatewayOnline = false
                     if (!silent) {
@@ -995,6 +988,16 @@ class MainActivity : ComponentActivity() {
 
             lifecycleScope.launch {
                 syncSessionSnapshot(session.id, restoreModelMeta = true, allowCompletionTransition = false)
+            }
+        }
+
+        // 点击常驻通知栏带 target_session_id 唤醒时自动响应切入目标会话
+        LaunchedEffect(pendingTargetSessionId, sessions) {
+            val pendingId = pendingTargetSessionId ?: return@LaunchedEffect
+            val target = sessions.firstOrNull { it.id == pendingId }
+            if (target != null) {
+                pendingTargetSessionId = null
+                openSessionWithHistory(target)
             }
         }
 
