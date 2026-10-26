@@ -263,80 +263,9 @@ fun SessionListScreen(
 
                     Spacer(modifier = Modifier.height(10.dp))
 
-                    // 🌟 跨工作区置顶专区 (1:1 对标 pi-web 左侧抽屉顶部 Pinned 专区)
                     val globalPinnedCount = remember(sessions, pinnedSessionIds) {
                         sessions.count { pinnedSessionIds.contains(it.id) }
                     }
-                    val isPinnedSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = if (isPinnedSelected) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                        border = BorderStroke(
-                            if (isPinnedSelected) 1.5.dp else 1.dp,
-                            if (isPinnedSelected) Color(0xFFEAB308) else theme.outline.copy(alpha = 0.6f)
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                selectedWorkspacePath = PINNED_WORKSPACE_KEY
-                                coroutineScope.launch { drawerState.close() }
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(30.dp)
-                                    .background(Color(0xFFEAB308).copy(alpha = 0.16f), CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.PushPin,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = Color(0xFFEAB308)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = "常用置顶 (Pinned)",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPinnedSelected) theme.textPrimary else theme.textSecondary
-                                )
-                                Text(
-                                    text = "跨工作区聚合 · ${globalPinnedCount} 个置顶会话",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = theme.textMuted
-                                )
-                            }
-                            if (sessions.any { pinnedSessionIds.contains(it.id) && it.active }) {
-                                PiWebRunningSpinner(size = 12.dp)
-                                Spacer(modifier = Modifier.width(4.dp))
-                            }
-                            Surface(
-                                shape = CircleShape,
-                                color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHigh,
-                                modifier = Modifier.padding(start = 4.dp)
-                            ) {
-                                Text(
-                                    text = "$globalPinnedCount",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = theme.outline)
-                    Spacer(modifier = Modifier.height(8.dp))
 
                     Text(
                         text = "项目工作区 (${workspaces.size})",
@@ -351,6 +280,68 @@ fun SessionListScreen(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        // 🌟 常用置顶（永远排在工作区列表第 1 项，与常规工作区尺寸风格完全一致）
+                        item(key = "workspace_pinned_item") {
+                            val isPinnedSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isPinnedSelected) theme.primary.copy(alpha = 0.14f) else Color.Transparent,
+                                border = if (isPinnedSelected) BorderStroke(1.dp, theme.primary) else null,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        selectedWorkspacePath = PINNED_WORKSPACE_KEY
+                                        coroutineScope.launch { drawerState.close() }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.PushPin,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(18.dp),
+                                        tint = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary
+                                    )
+                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "常用置顶",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = if (isPinnedSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isPinnedSelected) theme.textPrimary else theme.textSecondary
+                                        )
+                                        Text(
+                                            text = "跨工作区聚合置顶",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.textMuted,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    if (sessions.any { pinnedSessionIds.contains(it.id) && it.active }) {
+                                        PiWebRunningSpinner(size = 12.dp)
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHigh,
+                                        modifier = Modifier.padding(start = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "$globalPinnedCount",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         items(workspaces) { ws ->
                             val isSelected = ws.path == selectedWorkspacePath
                             Surface(
@@ -728,17 +719,64 @@ fun SessionListScreen(
                             CircularProgressIndicator(color = theme.primary)
                         }
                     } else if (filteredSessions.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                            Text(
-                                text = when {
-                                    selectedWorkspacePath == PINNED_WORKSPACE_KEY -> "暂无置顶任务。在任意工作区点击会话卡片右侧的图钉，即可将任务置顶到此处。"
-                                    statusFilter == SessionStatusFilter.RUNNING -> "当前没有正在运行的任务"
-                                    statusFilter == SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
-                                    else -> "当前工作区暂无历史任务"
-                                },
-                                color = theme.textMuted,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
+                        val isPinnedZone = selectedWorkspacePath == PINNED_WORKSPACE_KEY
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .background(
+                                            if (isPinnedZone) Color(0xFFEAB308).copy(alpha = 0.14f) else theme.surfaceContainerHigh,
+                                            CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = when {
+                                            isPinnedZone -> Icons.Default.PushPin
+                                            searchQuery.isNotBlank() -> Icons.Default.Search
+                                            else -> Icons.Default.FolderOpen
+                                        },
+                                        contentDescription = null,
+                                        modifier = Modifier.size(24.dp),
+                                        tint = if (isPinnedZone) Color(0xFFEAB308) else theme.textMuted
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(14.dp))
+
+                                Text(
+                                    text = when {
+                                        searchQuery.isNotBlank() -> "未找到匹配任务"
+                                        isPinnedZone -> "暂无置顶任务"
+                                        statusFilter == SessionStatusFilter.RUNNING -> "暂无运行中的任务"
+                                        statusFilter == SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
+                                        else -> "当前工作区暂无任务"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = theme.textSecondary,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+
+                                if (isPinnedZone) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = "点击会话菜单即可置顶常用任务",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = theme.textMuted,
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                    )
+                                }
+                            }
                         }
                     } else {
                         // 会话分组：如果在置顶专区则全量展示置顶项；若在普通项目区，则将已归档会话分离到末尾折叠区

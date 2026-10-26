@@ -12,31 +12,31 @@ enum class ToolPreset(
     CONFIGURED(
         id = "configured",
         displayName = "configured",
-        description = "取自 settings.json 的 defaultTools",
+        description = "按系统全局配置加载工具",
         toolNames = null
     ),
     CHAT_ONLY(
         id = "chat-only",
         displayName = "chat-only",
-        description = "仅聊天",
+        description = "禁用所有外部工具，纯文本问答",
         toolNames = emptyList()
     ),
     READ_ONLY(
         id = "read-only",
         displayName = "read-only",
-        description = "4 个只读内置工具",
+        description = "仅允许查看与搜索文件",
         toolNames = listOf("read", "grep", "find", "ls")
     ),
     DEFAULT(
         id = "default",
         displayName = "default",
-        description = "4 个内置工具",
+        description = "允许读写文件与执行终端命令",
         toolNames = listOf("read", "bash", "edit", "write")
     ),
     FULL(
         id = "full",
         displayName = "full",
-        description = "全部内置工具",
+        description = "开放所有 7 项内置能力",
         toolNames = listOf("bash", "read", "edit", "write", "grep", "find", "ls")
     );
 
