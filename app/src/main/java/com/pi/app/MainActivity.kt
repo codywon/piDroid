@@ -1547,7 +1547,7 @@ class MainActivity : ComponentActivity() {
                         // 先在本地乐观切换（下拉/图标立刻响应），随后写回 pi-web 的 ui-state；
                         // 失败再回滚，避免「手机上置顶了、PC 上没置顶」。
                         val willPin = !pinnedSessionIds.contains(activeSessionId)
-                        val localPinned = prefs.togglePinSession(activeSessionId)
+                        val pinned = prefs.togglePinSession(activeSessionId)
                         pinnedSessionIds = prefs.getPinnedSessionIds()
                         lifecycleScope.launch {
                             apiClient.setSessionPinned(activeSessionId, willPin).onFailure { err ->

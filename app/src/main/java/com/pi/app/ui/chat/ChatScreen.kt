@@ -175,6 +175,14 @@ fun ChatScreen(
 
     // 统一发送入口：图片真的读成 base64 走 pi 的 images 字段；非图片文件目前只能按名字引用
     // （pi 的图片通道只收 image/*，文件要走 /api/files?type=upload 的 multipart 上传，后续补）
+    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind) {
+        when (kind) {
+            SendKind.SEND -> onSendMessage(text, images)
+            SendKind.STEER -> onSendSteer(text, images)
+            SendKind.FOLLOW_UP -> onSendFollowUp(text, images)
+        }
+    }
+
     fun submitMessage(rawText: String, kind: SendKind) {
         val picked = attachments.toList()
         attachments.clear()
@@ -200,13 +208,6 @@ fun ChatScreen(
         }
     }
 
-    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind) {
-        when (kind) {
-            SendKind.SEND -> onSendMessage(text, images)
-            SendKind.STEER -> onSendSteer(text, images)
-            SendKind.FOLLOW_UP -> onSendFollowUp(text, images)
-        }
-    }
 
     // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
     // 两者互不重叠（更早记录只 prepend、主快照只按下标对账更新），这里直接拼接渲染；
