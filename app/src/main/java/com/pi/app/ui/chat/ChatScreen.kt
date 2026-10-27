@@ -1318,7 +1318,9 @@ fun ChatScreen(
                                     scrollToVeryBottom()
                                 }
                             },
-                            onForkFromHere = onForkFromMessage
+                            onForkFromHere = onForkFromMessage,
+                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                            onOpenFilePreview = { p -> openFilePreview(p) }
                         )
                     }
                 }
@@ -1343,7 +1345,9 @@ fun ChatScreen(
                             },
                             onForkFromHere = { userItem ->
                                 onForkFromMessage?.invoke(userItem)
-                            }
+                            },
+                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                            onOpenFilePreview = { p -> openFilePreview(p) }
                         )
                     }
 
@@ -1368,7 +1372,9 @@ fun ChatScreen(
                                                 scrollToVeryBottom()
                                             }
                                         },
-                                        onForkFromHere = onForkFromMessage
+                                        onForkFromHere = onForkFromMessage,
+                                        onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                        onOpenFilePreview = { p -> openFilePreview(p) }
                                     )
                                 }
                             }
@@ -1391,7 +1397,9 @@ fun ChatScreen(
                                         scrollToVeryBottom()
                                     }
                                 },
-                                onForkFromHere = onForkFromMessage
+                                onForkFromHere = onForkFromMessage,
+                                onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                onOpenFilePreview = { p -> openFilePreview(p) }
                             )
                         }
                     }
@@ -1858,7 +1866,11 @@ fun ChatMessageItem(
     defaultModelName: String = "",
     onApproveTool: (approved: Boolean) -> Unit,
     onEditFromHere: ((String) -> Unit)? = null,
-    onForkFromHere: ((ChatItem) -> Unit)? = null
+    onForkFromHere: ((ChatItem) -> Unit)? = null,
+    /** 打开 bash 完整输出：由 ChatScreen 注入，工具卡里才有入口 */
+    onOpenBashOutput: ((path: String, title: String) -> Unit)? = null,
+    /** 打开文件预览：由 ChatScreen 注入 */
+    onOpenFilePreview: ((path: String) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     var isThinkingExpanded by remember { mutableStateOf(false) }
@@ -2054,10 +2066,12 @@ fun ChatMessageItem(
                         onToggle = { isToolExpanded = !isToolExpanded },
                         onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
                         onApproveTool = onApproveTool,
-                        onOpenFullOutput = tool.fullOutputPath?.let { p ->
-                            { openBashOutput(p, "${tool.toolName} 完整输出") }
+                        onOpenFullOutput = if (onOpenBashOutput == null || tool.fullOutputPath == null) null else {
+                            { onOpenBashOutput(tool.fullOutputPath, "${tool.toolName} 完整输出") }
                         },
-                        onOpenFile = tool.filePath?.let { p -> { openFilePreview(p) } }
+                        onOpenFile = if (onOpenFilePreview == null || tool.filePath == null) null else {
+                            { onOpenFilePreview(tool.filePath) }
+                        }
                     )
                 }
             }
