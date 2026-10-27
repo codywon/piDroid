@@ -593,6 +593,30 @@ class MainActivity : ComponentActivity() {
                 } else {
                     hist.stats
                 }
+                // 上下文占用以 agent 运行时为准（pi 的 getContextUsage 自带模型真实窗口）：
+                // 会话快照的 context.model 不带 contextWindow，App 以前兜底 200k，
+                // 1M 窗口的模型就永久显示 100%。这里用 POST /api/agent/{id} get_state 覆盖。
+                apiClient.getAgentState(sessionId).getOrNull()?.let { st ->
+                    if (st.hasContextUsage) {
+                        val window = st.contextWindow.takeIf { it > 0L } ?: tokenStats.maxContextWindow
+                        tokenStats = tokenStats.copy(
+                            contextTokens = st.contextTokens.takeIf { it > 0L } ?: tokenStats.contextTokens,
+                            maxContextWindow = window
+                        )
+                    }
+                    // 顺手对齐模型/思考档位（用户可能在 PC 端切过）
+                    if (restoreModelMeta) {
+                        st.modelId?.takeIf { it.isNotBlank() }?.let { mid ->
+                            dynamicCatalog.models.firstOrNull {
+                                it.id.equals(mid, ignoreCase = true) &&
+                                    (st.provider.isNullOrBlank() || it.provider.equals(st.provider, ignoreCase = true))
+                            }?.let { selectedModel = it }
+                        }
+                        st.thinkingLevel?.takeIf { it.isNotBlank() }?.let {
+                            currentThinkingLevel = ThinkingLevel.fromValue(it)
+                        }
+                    }
+                }
                 // 不再由 App 在阈值处自动 POST {"type":"compact"}：pi 的 manual compact
                 // 内部第一步就是 await this.abort()，会把正在执行的回合直接打断成
                 // 「模型服务异常: This operation was aborted」。阈值压缩交给 pi 自身的

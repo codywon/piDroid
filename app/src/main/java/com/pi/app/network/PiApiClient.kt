@@ -68,6 +68,15 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
 
+    /**
+     * 模型目录（models.json + 内置注册表）里各模型的真实 contextWindow，键为 `provider:modelId` 小写。
+     *
+     * 用途：`GET /api/sessions/{id}` 的 `context.model` 只给 provider/modelId、**不带 contextWindow**，
+     * 会话快照算不出占用率的分母。之前直接兜底 200000，于是 1M 窗口的模型一律显示 100%。
+     */
+    @Volatile
+    private var catalogContextWindows: Map<String, Long> = emptyMap()
+
     fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
 
     fun clearSessionCache(sessionId: String? = null) {
@@ -319,9 +328,15 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val overrides = prefs.getModelOverrides()
                 val overrideModel = overrides["$currentProvider:$currentModelId"]
                     ?: overrides.values.firstOrNull { it.modelId.equals(currentModelId, ignoreCase = true) }
+                val catalogWindow = catalogContextWindows["${currentProvider.lowercase()}:${currentModelId.lowercase()}"]
+                    ?: catalogContextWindows.entries.firstOrNull {
+                        it.key.substringAfter(':') == currentModelId.lowercase()
+                    }?.value
+                    ?: 0L
                 val effectiveMaxContext = when {
                     overrideModel != null && overrideModel.contextWindow > 0L -> overrideModel.contextWindow
                     modelContextWindow > 0L -> modelContextWindow
+                    catalogWindow > 0L -> catalogWindow
                     else -> 200000L
                 }
 
@@ -1094,7 +1109,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                     defaultModel = defaultModelRef,
                     defaultThinkingLevel = defaultThinking
                 )
-                Result.success(applyModelOverrides(baseCatalog, serverModelsConfig))
+                val merged = applyModelOverrides(baseCatalog, serverModelsConfig)
+                catalogContextWindows = merged.models
+                    .filter { it.contextWindow > 0L }
+                    .associate { "${it.provider.lowercase()}:${it.id.lowercase()}" to it.contextWindow }
+                Result.success(merged)
             }
         } catch (e: Exception) {
             Result.success(applyModelOverrides(getDefaultCatalog(), null))
@@ -1511,6 +1530,53 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun updateThinkingLevel(sessionId: String, level: ThinkingLevel): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "set_thinking_level", "level" to level.value))
+    }
+
+    /**
+     * 读取 agent 运行时的权威状态 (POST /api/agent/{id} {"type":"get_state"})。
+     *
+     * 这是上下文占用的唯一可信来源：pi 的 `getContextUsage()` 直接返回
+     * `{percent, contextWindow, tokens}`，contextWindow 是**模型真实窗口**（如 1,000,000）。
+     * App 以前是自己拿“最后一条 assistant 的 input+cacheRead”除以 200k 默认值，
+     * 于是 438,919 / 200,000 = 219% 被截成 100%，面板永远显示满载。
+     *
+     * 同一个响应里还有 model / thinkingLevel / isStreaming / isCompacting /
+     * pendingMessageCount / queuedMessages，可与手机端状态对账。
+     */
+    suspend fun getAgentState(sessionId: String): Result<AgentRuntimeState> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val body = gson.toJson(mapOf("type" to "get_state")).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取 agent 状态失败 (${response.code})"))
+                }
+                val raw = response.body?.string() ?: ""
+                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("agent 状态响应无法解析"))
+                val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+                val usage = data.get("contextUsage")?.takeIf { it.isJsonObject }?.asJsonObject
+                val modelObj = data.get("model")?.takeIf { it.isJsonObject }?.asJsonObject
+                Result.success(
+                    AgentRuntimeState(
+                        percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+                        contextWindow = usage?.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                        contextTokens = usage?.get("tokens")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                        hasContextUsage = usage != null,
+                        provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
+                        modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString,
+                        thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
+                        isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> = withContext(Dispatchers.IO) {

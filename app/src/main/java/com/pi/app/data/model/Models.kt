@@ -111,6 +111,26 @@ data class ProviderAuthState(
 }
 
 /**
+ * agent 运行时的权威状态（POST /api/agent/{id} {"type":"get_state"} → data）。
+ *
+ * `percent/contextWindow/contextTokens` 来自 pi 的 `getContextUsage()`，是上下文占用的唯一
+ * 可信来源：contextWindow 为**模型真实窗口**（例如 deepseek-flash 是 1,000,000），
+ * 而 App 早前用 200,000 硬默认值做分母，导致占用率永远顶格 100%。
+ */
+data class AgentRuntimeState(
+    val percent: Double = 0.0,
+    val contextWindow: Long = 0L,
+    val contextTokens: Long = 0L,
+    val hasContextUsage: Boolean = false,
+    val provider: String? = null,
+    val modelId: String? = null,
+    val thinkingLevel: String? = null,
+    val isStreaming: Boolean = false,
+    val isCompacting: Boolean = false,
+    val pendingMessageCount: Int = 0
+)
+
+/**
  * 详细 Token 与上下文用量、缓存率监控
  */
 data class TokenStats(

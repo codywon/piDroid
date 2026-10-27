@@ -20,6 +20,20 @@ All notable changes to the piDroid application will be documented in this file.
 
 ---
 
+## [1.7.5] - 2026-10-27
+
+### 📊 上下文占用恒为 100% 修复：改用 agent 运行时的真实窗口 (Release v1.7.5)
+
+- **左下角上下文占用一直顶格 100%（且永远是红色告警色）**：
+  - **根因**：`GET /api/sessions/{id}` 的 `context.model` 只有 `{provider, modelId}`，**没有 `contextWindow`**；App 在没有本地覆盖配置时兜底成硬编码的 `200000`。而这条会话的模型 `codywon/deepseek-flash` 在 `models.json` 里是 **`contextWindow: 1000000`**。分子（最后一条 assistant 的 `input + cacheRead` ≈ 438,919）除以 20 万得到 219%，被 `coerceIn(0f,1f)` 截成 100%。
+  - **实测对齐**：`POST /api/agent/{id} {"type":"get_state"}` 返回 `contextUsage: {percent: 43.8919, contextWindow: 1000000, tokens: 438919}` —— pi 自己的 `getContextUsage()` 就是权威值，pi-web 前端也是直接用它（`get_state`）。
+  - **修复一（权威值）**：新增 `PiApiClient.getAgentState()`，`syncSessionSnapshot` 每轮用 `contextUsage` 覆盖 `contextTokens / maxContextWindow`；顺手对齐 PC 端可能切换过的 `model` 与 `thinkingLevel`。
+  - **修复二（静态兜底）**：`getDynamicModels()` 把模型目录里各模型的真实 `contextWindow` 缓存为 `provider:modelId → window`，`getSessionDetail` 的兜底顺序改为「本地覆盖 > 会话快照 > 模型目录 > 20 万」，即使还没拿到 `get_state` 也不会算错。
+  - **验证**：同一台机器另一条空闲会话 `get_state` 返回 `percent 21.37 / window 1000000 / tokens 213707`（9ms），修复后不再误报满载。
+- 附带说明：底部 `⚡ cache R` 是**整场会话累计**缓存读取（来自服务端 `stats.tokens.cacheRead`），与单条消息行里的 `cache R` 不是同一口径，两者本来就不该相等。
+
+---
+
 ## [1.7.4] - 2026-10-27
 
 ### 💬 会话正文不再空白、折叠卡片移除、上滑自动续批 (Release v1.7.4)
