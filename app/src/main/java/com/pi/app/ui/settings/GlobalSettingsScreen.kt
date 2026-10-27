@@ -138,7 +138,7 @@ fun GlobalSettingsScreen(
                         updateUiState = UpdateUiState.ReadyToInstall(permState.apkFile, permState.info)
                         if (!AppUpdateManager.installApk(context, permState.apkFile)) {
                             updateUiState = UpdateUiState.Error(
-                                "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                                "校验未通过，已阻止安装；请到 Release 手动下载",
                                 permState.info
                             )
                         }
@@ -344,7 +344,7 @@ fun GlobalSettingsScreen(
                         updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
                         if (!AppUpdateManager.installApk(context, apkFile)) {
                             updateUiState = UpdateUiState.Error(
-                                "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                                "校验未通过，已阻止安装；请到 Release 手动下载",
                                 info
                             )
                         }
@@ -360,7 +360,7 @@ fun GlobalSettingsScreen(
             if (AppUpdateManager.canInstallPackages(context)) {
                 if (!AppUpdateManager.installApk(context, file)) {
                     updateUiState = UpdateUiState.Error(
-                        "安装包校验未通过，已阻止安装。请到官方 Release 手动下载安装。",
+                        "校验未通过，已阻止安装；请到 Release 手动下载",
                         (updateUiState as? UpdateUiState.ReadyToInstall)?.info
                     )
                 }
@@ -629,7 +629,7 @@ fun GlobalModelsTab(
         item {
             InfoTitle(
                 title = "默认推理思考档位",
-                infoDescription = "为新启动的任务设定全局默认思考深度，也可在每个会话内随时切换。",
+                infoDescription = "新任务默认思考深度",
                 style = MaterialTheme.typography.titleMedium
             )
             Spacer(modifier = Modifier.height(6.dp))
@@ -670,7 +670,7 @@ fun GlobalModelsTab(
             ) {
                 InfoTitle(
                     title = "模型与提供商管理 (${models.size})",
-                    infoDescription = "支持添加自定义提供商与模型、配置各厂商 API 密钥、直接编辑 models.json 配置文件，或修改现有模型参数。",
+                    infoDescription = "增删提供商与模型、配置 Key 与参数",
                     style = MaterialTheme.typography.titleMedium
                 )
             }
@@ -1165,7 +1165,7 @@ fun GlobalModelsTab(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "直接编辑网关 ~/.pi/agent/models.json（支持完整自定义 providers 与 models）：",
+                        "直接编辑 models.json：",
                         style = MaterialTheme.typography.labelSmall,
                         color = theme.textSecondary
                     )
@@ -1237,7 +1237,7 @@ fun GlobalSkillsTab(
                 Box(modifier = Modifier.weight(1f)) {
                     InfoTitle(
                         title = "智能体技能包 (${skills.size} 项)",
-                        infoDescription = "全局与工作区工程技能包。点击卡片或「编辑」按钮可查看与在线修改 SKILL.md 源码，支持自定义中文别名与安装新技能包。",
+                        infoDescription = "全局与工作区技能包，点卡片编辑 SKILL.md",
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
@@ -1307,7 +1307,7 @@ fun GlobalSkillsTab(
 
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = skill.description ?: "点击查看或编辑 SKILL.md 详细指令",
+                            text = skill.description ?: "点开查看 / 编辑 SKILL.md",
                             style = MaterialTheme.typography.bodySmall,
                             color = theme.textSecondary,
                             maxLines = 2,
@@ -1431,7 +1431,7 @@ fun GlobalMcpTab(
                 Box(modifier = Modifier.weight(1f)) {
                     InfoTitle(
                         title = "MCP 协议与沙箱代码模式",
-                        infoDescription = "配置 Model Context Protocol 协议服务器，支持新增、编辑、启停节点及配置 Code Mode 沙箱预算。",
+                        infoDescription = "MCP 服务器与 Code Mode 预算",
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
@@ -1920,7 +1920,7 @@ fun GlobalMcpTab(
             },
             text = {
                 Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("网关向该 MCP 服务发出探测时返回了错误：", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
+                    Text("探测失败：", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = theme.background,
@@ -1967,7 +1967,7 @@ fun GlobalPluginsTab(
                 Box(modifier = Modifier.weight(1f)) {
                     InfoTitle(
                         title = "插件扩展 (${plugins.size} 个扩展包)",
-                        infoDescription = "支持在线安装 NPM / Git 插件包，以及随时编辑配置、启用、禁用、更新或卸载。",
+                        infoDescription = "NPM / Git 插件，可随时启停与更新",
                         style = MaterialTheme.typography.titleMedium
                     )
                 }
@@ -2253,6 +2253,9 @@ fun GlobalSystemSettingsTab(
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
 
+    // 第三方镜像说明弹窗（开关在「关于与升级」卡片内）
+    var showMirrorInfo by remember { mutableStateOf(false) }
+
     // 实时同步电池白名单状态：监听 Activity Resume 并做多拍延迟检测（应对系统授权弹窗返回后的异步生效）
     var liveIgnoringBattery by remember(isIgnoringBattery) { mutableStateOf(isIgnoringBattery) }
     DisposableEffect(lifecycleOwner) {
@@ -2277,7 +2280,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "应用主题外观",
-                infoDescription = "浅色纸质 / 深空暗黑 / 纯黑 OLED / 冰蓝 / 翡翠，五种高对比配色。",
+                infoDescription = "五种高对比配色",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2372,7 +2375,7 @@ fun GlobalSystemSettingsTab(
                             )
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = "任务完成时双连震动提醒，安全审批时重震提醒",
+                                text = "完成双振，审批重振",
                                 style = MaterialTheme.typography.labelSmall,
                                 lineHeight = 16.sp,
                                 color = theme.textMuted
@@ -2425,7 +2428,7 @@ fun GlobalSystemSettingsTab(
                             )
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = "任务完成时播放提示音（对标 pi-web 提示音）",
+                                text = "任务完成时播放提示音",
                                 style = MaterialTheme.typography.labelSmall,
                                 lineHeight = 16.sp,
                                 color = theme.textMuted
@@ -2461,7 +2464,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "后台保活",
-                infoDescription = "前台服务 + 电池白名单 + 唤醒锁，锁屏与切后台不断连。",
+                infoDescription = "锁屏与切后台不断连",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2490,7 +2493,7 @@ fun GlobalSystemSettingsTab(
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "通知栏常驻前台服务，进程不被后台回收",
+                                text = "常驻通知栏，防后台回收",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.textMuted
                             )
@@ -2603,7 +2606,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "主机网关连接",
-                infoDescription = "管理已配对的网关地址与访问令牌，支持编辑与扫码切换。",
+                infoDescription = "网关地址与访问令牌",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2718,7 +2721,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "关于与升级",
-                infoDescription = "查看版本信息、开发者署名与开源使用许可协议。",
+                infoDescription = "版本、作者与许可",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2803,11 +2806,26 @@ fun GlobalSystemSettingsTab(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = theme.textPrimary
                             )
-                            Text(
-                                "国内网络下可提升下载速度；安装包仍会校验 SHA-256 与签名",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textSecondary
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { showMirrorInfo = true }
+                            ) {
+                                Text(
+                                    "ghfast.top / ghproxy.net / gh-proxy.com 中转",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = theme.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "镜像说明",
+                                    tint = theme.textMuted,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
                         }
                         Spacer(modifier = Modifier.width(12.dp))
                         Switch(
@@ -2843,7 +2861,7 @@ fun GlobalSystemSettingsTab(
                     ) {
                         Text("许可协议", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
                         Text(
-                            text = "CC BY-NC（个人学习交流，禁止商业用途）",
+                            text = "CC BY-NC · 禁止商用",
                             style = MaterialTheme.typography.labelSmall,
                             color = theme.textSecondary
                         )
@@ -2851,6 +2869,26 @@ fun GlobalSystemSettingsTab(
                 }
             }
         }
+    }
+
+    if (showMirrorInfo) {
+        AlertDialog(
+            onDismissRequest = { showMirrorInfo = false },
+            containerColor = theme.surfaceContainerLow,
+            title = { Text("第三方加速镜像", fontWeight = FontWeight.Bold, color = theme.textPrimary, fontSize = 15.sp) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("仅加速安装包下载，检测新版本仍走 api.github.com。", fontSize = 12.sp, color = theme.textSecondary, lineHeight = 18.sp)
+                    Text("中转站点：ghfast.top、ghproxy.net、gh-proxy.com（均为第三方公益镜像，与本应用无关）。", fontSize = 12.sp, color = theme.textSecondary, lineHeight = 18.sp)
+                    Text("风险：镜像方可见你的 IP 与所下版本；若文件被篡改，SHA-256 与签名校验会拦住安装。", fontSize = 12.sp, color = theme.textSecondary, lineHeight = 18.sp)
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMirrorInfo = false }) {
+                    Text("知道了", color = theme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
 }
 

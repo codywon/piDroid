@@ -440,7 +440,7 @@ object AppUpdateManager {
                     Log.e(TAG, "APK signature mismatch on ${channel.name}, refusing to keep the file")
                     tempFile.delete()
                     lastException = SecurityException(
-                        "安装包签名校验未通过，已丢弃。为避免安装伪造包，请改用【浏览器下载】并到官方 Release 手动安装。"
+                        "签名不匹配，已丢弃；请改用浏览器下载或官方 Release"
                     )
                     continue
                 }

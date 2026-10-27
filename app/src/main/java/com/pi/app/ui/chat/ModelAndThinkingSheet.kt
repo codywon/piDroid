@@ -92,7 +92,7 @@ fun ModelAndThinkingSheet(
         ) {
             InfoTitle(
                 title = "模型与思考级别切换",
-                infoDescription = "在此无缝切换正在服务的前端模型与推理思考档位，点击星标可设为全局默认模型。",
+                infoDescription = "仅作用于当前会话；全局默认在设置页",
                 style = MaterialTheme.typography.titleMedium
             )
 

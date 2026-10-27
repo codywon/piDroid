@@ -33,7 +33,7 @@ fun TokenStatsHudDialog(
         title = {
             InfoTitle(
                 title = "Token 用量与监控",
-                infoDescription = "实时追踪大模型上下文窗口、Prompt 缓存复用率与累计花费。",
+                infoDescription = "上下文、缓存命中与花费",
                 style = MaterialTheme.typography.titleMedium
             )
         },
@@ -51,7 +51,7 @@ fun TokenStatsHudDialog(
                     ) {
                         InfoTitle(
                             title = "上下文容量",
-                            infoDescription = "当前历史会话占用的 Token 数量以及模型所支持的最大上限。超过 80% 建议执行压缩。",
+                            infoDescription = "超过 80% 建议压缩上下文",
                             style = MaterialTheme.typography.labelMedium
                         )
                         Spacer(modifier = Modifier.width(6.dp))
@@ -99,7 +99,7 @@ fun TokenStatsHudDialog(
                         Column(modifier = Modifier.weight(1f, fill = false)) {
                             InfoTitle(
                                 title = "Prompt 缓存率",
-                                infoDescription = "基于 Anthropic/OpenAI 的前缀缓存机制：命中缓存的 Token 响应更快且费用减少高达 90%！",
+                                infoDescription = "前缀缓存命中可省约 90% 费用",
                                 style = MaterialTheme.typography.labelMedium
                             )
                             Spacer(modifier = Modifier.height(2.dp))

@@ -1413,7 +1413,7 @@ fun GlobalModelsConfigTab(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "先联网验证再写入 pi 凭据库（auth.json）。错 Key 会让 PC 上所有会话直接 401，所以不验证不保存。",
+                        "先实测再写入 auth.json；错 Key 会让所有会话 401",
                         fontSize = 11.sp,
                         color = theme.textMuted,
                         lineHeight = 16.sp
@@ -1489,7 +1489,7 @@ fun GlobalModelsConfigTab(
                                     // 测试接口本身不可用（旧网关 / 网络异常）：不强存，只给出路
                                     allowUnverifiedSave = true
                                     apiKeyInputError =
-                                        "无法联网实测（${err.message ?: "测试接口不可用"}）。确认 Key 无误请再点一次「跳过实测并保存」。"
+                                        "无法实测（${err.message ?: "测试接口不可用"}）；确认无误请再点一次「跳过实测并保存」"
                                 }
                             }
 
@@ -1511,7 +1511,7 @@ fun GlobalModelsConfigTab(
                             } else if (!canVerify && apiKeyInputError == null) {
                                 // 内置 Provider 没有 Base URL，提示需要明示确认
                                 allowUnverifiedSave = true
-                                apiKeyInputError = "该 Provider 未配置 Base URL，无法联网实测。确认 Key 无误请再点一次「跳过实测并保存」。"
+                                apiKeyInputError = "无 Base URL，无法实测；再点一次「跳过实测并保存」"
                             }
                             apiKeyVerifyPhase = null
                             isSavingApiKey = false
@@ -1544,7 +1544,7 @@ fun GlobalModelsConfigTab(
             onDismissRequest = { showDeleteProviderDialog = false },
             containerColor = theme.surfaceContainerLow,
             title = { Text("确认删除 Provider？", fontWeight = FontWeight.Bold, color = theme.textPrimary) },
-            text = { Text("将删除 ${currentProvider.name} 以及其下属所有模型配置，此操作在点击保存后永久生效。", color = theme.textSecondary) },
+            text = { Text("将删除 ${currentProvider.name} 及其全部模型，保存后生效", color = theme.textSecondary) },
             confirmButton = {
                 Button(
                     onClick = {

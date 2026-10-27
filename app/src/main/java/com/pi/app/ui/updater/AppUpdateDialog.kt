@@ -348,7 +348,7 @@ fun AppUpdateDialog(
 
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = "正在通过多路国内镜像智能选路下载，完成后将自动呼起系统无缝覆盖安装。",
+                            text = "多路镜像并行下载，完成后自动安装",
                             fontSize = 11.sp,
                             color = theme.textMuted,
                             lineHeight = 16.sp
@@ -381,7 +381,7 @@ fun AppUpdateDialog(
                                 )
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = "已配置统一签名 Key，点击下方按钮即可一键覆盖升级，无需卸载原有应用。",
+                                    text = "签名一致，可直接覆盖安装",
                                     fontSize = 12.sp,
                                     color = theme.textMuted,
                                     lineHeight = 18.sp
@@ -422,7 +422,7 @@ fun AppUpdateDialog(
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "Android 系统安全规范要求：首次升级需要为您开启本应用的安装权限，开启后将自动继续完成升级。",
+                                    text = "首次升级需允许安装未知应用",
                                     fontSize = 12.sp,
                                     color = theme.textMuted,
                                     lineHeight = 18.sp

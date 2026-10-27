@@ -97,7 +97,7 @@ fun ToolPresetBottomSheet(
             }
 
             Text(
-                text = "根据任务场景精细控制智能体在当前会话中的系统执行能力",
+                text = "定义本会话可用的工具",
                 style = MaterialTheme.typography.bodySmall,
                 color = theme.textMuted,
                 modifier = Modifier.padding(bottom = 16.dp)
