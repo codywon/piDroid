@@ -103,7 +103,7 @@ fun GlobalModelsConfigTab(
 
     // pi 凭据库真实状态（GET /api/auth/providers）：models.json 里通常根本没 apiKey 字段，
     // 只看 models.json 会永远显示「未配置 Key」
-    var authStates by remember { mutableStateOf<Map<String, com.pi.app.network.ProviderAuthState>>(emptyMap()) }
+    var authStates by remember { mutableStateOf<Map<String, ProviderAuthState>>(emptyMap()) }
 
     // 辅助函数：加载服务端配置
     fun loadAuthStates() {

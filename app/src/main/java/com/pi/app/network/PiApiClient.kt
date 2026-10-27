@@ -2614,31 +2614,6 @@ data class ModelTestResult(
     val error: String? = null
 )
 
-/**
- * pi 凭据库中某个 Provider 的真实配置状态（GET /api/auth/providers → apiKeyProviders）。
- *
- * @param configured 是否已配置可用凭据
- * @param source pi 侧的凭据来源：stored(auth.json) / env(环境变量) / models_json_key 等
- */
-data class ProviderAuthState(
-    val providerId: String,
-    val configured: Boolean = false,
-    val source: String? = null,
-    val modelCount: Int = 0
-) {
-    /** 给 UI 看的中文来源说明 */
-    val sourceLabel: String
-        get() = when (source?.lowercase()) {
-            "stored" -> "已保存"
-            "env" -> "环境变量"
-            "models_json_key" -> "models.json"
-            "models_json_command" -> "models.json 命令"
-            "oauth" -> "OAuth"
-            null, "" -> ""
-            else -> source ?: ""
-        }
-}
-
 data class CatalogPreset(
     val name: String? = null,
     val reasoning: Boolean? = null,
