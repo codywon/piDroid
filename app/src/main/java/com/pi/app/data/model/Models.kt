@@ -130,6 +130,10 @@ data class AgentRuntimeState(
     val pendingMessageCount: Int = 0,
     /** GET /api/sessions/{id}/state 顶层的 running（等价于 /api/sessions 的 runningSessionIds 判定） */
     val running: Boolean = false,
+    /** pi 的自动上下文压缩开关（agent get_state.autoCompactionEnabled） */
+    val autoCompactionEnabled: Boolean = false,
+    /** pi 的自动重试开关（agent get_state.autoRetryEnabled） */
+    val autoRetryEnabled: Boolean = false,
     /** 正在排队等待下发的引导消息（pi 的 queuedMessages.steering） */
     val steering: List<String> = emptyList(),
     /** 正在排队的后续消息（pi 的 queuedMessages.followUp） */
@@ -205,6 +209,34 @@ data class SlashCommand(
             else -> source
         }
 }
+
+/**
+ * PC 上工作目录的 git 变更（GET /api/git/status?cwd=）。
+ * 实测返回：{isGitRepository, repositoryRoot, files:[{filePath,status,code,indexStatus,worktreeStatus}], additions, deletions}
+ */
+data class GitStatusResult(
+    val isGitRepository: Boolean = false,
+    val repositoryRoot: String = "",
+    val files: List<GitFileChange> = emptyList(),
+    val additions: Int = 0,
+    val deletions: Int = 0
+)
+
+data class GitFileChange(
+    val filePath: String,
+    /** modified / added / deleted / untracked / renamed … */
+    val status: String = "",
+    /** porcelain 的单字母状态，如 M / A / D / ?? */
+    val code: String = ""
+)
+
+/** 单个文件的 diff（GET /api/git/diff?cwd=&path=）：{supported, status, patch} */
+data class GitDiffResult(
+    val supported: Boolean = false,
+    val status: String = "",
+    /** 统一 diff 文本（unified patch） */
+    val patch: String = ""
+)
 
 /** 待上传到 PC 工作目录的文件（用于 /api/files?type=upload 的 multipart 上传） */
 data class UploadFileInput(

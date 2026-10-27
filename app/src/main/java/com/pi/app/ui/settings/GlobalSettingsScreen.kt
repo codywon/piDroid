@@ -97,6 +97,10 @@ fun GlobalSettingsScreen(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
+    autoCompactionEnabled: Boolean = true,
+    onToggleAutoCompaction: (Boolean) -> Unit = {},
+    autoRetryEnabled: Boolean = true,
+    onToggleAutoRetry: (Boolean) -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -292,6 +296,10 @@ fun GlobalSettingsScreen(
                     completionSoundEnabled = completionSoundEnabled,
                     onToggleCompletionSound = onToggleCompletionSound,
                     onTestCompletionSound = onTestCompletionSound,
+                    autoCompactionEnabled = autoCompactionEnabled,
+                    onToggleAutoCompaction = onToggleAutoCompaction,
+                    autoRetryEnabled = autoRetryEnabled,
+                    onToggleAutoRetry = onToggleAutoRetry,
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
@@ -2238,6 +2246,10 @@ fun GlobalSystemSettingsTab(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
+    autoCompactionEnabled: Boolean = true,
+    onToggleAutoCompaction: (Boolean) -> Unit = {},
+    autoRetryEnabled: Boolean = true,
+    onToggleAutoRetry: (Boolean) -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -2597,6 +2609,89 @@ fun GlobalSystemSettingsTab(
                         UnifiedStatusBadge(
                             text = "已就绪",
                             isActive = true
+                        )
+                    }
+                }
+            }
+        }
+
+        item {
+            InfoTitle(
+                title = "智能体行为",
+                infoDescription = "任务运行时的自动压缩与自动重试，读写 PC 上的 pi（get_state / set_auto_*）。",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
+        item {
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = theme.surfaceContainerLow,
+                border = BorderStroke(1.dp, theme.outline),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // 自动压缩上下文
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("自动压缩上下文", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
+                                UnifiedStatusBadge(
+                                    text = if (autoCompactionEnabled) "已开启" else "已关闭",
+                                    isActive = autoCompactionEnabled
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                "接近窗口上限时由 pi 在回合边界自动压缩，不打断当前请求",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textMuted
+                            )
+                        }
+                        Switch(
+                            checked = autoCompactionEnabled,
+                            onCheckedChange = onToggleAutoCompaction,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF2EA043),
+                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
+
+                    // 自动重试
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("自动重试", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
+                                UnifiedStatusBadge(
+                                    text = if (autoRetryEnabled) "已开启" else "已关闭",
+                                    isActive = autoRetryEnabled
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                "模型报错/断流时由 pi 自动重试本轮",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textMuted
+                            )
+                        }
+                        Switch(
+                            checked = autoRetryEnabled,
+                            onCheckedChange = onToggleAutoRetry,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF2EA043),
+                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
+                            )
                         )
                     }
                 }

@@ -120,6 +120,10 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    /** 读取工作目录的 git 变更（GET /api/git/status?cwd=） */
+    onLoadGitStatus: suspend () -> Result<GitStatusResult> = { Result.success(GitStatusResult()) },
+    /** 读取单个文件的 diff（GET /api/git/diff?cwd=&path=） */
+    onLoadGitDiff: suspend (String) -> Result<GitDiffResult> = { Result.success(GitDiffResult()) },
     /** 读取斜杠命令列表（pi 的 agent get_commands：扩展命令 / prompt 模板 / 技能） */
     onLoadCommands: suspend () -> Result<List<SlashCommand>> = { Result.success(emptyList()) },
     /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
@@ -156,6 +160,14 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
+    // Git 变更面板
+    var showGitSheet by remember { mutableStateOf(false) }
+    var gitStatus by remember { mutableStateOf<GitStatusResult?>(null) }
+    var isLoadingGit by remember { mutableStateOf(false) }
+    var gitDiff by remember { mutableStateOf<GitDiffResult?>(null) }
+    var gitDiffTitle by remember { mutableStateOf<String?>(null) }
+    var isLoadingGitDiff by remember { mutableStateOf(false) }
+
     // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）
     var showCommandSheet by remember { mutableStateOf(false) }
     var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
@@ -496,6 +508,31 @@ fun ChatScreen(
                         Icon(
                             Icons.Default.Sync,
                             contentDescription = "同步最新任务状态",
+                            tint = theme.textSecondary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    // 工作目录 git 变更（GET /api/git/status + /api/git/diff）
+                    IconButton(onClick = {
+                        showGitSheet = true
+                        gitDiff = null
+                        gitDiffTitle = null
+                        isLoadingGit = true
+                        coroutineScope.launch {
+                            onLoadGitStatus().onSuccess { gitStatus = it }
+                                .onFailure { err ->
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "读取 git 状态失败: ${err.message}",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            isLoadingGit = false
+                        }
+                    }) {
+                        Icon(
+                            Icons.Default.AccountTree,
+                            contentDescription = "工作目录变更",
                             tint = theme.textSecondary,
                             modifier = Modifier.size(20.dp)
                         )
@@ -1355,6 +1392,181 @@ fun ChatScreen(
             },
             onDismissRequest = { showToolPresetSheet = false }
         )
+    }
+
+    if (showGitSheet) {
+        ModalBottomSheet(
+            onDismissRequest = {
+                showGitSheet = false
+                gitDiff = null
+                gitDiffTitle = null
+            },
+            containerColor = theme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                val st = gitStatus
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.AccountTree,
+                        contentDescription = null,
+                        tint = theme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = gitDiffTitle?.let { it.substringAfterLast('/').substringAfterLast('\\') }
+                            ?: "工作目录变更",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = theme.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (gitDiffTitle != null) {
+                        Text(
+                            text = "返回列表",
+                            fontSize = 11.5.sp,
+                            color = theme.primary,
+                            modifier = Modifier.clickable {
+                                gitDiff = null
+                                gitDiffTitle = null
+                            }
+                        )
+                    }
+                }
+
+                // ── diff 视图 ──
+                if (gitDiffTitle != null) {
+                    if (isLoadingGitDiff) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.8.dp,
+                                color = theme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("正在读取 diff…", fontSize = 11.5.sp, color = theme.textMuted)
+                        }
+                    } else {
+                        val d = gitDiff
+                        if (d == null || !d.supported || d.patch.isBlank()) {
+                            Text(
+                                text = if (d != null && !d.supported) "该文件不支持 diff（可能是二进制）" else "没有可显示的 diff",
+                                fontSize = 11.5.sp,
+                                color = theme.textMuted
+                            )
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = theme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                                    item {
+                                        Text(
+                                            text = d.patch,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            lineHeight = 14.sp,
+                                            color = theme.textPrimary,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(8.dp)
+                                                .horizontalScroll(rememberScrollState())
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // ── 文件列表视图 ──
+                    if (isLoadingGit) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(14.dp),
+                                strokeWidth = 1.8.dp,
+                                color = theme.primary
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("正在读取 git 状态…", fontSize = 11.5.sp, color = theme.textMuted)
+                        }
+                    } else if (st == null || !st.isGitRepository) {
+                        Text(
+                            text = "当前工作目录不是 git 仓库",
+                            fontSize = 11.5.sp,
+                            color = theme.textMuted
+                        )
+                    } else {
+                        Text(
+                            text = "＋${st.additions}  －${st.deletions} · ${st.files.size} 个文件变更",
+                            fontSize = 11.sp,
+                            color = theme.textMuted
+                        )
+                        if (st.files.isEmpty()) {
+                            Text("工作目录干净，没有未提交变更", fontSize = 11.5.sp, color = theme.textMuted)
+                        } else {
+                            LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
+                                items(st.files, key = { it.filePath }) { f ->
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                gitDiffTitle = f.filePath
+                                                gitDiff = null
+                                                isLoadingGitDiff = true
+                                                coroutineScope.launch {
+                                                    onLoadGitDiff(f.filePath).onSuccess { gitDiff = it }
+                                                        .onFailure { err ->
+                                                            android.widget.Toast.makeText(
+                                                                context,
+                                                                "读取 diff 失败: ${err.message}",
+                                                                android.widget.Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
+                                                    isLoadingGitDiff = false
+                                                }
+                                            }
+                                            .padding(vertical = 7.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = (f.code.ifBlank { f.status }).take(2),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = when {
+                                                f.code.startsWith("D") || f.status == "deleted" -> Color(0xFFCF222E)
+                                                f.code.startsWith("A") || f.status == "added" || f.code == "??" -> Color(0xFF2EA043)
+                                                else -> Color(0xFFD29922)
+                                            },
+                                            modifier = Modifier.width(26.dp)
+                                        )
+                                        Text(
+                                            text = f.filePath
+                                                .removePrefix(st.repositoryRoot)
+                                                .trimStart('/', '\\'),
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showCommandSheet) {

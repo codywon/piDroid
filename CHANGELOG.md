@@ -2,6 +2,20 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.11] - 2026-10-27
+
+### ⚙️ 自动压缩/重试开关 + 工作目录 git diff (Release v1.7.11)
+
+- **pi 的两个智能体开关原先手机端看不到也改不了**：
+  - `get_state` 本来就返回 `autoCompactionEnabled` / `autoRetryEnabled`，现在解析进来，并在「设置 → 系统设置」新增**智能体行为**卡片（自动压缩上下文 / 自动重试），切换即写回 PC：`{"type":"set_auto_compaction","enabled":bool}` / `{"type":"set_auto_retry","enabled":bool}`，失败自动回滚开关状态。
+  - 备注：这两个开关作用于**当前会话的运行时**，未进入会话时切换会提示先打开会话。
+- **工作目录的 git 变更与 diff 打通**：
+  - `GET /api/git/status?cwd=` → `{isGitRepository, repositoryRoot, files:[{filePath,status,code,indexStatus,worktreeStatus}], additions, deletions}`（实测某仓库 273 个变更 / +20710 −7157）；
+  - `GET /api/git/diff?cwd=&path=` → `{supported, status, patch}`（unified patch）；
+  - 会话页顶栏新增「工作目录变更」入口：先看 `＋N −M · X 个文件` 与文件清单（M/A/D/?? 配色），点文件即渲染该文件的 patch（等宽、可横向滚动、支持二进制/不支持提示）。
+
+---
+
 ## [1.7.10] - 2026-10-27
 
 ### 🔎 服务端全文搜索 + 斜杠命令面板 + 未读标记 (Release v1.7.10)

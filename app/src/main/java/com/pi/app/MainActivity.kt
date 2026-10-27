@@ -292,6 +292,9 @@ class MainActivity : ComponentActivity() {
         var searchJob by remember { mutableStateOf<Job?>(null) }
         // 未读标记：与 pi-web 一致，属于「本设备」状态（它存在浏览器 localStorage）
         var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
+        // pi 的智能体行为开关（真源在 PC，读 get_state、写 set_auto_*）
+        var autoCompactionEnabled by remember { mutableStateOf(true) }
+        var autoRetryEnabled by remember { mutableStateOf(true) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
@@ -717,6 +720,8 @@ class MainActivity : ComponentActivity() {
                             maxContextWindow = window
                         )
                     }
+                    autoCompactionEnabled = st.autoCompactionEnabled
+                    autoRetryEnabled = st.autoRetryEnabled
                     // 顺手对齐模型/思考档位（用户可能在 PC 端切过）
                     if (restoreModelMeta) {
                         st.modelId?.takeIf { it.isNotBlank() }?.let { mid ->
@@ -1532,6 +1537,36 @@ class MainActivity : ComponentActivity() {
                         hapticsAndNotify.playTaskCompletedSound(force = true)
                         Toast.makeText(this@MainActivity, "已播放任务完成提示音", Toast.LENGTH_SHORT).show()
                     },
+                    autoCompactionEnabled = autoCompactionEnabled,
+                    onToggleAutoCompaction = { enabled ->
+                        autoCompactionEnabled = enabled
+                        val sid = currentSession?.id
+                        if (sid.isNullOrBlank()) {
+                            Toast.makeText(this@MainActivity, "请先进入一个会话再切换（写入的是当前会话运行时）", Toast.LENGTH_SHORT).show()
+                        } else {
+                            lifecycleScope.launch {
+                                apiClient.setAutoCompaction(sid, enabled).onFailure { err ->
+                                    autoCompactionEnabled = !enabled
+                                    Toast.makeText(this@MainActivity, "切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    autoRetryEnabled = autoRetryEnabled,
+                    onToggleAutoRetry = { enabled ->
+                        autoRetryEnabled = enabled
+                        val sid = currentSession?.id
+                        if (sid.isNullOrBlank()) {
+                            Toast.makeText(this@MainActivity, "请先进入一个会话再切换（写入的是当前会话运行时）", Toast.LENGTH_SHORT).show()
+                        } else {
+                            lifecycleScope.launch {
+                                apiClient.setAutoRetry(sid, enabled).onFailure { err ->
+                                    autoRetryEnabled = !enabled
+                                    Toast.makeText(this@MainActivity, "切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
@@ -1676,6 +1711,12 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
+                    },
+                    onLoadGitStatus = {
+                        apiClient.getGitStatus(currentSession?.cwd ?: "")
+                    },
+                    onLoadGitDiff = { path ->
+                        apiClient.getGitDiff(currentSession?.cwd ?: "", path)
                     },
                     onLoadCommands = {
                         val sid = currentSession?.id ?: ""

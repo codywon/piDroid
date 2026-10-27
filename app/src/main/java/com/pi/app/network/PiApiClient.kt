@@ -1608,6 +1608,92 @@ class PiApiClient(private val prefs: AppPreferences) {
         sendAgentAction(sessionId, payload)
     }
 
+    /** 开关 pi 的自动上下文压缩（agent {"type":"set_auto_compaction","enabled":bool}） */
+    suspend fun setAutoCompaction(sessionId: String, enabled: Boolean): Result<Boolean> =
+        sendAgentAction(sessionId, mapOf("type" to "set_auto_compaction", "enabled" to enabled))
+
+    /** 开关 pi 的自动重试（agent {"type":"set_auto_retry","enabled":bool}） */
+    suspend fun setAutoRetry(sessionId: String, enabled: Boolean): Result<Boolean> =
+        sendAgentAction(sessionId, mapOf("type" to "set_auto_retry", "enabled" to enabled))
+
+    /**
+     * 读取工作目录的 git 变更：GET /api/git/status?cwd=<绝对路径>
+     * → {isGitRepository, repositoryRoot, files:[{filePath,status,code,...}], additions, deletions}
+     */
+    suspend fun getGitStatus(cwd: String): Result<GitStatusResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (cwd.isBlank()) return@withContext Result.failure(Exception("会话缺少工作目录"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/git/status?cwd=${URLEncoder.encode(cwd, "UTF-8")}")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取 git 状态失败 (${resp.code})"))
+                }
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("git 状态响应无法解析"))
+                val files = root.get("files")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { el ->
+                    runCatching {
+                        val o = el.asJsonObject
+                        GitFileChange(
+                            filePath = o.get("filePath")?.asString ?: "",
+                            status = o.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            code = o.get("code")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        )
+                    }.getOrNull()
+                } ?: emptyList()
+                Result.success(
+                    GitStatusResult(
+                        isGitRepository = root.get("isGitRepository")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        repositoryRoot = root.get("repositoryRoot")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        files = files,
+                        additions = root.get("additions")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                        deletions = root.get("deletions")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** 读取单个文件的 diff：GET /api/git/diff?cwd=&path= → {supported, status, patch} */
+    suspend fun getGitDiff(cwd: String, path: String): Result<GitDiffResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (cwd.isBlank() || path.isBlank()) return@withContext Result.failure(Exception("缺少 cwd 或文件路径"))
+        try {
+            val req = Request.Builder()
+                .url(
+                    "$baseUrl/api/git/diff?cwd=${URLEncoder.encode(cwd, "UTF-8")}" +
+                        "&path=${URLEncoder.encode(path, "UTF-8")}"
+                )
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                if (!resp.isSuccessful || root == null) {
+                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException("读取 diff 失败：$err"))
+                }
+                Result.success(
+                    GitDiffResult(
+                        supported = root.get("supported")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        status = root.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        patch = root.get("patch")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /**
      * 服务端全文搜索会话内容：GET /api/sessions/search?q=<≤200 字符>
      *
@@ -1795,6 +1881,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                         pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
                         running = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean == true ||
                             isStreaming || isPromptRunning,
+                        autoCompactionEnabled =
+                            data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        autoRetryEnabled =
+                            data.get("autoRetryEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
                         steering = queueTexts("steering"),
                         followUp = queueTexts("followUp")
                     )
