@@ -2,6 +2,39 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.0] - 2026-10-27
+
+### 🧩 压缩上下文不再打断回合、摘要正文恢复 Markdown，MCP 与模型管理双页重设计 (Release v1.7.0)
+
+- **「模型服务异常: This operation was aborted」根因定位与根治**：
+  - **根因**：pi 的 `AgentSession.compact()` 第一行就是 `await this.abort()`，即**手动压缩天然会中止正在执行的回合**。App 侧有两处会发出该手动压缩：
+    1. 上下文占用 ≥70% 时自动 `POST {"type":"compact"}`；
+    2. 聊天页右上角「压缩上下文」按钮（无运行态判断）。
+    两者之一在 Agent 正在出字或调工具时到达，就会把在途请求 abort 掉，pi 落一条 `stopReason: error` + `errorMessage: This operation was aborted`（`usage 0`、`durationMs 0`）的空 assistant 记录，回放时被渲染成刺眼的「⚠️ 模型服务异常」。已在真实会话文件 `.pi/agent/sessions/**` 中复现该签名：toolResult 之后 22ms 即出现该错误条目，26 秒后才写入 compaction 条目。
+  - **移除 App 侧 70% 自动压缩**：阈值压缩交给 pi 自身的 `auto_compaction`（在回合边界触发、不打断在途请求）；App 不再与内核抢控制权。
+  - **手动压缩增加运行态守门**：`isAgentBusy || isToolExecuting` 时不再发请求，改为提示「压缩会中断当前回合」；压缩失败也会兜底 Toast。
+  - **中止类错误不再报「服务异常」**：历史回放时识别 `aborted` 系列错误，空正文条目直接跳过，有正文的降级为中性「⏸ 本轮生成已被中断」。
+  - **上下文占用百分比纠正**：优先采用本地模型配置的 `contextWindow`，避免 1M 上下文模型被 200k 默认窗口算成 ~98% 满载。
+
+- **压缩摘要 / 系统消息的 Markdown 渲染修复**：
+  - **根因**：`ChatMessageItem` 的 `SYSTEM` 分支用的是纯 `Text(...)`，完全绕过了 `MarkdownRenderer`，因此 `## Goal`、`## Constraints & Preferences` 等标题标记原样裸露。
+  - 文本正文统一改走 `MarkdownRenderer`，标题行单独提为卡片头部（剥除 `#/>/-` 等标记），压缩卡片展示「📦 … 查看摘要」，正文加分隔线后按 Markdown 渲染（标题、列表、表格、代码块全部生效）。
+  - 只点标题行才展开/收起，避免选中摘要文字时误触发折叠。
+  - `display: false` 的 `custom_message`（如 `auto-continue-after-compaction` 内部注入指令）不再当作系统消息展示，对齐 pi-web 的 `if (message.display)` 语义。
+
+- **MCP 服务器卡片重设计**：
+  - 「6 工具」徽标不再灰色填充、不再折行成「6 工/具」：工具数改为无底色等宽文字元信息，与传输协议/连接状态合成一行，`maxLines = 1, softWrap = false`。
+  - 卡片改为三段式：① 状态点 + 名称（`weight(1f)` + 省略号）+ 开关；② 元信息 + 描述 + 地址；③ 分隔线下的等宽操作栏（测试 / 编辑 / 移除），操作按钮独占一行，任何屏幕宽度都不再挤压。
+
+- **模型管理页布局与配色重设计**：
+  - **思考档位选择器**：去掉按字符长度手工配权的实现（曾导致 `minimal` 被压成 `minima+l`、留白突变），改为等内边距胶囊 + 横向滚动，单行绝不折行；标题右侧的重复档位徽标替换为「新会话生效」说明。
+  - **Provider 卡片头部**：名称占满剩余宽度并省略，编辑/删除收敛为 30dp 圆形图标按钮；协议胶囊与 Key 状态下移为独立元信息行，消除窄屏重叠。
+  - **模型调校卡片头部**：标题 + 图标操作（测试 / 移除），模型 ID 单独一行等宽展示，彻底消除「移/除」被挤成竖排的畸形按钮。
+  - **能力开关**：两个长中英双标签 Checkbox 改为双列等宽等高的 `深度思考 / 多模态视觉` 开关胶囊，窄屏不折行。
+  - **配色收敛**：移除 `#8B5CF6` 紫、`#0284C7` 天蓝、`#10B981/#059669` 绿、`#EF5350/#EF4444/#991B1B` 多套红色，统一为「主题 primary + 中性灰 + `colorScheme.error`」三档；「思考 / 视觉」标签改为 primary 强调 + 中性弱化两档；去掉重复的 `⚡` emoji（已有 Bolt 图标）。
+
+---
+
 ## [1.6.9] - 2026-10-27
 
 ### ⚡ 工作区会话极速秒开、运行态精准解耦与正文渲染/UI深度加固 (Release v1.6.9)

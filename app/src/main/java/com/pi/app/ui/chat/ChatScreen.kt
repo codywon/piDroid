@@ -1593,6 +1593,25 @@ fun ChatMessageItem(
             }
 
             MessageRole.SYSTEM -> {
+                // 压缩摘要 / 自定义注入消息：头部用单行标题（剥除 Markdown 标记），
+                // 正文统一走 Markdown 渲染，彻底消除「## Goal」这类裸露标记。
+                val isCompactionCard = remember(item.content) { item.content.trimStart().startsWith("📦") }
+                val titleText = remember(item.content, isCompactionCard) {
+                    val firstLine = item.content.lineSequence().firstOrNull()?.trim().orEmpty()
+                    if (isCompactionCard) {
+                        firstLine
+                    } else {
+                        firstLine.replace(Regex("^[#>*\\-\\s]+"), "").ifBlank { "系统状态摘要" }
+                    }
+                }
+                val bodyMarkdown = remember(item.content, isCompactionCard) {
+                    if (isCompactionCard) {
+                        item.content.lineSequence().drop(1).joinToString("\n").trim()
+                    } else {
+                        item.content.trim()
+                    }
+                }
+                val hasBody = bodyMarkdown.isNotBlank()
                 var sysExpanded by remember { mutableStateOf(false) }
                 Surface(
                     shape = RoundedCornerShape(10.dp),
@@ -1600,11 +1619,12 @@ fun ChatMessageItem(
                     border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.6f)),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable { sysExpanded = !sysExpanded }
                 ) {
                     Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = hasBody) { sysExpanded = !sysExpanded },
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -1620,28 +1640,39 @@ fun ChatMessageItem(
                                     modifier = Modifier.size(13.dp)
                                 )
                                 Text(
-                                    text = item.content.lineSequence().firstOrNull()?.trim() ?: "系统状态摘要",
+                                    text = titleText.ifBlank { "系统状态摘要" },
                                     fontSize = 11.5.sp,
                                     fontWeight = FontWeight.Medium,
                                     color = theme.textSecondary,
                                     maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (!sysExpanded) {
+                                    Text(
+                                        text = if (isCompactionCard) "查看摘要" else "展开",
+                                        fontSize = 10.sp,
+                                        color = theme.primary.copy(alpha = 0.85f)
+                                    )
+                                }
+                            }
+                            if (hasBody) {
+                                Icon(
+                                    imageVector = if (sysExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                    contentDescription = if (sysExpanded) "收起" else "展开",
+                                    tint = theme.textMuted,
+                                    modifier = Modifier.size(15.dp)
                                 )
                             }
-                            Icon(
-                                imageVector = if (sysExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                contentDescription = null,
-                                tint = theme.textMuted,
-                                modifier = Modifier.size(15.dp)
-                            )
                         }
-                        if (sysExpanded && item.content.lines().size > 1) {
+                        if (sysExpanded && hasBody) {
                             Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                text = item.content.lines().drop(1).joinToString("\n").trim(),
-                                fontSize = 11.5.sp,
-                                color = theme.textSecondary,
-                                lineHeight = 17.sp
+                            HorizontalDivider(color = theme.outline.copy(alpha = 0.7f))
+                            Spacer(modifier = Modifier.height(6.dp))
+                            MarkdownRenderer(
+                                content = bodyMarkdown,
+                                modifier = Modifier.fillMaxWidth(),
+                                isUser = false
                             )
                         }
                     }

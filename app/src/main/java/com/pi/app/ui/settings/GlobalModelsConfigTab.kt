@@ -53,6 +53,7 @@ fun GlobalModelsConfigTab(
     onModelsConfigChanged: () -> Unit = {}
 ) {
     val theme = LocalAppTheme.current
+    val dangerColor = MaterialTheme.colorScheme.error
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
@@ -281,7 +282,7 @@ fun GlobalModelsConfigTab(
                                         imageVector = Icons.Default.Psychology,
                                         contentDescription = null,
                                         tint = theme.primary,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(15.dp)
                                     )
                                     Text(
                                         text = "全局默认推理思考档位",
@@ -290,62 +291,43 @@ fun GlobalModelsConfigTab(
                                         color = theme.textPrimary
                                     )
                                 }
-
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = theme.primary.copy(alpha = 0.12f)
-                                ) {
-                                    Text(
-                                        text = currentDefaultThinkingLevel.value,
-                                        fontSize = 10.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.Bold,
-                                        color = theme.primary,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                    )
-                                }
+                                Text(
+                                    text = "新会话生效",
+                                    fontSize = 10.sp,
+                                    color = theme.textMuted
+                                )
                             }
 
-                            // 紧凑分段选择器 (Segmented Pills)
+                            // 等宽胶囊分段选择器：固定内边距 + 横向滚动，
+                            // 不再按字符长度分配权重（旧实现会把 minimal 压成 minima+l 或留白突变）
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .background(theme.surfaceContainerHigh.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
-                                    .padding(3.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 ThinkingLevel.entries.forEach { level ->
                                     val isSel = currentDefaultThinkingLevel == level
-                                    val levelWeight = when (level.value) {
-                                        "minimal" -> 1.45f
-                                        "medium" -> 1.32f
-                                        "xhigh" -> 1.15f
-                                        else -> 0.92f
-                                    }
                                     Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (isSel) theme.surfaceContainerLow else Color.Transparent,
-                                        border = if (isSel) BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.4f)) else null,
-                                        shadowElevation = if (isSel) 1.dp else 0.dp,
-                                        modifier = Modifier
-                                            .weight(levelWeight)
-                                            .clickable { onSetDefaultThinkingLevel(level) }
+                                        shape = RoundedCornerShape(7.dp),
+                                        color = if (isSel) theme.primary.copy(alpha = 0.12f) else theme.surfaceContainer,
+                                        border = BorderStroke(
+                                            if (isSel) 1.dp else 0.6.dp,
+                                            if (isSel) theme.primary.copy(alpha = 0.55f) else theme.outline.copy(alpha = 0.45f)
+                                        ),
+                                        modifier = Modifier.clickable { onSetDefaultThinkingLevel(level) }
                                     ) {
-                                        Box(
-                                            contentAlignment = Alignment.Center,
-                                            modifier = Modifier.padding(vertical = 5.dp)
-                                        ) {
-                                            Text(
-                                                text = level.value,
-                                                fontSize = 10.5.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSel) theme.primary else theme.textSecondary,
-                                                maxLines = 1,
-                                                softWrap = false
-                                            )
-                                        }
+                                        Text(
+                                            text = level.value,
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSel) theme.primary else theme.textSecondary,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                                        )
                                     }
                                 }
                             }
@@ -443,62 +425,72 @@ fun GlobalModelsConfigTab(
                                     modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(9.dp)
                                 ) {
-                                    // 顶行：提供商名 + 协议 + 编辑/删除
+                                    // 顶行：提供商名占满剩余宽度，操作按钮固定为图标按钮，
+                                    // 不再与协议胶囊挤在一行（旧实现窄屏下会重叠/溢出）
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            Icon(Icons.Default.CloudQueue, contentDescription = null, tint = theme.primary, modifier = Modifier.size(16.dp))
-                                            Text(text = currentProvider.name, fontWeight = FontWeight.Bold, fontSize = 14.5.sp, color = theme.textPrimary)
-                                            Surface(
-                                                shape = RoundedCornerShape(4.dp),
-                                                color = theme.primary.copy(alpha = 0.1f)
-                                            ) {
-                                                Text(
-                                                    text = currentProvider.api.ifBlank { "openai-completions" },
-                                                    fontSize = 10.sp,
-                                                    fontFamily = FontFamily.Monospace,
-                                                    color = theme.primary,
-                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
-                                                )
-                                            }
-                                        }
+                                        Icon(
+                                            Icons.Default.CloudQueue,
+                                            contentDescription = null,
+                                            tint = theme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = currentProvider.name,
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 14.5.sp,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        MiniIconAction(
+                                            icon = Icons.Default.Edit,
+                                            tint = theme.textSecondary,
+                                            borderColor = theme.outline.copy(alpha = 0.55f),
+                                            contentDescription = "编辑 Provider",
+                                            onClick = { showEditProviderDialog = true }
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        MiniIconAction(
+                                            icon = Icons.Default.DeleteOutline,
+                                            tint = dangerColor,
+                                            borderColor = dangerColor.copy(alpha = 0.35f),
+                                            contentDescription = "删除 Provider",
+                                            onClick = { showDeleteProviderDialog = true }
+                                        )
+                                    }
 
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = theme.surfaceContainerHigh,
-                                                border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
-                                                modifier = Modifier.clickable { showEditProviderDialog = true }
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(11.dp), tint = theme.textPrimary)
-                                                    Text("编辑", fontSize = 10.5.sp, color = theme.textPrimary, maxLines = 1, softWrap = false)
-                                                }
-                                            }
-
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = Color(0xFFEF5350).copy(alpha = 0.1f),
-                                                border = BorderStroke(0.6.dp, Color(0xFFEF5350).copy(alpha = 0.35f)),
-                                                modifier = Modifier.clickable { showDeleteProviderDialog = true }
-                                            ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(11.dp), tint = Color(0xFFEF5350))
-                                                    Text("删除", fontSize = 10.5.sp, color = Color(0xFFEF5350), fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
-                                                }
-                                            }
+                                    // 协议与密钥状态统一成一行元信息（单一配色体系，不再混用紫/天蓝/绿）
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = theme.primary.copy(alpha = 0.08f)
+                                        ) {
+                                            Text(
+                                                text = currentProvider.api.ifBlank { "openai-completions" },
+                                                fontSize = 10.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                color = theme.primary,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.5.dp)
+                                            )
                                         }
+                                        Text(
+                                            text = if (currentProvider.apiKey.isNotBlank()) "Key 已配置" else "未配置 Key",
+                                            fontSize = 10.sp,
+                                            color = theme.textMuted,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
                                     }
 
                                     // Base URL 单行展示框 (点击复制)
@@ -544,21 +536,7 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
 
-                                    // API Key 状态与两枚快捷操作胶囊 (重构为独立双列均衡按钮栏，彻底消除竖条挤压)
-                                    val hasKey = currentProvider.apiKey.isNotBlank()
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Text(text = "API Key: ", fontSize = 11.sp, color = theme.textMuted)
-                                        Text(
-                                            text = if (hasKey) "•••••••• (已配置)" else "未配置 API Key (可选)",
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                            color = if (hasKey) Color(0xFF10B981) else theme.textMuted
-                                        )
-                                    }
+                                    // API Key 状态已上提到协议元信息行，这里只说“从 API 发现”与“新增模型”两项功作
 
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -599,7 +577,7 @@ fun GlobalModelsConfigTab(
                                             ) {
                                                 Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(13.dp))
                                                 Spacer(modifier = Modifier.width(3.dp))
-                                                Text("⚡ 从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                                Text("从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                             }
                                         }
 
@@ -738,32 +716,10 @@ fun GlobalModelsConfigTab(
 
                                                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                                                     if (m.reasoning) {
-                                                        Surface(
-                                                            shape = RoundedCornerShape(4.dp),
-                                                            color = Color(0xFF8B5CF6).copy(alpha = 0.12f)
-                                                        ) {
-                                                            Text(
-                                                                text = "思考",
-                                                                fontSize = 9.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                color = Color(0xFF8B5CF6),
-                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                                            )
-                                                        }
+                                                        CapabilityTag(text = "思考", emphasized = true)
                                                     }
                                                     if (m.hasVision) {
-                                                        Surface(
-                                                            shape = RoundedCornerShape(4.dp),
-                                                            color = Color(0xFF0284C7).copy(alpha = 0.12f)
-                                                        ) {
-                                                            Text(
-                                                                text = "视觉",
-                                                                fontSize = 9.sp,
-                                                                fontWeight = FontWeight.Bold,
-                                                                color = Color(0xFF0284C7),
-                                                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                                            )
-                                                        }
+                                                        CapabilityTag(text = "视觉", emphasized = false)
                                                     }
                                                     if (isSel) {
                                                         Icon(
@@ -793,115 +749,110 @@ fun GlobalModelsConfigTab(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                // 顶行：模型标识 + 测试 / 移除操作
+                                // 顶行：标题 + 图标操作（测试/移除），模型 ID 单独一行展示
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Text(
-                                            text = "模型参数调校",
-                                            fontSize = 13.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = theme.textPrimary
-                                        )
-                                        Surface(
-                                            shape = RoundedCornerShape(4.dp),
-                                            color = theme.surfaceContainerHigh
-                                        ) {
-                                            Text(
-                                                text = currentModel.id,
-                                                fontSize = 10.5.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = theme.primary,
-                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                            )
-                                        }
-                                    }
-
-                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = theme.surfaceContainerHigh,
-                                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
-                                            modifier = Modifier.clickable {
-                                                if (isTestingModel) return@clickable
-                                                isTestingModel = true
-                                                testResultText = null
-                                                isTestSuccess = null
-                                                coroutineScope.launch {
-                                                    val provObj = JsonObject().apply {
-                                                        if (currentProvider.baseUrl.isNotBlank()) addProperty("baseUrl", currentProvider.baseUrl)
-                                                        if (currentProvider.apiKey.isNotBlank()) addProperty("apiKey", currentProvider.apiKey)
-                                                        if (currentProvider.api.isNotBlank()) addProperty("api", currentProvider.api)
-                                                    }
-                                                    val modelObj = JsonObject().apply {
-                                                        addProperty("id", currentModel.id)
-                                                        addProperty("name", currentModel.name)
-                                                        addProperty("contextWindow", currentModel.contextWindow)
-                                                        addProperty("maxTokens", currentModel.maxTokens)
-                                                        if (currentModel.apiOverride.isNotBlank()) addProperty("api", currentModel.apiOverride)
-                                                    }
-                                                    val testRes = apiClient.testModelConfig(currentProvider.name, provObj, modelObj)
-                                                    testRes.onSuccess { r ->
-                                                        isTestSuccess = r.ok
-                                                        if (r.ok) {
-                                                            testResultText = "测试通过 (${r.latencyMs ?: 0}ms)"
-                                                        } else {
-                                                            testResultText = "失败: ${r.error ?: "未知错误"}"
-                                                        }
-                                                    }.onFailure { err ->
-                                                        isTestSuccess = false
-                                                        testResultText = "网络错误: ${err.message}"
-                                                    }
-                                                    isTestingModel = false
+                                    Icon(
+                                        imageVector = Icons.Default.Tune,
+                                        contentDescription = null,
+                                        tint = theme.primary,
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        text = "模型参数调校",
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = theme.textPrimary,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    MiniIconAction(
+                                        icon = if (isTestingModel) Icons.Default.HourglassEmpty else Icons.Default.PlayArrow,
+                                        tint = theme.primary,
+                                        borderColor = theme.primary.copy(alpha = 0.35f),
+                                        enabled = !isTestingModel,
+                                        contentDescription = "测试连通性",
+                                        onClick = {
+                                            isTestingModel = true
+                                            testResultText = null
+                                            isTestSuccess = null
+                                            coroutineScope.launch {
+                                                val provObj = JsonObject().apply {
+                                                    if (currentProvider.baseUrl.isNotBlank()) addProperty("baseUrl", currentProvider.baseUrl)
+                                                    if (currentProvider.apiKey.isNotBlank()) addProperty("apiKey", currentProvider.apiKey)
+                                                    if (currentProvider.api.isNotBlank()) addProperty("api", currentProvider.api)
                                                 }
-                                            }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                            ) {
-                                                if (isTestingModel) {
-                                                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                                    Text("测试中...", fontSize = 10.5.sp, color = theme.textPrimary)
-                                                } else {
-                                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.primary)
-                                                    Text("测试连通性", fontSize = 10.5.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium)
+                                                val modelObj = JsonObject().apply {
+                                                    addProperty("id", currentModel.id)
+                                                    addProperty("name", currentModel.name)
+                                                    addProperty("contextWindow", currentModel.contextWindow)
+                                                    addProperty("maxTokens", currentModel.maxTokens)
+                                                    if (currentModel.apiOverride.isNotBlank()) addProperty("api", currentModel.apiOverride)
                                                 }
+                                                val testRes = apiClient.testModelConfig(currentProvider.name, provObj, modelObj)
+                                                testRes.onSuccess { r ->
+                                                    isTestSuccess = r.ok
+                                                    if (r.ok) {
+                                                        testResultText = "测试通过 (${r.latencyMs ?: 0}ms)"
+                                                    } else {
+                                                        testResultText = "失败: ${r.error ?: "未知错误"}"
+                                                    }
+                                                }.onFailure { err ->
+                                                    isTestSuccess = false
+                                                    testResultText = "网络错误: ${err.message}"
+                                                }
+                                                isTestingModel = false
                                             }
                                         }
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    MiniIconAction(
+                                        icon = Icons.Default.DeleteOutline,
+                                        tint = dangerColor,
+                                        borderColor = dangerColor.copy(alpha = 0.35f),
+                                        contentDescription = "移除模型",
+                                        onClick = { showDeleteModelDialog = true }
+                                    )
+                                }
 
-                                        Surface(
-                                            shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFFEF5350).copy(alpha = 0.1f),
-                                            border = BorderStroke(0.6.dp, Color(0xFFEF5350).copy(alpha = 0.35f)),
-                                            modifier = Modifier.clickable { showDeleteModelDialog = true }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                            ) {
-                                                Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(11.dp), tint = Color(0xFFEF5350))
-                                                Text("移除", fontSize = 10.5.sp, color = Color(0xFFEF5350), fontWeight = FontWeight.Medium)
-                                            }
-                                        }
-                                    }
+                                // 当前编辑对象：单独一行、等宽字体、单行省略，不再挤进标题行
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Memory,
+                                        contentDescription = null,
+                                        tint = theme.textMuted,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = currentModel.id,
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = theme.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = if (isTestingModel) "测试中..." else "test",
+                                        fontSize = 9.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = theme.textMuted
+                                    )
                                 }
 
                                 if (testResultText != null) {
                                     val isSuccess = isTestSuccess == true
-                                    val bgClr = if (isSuccess) Color(0xFF10B981).copy(alpha = 0.12f) else Color(0xFFEF4444).copy(alpha = 0.12f)
-                                    val borderClr = if (isSuccess) Color(0xFF10B981).copy(alpha = 0.35f) else Color(0xFFEF4444).copy(alpha = 0.35f)
-                                    val textClr = if (isSuccess) Color(0xFF065F46) else Color(0xFF991B1B)
-
+                                    val accent = if (isSuccess) theme.primary else dangerColor
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
-                                        color = bgClr,
-                                        border = BorderStroke(0.6.dp, borderClr),
+                                        color = accent.copy(alpha = 0.08f),
+                                        border = BorderStroke(0.6.dp, accent.copy(alpha = 0.3f)),
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Row(
@@ -912,10 +863,15 @@ fun GlobalModelsConfigTab(
                                                 imageVector = if (isSuccess) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
                                                 contentDescription = null,
                                                 modifier = Modifier.size(13.dp),
-                                                tint = if (isSuccess) Color(0xFF059669) else Color(0xFFDC2626)
+                                                tint = accent
                                             )
                                             Spacer(modifier = Modifier.width(6.dp))
-                                            Text(text = testResultText ?: "", fontSize = 11.5.sp, fontWeight = FontWeight.Medium, color = textClr)
+                                            Text(
+                                                text = testResultText ?: "",
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Medium,
+                                                color = accent
+                                            )
                                         }
                                     }
                                 }
@@ -980,51 +936,52 @@ fun GlobalModelsConfigTab(
                                         }
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                                            modifier = Modifier.weight(1f)
+                                        ) {
                                             if (isCatalogFilling) {
                                                 CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                                Text("正在从 models.dev 智能匹配...", fontSize = 11.sp, color = theme.primary)
+                                                Text("正在从 models.dev 智能匹配...", fontSize = 11.sp, color = theme.primary, maxLines = 1, softWrap = false)
                                             } else {
                                                 Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = theme.primary, modifier = Modifier.size(13.dp))
-                                                Text("智能补全规格 (从 models.dev 匹配)", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.Medium)
+                                                Text(
+                                                    text = "智能补全规格 (models.dev)",
+                                                    fontSize = 11.sp,
+                                                    color = theme.primary,
+                                                    fontWeight = FontWeight.Medium,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
                                             }
                                         }
-                                        Text("点击一键填入 ↗", fontSize = 10.sp, color = theme.textMuted)
+                                        Text("一键填入", fontSize = 10.sp, color = theme.textMuted, maxLines = 1, softWrap = false)
                                     }
                                 }
 
+                                // 双列等宽功能开关（旧实现两个 Checkbox 并排 + 长中英双标签，窄屏必折行）
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.clickable { updateCurrentModel { it.copy(reasoning = !it.reasoning) } }
-                                    ) {
-                                        Checkbox(
-                                            checked = currentModel.reasoning,
-                                            onCheckedChange = { v -> updateCurrentModel { it.copy(reasoning = v) } },
-                                            colors = CheckboxDefaults.colors(checkedColor = theme.primary)
-                                        )
-                                        Text("支持深度思考 (Reasoning)", fontSize = 11.5.sp, color = theme.textPrimary)
-                                    }
-
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.clickable { updateCurrentModel { it.copy(hasVision = !it.hasVision) } }
-                                    ) {
-                                        Checkbox(
-                                            checked = currentModel.hasVision,
-                                            onCheckedChange = { v -> updateCurrentModel { it.copy(hasVision = v) } },
-                                            colors = CheckboxDefaults.colors(checkedColor = theme.primary)
-                                        )
-                                        Text("多模态视觉 (Vision)", fontSize = 11.5.sp, color = theme.textPrimary)
-                                    }
+                                    ModelFlagChip(
+                                        label = "深度思考",
+                                        checked = currentModel.reasoning,
+                                        modifier = Modifier.weight(1f),
+                                        onToggle = { updateCurrentModel { it.copy(reasoning = !it.reasoning) } }
+                                    )
+                                    ModelFlagChip(
+                                        label = "多模态视觉",
+                                        checked = currentModel.hasVision,
+                                        modifier = Modifier.weight(1f),
+                                        onToggle = { updateCurrentModel { it.copy(hasVision = !it.hasVision) } }
+                                    )
                                 }
 
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1034,7 +991,7 @@ fun GlobalModelsConfigTab(
                                             val v = str.filter { it.isDigit() }.toLongOrNull() ?: 0L
                                             updateCurrentModel { it.copy(contextWindow = v) }
                                         },
-                                        label = "上下文窗口 (Context Window)",
+                                        label = "上下文窗口",
                                         trailingUnit = "tokens",
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                         isMonospace = true,
@@ -1047,7 +1004,7 @@ fun GlobalModelsConfigTab(
                                             val v = str.filter { it.isDigit() }.toLongOrNull() ?: 0L
                                             updateCurrentModel { it.copy(maxTokens = v) }
                                         },
-                                        label = "最大输出 (Max Output)",
+                                        label = "最大输出",
                                         trailingUnit = "tokens",
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                         isMonospace = true,
@@ -1756,6 +1713,107 @@ private fun ModelInputField(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * 统一的「图标操作」按钮：固定 30dp 圆形热区，仅图标不含文字，
+ * 避免窄屏下文字按钮被挤压成竖排（旧实现里的「移/除」竖排即由此产生）。
+ */
+@Composable
+private fun MiniIconAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    tint: Color,
+    borderColor: Color,
+    contentDescription: String,
+    enabled: Boolean = true,
+    onClick: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = CircleShape,
+        color = if (enabled) theme.surfaceContainer else theme.surfaceContainerHigh.copy(alpha = 0.5f),
+        border = BorderStroke(0.7.dp, borderColor.copy(alpha = if (enabled) 1f else 0.4f)),
+        modifier = Modifier
+            .size(30.dp)
+            .clickable(enabled = enabled) { onClick() }
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = contentDescription,
+                tint = if (enabled) tint else tint.copy(alpha = 0.4f),
+                modifier = Modifier.size(15.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 能力标签（思考 / 视觉）：统一到主题 primary + 中性色两档，
+ * 不再出现紫、天蓝、绿等多套互不相干的强调色。
+ */
+@Composable
+private fun CapabilityTag(text: String, emphasized: Boolean) {
+    val theme = LocalAppTheme.current
+    val bg = if (emphasized) theme.primary.copy(alpha = 0.10f) else theme.surfaceContainerHigh
+    val fg = if (emphasized) theme.primary else theme.textSecondary
+    Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(4.dp), color = bg) {
+        Text(
+            text = text,
+            fontSize = 9.sp,
+            fontWeight = FontWeight.Bold,
+            color = fg,
+            maxLines = 1,
+            softWrap = false,
+            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+        )
+    }
+}
+
+/**
+ * 双列等宽能力开关胶囊：整体可点击，选中态用主题色描边 + 对勾，
+ * 保证「深度思考 / 多模态视觉」两个标签在窄屏上永不折行。
+ */
+@Composable
+private fun ModelFlagChip(
+    label: String,
+    checked: Boolean,
+    modifier: Modifier = Modifier,
+    onToggle: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
+        color = if (checked) theme.primary.copy(alpha = 0.08f) else theme.surfaceContainer,
+        border = BorderStroke(
+            0.7.dp,
+            if (checked) theme.primary.copy(alpha = 0.45f) else theme.outline.copy(alpha = 0.5f)
+        ),
+        modifier = modifier.clickable { onToggle() }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 9.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = if (checked) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                contentDescription = null,
+                tint = if (checked) theme.primary else theme.textMuted,
+                modifier = Modifier.size(13.dp)
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = label,
+                fontSize = 11.5.sp,
+                fontWeight = if (checked) FontWeight.SemiBold else FontWeight.Normal,
+                color = if (checked) theme.textPrimary else theme.textSecondary,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false)
+            )
         }
     }
 }

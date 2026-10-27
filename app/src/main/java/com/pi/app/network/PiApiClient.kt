@@ -52,6 +52,17 @@ data class DynamicModelCatalog(
 
 class PiApiClient(private val prefs: AppPreferences) {
     private val gson = Gson()
+
+    companion object {
+        /**
+         * 中止类错误（非服务故障）：Node/undici 的 `This operation was aborted`、
+         * `Request was aborted`、`Operation aborted`、`cancelled` 等。
+         * pi 在压缩上下文、用户 Stop、自动重试换手、客户端断连时都会产生这类记录。
+         */
+        private val ABORT_LIKE_ERROR_REGEX = Regex(
+            "(?i)(operation was aborted|request was aborted|operation aborted|request aborted)"
+        )
+    }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
 
     fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
@@ -533,8 +544,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
                 entryType == "custom_message" -> {
+                    // pi-web 只在 display 为真时渲染 custom_message（如 auto-continue-after-compaction
+                    // 这条注入指令是 display:false），否则会把内部注入的 prompt 当系统消息展示出来。
+                    val explicitlyHidden = entry.get("display")
+                        ?.takeIf { !it.isJsonNull && it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
+                        ?.asBoolean == false
                     val contentText = extractTextFromContent(entry.get("content"))
-                    if (contentText.isNotBlank()) {
+                    if (!explicitlyHidden && contentText.isNotBlank()) {
                         val synthetic = JsonObject().apply {
                             addProperty("role", "system")
                             addProperty("content", contentText)
@@ -740,12 +756,18 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val startIndexForTurn = chatItems.size
                     val errMsg = msgObj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
                         ?: (if (msgObj.get("stopReason")?.takeIf { !it.isJsonNull }?.asString == "error") "上游模型异常中断" else null)
+                    // 「This operation was aborted」这类中止并非服务故障：pi 在压缩上下文、用户停止、
+                    // 自动重试换手时都会 abort 在途请求，并落一条空正文的 assistant 记录。
+                    // 历史回放时不应把它渲染成刺眼的「⚠️ 模型服务异常」。
+                    val isAbortLike = errMsg != null && ABORT_LIKE_ERROR_REGEX.containsMatchIn(errMsg)
 
                     if (text.isNotBlank() || !thinking.isNullOrBlank() || assistantMedia.isNotEmpty()) {
                         val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
-                        val fullContent = if (!errMsg.isNullOrBlank() && !text.contains(errMsg)) {
-                            (text + "\n\n⚠️ 模型服务异常: $errMsg").trim()
-                        } else text
+                        val fullContent = when {
+                            errMsg.isNullOrBlank() || text.contains(errMsg) -> text
+                            isAbortLike -> (text + "\n\n⏸ 本轮生成已被中断").trim()
+                            else -> (text + "\n\n⚠️ 模型服务异常: $errMsg").trim()
+                        }
                         chatItems.add(ChatItem(
                             id = "hist_${sessionId}_${chatItems.size}_agent",
                             role = MessageRole.AGENT,
@@ -757,7 +779,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
                             timestamp = timestamp
                         ))
-                    } else if (!errMsg.isNullOrBlank() && toolCalls.isEmpty()) {
+                    } else if (!errMsg.isNullOrBlank() && toolCalls.isEmpty() && !isAbortLike) {
                         // 彻底解决上游报错且内容为空时静默吞掉的问题 (如 HTTP 422 developer 角色拒收报错)
                         chatItems.add(ChatItem(
                             id = "hist_${sessionId}_${chatItems.size}_error",

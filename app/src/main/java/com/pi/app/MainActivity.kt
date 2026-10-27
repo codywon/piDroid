@@ -272,7 +272,6 @@ class MainActivity : ComponentActivity() {
 
         val messages = remember { mutableStateListOf<ChatItem>() }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
-        var hasAutoCompactedForCurrentThreshold by remember { mutableStateOf(false) }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
         var isAutoRetrying by remember { mutableStateOf(false) }
@@ -581,18 +580,21 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
-                tokenStats = hist.stats
-                if (hist.stats.contextUsagePercent >= 0.70f && !isCompacting && !hasAutoCompactedForCurrentThreshold) {
-                    hasAutoCompactedForCurrentThreshold = true
-                    lifecycleScope.launch {
-                        Toast.makeText(this@MainActivity, "上下文已达 70%，自动触发智能压缩...", Toast.LENGTH_SHORT).show()
-                        isCompacting = true
-                        apiClient.compactContext(sessionId)
-                        isCompacting = false
-                    }
-                } else if (hist.stats.contextUsagePercent < 0.60f) {
-                    hasAutoCompactedForCurrentThreshold = false
+                // 上下文窗口以服务端模型配置为准：本地偏好里的 contextWindow 优先级高于
+                // 统计回落的 200k 默认值，避免把 1M 上下文的模型误判成 98% 满载。
+                val preferredWindow = prefs.getModelOverrides()
+                    .values.firstOrNull { it.modelId.equals(hist.modelId, ignoreCase = true) }
+                    ?.contextWindow
+                    ?: 0L
+                tokenStats = if (preferredWindow > hist.stats.maxContextWindow) {
+                    hist.stats.copy(maxContextWindow = preferredWindow)
+                } else {
+                    hist.stats
                 }
+                // 不再由 App 在阈值处自动 POST {"type":"compact"}：pi 的 manual compact
+                // 内部第一步就是 await this.abort()，会把正在执行的回合直接打断成
+                // 「模型服务异常: This operation was aborted」。阈值压缩交给 pi 自身的
+                // auto_compaction（在 turn 边界触发，不打断进行中的请求）。
                 if (restoreModelMeta) {
                     dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
                         selectedModel = it
@@ -1454,14 +1456,34 @@ class MainActivity : ComponentActivity() {
                     onOpenModelSheet = { showModelSheet = true },
                     onOpenCapabilities = { showGlobalSettings = true },
                     onCompactContext = {
-                        lifecycleScope.launch {
-                            isCompacting = true
-                            Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
-                            apiClient.compactContext(currentSession!!.id).onSuccess {
-                                Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
-                                apiClient.getSessionStats(currentSession!!.id).onSuccess { tokenStats = it }
+                        // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
+                        // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。
+                        // 因此只在空闲态允许，忙时提示用户先等本轮结束。
+                        if (isAgentBusy || isToolExecuting) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "任务执行中，压缩会中断当前回合；请等本轮结束或先停止任务",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        } else {
+                            lifecycleScope.launch {
+                                isCompacting = true
+                                Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
+                                apiClient.compactContext(currentSession!!.id)
+                                    .onSuccess {
+                                        Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
+                                        apiClient.getSessionStats(currentSession!!.id).onSuccess { tokenStats = it }
+                                        syncSessionSnapshot(currentSession!!.id, restoreModelMeta = false, allowCompletionTransition = false)
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "压缩失败: ${err.message ?: "未知错误"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                isCompacting = false
                             }
-                            isCompacting = false
                         }
                     },
                     onStopAgent = {

@@ -1551,6 +1551,9 @@ fun GlobalMcpTab(
         }
 
         items(mcpServers, key = { it.name }) { server ->
+            val connected = server.isConnected && server.enabled
+            val statusColor = if (connected) Color(0xFF2EA043) else theme.textMuted
+            val toolCount = server.toolExposureCount
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = theme.surfaceContainerLow,
@@ -1563,31 +1566,106 @@ fun GlobalMcpTab(
                     }
             ) {
                 Column(modifier = Modifier.padding(12.dp)) {
+                    // 第一行：仅保留「状态点 + 名称 + 开关」，名称占据剩余宽度并可省略，
+                    // 彻底避免工具数、按钮、开关挤在同一行导致的徽标折行（“6 工/具”）。
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Surface(
+                            modifier = Modifier.size(7.dp),
+                            shape = CircleShape,
+                            color = statusColor
+                        ) {}
+                        Spacer(modifier = Modifier.width(7.dp))
+                        Text(
+                            text = server.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = theme.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = server.enabled,
+                            onCheckedChange = { enabled ->
+                                onManageMcpServer(if (enabled) "enable" else "disable", server.name)
+                            },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color(0xFF2EA043),
+                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                                uncheckedThumbColor = theme.textMuted,
+                                uncheckedTrackColor = theme.surfaceContainer
+                            )
+                        )
+                    }
+
+                    // 第二行：元信息标签，纯文字 + 分隔点，无灰底填充，单行不折行
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (toolCount > 0) {
+                            Text(
+                                text = "$toolCount 个工具",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textSecondary,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                            Text(
+                                text = "  ·  ",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = theme.textMuted,
+                                maxLines = 1,
+                                softWrap = false
+                            )
+                        }
+                        Text(
+                            text = "${server.transport?.uppercase() ?: "HTTP"} · ${if (connected) "已连接" else if (server.enabled) "未连接" else "已停用"}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (!server.description.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = server.description ?: "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = theme.textSecondary,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    if (!server.url.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = server.url ?: "",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.8f))
+
+                    // 操作区：独占一行并均分，任何屏幕宽度下都不会挤压或折行
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Surface(
-                                modifier = Modifier.size(8.dp),
-                                shape = CircleShape,
-                                color = if (server.isConnected && server.enabled) Color(0xFF2EA043) else Color(0xFFCF222E)
-                            ) {}
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(server.name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = theme.textPrimary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(shape = RoundedCornerShape(4.dp), color = theme.surfaceContainer) {
-                                Text(
-                                    text = "${server.toolExposureCount} 工具",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = theme.textSecondary,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             TextButton(
                                 onClick = {
                                     if (apiClient != null) {
@@ -1607,14 +1685,16 @@ fun GlobalMcpTab(
                                     }
                                 },
                                 enabled = testingServerName == null && apiClient != null,
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
                             ) {
                                 if (testingServerName == server.name) {
                                     CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("测试中", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("测试中", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
                                 } else {
-                                    Text("⚡测试", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                    Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.primary)
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text("测试", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
                                 }
                             }
                             TextButton(
@@ -1622,44 +1702,21 @@ fun GlobalMcpTab(
                                     editingMcpServer = server
                                     showAddMcpDialog = true
                                 },
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
                             ) {
-                                Icon(Icons.Default.Edit, contentDescription = "编辑", modifier = Modifier.size(12.dp), tint = theme.primary)
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.textSecondary)
+                                Spacer(modifier = Modifier.width(3.dp))
+                                Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary, maxLines = 1, softWrap = false)
                             }
-                            TextButton(
-                                onClick = { onManageMcpServer("remove", server.name) },
-                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                            ) {
-                                Text("移除", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCF222E))
-                            }
-                            Switch(
-                                checked = server.enabled,
-                                onCheckedChange = { enabled ->
-                                    onManageMcpServer(if (enabled) "enable" else "disable", server.name)
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color(0xFF2EA043),
-                                    checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                                )
-                            )
                         }
-                    }
-
-                    if (!server.description.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(server.description ?: "", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
-                    }
-
-                    if (!server.url.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "${server.transport?.uppercase() ?: "HTTP"}: ${server.url}",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted
-                        )
+                        TextButton(
+                            onClick = { onManageMcpServer("remove", server.name) },
+                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color(0xFFCF222E))
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text("移除", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCF222E), maxLines = 1, softWrap = false)
+                        }
                     }
                 }
             }
