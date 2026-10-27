@@ -91,6 +91,11 @@ fun GlobalModelsConfigTab(
     // 折叠高级设置状态
     var isAdvancedExpanded by remember { mutableStateOf(false) }
 
+    // 配置提供商凭据：写 pi 凭据库 (auth.json)，与 models.json 里的 apiKey 字段是两回事
+    var showApiKeyDialog by remember { mutableStateOf(false) }
+    var apiKeyInput by remember { mutableStateOf("") }
+    var isSavingApiKey by remember { mutableStateOf(false) }
+
     // 辅助函数：加载服务端配置
     fun loadConfigFromServer() {
         isLoading = true
@@ -377,20 +382,20 @@ fun GlobalModelsConfigTab(
                                             text = prov.name,
                                             fontSize = 11.5.sp,
                                             fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (isSel) theme.primary else theme.textPrimary
+                                            color = if (isSel) theme.primary else theme.textPrimary,
+                                            maxLines = 1,
+                                            softWrap = false
                                         )
-                                        Surface(
-                                            shape = CircleShape,
-                                            color = if (isSel) theme.primary else theme.surfaceContainerHigh
-                                        ) {
-                                            Text(
-                                                text = "${prov.models.size}",
-                                                fontSize = 9.5.sp,
-                                                fontFamily = FontFamily.Monospace,
-                                                color = if (isSel) Color.White else theme.textMuted,
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                            )
-                                        }
+                                        // 数量用等宽小字 + 中间点，不再用圆形填充脏（CircleShape 在中文宽度下会被挤成竖椭圆）
+                                        Text(
+                                            text = "· ${prov.models.size}",
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (isSel) theme.primary.copy(alpha = 0.75f) else theme.textMuted,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
                                     }
                                 }
                             }
@@ -491,6 +496,38 @@ fun GlobalModelsConfigTab(
                                             maxLines = 1,
                                             softWrap = false
                                         )
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        // 真正的密钥入口：写 pi 凭据库 (auth.json)，而不是 models.json
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = theme.primary.copy(alpha = 0.08f),
+                                            border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.3f)),
+                                            modifier = Modifier.clickable {
+                                                apiKeyInput = ""
+                                                showApiKeyDialog = true
+                                            }
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Lock,
+                                                    contentDescription = null,
+                                                    tint = theme.primary,
+                                                    modifier = Modifier.size(11.dp)
+                                                )
+                                                Text(
+                                                    text = "配置 Key",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = theme.primary,
+                                                    maxLines = 1,
+                                                    softWrap = false
+                                                )
+                                            }
+                                        }
                                     }
 
                                     // Base URL 单行展示框 (点击复制)
@@ -536,7 +573,7 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
 
-                                    // API Key 状态已上提到协议元信息行，这里只说“从 API 发现”与“新增模型”两项功作
+                                    // API Key 入口已上提到协议元信息行；这里只保留「主体信息 + 双列操作」
 
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -571,12 +608,10 @@ fun GlobalModelsConfigTab(
                                                 }
                                         ) {
                                             Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(13.dp))
-                                                Spacer(modifier = Modifier.width(3.dp))
                                                 Text("从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                             }
                                         }
@@ -603,13 +638,11 @@ fun GlobalModelsConfigTab(
                                                 }
                                         ) {
                                             Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Icon(Icons.Default.Add, contentDescription = null, tint = theme.textPrimary, modifier = Modifier.size(13.dp))
-                                                Spacer(modifier = Modifier.width(3.dp))
-                                                Text("+ 新增模型", fontSize = 11.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                                Text("新增模型", fontSize = 11.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                                             }
                                         }
                                     }
@@ -1244,7 +1277,8 @@ fun GlobalModelsConfigTab(
                     OutlinedTextField(
                         value = editApiKey,
                         onValueChange = { editApiKey = it.trim() },
-                        label = { Text("API Key") },
+                        label = { Text("API Key（可选，写入 models.json）") },
+                        placeholder = { Text("留空则不修改") },
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                         trailingIcon = {
                             IconButton(onClick = { showPassword = !showPassword }) {
@@ -1274,7 +1308,8 @@ fun GlobalModelsConfigTab(
                     onClick = {
                         val updated = currentProvider.copy(
                             baseUrl = editBaseUrl,
-                            apiKey = editApiKey,
+                            // 留空时保留原有值，避免一次「只改 Base URL」的编辑把已有 Key 抹掉
+                            apiKey = if (editApiKey.isNotBlank()) editApiKey else currentProvider.apiKey,
                             api = editApi
                         )
                         providers = providers.map { if (it.name == currentProvider.name) updated else it }
@@ -1287,6 +1322,76 @@ fun GlobalModelsConfigTab(
             },
             dismissButton = {
                 TextButton(onClick = { showEditProviderDialog = false }) {
+                    Text("取消", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
+    // 弹窗 2.5：配置 Provider 的 API Key（写 pi 凭据库 auth.json，即时生效）
+    if (showApiKeyDialog && currentProvider != null) {
+        AlertDialog(
+            onDismissRequest = { if (!isSavingApiKey) showApiKeyDialog = false },
+            containerColor = theme.surfaceContainerLow,
+            title = {
+                Text(
+                    "配置 ${currentProvider.name} 的 API Key",
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary,
+                    fontSize = 15.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "写入 pi 凭据库 (auth.json)，对所有会话与子代理立即生效（与 models.json 里的 apiKey 字段无关）。",
+                        fontSize = 11.sp,
+                        color = theme.textMuted,
+                        lineHeight = 16.sp
+                    )
+                    OutlinedTextField(
+                        value = apiKeyInput,
+                        onValueChange = { apiKeyInput = it.trim() },
+                        label = { Text("API Key 或 Bearer Token") },
+                        placeholder = { Text("如 sk-…") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val key = apiKeyInput.trim()
+                        if (key.isEmpty() || isSavingApiKey) return@Button
+                        isSavingApiKey = true
+                        coroutineScope.launch {
+                            apiClient.setProviderApiKey(currentProvider.name, key)
+                                .onSuccess {
+                                    Toast.makeText(context, "已保存 ${currentProvider.name} 的 API Key", Toast.LENGTH_SHORT).show()
+                                    apiKeyInput = ""
+                                    showApiKeyDialog = false
+                                    loadConfigFromServer()
+                                }
+                                .onFailure { err ->
+                                    Toast.makeText(
+                                        context,
+                                        "保存失败: ${err.message ?: "未知错误"}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            isSavingApiKey = false
+                        }
+                    },
+                    enabled = apiKeyInput.isNotBlank() && !isSavingApiKey,
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
+                ) {
+                    Text(if (isSavingApiKey) "保存中..." else "保存", color = Color.White)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { if (!isSavingApiKey) showApiKeyDialog = false }) {
                     Text("取消", color = theme.textSecondary)
                 }
             }

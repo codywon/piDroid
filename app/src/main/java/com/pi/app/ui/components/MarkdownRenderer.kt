@@ -80,8 +80,10 @@ object CjkMarkdownNormalizer {
     private val INNER_BOLD_WHITESPACE_ASTERISK = Regex("""\*\*[\t ]*([^*]+?)[\t ]*\*\*""")
     private val INNER_BOLD_WHITESPACE_UNDERSCORE = Regex("""__[\t ]*([^_]+?)[\t ]*__""")
 
-    private val TABLE_STICKY_ROW_REGEX = Regex("""\|\s*\|(?=\s*[:\w\-\./*\$#@~`\u4e00-\u9fa5])""")
-    private val TABLE_SEPARATOR_REGEX = Regex("""(?<!\n)(\|[^\n|]+?\|\s*)(\|(?:[\s:]*-+[\s:]*\|)+)""")
+    private val TABLE_STICKY_ROW_REGEX = Regex("""\s\|\|\s""")
+
+    /** 行内分隔行（如 `|---|`）——仅在它之前还有表头内容、且后面再无内容时才会被断行。 */
+    private val TABLE_INLINE_DELIMITER = Regex("""\|(?:\s*:?-{2,}:?\s*\|)+""")
 
     fun normalize(rawMarkdown: String): String {
         if (rawMarkdown.isEmpty()) return rawMarkdown
@@ -110,9 +112,38 @@ object CjkMarkdownNormalizer {
 
     private val RAW_SVG_BLOCK_REGEX = Regex("""<svg\b[\s\S]*?</svg>""", RegexOption.IGNORE_CASE)
 
+    /** 已成对的行内代码（不跨行）。 */
+    private val INLINE_CODE_SPAN = Regex("""`[^`\n]+`""")
+
+    /**
+     * 修复孤立的反引号，但**先保护已成对的行内代码**。
+     *
+     * 旧实现在全文上直接跑 SQL 引号修复（如 status=`0'），会把行内代码自己拆掉：
+     * 反引号包裹的 SQL 里带单引号是常态，被改写后反引号奇偶被打乱，
+     * 解析器只能把后面一大段正文当成 Code 节点——正文里那些「粉色大块」就是这么来的。
+     */
     private fun healBrokenInlineBackticks(text: String): String {
+        if (!text.contains('`')) return text
+        val spans = INLINE_CODE_SPAN.findAll(text).toList()
+        if (spans.isEmpty()) return healLooseBackticks(text)
+
+        val sb = StringBuilder()
+        var cursor = 0
+        for (span in spans) {
+            if (span.range.first < cursor) continue
+            sb.append(healLooseBackticks(text.substring(cursor, span.range.first)))
+            sb.append(span.value)
+            cursor = span.range.last + 1
+        }
+        if (cursor < text.length) sb.append(healLooseBackticks(text.substring(cursor)))
+        return sb.toString()
+    }
+
+    /** 仅作用于「不在成对行内代码里」的自由文本。 */
+    private fun healLooseBackticks(text: String): String {
+        if (!text.contains('`')) return text
         // 1. 修复 SQL 单引号与反引号混写（如 status=`0' 或 status='0` ）
-        var s = text.replace(Regex("""`([^`'\n]+)'"""), "'$1'")
+        val s = text.replace(Regex("""`([^`'\n]+)'"""), "'$1'")
             .replace(Regex("""'([^`'\n]+)`"""), "'$1'")
 
         // 2. 检查跨中文句逗标点未闭合的孤立反引号，避免整段正文被误染成单行 Code 节点
@@ -132,6 +163,49 @@ object CjkMarkdownNormalizer {
             }
         }
         return healed.joinToString("\n")
+    }
+
+    /**
+     * 只修复「确定被压平」的表格，绝不动合法表格：
+     *
+     * 旧实现的两条正则会切碎合法表格：
+     * 1) `\|\s*\|(?=\s*\w)` 会把表头的空首列 `| | SaaS …` 拆成两行；
+     * 2) 分隔行插换行正则的 `\s*` 会吃掉表头行末的换行，在「表头行」与「|---|」之间插入空行，
+     *    于是 GFM 不再识别为表格，整张表退化成普通段落（管道符原样显示）。
+     *
+     * 现在仅处理两种真实形变：行内 ` || ` 行边界、表头与分隔行粘在同一行。
+     */
+    private fun repairJammedTables(text: String): String {
+        if (!text.contains('|')) return text
+        val out = ArrayList<String>()
+        for (rawLine in text.split("\n")) {
+            val pieces: List<String> = if (
+                rawLine.count { it == '|' } >= 4 && TABLE_STICKY_ROW_REGEX.containsMatchIn(rawLine)
+            ) {
+                rawLine.replace(TABLE_STICKY_ROW_REGEX, " |\n| ")
+                    .split("\n")
+                    .map { it.trimEnd() }
+            } else {
+                listOf(rawLine)
+            }
+            for (piece in pieces) {
+                val delimiter = TABLE_INLINE_DELIMITER.find(piece)
+                val head = delimiter?.let { piece.substring(0, it.range.first) }
+                val tail = delimiter?.let { piece.substring(it.range.last + 1) }
+                // 仅当分隔行前面确实还有表格内容（含管道符）时才断行；
+                // 否则 `> | :--- | :--- |` 这类引用块内的分隔行会被误拆掉引用前缀。
+                if (delimiter != null && head != null && tail != null &&
+                    head.contains('|') && tail.isBlank()
+                ) {
+                    val prefix = head.substring(0, head.indexOf('|'))
+                    out.add(head.trimEnd())
+                    out.add(prefix + delimiter.value)
+                } else {
+                    out.add(piece)
+                }
+            }
+        }
+        return out.joinToString("\n")
     }
 
     private fun fixSegment(text: String): String {
@@ -166,13 +240,12 @@ object CjkMarkdownNormalizer {
             }
         }
 
-        // 1. 自动修复表格：若首行紧贴上方普通文本，自动补充换行空行以触发 GFM 表格解析；修复单行粘连
+        // 1. 自动修复表格：若首行紧贴上方普通文本，自动补充换行空行以触发 GFM 表格解析
         s = s.replace(Regex("""(?m)^([^\n|]+)\n(\|[^\n]+\|\s*\n\|[\s:\-|]+\|)""")) { m ->
             "${m.groupValues[1]}\n\n${m.groupValues[2]}"
         }
         if (s.contains("|") && s.contains("-")) {
-            s = TABLE_SEPARATOR_REGEX.replace(s) { "${it.groupValues[1]}\n${it.groupValues[2]}" }
-            s = TABLE_STICKY_ROW_REGEX.replace(s, "|\n|")
+            s = repairJammedTables(s)
         }
 
         // 2. 规范化伪列表符号
@@ -775,15 +848,19 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
                 builder.pop()
             }
             is Code -> {
+                // 行内代码只做「等宽 + 轻底纹」，不再染成玫红色：旧实现的 #F43F5E 前景色
+                // 使 SQL/标识符在正文里像一块“红色告警”，反而更像没渲染。过长的行内代码
+                // （如整段 WHERE 子句）不加底纹，避免折行后形成大色块。
+                val literal = child.literal
+                val withTint = literal.length <= 40 && !literal.contains('\n')
                 builder.pushStyle(
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
-                        background = Color(0x22888888),
-                        color = if (isUser) Color(0xFF2563EB) else Color(0xFFF43F5E)
+                        background = if (withTint) Color(0x1F88888F) else Color.Transparent
                     )
                 )
-                builder.append(" ${child.literal} ")
+                if (withTint) builder.append(" $literal ") else builder.append(literal)
                 builder.pop()
             }
             is Link -> {
