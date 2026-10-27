@@ -157,7 +157,7 @@ fun SessionListScreen(
                 path = path,
                 name = name.ifBlank { "默认项目" },
                 sessionCount = list.size,
-                runningCount = list.count { it.active },
+                runningCount = list.count { it.isLive },
                 awaitingCount = list.count { it.awaitingInput }
             )
         }.sortedWith(
@@ -187,13 +187,13 @@ fun SessionListScreen(
         }
         base.sortedWith(
             compareByDescending<Session> { it.awaitingInput }
-                .thenByDescending { it.active }
+                .thenByDescending { it.isLive }
                 .thenByDescending { it.modified ?: it.created ?: "" }
         )
     }
 
     val runningInWorkspace = remember(currentWorkspaceSessions) {
-        currentWorkspaceSessions.count { it.active || it.awaitingInput }
+        currentWorkspaceSessions.count { it.isLive || it.awaitingInput }
     }
     val completedInWorkspace = remember(currentWorkspaceSessions, runningInWorkspace) {
         (currentWorkspaceSessions.size - runningInWorkspace).coerceAtLeast(0)
@@ -203,8 +203,8 @@ fun SessionListScreen(
         currentWorkspaceSessions.filter { s ->
             val matchesStatus = when (statusFilter) {
                 SessionStatusFilter.ALL -> true
-                SessionStatusFilter.RUNNING -> s.active || s.awaitingInput
-                SessionStatusFilter.COMPLETED -> !s.active && !s.awaitingInput
+                SessionStatusFilter.RUNNING -> s.isLive || s.awaitingInput
+                SessionStatusFilter.COMPLETED -> !s.isLive && !s.awaitingInput
             }
             val q = searchQuery.trim()
             val cTitle = customTitles[s.id] ?: ""
@@ -254,7 +254,7 @@ fun SessionListScreen(
                                 color = theme.textPrimary
                             )
                             Text(
-                                text = "共 ${workspaces.size} 个活动目录 · ${sessions.count { it.active }} 个运行中",
+                                text = "共 ${workspaces.size} 个活动目录 · ${sessions.count { it.isLive }} 个运行中",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.textMuted
                             )
@@ -345,7 +345,7 @@ fun SessionListScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                    if (sessions.any { pinnedSessionIds.contains(it.id) && it.active }) {
+                                    if (sessions.any { pinnedSessionIds.contains(it.id) && it.isLive }) {
                                         PiWebRunningSpinner(size = 12.dp)
                                         Spacer(modifier = Modifier.width(4.dp))
                                     }
@@ -578,9 +578,8 @@ fun SessionListScreen(
                     },
                     actions = {
                         if (isConfigured) {
-                            IconButton(onClick = { showAddWorkspaceDialog = true }) {
-                                Icon(Icons.Default.CreateNewFolder, contentDescription = "添加或新建远程项目目录", tint = theme.primary)
-                            }
+                            // 添加 / 新建项目目录入口保留在左侧工作区抽屉里（顶部横幅 [+] 与底部
+                            // 「打开 / 添加其他项目...」两处），顶栏不再放这个图标，避免列表页误触。
                             IconButton(onClick = onRefresh, enabled = !isLoading) {
                                 if (isLoading) {
                                     CircularProgressIndicator(
@@ -1215,7 +1214,7 @@ fun SessionListScreen(
                 val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
                 val olderSessions = remember(projectSessions, weekAgo) {
                     projectSessions.filter { s ->
-                        if (s.active || prefs.isSessionArchived(s.id)) return@filter false
+                        if (s.isLive || prefs.isSessionArchived(s.id)) return@filter false
                         val t = parseSessionTimeMillis(s.modified ?: s.created)
                         t in 1..<weekAgo
                     }
@@ -1340,8 +1339,8 @@ fun SessionListScreen(
         val projectSessions = remember(sessions, target) {
             sessions.filter { it.workspacePath == target.path || it.cwd == target.path || it.project == target.displayName }
         }
-        val runningSessions = remember(projectSessions) { projectSessions.filter { it.active } }
-        val toDeleteSessions = remember(projectSessions) { projectSessions.filterNot { it.active } }
+        val runningSessions = remember(projectSessions) { projectSessions.filter { it.isLive } }
+        val toDeleteSessions = remember(projectSessions) { projectSessions.filterNot { it.isLive } }
 
         AlertDialog(
             onDismissRequest = { showDeleteAllSessionsDialog = null },
@@ -1877,9 +1876,9 @@ private fun FilterPill(
 
 /**
  * 对标 pi-web SessionTree.tsx 的任务行卡片：
- * - 正在运行 (`session.active`)：左侧动态旋转圆弧 `PiWebRunningSpinner` + 右侧绿色 `运行中` 徽章 + 翠绿高亮边框
+ * - 正在运行 (`session.isLive`)：左侧动态旋转圆弧 `PiWebRunningSpinner` + 右侧绿色 `运行中` 徽章 + 翠绿高亮边框
  * - 等待输入 (`session.awaitingInput`)：左侧琥珀色脉冲圆点 + 右侧 `等待确认` 徽章
- * - 已完成 (`!session.active`)：左侧已完成打勾图标 (`CheckCircle`) + 消息条数统计 + 格式化时间
+ * - 已完成 (`!session.isLive`)：左侧已完成打勾图标 (`CheckCircle`) + 消息条数统计 + 格式化时间
  * - 支持置顶与自定义上下文取名展示
  */
 @Composable
@@ -1898,15 +1897,22 @@ fun SessionCard(
     val theme = LocalAppTheme.current
     var showMenu by remember { mutableStateOf(false) }
     val timeRaw = session.modified ?: session.created ?: ""
+    // pi-web 的 modified 是 UTC ISO 串（如 2026-10-27T08:31:27.266Z）。
+    // 以前直接 take(16) 截字符串，手机列表显示的是 UTC 时间，看上去比 pi-web 的
+    // 本地时间「慢 8 小时」，很像没同步。这里转成本地时区再格式化。
     val dateStr = remember(timeRaw) {
-        if (timeRaw.length >= 16) {
+        val millis = parseSessionTimeMillis(timeRaw)
+        if (millis > 0L) {
+            java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
+                .format(java.util.Date(millis))
+        } else if (timeRaw.length >= 16) {
             timeRaw.take(16).replace("T", " ").substringAfter("-")
         } else {
             timeRaw
         }
     }
 
-    val isRunning = session.active
+    val isRunning = session.isLive
     val isAwaiting = session.awaitingInput
     val titleText = customTitle ?: session.displayTitle
 

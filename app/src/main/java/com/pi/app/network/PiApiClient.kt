@@ -62,6 +62,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         private val ABORT_LIKE_ERROR_REGEX = Regex(
             "(?i)(operation was aborted|request was aborted|operation aborted|request aborted)"
         )
+
+        /** 候选 Key 联网自检时使用的一次性 provider 名后缀（避开已保存凭据的遮蔽）。 */
+        private const val VERIFY_PROVIDER_SUFFIX = "-key-verify"
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
 
@@ -2032,22 +2035,154 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 配置指定 Provider 的 API Key (POST /api/auth/api-key/{provider})
+     * 读取 PC 上 pi 凭据库的真实配置状态 (GET /api/auth/providers)。
+     *
+     * 这是「Key 到底配没配」的唯一可信来源：pi 把凭据存在 `~/.pi/agent/auth.json`
+     * （source = stored），也可能来自环境变量（env）或 models.json（models_json_key），
+     * 而 models.json 里的 `apiKey` 字段往往根本不存在。此前设置页只读 models.json，
+     * 所以在 pi-web 里配好 Key 之后，App 仍然一直显示「未配置 Key」。
+     *
+     * 返回 map：providerId(小写) -> ProviderAuthState。
      */
-    suspend fun setProviderApiKey(provider: String, apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun getProviderAuthStates(): Result<Map<String, ProviderAuthState>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val encodedProvider = URLEncoder.encode(provider.trim(), "UTF-8")
-            val body = gson.toJson(mapOf("apiKey" to apiKey.trim())).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/auth/api-key/$encodedProvider").post(body).build()
+            val req = Request.Builder().url("$baseUrl/api/auth/providers").get().build()
             client.newCall(req).execute().use { response ->
-                if (response.isSuccessful) Result.success(true)
-                else Result.failure(IOException("配置 API Key 失败 (${response.code})"))
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取凭据状态失败 (${response.code})"))
+                }
+                val body = response.body?.string() ?: "{}"
+                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("凭据状态响应无法解析"))
+                val result = mutableMapOf<String, ProviderAuthState>()
+                val arr = json.get("apiKeyProviders")?.takeIf { it.isJsonArray }?.asJsonArray
+                if (arr != null) {
+                    for (el in arr) {
+                        if (!el.isJsonObject) continue
+                        val o = el.asJsonObject
+                        val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                        if (id.isBlank()) continue
+                        result[id.lowercase()] = ProviderAuthState(
+                            providerId = id,
+                            configured = o.get("configured")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                            source = o.get("source")?.takeIf { !it.isJsonNull }?.asString,
+                            modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                        )
+                    }
+                }
+                Result.success(result)
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /**
+     * 清除某个 Provider 已保存的 API Key (DELETE /api/auth/api-key/{provider})。
+     *
+     * 手机端一旦写入过错误的 Key，pi 会把每一个请求都拿它去发 → PC 上所有会话
+     * 直接 401 "Invalid API key"。没有这个删除入口，用户只能去 PC 上手工改
+     * auth.json 才能恢复。
+     */
+    suspend fun deleteProviderApiKey(provider: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val encodedProvider = URLEncoder.encode(provider.trim(), "UTF-8")
+            val req = Request.Builder().url("$baseUrl/api/auth/api-key/$encodedProvider").delete().build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) Result.success(true)
+                else Result.failure(IOException("清除 API Key 失败 (${response.code})"))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 校验一个「候选」 API Key 是否真的能被该 Provider 接受。
+     *
+     * 实现方式：借用 pi-web 的 POST /api/models-config/test —— 它会用临时 models.json
+     * 建一个一次性 ModelRuntime 并真发一轮 16 token 的补全请求。
+     *
+     * 关键细节：providerName 必须换成一次性名字（见 VERIFY_PROVIDER_SUFFIX）。若沿用真实
+     * provider 名，pi 的 getAuth 会优先取**已保存**的凭据，请求里带的候选 Key 会被忽略，
+     * 于是「错 Key 也能测通过」——这个坑已经实测确认过。用临时名字则没有任何已存凭据可
+     * 遮蔽，候选 Key 才真正生效（实测：错 Key 0.2s 内返回 401 "Invalid API key"）。
+     */
+    suspend fun verifyProviderApiKey(
+        provider: String,
+        baseUrlEndpoint: String,
+        apiType: String,
+        modelId: String,
+        candidateKey: String
+    ): Result<ModelTestResult> {
+        if (baseUrlEndpoint.isBlank() || modelId.isBlank()) {
+            return Result.failure(Exception("该 Provider 缺少 Base URL 或模型，无法联网校验"))
+        }
+        val provObj = JsonObject().apply {
+            addProperty("baseUrl", baseUrlEndpoint.trim())
+            if (apiType.isNotBlank()) addProperty("api", apiType.trim())
+            addProperty("apiKey", candidateKey.trim())
+        }
+        val modelObj = JsonObject().apply {
+            addProperty("id", modelId.trim())
+            addProperty("name", modelId.trim())
+            addProperty("contextWindow", 128000)
+            addProperty("maxTokens", 1024)
+        }
+        return testModelConfig("${provider.trim()}${VERIFY_PROVIDER_SUFFIX}", provObj, modelObj)
+    }
+
+    /**
+     * 配置指定 Provider 的 API Key (POST /api/auth/api-key/{provider})
+     *
+     * 写入点只有这一个，所以格式自检也放在这里：pi 的 auth 路由不做任何校验就把值存进
+     * auth.json，之后每个请求都拿它当 Bearer Token。一旦存进去的是错的/粘了一半的值，
+     * PC 上所有会话立刻 401 "Invalid API key"（本机 2026-10-27 16:35 就这样被打挂过）。
+     * 因此 UI 层必须先走 [verifyProviderApiKey] 实测，这里再兜一层基础自检。
+     */
+    suspend fun setProviderApiKey(provider: String, apiKey: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val cleanKey = apiKey.trim()
+        checkApiKeyFormat(cleanKey)?.let { return@withContext Result.failure(IllegalArgumentException(it)) }
+        try {
+            val encodedProvider = URLEncoder.encode(provider.trim(), "UTF-8")
+            val body = gson.toJson(mapOf("apiKey" to cleanKey)).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/auth/api-key/$encodedProvider").post(body).build()
+            client.newCall(req).execute().use { response ->
+                if (response.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    // pi-web 的失败原因（如 does not support API key login）在响应体里，别丢掉
+                    val detail = response.body?.string()?.takeIf { it.isNotBlank() }?.take(200) ?: ""
+                    Result.failure(
+                        IOException(
+                            "配置 API Key 失败 (${response.code})" + if (detail.isNotBlank()) "：$detail" else ""
+                        )
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 写入前的格式自检。返回 null 表示通过，否则返回给用户看的拒绝原因。
+     *
+     * 只做「显然不是密钥」的拦截，不做长度/字符集规则：中转站的 Key 可能非常短
+     * （本机实际使用的就是一个 7 位的自定义串，甚至与 Provider 同名），任何长度或
+     * 形似规则都会把合法 Key 拦在门外。真正判断 Key 对不对的，是 [verifyProviderApiKey]
+     * 那一步的联网实测。
+     */
+    private fun checkApiKeyFormat(key: String): String? {
+        if (key.isEmpty()) return "API Key 不能为空"
+        if (key.any { it.isWhitespace() }) return "API Key 里不能有空格或换行，请重新粘贴"
+        return null
     }
 
     /**
@@ -2478,6 +2613,31 @@ data class ModelTestResult(
     val responseText: String? = null,
     val error: String? = null
 )
+
+/**
+ * pi 凭据库中某个 Provider 的真实配置状态（GET /api/auth/providers → apiKeyProviders）。
+ *
+ * @param configured 是否已配置可用凭据
+ * @param source pi 侧的凭据来源：stored(auth.json) / env(环境变量) / models_json_key 等
+ */
+data class ProviderAuthState(
+    val providerId: String,
+    val configured: Boolean = false,
+    val source: String? = null,
+    val modelCount: Int = 0
+) {
+    /** 给 UI 看的中文来源说明 */
+    val sourceLabel: String
+        get() = when (source?.lowercase()) {
+            "stored" -> "已保存"
+            "env" -> "环境变量"
+            "models_json_key" -> "models.json"
+            "models_json_command" -> "models.json 命令"
+            "oauth" -> "OAuth"
+            null, "" -> ""
+            else -> source ?: ""
+        }
+}
 
 data class CatalogPreset(
     val name: String? = null,

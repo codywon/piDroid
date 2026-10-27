@@ -95,8 +95,23 @@ fun GlobalModelsConfigTab(
     var showApiKeyDialog by remember { mutableStateOf(false) }
     var apiKeyInput by remember { mutableStateOf("") }
     var isSavingApiKey by remember { mutableStateOf(false) }
+    // 检验阶段：先拿候选 Key 真发一轮请求，通了才写入凭据库（避免把 PC 上所有会话打成 401）
+    var apiKeyVerifyPhase by remember { mutableStateOf<String?>(null) }
+    var apiKeyInputError by remember { mutableStateOf<String?>(null) }
+    // 无法联网实测时（内置 Provider 无 Base URL / 旧网关无测试接口）允许用户明示跳过实测
+    var allowUnverifiedSave by remember { mutableStateOf(false) }
+
+    // pi 凭据库真实状态（GET /api/auth/providers）：models.json 里通常根本没 apiKey 字段，
+    // 只看 models.json 会永远显示「未配置 Key」
+    var authStates by remember { mutableStateOf<Map<String, com.pi.app.network.ProviderAuthState>>(emptyMap()) }
 
     // 辅助函数：加载服务端配置
+    fun loadAuthStates() {
+        coroutineScope.launch {
+            apiClient.getProviderAuthStates().onSuccess { authStates = it }
+        }
+    }
+
     fun loadConfigFromServer() {
         isLoading = true
         coroutineScope.launch {
@@ -127,6 +142,7 @@ fun GlobalModelsConfigTab(
 
     LaunchedEffect(Unit) {
         loadConfigFromServer()
+        loadAuthStates()
     }
 
     // 获取当前选中的 Provider 和 Model
@@ -136,6 +152,26 @@ fun GlobalModelsConfigTab(
     val currentModel = remember(currentProvider, selectedModelId) {
         currentProvider?.models?.firstOrNull { it.id == selectedModelId }
     }
+
+    // 凭据真实状态：优先 pi 凭据库（GET /api/auth/providers），models.json 里的 apiKey 仅作兜底
+    val currentAuthState = remember(authStates, currentProvider) {
+        currentProvider?.let { authStates[it.name.lowercase()] }
+    }
+    val isKeyConfigured = currentAuthState?.configured == true || currentProvider?.apiKey?.isNotBlank() == true
+    // 行内只放最短标签，来源留给配置弹窗展示，避免窄屏挤压按钮
+    val keyStatusLabel = if (isKeyConfigured) "Key 已配置" else "未配置 Key"
+    // 详细来源说明（弹窗里用）
+    val keySourceDetail = when {
+        currentAuthState?.configured == true -> {
+            val src = currentAuthState.sourceLabel
+            if (src.isNotBlank()) src else "已配置"
+        }
+        currentProvider?.apiKey?.isNotBlank() == true -> "models.json"
+        else -> ""
+    }
+    // 只有存在已保存（stored）凭据时才能从手机端清除；环境变量等来源不归 App 管
+    val canClearStoredKey = currentAuthState?.configured == true &&
+        currentAuthState.source?.lowercase() == "stored"
 
     // 保存方法
     fun saveAllConfig() {
@@ -490,13 +526,43 @@ fun GlobalModelsConfigTab(
                                             )
                                         }
                                         Text(
-                                            text = if (currentProvider.apiKey.isNotBlank()) "Key 已配置" else "未配置 Key",
+                                            text = keyStatusLabel,
                                             fontSize = 10.sp,
-                                            color = theme.textMuted,
+                                            color = if (isKeyConfigured) Color(0xFF2EA043) else theme.textMuted,
                                             maxLines = 1,
                                             softWrap = false
                                         )
                                         Spacer(modifier = Modifier.weight(1f))
+                                        // 手机上录错过 Key 时（PC 上所有会话 401），至少能从这里一键清掉
+                                        if (canClearStoredKey) {
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = Color.Transparent,
+                                                border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.6f)),
+                                                modifier = Modifier.clickable {
+                                                    coroutineScope.launch {
+                                                        apiClient.deleteProviderApiKey(currentProvider.name)
+                                                            .onSuccess {
+                                                                Toast.makeText(context, "已清除 ${currentProvider.name} 的已保存 Key", Toast.LENGTH_SHORT).show()
+                                                                loadAuthStates()
+                                                            }
+                                                            .onFailure { err ->
+                                                                Toast.makeText(context, "清除失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                                            }
+                                                    }
+                                                }
+                                            ) {
+                                                Text(
+                                                    text = "清除",
+                                                    fontSize = 10.sp,
+                                                    color = theme.textSecondary,
+                                                    maxLines = 1,
+                                                    softWrap = false,
+                                                    modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                        }
                                         // 真正的密钥入口：写 pi 凭据库 (auth.json)，而不是 models.json
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
@@ -504,6 +570,9 @@ fun GlobalModelsConfigTab(
                                             border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.3f)),
                                             modifier = Modifier.clickable {
                                                 apiKeyInput = ""
+                                                apiKeyInputError = null
+                                                apiKeyVerifyPhase = null
+                                                allowUnverifiedSave = false
                                                 showApiKeyDialog = true
                                             }
                                         ) {
@@ -1344,20 +1413,46 @@ fun GlobalModelsConfigTab(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        "写入 pi 凭据库 (auth.json)，对所有会话与子代理立即生效（与 models.json 里的 apiKey 字段无关）。",
+                        "先联网验证再写入 pi 凭据库（auth.json）。错 Key 会让 PC 上所有会话直接 401，所以不验证不保存。",
                         fontSize = 11.sp,
                         color = theme.textMuted,
                         lineHeight = 16.sp
                     )
+                    if (keySourceDetail.isNotBlank()) {
+                        Text(
+                            "当前状态：${currentProvider.name} 已配置（来源：$keySourceDetail）",
+                            fontSize = 10.5.sp,
+                            color = Color(0xFF2EA043)
+                        )
+                    }
                     OutlinedTextField(
                         value = apiKeyInput,
-                        onValueChange = { apiKeyInput = it.trim() },
+                        onValueChange = {
+                            apiKeyInput = it.trim()
+                            apiKeyInputError = null
+                            allowUnverifiedSave = false
+                        },
                         label = { Text("API Key 或 Bearer Token") },
                         placeholder = { Text("如 sk-…") },
                         singleLine = true,
+                        isError = apiKeyInputError != null,
                         visualTransformation = PasswordVisualTransformation(),
                         modifier = Modifier.fillMaxWidth()
                     )
+                    apiKeyInputError?.let { err ->
+                        Text(err, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, lineHeight = 15.sp)
+                    }
+                    apiKeyVerifyPhase?.let { phase ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(12.dp),
+                                strokeWidth = 1.6.dp,
+                                color = theme.primary
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(phase, fontSize = 10.5.sp, color = theme.textSecondary)
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -1365,29 +1460,74 @@ fun GlobalModelsConfigTab(
                     onClick = {
                         val key = apiKeyInput.trim()
                         if (key.isEmpty() || isSavingApiKey) return@Button
+                        val prov = currentProvider
+                        // 先用该 Provider 下的第一个模型真实发一轮请求：
+                        // 1) 服务端不认（401）就绝不写入；
+                        // 2) 无 Base URL（如内置 anthropic/openai 走 pi 自带端点）时无法实测，
+                        //    需用户再点一次「跳过实测并保存」明示确认；
+                        // 3) 底层 setProviderApiKey 仍会再做一次格式自检。
+                        val probeModelId = prov.models.firstOrNull()?.id ?: ""
+                        val canVerify = prov.baseUrl.isNotBlank() && probeModelId.isNotBlank()
                         isSavingApiKey = true
+                        apiKeyInputError = null
                         coroutineScope.launch {
-                            apiClient.setProviderApiKey(currentProvider.name, key)
-                                .onSuccess {
-                                    Toast.makeText(context, "已保存 ${currentProvider.name} 的 API Key", Toast.LENGTH_SHORT).show()
-                                    apiKeyInput = ""
-                                    showApiKeyDialog = false
-                                    loadConfigFromServer()
+                            var verified = !canVerify || allowUnverifiedSave
+                            if (!verified) {
+                                apiKeyVerifyPhase = "正在用 ${prov.name} 实测该 Key…"
+                                apiClient.verifyProviderApiKey(
+                                    provider = prov.name,
+                                    baseUrlEndpoint = prov.baseUrl,
+                                    apiType = prov.api,
+                                    modelId = probeModelId,
+                                    candidateKey = key
+                                ).onSuccess { res ->
+                                    verified = res.ok
+                                    if (!res.ok) {
+                                        apiKeyInputError = "该 Key 未被服务端接受：${res.error ?: "未知错误"}"
+                                    }
+                                }.onFailure { err ->
+                                    // 测试接口本身不可用（旧网关 / 网络异常）：不强存，只给出路
+                                    allowUnverifiedSave = true
+                                    apiKeyInputError =
+                                        "无法联网实测（${err.message ?: "测试接口不可用"}）。确认 Key 无误请再点一次「跳过实测并保存」。"
                                 }
-                                .onFailure { err ->
-                                    Toast.makeText(
-                                        context,
-                                        "保存失败: ${err.message ?: "未知错误"}",
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
+                            }
+
+                            if (verified) {
+                                apiKeyVerifyPhase = "验证通过，正在写入凭据库…"
+                                apiClient.setProviderApiKey(prov.name, key)
+                                    .onSuccess {
+                                        Toast.makeText(context, "已保存 ${prov.name} 的 API Key", Toast.LENGTH_SHORT).show()
+                                        apiKeyInput = ""
+                                        apiKeyInputError = null
+                                        allowUnverifiedSave = false
+                                        showApiKeyDialog = false
+                                        loadConfigFromServer()
+                                        loadAuthStates()
+                                    }
+                                    .onFailure { err ->
+                                        apiKeyInputError = "保存失败: ${err.message ?: "未知错误"}"
+                                    }
+                            } else if (!canVerify && apiKeyInputError == null) {
+                                // 内置 Provider 没有 Base URL，提示需要明示确认
+                                allowUnverifiedSave = true
+                                apiKeyInputError = "该 Provider 未配置 Base URL，无法联网实测。确认 Key 无误请再点一次「跳过实测并保存」。"
+                            }
+                            apiKeyVerifyPhase = null
                             isSavingApiKey = false
                         }
                     },
                     enabled = apiKeyInput.isNotBlank() && !isSavingApiKey,
                     colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
                 ) {
-                    Text(if (isSavingApiKey) "保存中..." else "保存", color = Color.White)
+                    Text(
+                        when {
+                            isSavingApiKey -> "验证中..."
+                            allowUnverifiedSave -> "跳过实测并保存"
+                            else -> "验证并保存"
+                        },
+                        color = Color.White
+                    )
                 }
             },
             dismissButton = {

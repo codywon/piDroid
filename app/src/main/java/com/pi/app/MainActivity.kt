@@ -110,7 +110,9 @@ class MainActivity : ComponentActivity() {
                 lastFinishedTaskTitle = lastFinishedTask
             }
             val totalSessions = cachedSessions.size
-            val activeSessionsCount = cachedSessions.count { it.active }
+            // 运行态以 isLive 为准（runningSessionIds → isRunning 与本地 active 取或），
+            // 只读 active 会让通知栏长期显示「0 运行 / 全部完成」。
+            val activeSessionsCount = cachedSessions.count { it.isLive }
             val runningCount = if (isBusy) maxOf(1, activeSessionsCount) else activeSessionsCount
             val completedCount = maxOf(0, totalSessions - runningCount)
             val devName = prefs.deviceName.ifBlank { prefs.serverUrl.substringAfter("://").substringBefore(":") }.ifBlank { "Remote PC" }

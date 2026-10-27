@@ -71,6 +71,18 @@ data class Session(
             val p = workspacePath
             return p.substringAfterLast('\\').substringAfterLast('/').ifBlank { p }
         }
+
+    /**
+     * 真实运行态（列表徽章、筛选、计数、删除保护一律以此为准）。
+     *
+     * pi-web 已把「谁在跑」从会话条目里的 `active` 字段搬到 `GET /api/sessions` 顶层的
+     * `runningSessionIds`，条目本身不再带 `active`——所以 `PiApiClient.getSessions()` 解析后
+     * 只能把它落到 [isRunning]。而本地新建会话（MainActivity 里 `active = true`）与旧缓存
+     * 只有 `active` 有值。因此运行态必须两者取或：只读 `active` 会让「运行中」永远为 0、
+     * 全部任务都被判成「已完成」。
+     */
+    val isLive: Boolean
+        get() = isRunning || active
 }
 
 /**

@@ -2277,7 +2277,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "应用主题外观",
-                infoDescription = "默认浅色纸质明眸，提供深空暗黑、纯黑 OLED、冰蓝与翡翠等高对比度配色方案。",
+                infoDescription = "浅色纸质 / 深空暗黑 / 纯黑 OLED / 冰蓝 / 翡翠，五种高对比配色。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2461,7 +2461,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "后台保活",
-                infoDescription = "三重保活架构（常驻通知栏前台服务 + 系统电池白名单 + 任务期动态唤醒锁），确保锁屏与切后台不断连。",
+                infoDescription = "前台服务 + 电池白名单 + 唤醒锁，锁屏与切后台不断连。",
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -2490,7 +2490,7 @@ fun GlobalSystemSettingsTab(
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "在通知栏常驻展示网关连接与实时任务进度，提升进程为前台级优先级",
+                                text = "通知栏常驻前台服务，进程不被后台回收",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.textMuted
                             )
@@ -2523,7 +2523,7 @@ fun GlobalSystemSettingsTab(
                             }
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                text = "默认关闭（常驻栏状态、大盘统计与音效/震动已实时感知）；开启后在任务完成时额外弹出附带任务标题的通知卡片",
+                                text = "完成时额外弹一张通知卡片",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = theme.textMuted
                             )
@@ -2550,7 +2550,7 @@ fun GlobalSystemSettingsTab(
                             Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
                             Spacer(modifier = Modifier.height(2.dp))
                             Text(
-                                if (liveIgnoringBattery) "已加入系统电池白名单，后台网络不受限制" else "建议开启：防止息屏后系统休眠冻结后台长连接",
+                                if (liveIgnoringBattery) "后台网络不受系统休眠限制" else "建议开启：防息屏冻结长连接",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (liveIgnoringBattery) theme.textMuted else Color(0xFFD97706)
                             )
@@ -2589,7 +2589,7 @@ fun GlobalSystemSettingsTab(
                         Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
                             Text("CPU 唤醒锁与断线自愈", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
                             Spacer(modifier = Modifier.height(2.dp))
-                            Text("任务运行期间自动持有唤醒锁 + 指数退避 SSE 重连与 2s 快照对账", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
+                            Text("任务期持有唤醒锁 + 断线自动重连", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
                         }
                         UnifiedStatusBadge(
                             text = "已就绪",
@@ -2603,7 +2603,7 @@ fun GlobalSystemSettingsTab(
         item {
             InfoTitle(
                 title = "主机网关连接",
-                infoDescription = "管理已配对的 PC 上的网关地址与访问令牌，支持手动编辑与扫码切换。",
+                infoDescription = "管理已配对的网关地址与访问令牌，支持编辑与扫码切换。",
                 style = MaterialTheme.typography.titleMedium
             )
         }

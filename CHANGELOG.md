@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.3] - 2026-10-27
+
+### 🔄 列表运行状态对齐 / API Key 真伪校验 / 设置文案精简 (Release v1.7.3)
+
+- **“运行中”永远为 0、“已完成”永远等于总数（app 列表看不到 pi-web 正在跑的任务）**：
+  - **根因**：v1.6.9 把 pi-web 的运行态从会话条目里的 `active` 字段改为解析 `GET /api/sessions` 顶层的 `runningSessionIds`，落盘到新字段 `isRunning`；但列表页所有判断仍读 `session.active`。而 pi-web 的会话条目已经**不再返回** `active`，它恒为 `false` —— 于是 `运行中(0)`、`已完成(总数)`，连卡片上的绿色 `运行中` 徽章、旋转圆弧、运行中会话的删除保护、常驻通知栏的“N 项运行”全都失效。
+  - **修复**：`Session` 新增 `isLive = isRunning || active`（兼容 `runningSessionIds` 与本地新建会话的 `active = true`），`SessionListScreen` 与 `MainActivity` 的状态计数/筛选/排序/徽章/删除保护/通知栏统计全部改读 `isLive`。
+  - **验证**：本机 `GET /api/sessions` 返回 `runningSessionIds` 含 3 个会话（经网关 4100 透传亦一致），修复后应显示 `运行中(2)`（当前工作区）并置顶。
+- **列表时间看起来“比 pi-web 慢 8 小时”**：`modified` 是 UTC ISO 串，旧实现直接 `take(16)` 截字符串展示，等于把 UTC 当本地时间显示；现改为解析成时间戳后按本地时区格式化为 `MM-dd HH:mm`。
+- **模型管理里「未配置 Key」是错的（pi-web 明明配好了）**：
+  - **根因**：设置页只读 `models.json` 的 `providers.<p>.apiKey`，而 pi 的密钥其实存在 `~/.pi/agent/auth.json`，`models.json` 里通常**根本没有** `apiKey` 字段 —— 于是 pi-web 配好了、App 永远显示「未配置 Key」。
+  - **修复**：新增 `GET /api/auth/providers` 解析（`apiKeyProviders[].configured/source`），状态显示改为「Key 已配置 · 已保存 / 环境变量 / models.json」，并按真实状态着色；`models.json` 的 `apiKey` 仅作兜底。
+  - **实测**：本机网关返回 `{id: codywon, configured: true, source: "stored"}`，修复后不再误报未配置。
+- **在 App 里配 Key 会把 pi-web 打成 `Error: 401 "Invalid API key"`**：
+  - **根因**：`POST /api/auth/api-key/{provider}` 不做任何校验就把值写进 `auth.json`，此后 pi 的**每一个**请求都拿它当 Bearer Token —— 一次粘贴失误（粘了一半、粘错内容）就让 PC 上所有会话全部 401。本机 2026-10-27 16:35:28Z / 16:35:53Z / 16:37:15Z 三个会话的 401 就是这么来的。
+  - **修复**：写入前先用 `POST /api/models-config/test` **真发一轮请求实测该候选 Key**，通过才落盘；被 401 拒绝则直接报错且绝不写入。实测关键坑：测试时必须把 providerName 换成一个一次性名字（`<provider>-key-verify`），否则 pi 的 `getAuth` 会优先取**已保存**凭据、把候选 Key 遮蔽掉，导致「错 Key 也测通过」；用临时名字后错 Key 0.2s 内返回 `401 "Invalid API key"`，对 Key 返回 `ok:true`。
+  - **注意**：中转站的 Key 可能非常短、甚至与 Provider 同名（本机实际在用的就是一个 7 位自定义串），所以格式校验只拦「空值 / 含空格换行」，不做长度或形似规则，避免把合法 Key 拒之门外。
+  - **逃生口**：Provider 卡片新增「清除」按钮（`DELETE /api/auth/api-key/{provider}`），录错 Key 后不必再上 PC 手改 `auth.json`。内置 Provider（无 Base URL，无法联网实测）需再点一次「跳过实测并保存」明示确认。
+- **后台保活设置文案瘦身**：五项说明从两三行长句压成一行，如「常驻通知栏保活」→“通知栏常驻前台服务，进程不被后台回收”、“任务完成独立弹窗通知”→“完成时额外弹一张通知卡片”、“电池优化白名单”→“后台网络不受系统休眠限制”、“CPU 唤醒锁与断线自愈”→“任务期持有唤醒锁 + 断线自动重连”，分组说明也同步压缩。
+- **顶栏移除“添加项目目录”图标**：列表页顶栏不再放 `CreateNewFolder` 按钮，避免误触；添加入口仍保留在工作区抽屉（横幅 `[+]` 与底部“打开 / 添加其他项目...”）。
+
+---
+
 ## [1.7.2] - 2026-10-27
 
 ### ⚙️ 发布流水线现代化：Actions 全量升级 + 缓存 400 修复 (Release v1.7.2)
