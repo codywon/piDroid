@@ -1608,6 +1608,99 @@ class PiApiClient(private val prefs: AppPreferences) {
         sendAgentAction(sessionId, payload)
     }
 
+    /**
+     * 服务端全文搜索会话内容：GET /api/sessions/search?q=<≤200 字符>
+     *
+     * 返回 `{results:[{session, entryId, blockIndex, match, before, after}], truncated}`，
+     * 每条命中都带会话本身与命中片段，手机端不必自己再扫一遍 jsonl。
+     * 实测：q=Wren 返回 25 条 / 29.8 KB / 3.0s（服务端要扫全部会话，所以 UI 要做防抖）。
+     */
+    suspend fun searchSessions(query: String): Result<List<SessionSearchHit>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        val q = query.trim()
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (q.isEmpty()) return@withContext Result.success(emptyList())
+        if (q.length > 200) return@withContext Result.failure(IllegalArgumentException("搜索词过长（最多 200 字符）"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/search?q=${URLEncoder.encode(q, "UTF-8")}")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("搜索失败 (${resp.code})"))
+                }
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.success(emptyList())
+                val arr = root.get("results")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?: return@withContext Result.success(emptyList())
+                val out = mutableListOf<SessionSearchHit>()
+                for (el in arr) {
+                    if (!el.isJsonObject) continue
+                    val o = el.asJsonObject
+                    val sessionEl = o.get("session")?.takeIf { it.isJsonObject } ?: continue
+                    val session = runCatching { gson.fromJson(sessionEl, Session::class.java) }.getOrNull()
+                        ?: continue
+                    out.add(
+                        SessionSearchHit(
+                            session = session,
+                            entryId = o.get("entryId")?.takeIf { !it.isJsonNull }?.asString,
+                            match = o.get("match")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            before = o.get("before")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            after = o.get("after")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        )
+                    )
+                }
+                Result.success(out)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 读取斜杠命令列表：POST /api/agent/{id} {"type":"get_commands"}
+     * → {commands:[{name, description, source: extension|prompt|skill}]}
+     */
+    suspend fun getCommands(sessionId: String): Result<List<SlashCommand>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+        try {
+            val body = gson.toJson(mapOf("type" to "get_commands")).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取命令列表失败 (${resp.code})"))
+                }
+                val raw = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.success(emptyList())
+                val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+                val arr = data.get("commands")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?: return@withContext Result.success(emptyList())
+                val out = mutableListOf<SlashCommand>()
+                for (el in arr) {
+                    if (!el.isJsonObject) continue
+                    val o = el.asJsonObject
+                    val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                    if (name.isBlank()) continue
+                    out.add(
+                        SlashCommand(
+                            name = name,
+                            description = o.get("description")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                            source = o.get("source")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        )
+                    )
+                }
+                Result.success(out)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     /** 按 pi-web 的校验规则序列化图片：最多 10 张，data 必须是纯 base64、不带 data: 前缀。 */
     private fun imagesToJson(images: List<ChatImageInput>): JsonArray {
         val arr = JsonArray()

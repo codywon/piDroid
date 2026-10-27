@@ -172,6 +172,40 @@ data class SessionUiSnapshot(
     val projectOrder: List<String> = emptyList()
 )
 
+/**
+ * 服务端全文搜索的一条命中（GET /api/sessions/search?q=）。
+ *
+ * pi-web 的返回是**按命中条目**展开的：`{results:[{session, entryId, blockIndex, match, before, after}], truncated}`，
+ * 每条都带会话本身 + 命中片段前后各 80 字符，所以手机端能直接展示「命中了什么」。
+ */
+data class SessionSearchHit(
+    val session: Session,
+    val entryId: String? = null,
+    val match: String = "",
+    val before: String = "",
+    val after: String = ""
+) {
+    /** 拼成一行可读片段 */
+    val snippet: String
+        get() = ("…" + before + match + after + "…").replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+}
+
+/** pi 的斜杠命令（agent get_commands）：扩展命令 / prompt 模板 / 技能 */
+data class SlashCommand(
+    val name: String,
+    val description: String = "",
+    /** extension | prompt | skill */
+    val source: String = ""
+) {
+    val sourceLabel: String
+        get() = when (source) {
+            "extension" -> "扩展"
+            "prompt" -> "模板"
+            "skill" -> "技能"
+            else -> source
+        }
+}
+
 /** 待上传到 PC 工作目录的文件（用于 /api/files?type=upload 的 multipart 上传） */
 data class UploadFileInput(
     val name: String,

@@ -2,6 +2,21 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.10] - 2026-10-27
+
+### 🔎 服务端全文搜索 + 斜杠命令面板 + 未读标记 (Release v1.7.10)
+
+- **搜索只能搜标题（本地过滤），搜不到正文**：
+  - 新增 `GET /api/sessions/search?q=…`（≤200 字符）。返回按**命中条目**展开：`{results:[{session, entryId, blockIndex, match, before, after}], truncated}`，每条都带会话本身 + 命中前后各 80 字片段（实测 `q=Wren` → 25 条 / 29.8 KB / 3.0s，服务端要扫全部会话）。
+  - 列表页搜索框改为 **500ms 防抖 + 服务端检索**，顶部展示「正文命中 · N 条」卡片（会话名 + 片段，点一下进会话），本地标题/首句过滤继续保留兜底。
+- **打不出斜杠命令（prompt 模板 / 技能 / 扩展命令）**：
+  - 新增输入框左侧「/」按钮 → 底部面板列出来自 PC 的命令：`POST /api/agent/{id} {"type":"get_commands"}` → `{commands:[{name, description, source: extension|prompt|skill}]}`；点选即把 `/命令 ` 填进输入框。
+- **未读标记**：
+  - pi-web 的未读**只存在浏览器 localStorage**（键 `pi-web:unread-session-ids`），本质上不跨端；App 按同样语义做本设备未读：打开会话即已读，未读会话在列表状态位显示蓝色 NEW 图标。
+- 说明：上一批列出的 `autoCompaction/autoRetry` 开关、终端、git diff、subagents 仍未做，排在下一批。
+
+---
+
 ## [1.7.9] - 2026-10-27
 
 ### 🔁 P0+P1 同步补齐：会话改名、文件上传、项目置顶排序、批量归档 (Release v1.7.9)

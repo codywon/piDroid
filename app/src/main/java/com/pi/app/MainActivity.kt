@@ -286,6 +286,12 @@ class MainActivity : ComponentActivity() {
         // pi-web 的项目（工作区）置顶与排序（来自 ui-state，小写绝对路径）
         var serverPinnedWorkspaceKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
         var serverWorkspaceOrder by remember { mutableStateOf<List<String>>(emptyList()) }
+        // 服务端全文搜索（GET /api/sessions/search）：服务端要扫全部会话，故做 500ms 防抖
+        var searchHits by remember { mutableStateOf<List<SessionSearchHit>>(emptyList()) }
+        var isSearching by remember { mutableStateOf(false) }
+        var searchJob by remember { mutableStateOf<Job?>(null) }
+        // 未读标记：与 pi-web 一致，属于「本设备」状态（它存在浏览器 localStorage）
+        var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
@@ -406,6 +412,26 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
                     }
                 isLoadingOlder = false
+            }
+        }
+
+        /** 列表页搜索框输入变化：500ms 防抖后请求服务端全文搜索 */
+        fun searchSessionsDebounced(query: String) {
+            searchJob?.cancel()
+            if (query.isBlank()) {
+                searchHits = emptyList()
+                isSearching = false
+                return
+            }
+            searchJob = lifecycleScope.launch {
+                kotlinx.coroutines.delay(500)
+                isSearching = true
+                apiClient.searchSessions(query).onSuccess {
+                    searchHits = it
+                }.onFailure {
+                    searchHits = emptyList()
+                }
+                isSearching = false
             }
         }
 
@@ -1109,6 +1135,11 @@ class MainActivity : ComponentActivity() {
         fun openSessionWithHistory(session: Session) {
             completionSettleJob?.cancel()
             completionSettleJob = null
+            // 打开即已读（与 pi-web 侧栏一致：本地已读集合，不跨端）
+            if (unreadSessionIds.contains(session.id)) {
+                prefs.markSessionRead(session.id)
+                unreadSessionIds = prefs.getUnreadSessionIds()
+            }
             currentSession = session
             currentProject = session.workspaceName
             queuedMessages.clear()
@@ -1646,6 +1677,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    onLoadCommands = {
+                        val sid = currentSession?.id ?: ""
+                        if (sid.isBlank()) Result.success(emptyList()) else apiClient.getCommands(sid)
+                    },
                     onUploadFiles = { files ->
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
@@ -1850,6 +1885,10 @@ class MainActivity : ComponentActivity() {
                     },
                     serverPinnedWorkspaceKeys = serverPinnedWorkspaceKeys,
                     serverWorkspaceOrder = serverWorkspaceOrder,
+                    searchHits = searchHits,
+                    isSearching = isSearching,
+                    unreadSessionIds = unreadSessionIds,
+                    onSearchQueryChange = { q -> searchSessionsDebounced(q) },
                     onTogglePinWorkspace = { path, root ->
                         val key = path.replace('\\', '/').lowercase()
                         val willPin = !serverPinnedWorkspaceKeys.contains(key)

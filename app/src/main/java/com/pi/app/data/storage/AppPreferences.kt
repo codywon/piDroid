@@ -122,6 +122,25 @@ class AppPreferences(context: Context) {
         return willPin
     }
 
+    // 未读标记（与 pi-web 一致：存在设备本地，不跨端同步）
+    fun getUnreadSessionIds(): Set<String> {
+        return prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()
+    }
+
+    fun markSessionRead(sessionId: String) {
+        val current = getUnreadSessionIds().toMutableSet()
+        if (current.remove(sessionId)) {
+            prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, current).apply()
+        }
+    }
+
+    fun markSessionUnread(sessionId: String) {
+        val current = getUnreadSessionIds().toMutableSet()
+        if (current.add(sessionId)) {
+            prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, current).apply()
+        }
+    }
+
     // 会话归档管理 (对标 pi-web 侧边栏底部已归档体系)
     fun getArchivedSessionIds(): Set<String> {
         return prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()
@@ -337,6 +356,7 @@ class AppPreferences(context: Context) {
         private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"
         private const val KEY_PINNED_SESSIONS = "key_pinned_sessions"
         private const val KEY_ARCHIVED_SESSIONS = "key_archived_sessions"
+        private const val KEY_UNREAD_SESSIONS = "key_unread_sessions"
             private const val KEY_PINNED_WORKSPACES = "pinned_workspaces"
     private const val KEY_WORKSPACE_ORDER = "workspace_order"
     private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"

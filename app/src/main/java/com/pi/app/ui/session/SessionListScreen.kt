@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
 import com.pi.app.data.model.Session
+import com.pi.app.data.model.SessionSearchHit
 import com.pi.app.data.model.WorkspaceInfo
 import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
@@ -109,6 +110,13 @@ fun SessionListScreen(
     onToggleArchiveSession: (String) -> Unit = {},
     /** 批量归档（一次提交全部 id 到 pi-web 的 ui-state） */
     onBulkArchive: (List<String>) -> Unit = {},
+    /** 服务端全文搜索命中（GET /api/sessions/search） */
+    searchHits: List<SessionSearchHit> = emptyList(),
+    isSearching: Boolean = false,
+    /** 搜索词变化（交给上层做防抖 + 服务端搜索） */
+    onSearchQueryChange: (String) -> Unit = {},
+    /** 本设备未读会话 id */
+    unreadSessionIds: Set<String> = emptySet(),
     /** pi-web 里的项目（工作区）置顶 key 集合（小写绝对路径） */
     serverPinnedWorkspaceKeys: Set<String> = emptySet(),
     /** pi-web 里的项目排序（小写绝对路径） */
@@ -747,7 +755,10 @@ fun SessionListScreen(
                                     }
                                     BasicTextField(
                                         value = searchQuery,
-                                        onValueChange = { searchQuery = it },
+                                        onValueChange = {
+                                            searchQuery = it
+                                            onSearchQueryChange(it)
+                                        },
                                         singleLine = true,
                                         textStyle = TextStyle(
                                             color = theme.textPrimary,
@@ -762,7 +773,10 @@ fun SessionListScreen(
                                         contentDescription = "清除",
                                         modifier = Modifier
                                             .size(15.dp)
-                                            .clickable { searchQuery = "" },
+                                            .clickable {
+                                                searchQuery = ""
+                                                onSearchQueryChange("")
+                                            },
                                         tint = theme.textMuted
                                     )
                                 }
@@ -815,6 +829,69 @@ fun SessionListScreen(
                                 }
                             )
                         }
+                    }
+
+                    // 服务端全文搜索命中（GET /api/sessions/search）：搜的是**会话正文内容**，
+                    // 而不是标题，命中里带着前后各 80 字的片段，点一下直接进会话。
+                    if (searchQuery.isNotBlank() && (searchHits.isNotEmpty() || isSearching)) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.3f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isSearching) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(12.dp),
+                                            strokeWidth = 1.6.dp,
+                                            color = theme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                    }
+                                    Text(
+                                        text = if (isSearching) "正在检索全部会话正文…" else "正文命中 · ${searchHits.size} 条",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.primary
+                                    )
+                                }
+                                searchHits.take(8).forEach { hit ->
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { onSessionClick(hit.session) }
+                                            .padding(vertical = 4.dp),
+                                        verticalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Text(
+                                            text = hit.session.displayTitle,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                        Text(
+                                            text = hit.snippet,
+                                            fontSize = 10.5.sp,
+                                            color = theme.textMuted,
+                                            maxLines = 2,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                }
+                                if (searchHits.size > 8) {
+                                    Text(
+                                        text = "仅显示前 8 条（共 ${searchHits.size} 条命中）",
+                                        fontSize = 10.sp,
+                                        color = theme.textMuted
+                                    )
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(6.dp))
                     }
 
                     // 任务列表
@@ -925,6 +1002,7 @@ fun SessionListScreen(
                                         session = session,
                                         isPinned = true,
                                         isArchived = archivedSessionIds.contains(session.id),
+                                        isUnread = unreadSessionIds.contains(session.id),
                                         customTitle = customTitles[session.id],
                                         onTogglePin = { onTogglePinSession(session.id) },
                                         onRename = {
@@ -958,6 +1036,7 @@ fun SessionListScreen(
                                     session = session,
                                     isPinned = pinnedSessionIds.contains(session.id),
                                     isArchived = archivedSessionIds.contains(session.id),
+                                    isUnread = unreadSessionIds.contains(session.id),
                                     customTitle = customTitles[session.id],
                                     onTogglePin = { onTogglePinSession(session.id) },
                                     onRename = {
@@ -1918,6 +1997,7 @@ fun SessionCard(
     session: Session,
     isPinned: Boolean = false,
     isArchived: Boolean = false,
+    isUnread: Boolean = false,
     customTitle: String? = null,
     onTogglePin: () -> Unit = {},
     onRename: () -> Unit = {},
@@ -1999,10 +2079,14 @@ fun SessionCard(
                         }
                         else -> {
                             Icon(
-                                imageVector = Icons.Outlined.CheckCircle,
-                                contentDescription = "已完成",
+                                imageVector = if (isUnread) Icons.Default.FiberNew else Icons.Outlined.CheckCircle,
+                                contentDescription = if (isUnread) "未读" else "已完成",
                                 modifier = Modifier.size(15.dp),
-                                tint = if (theme.isDark) Color(0xFF3FB950).copy(alpha = 0.75f) else Color(0xFF16A34A).copy(alpha = 0.75f)
+                                tint = when {
+                                    isUnread -> Color(0xFF2563EB)
+                                    theme.isDark -> Color(0xFF3FB950).copy(alpha = 0.75f)
+                                    else -> Color(0xFF16A34A).copy(alpha = 0.75f)
+                                }
                             )
                         }
                     }

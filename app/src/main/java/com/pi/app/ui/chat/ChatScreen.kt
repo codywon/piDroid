@@ -120,6 +120,8 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    /** 读取斜杠命令列表（pi 的 agent get_commands：扩展命令 / prompt 模板 / 技能） */
+    onLoadCommands: suspend () -> Result<List<SlashCommand>> = { Result.success(emptyList()) },
     /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
     onUploadFiles: suspend (List<UploadFileInput>) -> Result<UploadFilesResult> = { Result.success(UploadFilesResult()) },
     onSendMessage: (String, List<ChatImageInput>) -> Unit,
@@ -154,6 +156,10 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
+    // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）
+    var showCommandSheet by remember { mutableStateOf(false) }
+    var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
+    var isLoadingCommands by remember { mutableStateOf(false) }
 
     // 图片与文件附件选择器
     val attachments = remember { mutableStateListOf<ChatAttachment>() }
@@ -812,6 +818,34 @@ fun ChatScreen(
                                 .heightIn(min = 38.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // 左侧：圆形「/」命令按钮（扩展命令 / prompt 模板 / 技能）
+                            Surface(
+                                shape = CircleShape,
+                                color = theme.surfaceContainer,
+                                modifier = Modifier
+                                    .size(34.dp)
+                                    .clickable {
+                                        showCommandSheet = true
+                                        if (commands.isEmpty() && !isLoadingCommands) {
+                                            isLoadingCommands = true
+                                            coroutineScope.launch {
+                                                onLoadCommands().onSuccess { commands = it }
+                                                isLoadingCommands = false
+                                            }
+                                        }
+                                    }
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Code,
+                                        contentDescription = "斜杠命令",
+                                        modifier = Modifier.size(17.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+
                             // 左侧：圆形附件按钮
                             Surface(
                                 shape = CircleShape,
@@ -1321,6 +1355,90 @@ fun ChatScreen(
             },
             onDismissRequest = { showToolPresetSheet = false }
         )
+    }
+
+    if (showCommandSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showCommandSheet = false },
+            containerColor = theme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "斜杠命令 · ${commands.size}",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary
+                )
+                Text(
+                    text = "来自 PC 的扩展命令 / prompt 模板 / 技能（agent get_commands）",
+                    fontSize = 10.5.sp,
+                    color = theme.textMuted
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                if (isLoadingCommands) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.8.dp,
+                            color = theme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在读取命令列表…", fontSize = 11.5.sp, color = theme.textMuted)
+                    }
+                } else if (commands.isEmpty()) {
+                    Text("PC 上暂无可用命令", fontSize = 11.5.sp, color = theme.textMuted)
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
+                        items(commands, key = { it.source + ":" + it.name }) { cmd ->
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        // 选中即填入输入框，光标停在命令后面的空格处
+                                        inputText = "/${cmd.name} "
+                                        showCommandSheet = false
+                                    }
+                                    .padding(vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = "/${cmd.name}",
+                                        fontSize = 12.5.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.primary
+                                    )
+                                    if (cmd.sourceLabel.isNotBlank()) {
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = cmd.sourceLabel,
+                                            fontSize = 9.5.sp,
+                                            color = theme.textMuted
+                                        )
+                                    }
+                                }
+                                if (cmd.description.isNotBlank()) {
+                                    Text(
+                                        text = cmd.description,
+                                        fontSize = 10.5.sp,
+                                        color = theme.textMuted,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showHudDialog) {
