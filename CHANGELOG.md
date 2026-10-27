@@ -2,6 +2,25 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.2] - 2026-10-27
+
+### ⚙️ 发布流水线现代化：Actions 全量升级 + 缓存 400 修复 (Release v1.7.2)
+
+本次改动仅涉及 CI，App 功能与 v1.7.1 一致（仅版本号递增，用作流水线的端到端验证发布）。
+
+- **Actions 全量升级到当前主版本（清掉 Node 20 弃用注解）**：
+  - `actions/checkout@v4` → **v7**、`actions/setup-java@v4` → **v6**、`actions/upload-artifact@v4` → **v7**
+  - `gradle/actions/setup-gradle@v3` → **v6**、`softprops/action-gh-release@v2` → **v3**
+- **修复每次都出现的 `Failed to restore gradle-home-v1|…: Cache service responded with 400`**：
+  - **根因**：`setup-gradle` 自 v4 起默认 `cache-provider: enhanced`，指向 `gradle-actions-caching` 商业预览服务；本仓库命中该服务时恢复阶段被返回 400（发布仍是绿的，但每次都挂一条红色注解）。
+  - **修复**：显式 `cache-provider: basic`，走标准 `actions/cache` 后端（公共/私有仓库均免费），并显式 `cache-read-only: false`——tag 构建默认被当作「非默认分支」而只读不写，否则每次发版都要重新下载全部依赖；再加 `cache-cleanup: on-success` 保持缓存体积。
+- **发布健壮性**：
+  - 新增 `concurrency: release-${{ github.ref }}`，同一 tag 的重复触发串行执行，不再抢同一个 asset 名；
+  - `upload-artifact` 加 `overwrite: true`、`action-gh-release` 加 `overwrite_files: true`，重跑同一个版本号不会因 `already_exists` 直接失败；
+  - 新增 `timeout-minutes: 45` 防止 runner 卡死挂住发布队列。
+
+---
+
 ## [1.7.1] - 2026-10-27
 
 ### 🔧 正文 Markdown 表格/行内代码真实修复，模型管理细节打磨 (Release v1.7.1)

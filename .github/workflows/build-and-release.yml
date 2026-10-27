@@ -14,25 +14,41 @@ on:
 permissions:
   contents: write
 
+# 同一 tag 的重复触发串行执行，避免两次 release 抢同一个 asset 名
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     name: Build Signed APK
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Setup Gradle Cache
-        uses: gradle/actions/setup-gradle@v3
+      # cache-provider 必须显式设为 basic：
+      # 默认的 enhanced 是 gradle-actions-caching 商业预览服务，本项目上恢复缓存时
+      # 返回 "Cache service responded with 400"（每次发的都是红色注解）。
+      # basic 走标准 actions/cache 后端，公共/私有仓库均免费且稳定。
+      - name: Setup Gradle (basic cache)
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          # tag 构建默认会被判定为「非默认分支」而只读不写，这里显式允许写回，
+          # 否则每次发版都要重新下载全部依赖。
+          cache-read-only: false
+          cache-cleanup: on-success
 
       - name: Grant Execute Permission to gradlew
         run: chmod +x gradlew
@@ -67,14 +83,14 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VERSION="${{ github.event.inputs.version_tag }}"
           fi
-          
+
           APK_PATH=$(find ./app/build -name "*.apk" | grep -i "release" | head -n 1)
           if [ -z "$APK_PATH" ]; then
             echo "Error: No release APK found!"
             exit 1
           fi
           TARGET_NAME="piDroid-${VERSION}.apk"
-          
+
           cp "$APK_PATH" "$TARGET_NAME"
           echo "apk_path=$TARGET_NAME" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -84,10 +100,12 @@ jobs:
           echo "checksums=checksums.txt" >> $GITHUB_OUTPUT
 
       - name: Upload Artifact to GitHub Actions Run
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.prepare_apk.outputs.version }}
           path: ${{ steps.prepare_apk.outputs.apk_path }}
+          # 重跑同一个版本号时覆盖，而不是让 workflow 因同名 artifact 直接失败
+          overwrite: true
 
       - name: Extract Release Notes from CHANGELOG
         id: release_notes
@@ -95,7 +113,7 @@ jobs:
           VERSION="${{ steps.prepare_apk.outputs.version }}"
           CLEAN_VERSION="${VERSION#v}"
           NOTES_FILE="release_body.md"
-          
+
           if [ -f "CHANGELOG.md" ]; then
             awk -v ver="$CLEAN_VERSION" '
               BEGIN { in_ver = 0 }
@@ -104,16 +122,16 @@ jobs:
               in_ver { print }
             ' CHANGELOG.md > "$NOTES_FILE"
           fi
-          
+
           if [ ! -s "$NOTES_FILE" ]; then
             echo "### 🚀 piDroid 官方正式发布版本 ${VERSION}" > "$NOTES_FILE"
             echo "- 修复已知问题并提升稳定性" >> "$NOTES_FILE"
           fi
-          
+
           echo "notes_file=$NOTES_FILE" >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           tag_name: ${{ steps.prepare_apk.outputs.version }}
@@ -121,6 +139,8 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          # 重跑发布时覆盖 assets，避免 "already_exists" 失败
+          overwrite_files: true
           files: |
             ${{ steps.prepare_apk.outputs.apk_path }}
             ${{ steps.prepare_apk.outputs.checksums }}
