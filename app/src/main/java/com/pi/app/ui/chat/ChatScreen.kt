@@ -120,6 +120,8 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
+    onUploadFiles: suspend (List<UploadFileInput>) -> Result<UploadFilesResult> = { Result.success(UploadFilesResult()) },
     onSendMessage: (String, List<ChatImageInput>) -> Unit,
     onSendSteer: (String, List<ChatImageInput>) -> Unit,
     onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
@@ -191,19 +193,49 @@ fun ChatScreen(
             return
         }
         coroutineScope.launch {
+            // 图片：读成 base64 走 prompt 的 images 字段
             val (images, skipped) = withContext(Dispatchers.IO) { encodePickedImages(context, picked) }
             if (skipped > 0) {
                 android.widget.Toast.makeText(context, "$skipped 张图片超过 10MB 或读取失败，已跳过", android.widget.Toast.LENGTH_SHORT).show()
             }
-            val imagesCount = images.size
-            val fileNames = picked.filter { !it.isImage }.joinToString("\n") { "[文件附件: ${it.name}]" }
-            val text = when {
-                fileNames.isBlank() -> rawText
-                rawText.isBlank() -> fileNames
-                else -> "$rawText\n\n$fileNames"
+
+            // 非图片文件：真上传到 PC 的工作目录（multipart），再把文件名写进正文，
+            // 让 agent 能在 cwd 里直接看到它们
+            var uploadedNote = ""
+            val fileAtts = picked.filter { !it.isImage }
+            if (fileAtts.isNotEmpty()) {
+                val payloads = withContext(Dispatchers.IO) { readPickedFiles(context, fileAtts) }
+                val skippedFiles = fileAtts.size - payloads.size
+                if (skippedFiles > 0) {
+                    android.widget.Toast.makeText(context, "$skippedFiles 个文件读取失败，已跳过", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                if (payloads.isNotEmpty()) {
+                    val res = onUploadFiles(payloads)
+                    res.onSuccess { r ->
+                        val names = r.uploaded
+                        if (names.isNotEmpty()) {
+                            uploadedNote = names.joinToString("\n") { "已上传文件到工作目录: $it" }
+                        }
+                        if (r.errors.isNotEmpty()) {
+                            android.widget.Toast.makeText(
+                                context,
+                                "部分文件上传失败: ${r.errors.joinToString("; ").take(120)}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }.onFailure { err ->
+                        android.widget.Toast.makeText(
+                            context,
+                            "文件上传失败: ${err.message}",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
             }
+
+            val text = listOf(rawText, uploadedNote).filter { it.isNotBlank() }.joinToString("\n\n")
             // 纯图片消息也必须给 pi 一句可见文本，避免空 message 被拒
-            val finalText = if (text.isBlank() && imagesCount > 0) "（图片）" else text
+            val finalText = if (text.isBlank() && images.isNotEmpty()) "（图片）" else text
             dispatchSend(finalText, images, kind)
         }
     }
@@ -2166,3 +2198,24 @@ private fun encodePickedImages(
 
 /** 单张图片上限：pi 服务端校验为解码后 ≤10MB */
 private const val MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024
+
+/** 读取待上传文件的原始字节；超过 25MB（pi 服务端单文件上限）或读取失败的一律跳过 */
+private fun readPickedFiles(
+    context: android.content.Context,
+    picked: List<ChatAttachment>
+): List<UploadFileInput> {
+    val out = mutableListOf<UploadFileInput>()
+    for (att in picked) {
+        try {
+            val bytes = context.contentResolver.openInputStream(att.uri)?.use { it.readBytes() } ?: continue
+            if (bytes.isEmpty() || bytes.size > MAX_UPLOAD_FILE_BYTES) continue
+            out.add(UploadFileInput(name = att.name.ifBlank { "attachment" }, bytes = bytes))
+        } catch (e: Exception) {
+            // 单个文件失败不影响其它文件
+        }
+    }
+    return out
+}
+
+/** 单文件上限：pi 服务端限制 25MB */
+private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024

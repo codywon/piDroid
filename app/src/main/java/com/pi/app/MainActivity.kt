@@ -283,6 +283,9 @@ class MainActivity : ComponentActivity() {
         var isLoadingOlder by remember { mutableStateOf(false) }
         // 本地刚改过队列的时间戳：PC 端状态可能还没反映出来，避免 1.5s 后一轮对账就把刚排的消息清掉
         var lastQueueMutationAt by remember { mutableStateOf(0L) }
+        // pi-web 的项目（工作区）置顶与排序（来自 ui-state，小写绝对路径）
+        var serverPinnedWorkspaceKeys by remember { mutableStateOf<Set<String>>(emptySet()) }
+        var serverWorkspaceOrder by remember { mutableStateOf<List<String>>(emptyList()) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
@@ -349,13 +352,16 @@ class MainActivity : ComponentActivity() {
                     pinnedSessionIds = prefs.getPinnedSessionIds()
                     // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
                     // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
-                    apiClient.getSessionUiState().onSuccess { states ->
-                        val pinned = states.filterValues { it.pinned }.keys
-                        val archived = states.filterValues { it.archived }.keys
+                    apiClient.getSessionUiState().onSuccess { ui ->
+                        val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
+                        val archived = ui.sessionFlags.filterValues { it.archived }.keys
                         pinnedSessionIds = pinned
                         archivedSessionIds = archived
                         prefs.setPinnedSessionIds(pinned)
                         prefs.setArchivedSessionIds(archived)
+                        // 项目（工作区）置顶与排序同样以 PC 为准
+                        serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
+                        serverWorkspaceOrder = ui.projectOrder
                     }
                     customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                     isGatewayOnline = true
@@ -1640,6 +1646,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    onUploadFiles = { files ->
+                        // 上传目标必须是真实的会话工作目录（不是工作区显示名）
+                        apiClient.uploadFiles(currentSession?.cwd ?: "", files)
+                    },
                     onSendMessage = { prompt, images ->
                         val sid = currentSession!!.id
                         if (messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
@@ -1824,6 +1834,43 @@ class MainActivity : ComponentActivity() {
                             Toast.LENGTH_SHORT
                         ).show()
                     },
+                    onBulkArchive = { sids ->
+                        if (sids.isNotEmpty()) {
+                            lifecycleScope.launch {
+                                apiClient.setSessionsArchived(sids, true).onSuccess {
+                                    sids.forEach { prefs.toggleArchiveSession(it) }
+                                    archivedSessionIds = prefs.getArchivedSessionIds()
+                                    loadSessions(silent = true)
+                                    Toast.makeText(this@MainActivity, "已归档 ${sids.size} 个会话", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "归档失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    serverPinnedWorkspaceKeys = serverPinnedWorkspaceKeys,
+                    serverWorkspaceOrder = serverWorkspaceOrder,
+                    onTogglePinWorkspace = { path, root ->
+                        val key = path.replace('\\', '/').lowercase()
+                        val willPin = !serverPinnedWorkspaceKeys.contains(key)
+                        lifecycleScope.launch {
+                            apiClient.setProjectPinned(key, root, willPin).onSuccess {
+                                serverPinnedWorkspaceKeys =
+                                    if (willPin) serverPinnedWorkspaceKeys + key else serverPinnedWorkspaceKeys - key
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "项目置顶同步失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    onMoveWorkspace = { path, anchorPath ->
+                        val key = path.replace('\\', '/').lowercase()
+                        val anchorKey = anchorPath.replace('\\', '/').lowercase()
+                        lifecycleScope.launch {
+                            apiClient.moveProject(key, anchorKey).onFailure { err ->
+                                Toast.makeText(this@MainActivity, "项目排序同步失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
                     onToggleArchiveSession = { sid ->
                         val willArchive = !archivedSessionIds.contains(sid)
                         val archived = prefs.toggleArchiveSession(sid)
@@ -1843,6 +1890,18 @@ class MainActivity : ComponentActivity() {
                     },
                     onRenameSession = { sid, newTitle ->
                         prefs.saveSessionCustomTitle(sid, newTitle)
+                        // 同步写进会话文件（pi 的 set_session_name），否则 PC 端看不到
+                        lifecycleScope.launch {
+                            apiClient.setSessionName(sid, newTitle).onSuccess {
+                                loadSessions(silent = true)
+                            }.onFailure { err ->
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "改名已存本地，同步到 PC 失败: ${err.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                         customTitles = customTitles + (sid to newTitle)
                         Toast.makeText(this@MainActivity, "已重命名会话", Toast.LENGTH_SHORT).show()
                     },

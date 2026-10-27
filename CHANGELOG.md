@@ -2,6 +2,25 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.9] - 2026-10-27
+
+### 🔁 P0+P1 同步补齐：会话改名、文件上传、项目置顶排序、批量归档 (Release v1.7.9)
+
+- **会话改名只写本地，PC 端看不到（P0）**：
+  - pi 的会话名存在 `jsonl` header 里，`GET /api/sessions` 的 `name` 字段就是它；App 之前只写 `SharedPreferences.customTitles`；
+  - 新增 `setSessionName()` → `POST /api/agent/{id} {"type":"set_session_name","name":...}`（pi 命令表里确认的 type），手动改名与大模型生成标题后都会写回，并重新拉一次列表让服务端名字生效。
+- **非图片文件根本没上传（P0）**：
+  - 之前只把文件名拼成 `[文件附件: xxx]` 文本；
+  - 现在走 pi 的上传接口：`POST /api/files/<工作目录>?type=upload&conflict=overwrite`，`multipart/form-data`、字段名固定 `files`、单文件 ≤25MB / 合计 ≤100MB（实测本机返回 `{"uploaded":["uptest.txt"]}`）；
+  - 上传成功后把「已上传文件到工作目录: xxx」写进正文，agent 在 cwd 里直接可见；超过 25MB 或读取失败的文件自动跳过并提示。
+- **项目（工作区）置顶与排序没同步（P1）**：
+  - 与会话置顶同属 `ui-state`：`projects{pinnedAt}` + `projectOrder`；写入用 `pin-project`（`{action,projectKey,root,pinned}`，实测缺 root 会 400）与 `move-project`（`{projectKey,anchorKey}`）；
+  - 抽屉里的项目排序/置顶现在以 PC 为真源（取不到时回退本地偏好），上移/下移会同时提交 `move-project`。
+- **「归档 7 天前」批量操作只写本地（P1）**：
+  - 新增 `setSessionsArchived(ids, archived)`，一次请求提交全部 id（`{"action":"set","ids":[...],"archived":true}`），本地标记由回调同步。
+
+---
+
 ## [1.7.8] - 2026-10-27
 
 ### 🔌 补齐四处与 pi-web 的同步：运行态/排队、置顶归档、图片上传、权限切换 (Release v1.7.8)

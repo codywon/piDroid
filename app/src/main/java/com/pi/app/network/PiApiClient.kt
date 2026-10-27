@@ -11,6 +11,7 @@ import com.pi.app.data.storage.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -1712,12 +1713,13 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 读取 pi-web 的会话 UI 状态（置顶 / 归档）：GET /api/sessions/ui-state
+     * 读取 pi-web 的会话 UI 状态：GET /api/sessions/ui-state
      *
-     * pi-web 把置顶与归档存在自己的状态文件里（带 revision），App 之前只在本地
-     * SharedPreferences 里自建一份，两边永远不同步 —— 这就是「手机上置顶了、PC 上没置顶」。
+     * 一份状态里同时有：会话的置顶/归档（sessions）、项目的置顶（projects）、项目排序（projectOrder）。
+     * pi-web 把它存在自己的状态文件里并带 revision，App 之前只在本地 SharedPreferences 自建一份，
+     * 所以「手机上置顶了、PC 上没置顶」。
      */
-    suspend fun getSessionUiState(): Result<Map<String, SessionUiFlags>> = withContext(Dispatchers.IO) {
+    suspend fun getSessionUiState(): Result<SessionUiSnapshot> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
@@ -1727,24 +1729,40 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.failure(IOException("读取置顶/归档状态失败 (${response.code})"))
                 }
                 val raw = response.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
-                    ?: return@withContext Result.failure(IOException("ui-state 响应无法解析"))
-                val state = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
-                val sessions = state.get("sessions")?.takeIf { it.isJsonObject }?.asJsonObject
-                val out = mutableMapOf<String, SessionUiFlags>()
-                sessions?.entrySet()?.forEach { (id, el) ->
-                    if (!el.isJsonObject) return@forEach
-                    val o = el.asJsonObject
-                    out[id] = SessionUiFlags(
-                        pinned = o.get("pinnedAt")?.takeIf { !it.isJsonNull } != null,
-                        archived = o.get("archivedAt")?.takeIf { !it.isJsonNull } != null
-                    )
-                }
-                Result.success(out)
+                Result.success(parseUiState(raw))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    private fun parseUiState(raw: String): SessionUiSnapshot {
+        val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: JsonObject()
+        val state = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+        val flags = mutableMapOf<String, SessionUiFlags>()
+        state.get("sessions")?.takeIf { it.isJsonObject }?.asJsonObject?.entrySet()?.forEach { (id, el) ->
+            if (el.isJsonObject) {
+                val o = el.asJsonObject
+                flags[id] = SessionUiFlags(
+                    pinned = o.get("pinnedAt")?.takeIf { !it.isJsonNull } != null,
+                    archived = o.get("archivedAt")?.takeIf { !it.isJsonNull } != null
+                )
+            }
+        }
+        val pinnedProjects = mutableSetOf<String>()
+        state.get("projects")?.takeIf { it.isJsonObject }?.asJsonObject?.entrySet()?.forEach { (key, el) ->
+            if (el.isJsonObject && el.asJsonObject.get("pinnedAt")?.takeIf { !it.isJsonNull } != null) {
+                pinnedProjects.add(key.lowercase())
+            }
+        }
+        val order = state.get("projectOrder")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?.mapNotNull { runCatching { it.asString }.getOrNull() } ?: emptyList()
+        return SessionUiSnapshot(
+            revision = state.get("revision")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+            sessionFlags = flags,
+            pinnedProjectKeys = pinnedProjects,
+            projectOrder = order
+        )
     }
 
     /**
@@ -1752,24 +1770,152 @@ class PiApiClient(private val prefs: AppPreferences) {
      * POST /api/sessions/ui-state {"action":"set","ids":[...],"pinned":true|false}
      */
     suspend fun setSessionPinned(sessionId: String, pinned: Boolean): Result<Boolean> =
-        setSessionUiFlag(sessionId, "pinned", pinned)
+        setSessionUiFlag(listOf(sessionId), "pinned", pinned)
 
     /**
      * 归档 / 取消归档
      * POST /api/sessions/ui-state {"action":"set","ids":[...],"archived":true|false}
      */
     suspend fun setSessionArchived(sessionId: String, archived: Boolean): Result<Boolean> =
-        setSessionUiFlag(sessionId, "archived", archived)
+        setSessionUiFlag(listOf(sessionId), "archived", archived)
 
-    private suspend fun setSessionUiFlag(sessionId: String, key: String, value: Boolean): Result<Boolean> =
+    /** 批量归档 / 取消归档（例如「归档 7 天前的会话」一次提交全部 id） */
+    suspend fun setSessionsArchived(sessionIds: List<String>, archived: Boolean): Result<Boolean> =
+        setSessionUiFlag(sessionIds, "archived", archived)
+
+    /**
+     * 项目（工作区）置顶 / 取消置顶：{"action":"pin-project","projectKey":..,"root":..,"pinned":bool}
+     * （实测：缺 root 会 400 "root must be a non-empty string"）
+     */
+    suspend fun setProjectPinned(projectKey: String, root: String, pinned: Boolean): Result<Boolean> =
+        postUiState(
+            JsonObject().apply {
+                addProperty("action", "pin-project")
+                addProperty("projectKey", projectKey)
+                addProperty("root", root)
+                addProperty("pinned", pinned)
+            }
+        )
+
+    /** 项目排序：把 projectKey 移到 anchorKey 之前/之后（pi 侧 move-project） */
+    suspend fun moveProject(projectKey: String, anchorKey: String): Result<Boolean> =
+        postUiState(
+            JsonObject().apply {
+                addProperty("action", "move-project")
+                addProperty("projectKey", projectKey)
+                addProperty("anchorKey", anchorKey)
+            }
+        )
+
+    private suspend fun postUiState(payload: JsonObject): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/ui-state")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    val detail = resp.body?.string()?.take(200) ?: ""
+                    Result.failure(
+                        IOException("同步到 PC 失败 (${resp.code})" + if (detail.isNotBlank()) "：$detail" else "")
+                    )
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 重命名会话：POST /api/agent/{id} {"type":"set_session_name","name":"..."}
+     *
+     * pi 把它写进会话 jsonl 的 header，`GET /api/sessions` 的 `name` 字段随即变化 ——
+     * App 之前只写本地 SharedPreferences，所以在 PC 上看不到手机改的名字。
+     */
+    suspend fun setSessionName(sessionId: String, name: String): Result<Boolean> {
+        val clean = name.trim()
+        if (clean.isEmpty()) return Result.failure(IllegalArgumentException("会话名称不能为空"))
+        return sendAgentAction(
+            sessionId,
+            mapOf("type" to "set_session_name", "name" to clean)
+        )
+    }
+
+    /**
+     * 把文件上传到 PC 上的工作目录：
+     * POST /api/files/<目录路径>?type=upload&conflict=overwrite
+     * multipart/form-data，字段名固定为 `files`（可重复）。
+     * 服务端限制：单文件 ≤25MB，合计 ≤100MB；返回 {uploaded, skipped, errors}（有失败时 207）。
+     */
+    suspend fun uploadFiles(
+        directoryPath: String,
+        files: List<UploadFileInput>,
+        conflict: String = "overwrite"
+    ): Result<UploadFilesResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (directoryPath.isBlank()) return@withContext Result.failure(Exception("会话缺少工作目录，无法上传"))
+        if (files.isEmpty()) return@withContext Result.success(UploadFilesResult())
+        try {
+            val dirSegment = URLEncoder.encode(directoryPath.trim().replace('\\', '/'), "UTF-8")
+            val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
+            files.forEach { f ->
+                builder.addFormDataPart(
+                    "files",
+                    f.name,
+                    f.bytes.toRequestBody("application/octet-stream".toMediaType())
+                )
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/files/$dirSegment?type=upload&conflict=$conflict")
+                .post(builder.build())
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                if (json == null) {
+                    return@withContext Result.failure(IOException("上传响应无法解析 (${resp.code})"))
+                }
+                if (!resp.isSuccessful && resp.code != 207) {
+                    val err = json.get("error")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException("上传失败：$err"))
+                }
+                fun strList(key: String) = json.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { runCatching { it.asString }.getOrNull() } ?: emptyList()
+                val errors = json.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { el ->
+                        runCatching {
+                            val o = el.asJsonObject
+                            (o.get("name")?.asString ?: "?") + ": " + (o.get("error")?.asString ?: "")
+                        }.getOrNull()
+                    } ?: emptyList()
+                Result.success(
+                    UploadFilesResult(
+                        uploaded = strList("uploaded"),
+                        skipped = strList("skipped"),
+                        errors = errors
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun setSessionUiFlag(sessionIds: List<String>, key: String, value: Boolean): Result<Boolean> =
         withContext(Dispatchers.IO) {
             val baseUrl = prefs.serverUrl
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
-            if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+            val ids = sessionIds.filter { it.isNotBlank() }
+            if (ids.isEmpty()) return@withContext Result.failure(Exception("会话ID不能为空"))
             try {
                 val payload = JsonObject().apply {
                     addProperty("action", "set")
-                    add("ids", JsonArray().apply { add(sessionId) })
+                    add("ids", JsonArray().apply { ids.forEach { add(it) } })
                     addProperty(key, value)
                 }
                 val req = Request.Builder()

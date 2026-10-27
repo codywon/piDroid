@@ -160,6 +160,37 @@ data class SessionUiFlags(
 )
 
 /**
+ * pi-web 的会话 UI 状态快照（GET /api/sessions/ui-state）：
+ * 会话置顶/归档 + 项目（工作区）置顶与排序，全部与 PC 端共用同一份状态。
+ */
+data class SessionUiSnapshot(
+    val revision: Int = 0,
+    val sessionFlags: Map<String, SessionUiFlags> = emptyMap(),
+    /** 已置顶的项目 key（pi-web 的 projectKey，通常是工作区绝对路径小写） */
+    val pinnedProjectKeys: Set<String> = emptySet(),
+    /** 项目排序（同样是小写绝对路径） */
+    val projectOrder: List<String> = emptyList()
+)
+
+/** 待上传到 PC 工作目录的文件（用于 /api/files?type=upload 的 multipart 上传） */
+data class UploadFileInput(
+    val name: String,
+    val bytes: ByteArray
+) {
+    override fun equals(other: Any?): Boolean =
+        other is UploadFileInput && other.name == name && other.bytes.contentEquals(bytes)
+
+    override fun hashCode(): Int = name.hashCode() * 31 + bytes.contentHashCode()
+}
+
+/** 上传结果：成功/因重名跳过/失败明细 */
+data class UploadFilesResult(
+    val uploaded: List<String> = emptyList(),
+    val skipped: List<String> = emptyList(),
+    val errors: List<String> = emptyList()
+)
+
+/**
  * 详细 Token 与上下文用量、缓存率监控
  */
 data class TokenStats(

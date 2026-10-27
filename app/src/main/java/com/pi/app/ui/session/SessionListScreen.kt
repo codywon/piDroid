@@ -107,6 +107,16 @@ fun SessionListScreen(
     customTitles: Map<String, String> = emptyMap(),
     onTogglePinSession: (String) -> Unit = {},
     onToggleArchiveSession: (String) -> Unit = {},
+    /** 批量归档（一次提交全部 id 到 pi-web 的 ui-state） */
+    onBulkArchive: (List<String>) -> Unit = {},
+    /** pi-web 里的项目（工作区）置顶 key 集合（小写绝对路径） */
+    serverPinnedWorkspaceKeys: Set<String> = emptySet(),
+    /** pi-web 里的项目排序（小写绝对路径） */
+    serverWorkspaceOrder: List<String> = emptyList(),
+    /** 项目置顶切换：(工作区路径, 展示用根路径) */
+    onTogglePinWorkspace: (path: String, root: String) -> Unit = { _, _ -> },
+    /** 项目排序：(被移动的项目路径, 锚点项目路径) */
+    onMoveWorkspace: (path: String, anchorPath: String) -> Unit = { _, _ -> },
     onRenameSession: (sessionId: String, newTitle: String) -> Unit = { _, _ -> },
     onForkSession: (Session) -> Unit = {},
     onDeleteSession: (String) -> Unit = {},
@@ -282,11 +292,23 @@ fun SessionListScreen(
                         sessions.count { pinnedSessionIds.contains(it.id) }
                     }
 
-                    val sortedWorkspaces = remember(workspaces, pinnedWorkspaces, wsOrder) {
+                    // 置顶与排序以 pi-web 的 ui-state 为准；取不到时才回退到本地偏好
+                    fun wsKey(path: String) = path.replace('\\', '/').trimEnd('/').lowercase()
+                    val pinnedKeys = remember(serverPinnedWorkspaceKeys, pinnedWorkspaces, workspaces) {
+                        if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
+                            serverPinnedWorkspaceKeys
+                        } else {
+                            pinnedWorkspaces.map { wsKey(it) }.toSet()
+                        }
+                    }
+                    val orderList = remember(serverWorkspaceOrder, wsOrder, workspaces) {
+                        if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { wsKey(it) }
+                    }
+                    val sortedWorkspaces = remember(workspaces, pinnedKeys, orderList) {
                         workspaces.sortedWith(
-                            compareByDescending<WorkspaceInfo> { pinnedWorkspaces.contains(it.path) }
+                            compareByDescending<WorkspaceInfo> { pinnedKeys.contains(wsKey(it.path)) }
                                 .thenBy { ws ->
-                                    val idx = wsOrder.indexOf(ws.path)
+                                    val idx = orderList.indexOf(wsKey(ws.path))
                                     if (idx != -1) idx else Int.MAX_VALUE
                                 }
                         )
@@ -371,7 +393,7 @@ fun SessionListScreen(
 
                         items(sortedWorkspaces, key = { it.path }) { ws ->
                             val isSelected = ws.path == selectedWorkspacePath
-                            val isPinned = pinnedWorkspaces.contains(ws.path)
+                            val isPinned = pinnedKeys.contains(wsKey(ws.path))
                             val customName = prefs.getWorkspaceCustomName(ws.path)
                             val displayName = customName ?: ws.displayName
 
@@ -1040,7 +1062,11 @@ fun SessionListScreen(
     val menuWsTarget = selectedMenuWorkspace
     if (menuWsTarget != null) {
         val targetWs = menuWsTarget
-        val isPinned = pinnedWorkspaces.contains(targetWs.path)
+        val isPinned = if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
+            serverPinnedWorkspaceKeys.contains(targetWs.path.replace('\\', '/').trimEnd('/').lowercase())
+        } else {
+            pinnedWorkspaces.contains(targetWs.path)
+        }
         val customName = prefs.getWorkspaceCustomName(targetWs.path)
         val wsDisplayName = customName ?: targetWs.displayName
 
@@ -1108,8 +1134,11 @@ fun SessionListScreen(
                     title = if (isPinned) "取消置顶项目" else "置顶项目",
                     subtitle = if (isPinned) "从大盘顶部移除常驻优先排列" else "固定在工作区项目列表最顶端",
                     onClick = {
-                        val willPin = prefs.togglePinWorkspace(targetWs.path)
+                        // 项目置顶的真源在 pi-web 的 ui-state（pin-project），本地只做乐观镜像
+                        val willPin = !isPinned
+                        prefs.togglePinWorkspace(targetWs.path)
                         pinnedWorkspaces = prefs.getPinnedWorkspaces()
+                        onTogglePinWorkspace(targetWs.path, targetWs.path)
                         selectedMenuWorkspace = null
                         Toast.makeText(context, if (willPin) "已置顶该项目" else "已取消置顶", Toast.LENGTH_SHORT).show()
                     }
@@ -1160,6 +1189,8 @@ fun SessionListScreen(
                                 java.util.Collections.swap(currentList, idx, idx - 1)
                                 prefs.saveWorkspaceOrder(currentList)
                                 wsOrder = currentList
+                                // 同步到 pi-web 的 projectOrder（anchor = 换到它前面的那个项目）
+                                onMoveWorkspace(targetWs.path, currentList[idx - 1])
                                 Toast.makeText(context, "已上移项目", Toast.LENGTH_SHORT).show()
                             }
                             selectedMenuWorkspace = null
@@ -1187,6 +1218,7 @@ fun SessionListScreen(
                                 java.util.Collections.swap(currentList, idx, idx + 1)
                                 prefs.saveWorkspaceOrder(currentList)
                                 wsOrder = currentList
+                                onMoveWorkspace(targetWs.path, currentList[idx + 1])
                                 Toast.makeText(context, "已下移项目", Toast.LENGTH_SHORT).show()
                             }
                             selectedMenuWorkspace = null
@@ -1231,9 +1263,9 @@ fun SessionListScreen(
                     subtitle = if (olderSessions.isNotEmpty()) "一键批量沉淀已逾一周的 ${olderSessions.size} 个历史会话" else "暂无超过 7 天的未归档历史会话",
                     enabled = olderSessions.isNotEmpty(),
                     onClick = {
-                        olderSessions.forEach { prefs.toggleArchiveSession(it.id) }
+                        // 一次提交全部 id 到 pi-web 的 ui-state（本地标记由外层回调同步）
+                        onBulkArchive(olderSessions.map { it.id })
                         selectedMenuWorkspace = null
-                        Toast.makeText(context, "已成功归档 ${olderSessions.size} 个 7 天前会话", Toast.LENGTH_SHORT).show()
                     }
                 )
 
