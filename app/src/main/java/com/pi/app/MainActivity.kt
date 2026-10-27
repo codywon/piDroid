@@ -281,6 +281,8 @@ class MainActivity : ComponentActivity() {
         var olderCursor by remember { mutableStateOf<String?>(null) }
         var olderLeafId by remember { mutableStateOf<String?>(null) }
         var isLoadingOlder by remember { mutableStateOf(false) }
+        // 本地刚改过队列的时间戳：PC 端状态可能还没反映出来，避免 1.5s 后一轮对账就把刚排的消息清掉
+        var lastQueueMutationAt by remember { mutableStateOf(0L) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
@@ -345,6 +347,16 @@ class MainActivity : ComponentActivity() {
                     sessions = it
                     cachedSessions = it
                     pinnedSessionIds = prefs.getPinnedSessionIds()
+                    // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
+                    // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
+                    apiClient.getSessionUiState().onSuccess { states ->
+                        val pinned = states.filterValues { it.pinned }.keys
+                        val archived = states.filterValues { it.archived }.keys
+                        pinnedSessionIds = pinned
+                        archivedSessionIds = archived
+                        prefs.setPinnedSessionIds(pinned)
+                        prefs.setArchivedSessionIds(archived)
+                    }
                     customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                     isGatewayOnline = true
                     syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
@@ -510,7 +522,7 @@ class MainActivity : ComponentActivity() {
             completionSettleJob = lifecycleScope.launch {
                 kotlinx.coroutines.delay(delayMs)
                 if (isAutoRetrying || isToolExecuting) return@launch
-                val stillRunning = apiClient.getAgentRunningState(sessionId).getOrDefault(false)
+                val stillRunning = apiClient.getAgentState(sessionId).getOrNull()?.running ?: false
                 if (stillRunning || isAutoRetrying || isToolExecuting) return@launch
                 completeAgentSessionRun(sessionId, syncSnapshot = true)
             }
@@ -525,9 +537,30 @@ class MainActivity : ComponentActivity() {
             restoreModelMeta: Boolean = false,
             allowCompletionTransition: Boolean = true
         ) {
-            val runningResult = apiClient.getAgentRunningState(sessionId)
-            val serverRunning = runningResult.getOrDefault(isAgentBusy)
+            // 运行态改由 /api/sessions/{id}/state 判定（39KB，实测 9ms），
+            // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
+            // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
+            val runtimeResult = apiClient.getAgentState(sessionId)
+            val runtime = runtimeResult.getOrNull()
+            val runningResult = if (runtime != null) {
+                Result.success(runtime.running)
+            } else {
+                Result.failure(runtimeResult.exceptionOrNull() ?: IllegalStateException("state unavailable"))
+            }
+            val serverRunning = runtime?.running ?: isAgentBusy
             val effectiveRunning = serverRunning || (isAgentBusy && (!allowCompletionTransition || isAutoRetrying || isToolExecuting || consecutiveIdlePolls < 2))
+
+            // 排队消息与 PC 对账：离开会话页再回来、或在 PC 端撤回，这里都能拉齐
+            if (runtime != null && System.currentTimeMillis() - lastQueueMutationAt > 3_000L) {
+                val serverQueue = runtime.steering.map { QueuedMessage("steer", it) } +
+                    runtime.followUp.map { QueuedMessage("followUp", it) }
+                val serverTexts = serverQueue.map { it.kind to it.text }.toSet()
+                val localTexts = queuedMessages.map { it.kind to it.text }.toSet()
+                if (serverTexts != localTexts) {
+                    queuedMessages.clear()
+                    queuedMessages.addAll(serverQueue)
+                }
+            }
 
             apiClient.getSessionDetail(sessionId).onSuccess { hist ->
                 isGatewayOnline = true
@@ -643,8 +676,8 @@ class MainActivity : ComponentActivity() {
                 }
                 // 上下文占用以 agent 运行时为准（pi 的 getContextUsage 自带模型真实窗口）：
                 // 会话快照的 context.model 不带 contextWindow，App 以前兜底 200k，
-                // 1M 窗口的模型就永久显示 100%。这里用 POST /api/agent/{id} get_state 覆盖。
-                apiClient.getAgentState(sessionId).getOrNull()?.let { st ->
+                // 1M 窗口的模型就永久显示 100%。这里复用本轮已经取回的 runtime state。
+                runtime?.let { st ->
                     if (st.hasContextUsage) {
                         val window = st.contextWindow.takeIf { it > 0L } ?: tokenStats.maxContextWindow
                         tokenStats = tokenStats.copy(
@@ -1511,8 +1544,22 @@ class MainActivity : ComponentActivity() {
                         cwd = currentSession?.cwd ?: currentProject
                     ),
                     onTogglePin = {
-                        val pinned = prefs.togglePinSession(activeSessionId)
+                        // 先在本地乐观切换（下拉/图标立刻响应），随后写回 pi-web 的 ui-state；
+                        // 失败再回滚，避免「手机上置顶了、PC 上没置顶」。
+                        val willPin = !pinnedSessionIds.contains(activeSessionId)
+                        val localPinned = prefs.togglePinSession(activeSessionId)
                         pinnedSessionIds = prefs.getPinnedSessionIds()
+                        lifecycleScope.launch {
+                            apiClient.setSessionPinned(activeSessionId, willPin).onFailure { err ->
+                                prefs.togglePinSession(activeSessionId)
+                                pinnedSessionIds = prefs.getPinnedSessionIds()
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "同步到 PC 失败: ${err.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
                         Toast.makeText(
                             this@MainActivity,
                             if (pinned) "已置顶任务" else "已取消置顶",
@@ -1593,7 +1640,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onSendMessage = { prompt ->
+                    onSendMessage = { prompt, images ->
                         val sid = currentSession!!.id
                         if (messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
                             val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
@@ -1612,7 +1659,7 @@ class MainActivity : ComponentActivity() {
                             startListeningEvents(sid, initialBusy = true)
                         }
                         lifecycleScope.launch {
-                            apiClient.sendCommand(sid, prompt).onFailure { err ->
+                            apiClient.sendCommand(sid, prompt, images).onFailure { err ->
                                 isAgentBusy = false
                                 agentPhaseLabel = null
                                 keepAliveManager.releaseWakeLock()
@@ -1629,20 +1676,21 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onSendSteer = { steerText ->
+                    onSendSteer = { steerText, steerImages ->
                         messages.add(ChatItem(role = MessageRole.USER, content = "➔ [引导] $steerText"))
                         lifecycleScope.launch {
-                            apiClient.sendSteer(currentSession!!.id, steerText).onSuccess {
+                            apiClient.sendSteer(currentSession!!.id, steerText, steerImages).onSuccess {
                                 Toast.makeText(this@MainActivity, "已下发引导指令", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
                                 Toast.makeText(this@MainActivity, "引导下发失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
-                    onSendFollowUp = { followText ->
+                    onSendFollowUp = { followText, followImages ->
                         queuedMessages.add(QueuedMessage("followUp", followText))
+                        lastQueueMutationAt = System.currentTimeMillis()
                         lifecycleScope.launch {
-                            apiClient.sendFollowUp(currentSession!!.id, followText).onSuccess {
+                            apiClient.sendFollowUp(currentSession!!.id, followText, followImages).onSuccess {
                                 Toast.makeText(this@MainActivity, "已排入后续任务队列", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
                                 queuedMessages.removeAll { it.text == followText }
@@ -1654,6 +1702,7 @@ class MainActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             apiClient.clearQueue(currentSession!!.id).onSuccess {
                                 queuedMessages.clear()
+                                lastQueueMutationAt = System.currentTimeMillis()
                                 Toast.makeText(this@MainActivity, "已撤回排队消息", Toast.LENGTH_SHORT).show()
                             }
                         }
@@ -1759,8 +1808,16 @@ class MainActivity : ComponentActivity() {
                     archivedSessionIds = archivedSessionIds,
                     customTitles = customTitles,
                     onTogglePinSession = { sid ->
+                        val willPin = !pinnedSessionIds.contains(sid)
                         val pinned = prefs.togglePinSession(sid)
                         pinnedSessionIds = prefs.getPinnedSessionIds()
+                        lifecycleScope.launch {
+                            apiClient.setSessionPinned(sid, willPin).onFailure { err ->
+                                prefs.togglePinSession(sid)
+                                pinnedSessionIds = prefs.getPinnedSessionIds()
+                                Toast.makeText(this@MainActivity, "同步到 PC 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                         Toast.makeText(
                             this@MainActivity,
                             if (pinned) "已置顶任务" else "已取消置顶",
@@ -1768,8 +1825,16 @@ class MainActivity : ComponentActivity() {
                         ).show()
                     },
                     onToggleArchiveSession = { sid ->
+                        val willArchive = !archivedSessionIds.contains(sid)
                         val archived = prefs.toggleArchiveSession(sid)
                         archivedSessionIds = prefs.getArchivedSessionIds()
+                        lifecycleScope.launch {
+                            apiClient.setSessionArchived(sid, willArchive).onFailure { err ->
+                                prefs.toggleArchiveSession(sid)
+                                archivedSessionIds = prefs.getArchivedSessionIds()
+                                Toast.makeText(this@MainActivity, "同步到 PC 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
                         Toast.makeText(
                             this@MainActivity,
                             if (archived) "已归档任务" else "已取消归档",

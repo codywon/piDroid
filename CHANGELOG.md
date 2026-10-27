@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.8] - 2026-10-27
+
+### 🔌 补齐四处与 pi-web 的同步：运行态/排队、置顶归档、图片上传、权限切换 (Release v1.7.8)
+
+- **省流量省电：判「是否在跑」不再每 1.5s 拉 273 KB**：
+  - 原先 `getAgentRunningState()` 每次 GET `/api/sessions`——实测 **273 KB / 390 条会话**，会话页 1.5s 一轮；
+  - 改用 `GET /api/sessions/{id}/state`（实测 **9 ms / 39 KB**，其中 28 KB 是 systemPrompt），一次拿齐 `running` + `contextUsage` + `queuedMessages` + `pendingMessageCount`，并复用于上下文百分比，不再一轮两次请求。
+- **排队消息离开页面就没了**：
+  - **根因**：`queuedMessages` 只存在内存里，且从未与 PC 对账；
+  - **修复**：每轮状态同步用 `queuedMessages.steering / followUp` 与本地对账（本地刚改过队列 3 秒内不覆盖，避免把刚排的消息误清）；撤回队列同样打时间戳。
+- **置顶 / 归档真正与 pi-web 打通**：
+  - **根因**：App 自建了一份 SharedPreferences 置顶/归档，pi-web 把这两项存在自己的状态文件里（`/api/sessions/ui-state`，带 `revision`），两边互不相干；
+  - **修复**：新增 `getSessionUiState()` / `setSessionPinned()` / `setSessionArchived()`（`POST {"action":"set","ids":[...],"pinned":true}`，实测 200），`loadSessions` 以服务端为准回写本地镜像，置顶/归档先本地乐观切换再写回 PC，失败回滚并提示。
+- **输入框的图片根本没传给 pi**：
+  - **根因**：旧实现只把文件名拼成 `[图片: xxx.jpg]` 文本，pi 收不到任何图像数据；
+  - **修复**：按 pi-web 的请求校验规则真正上传——`images: [{type:"image", data:<纯 base64>, mimeType:"image/*"}]`（≤10 张、每张 ≤10MB、base64 不带 `data:` 前缀），发送 / 引导(steer) / 排队(followUp) 三条通道都带图；纯图片消息补一句可见文本，避免空 message 被拒。
+- **切换权限模式报 500**：
+  - **根因**：pi 在会话运行中会明确拒绝（HTTP 500 + `Cannot change tools while the session is running`），App 把 500 原样糊给用户；
+  - **修复**：把服务端 `error` 解析出来，运行中提示「任务运行中不能切换权限模式，请等本轮结束后再切换」。（实测同一接口在空闲会话上 `set_tools` 返回 200。）
+  - 备注：切换工具会**重建会话运行时**（服务端回 `recreated`），App 已按返回的 sessionId 重新挂 SSE。
+
+---
+
 ## [1.7.7] - 2026-10-27
 
 ### ⬆️ 上滑翻页真正接通 PC + 一键到底真正到底 (Release v1.7.7)

@@ -82,6 +82,9 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** 候选 Key 联网自检时使用的一次性 provider 名后缀（避开已保存凭据的遮蔽）。 */
         private const val VERIFY_PROVIDER_SUFFIX = "-key-verify"
+
+        /** pi 允许单条消息携带的图片上限（服务端校验：最多 10 张、每张 ≤10MB）。 */
+        const val MAX_PROMPT_IMAGES = 10
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
 
@@ -1554,19 +1557,27 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 4. 命令发送与交互动作 (1:1 匹配 pi-web)
     // ==========================================
 
-    suspend fun sendCommand(sessionId: String, prompt: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun sendCommand(
+        sessionId: String,
+        prompt: String,
+        images: List<ChatImageInput> = emptyList()
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         val payload = mutableMapOf<String, Any>(
             "type" to "prompt",
             "message" to prompt,
             "text" to prompt
         )
         if (images.isNotEmpty()) {
-            payload["images"] = images
+            payload["images"] = imagesToJson(images)
         }
         sendAgentAction(sessionId, payload)
     }
 
-    suspend fun sendSteer(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun sendSteer(
+        sessionId: String,
+        text: String,
+        images: List<ChatImageInput> = emptyList()
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         val payload = mutableMapOf<String, Any>(
             "type" to "prompt",
             "streamingBehavior" to "steer",
@@ -1574,12 +1585,16 @@ class PiApiClient(private val prefs: AppPreferences) {
             "text" to text
         )
         if (images.isNotEmpty()) {
-            payload["images"] = images
+            payload["images"] = imagesToJson(images)
         }
         sendAgentAction(sessionId, payload)
     }
 
-    suspend fun sendFollowUp(sessionId: String, text: String, images: List<String> = emptyList()): Result<Boolean> = withContext(Dispatchers.IO) {
+    suspend fun sendFollowUp(
+        sessionId: String,
+        text: String,
+        images: List<ChatImageInput> = emptyList()
+    ): Result<Boolean> = withContext(Dispatchers.IO) {
         val payload = mutableMapOf<String, Any>(
             "type" to "prompt",
             "streamingBehavior" to "followUp",
@@ -1587,9 +1602,24 @@ class PiApiClient(private val prefs: AppPreferences) {
             "text" to text
         )
         if (images.isNotEmpty()) {
-            payload["images"] = images
+            payload["images"] = imagesToJson(images)
         }
         sendAgentAction(sessionId, payload)
+    }
+
+    /** 按 pi-web 的校验规则序列化图片：最多 10 张，data 必须是纯 base64、不带 data: 前缀。 */
+    private fun imagesToJson(images: List<ChatImageInput>): JsonArray {
+        val arr = JsonArray()
+        images.take(MAX_PROMPT_IMAGES).forEach { img ->
+            val b64 = img.base64Data.substringAfter("base64,", img.base64Data).trim()
+            if (b64.isEmpty()) return@forEach
+            arr.add(JsonObject().apply {
+                addProperty("type", "image")
+                addProperty("data", b64)
+                addProperty("mimeType", img.mimeType.ifBlank { "image/png" })
+            })
+        }
+        return arr
     }
 
     suspend fun stopAgent(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -1613,22 +1643,23 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 读取 agent 运行时的权威状态 (POST /api/agent/{id} {"type":"get_state"})。
+     * 读取会话运行时的权威状态 (GET /api/sessions/{id}/state)。
      *
-     * 这是上下文占用的唯一可信来源：pi 的 `getContextUsage()` 直接返回
-     * `{percent, contextWindow, tokens}`，contextWindow 是**模型真实窗口**（如 1,000,000）。
-     * App 以前是自己拿“最后一条 assistant 的 input+cacheRead”除以 200k 默认值，
-     * 于是 438,919 / 200,000 = 219% 被截成 100%，面板永远显示满载。
+     * 一次调用同时解决三件事，取代原先三个各自为政的来源：
+     * 1. **是否在跑**：`running`（等价 `/api/sessions` 里 runningSessionIds 的判定）。原先每次
+     *    GET `/api/sessions` 实测 **273 KB / 390 条会话**，现在 39 KB 且不用遍历全表；
+     * 2. **上下文占用**：`contextUsage {percent, contextWindow, tokens}`，contextWindow 是模型
+     *    真实窗口（如 1,000,000），不再用 20 万硬默认值算出「恒为 100%」；
+     * 3. **排队消息**：`queuedMessages {steering, followUp}` + `pendingMessageCount`，
+     *    手机离开会话页再回来时队列不会凭空消失。
      *
-     * 同一个响应里还有 model / thinkingLevel / isStreaming / isCompacting /
-     * pendingMessageCount / queuedMessages，可与手机端状态对账。
+     * 顺带还有 model / thinkingLevel，可用于对齐 PC 端切过的模型与思考档位。
      */
     suspend fun getAgentState(sessionId: String): Result<AgentRuntimeState> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val body = gson.toJson(mapOf("type" to "get_state")).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/state").get().build()
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("读取 agent 状态失败 (${response.code})"))
@@ -1636,9 +1667,26 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val raw = response.body?.string() ?: ""
                 val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
                     ?: return@withContext Result.failure(IOException("agent 状态响应无法解析"))
-                val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+                // 兼容两种形态：{running, state:{...}} 或直接是 state 本体
+                val data = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: root
                 val usage = data.get("contextUsage")?.takeIf { it.isJsonObject }?.asJsonObject
                 val modelObj = data.get("model")?.takeIf { it.isJsonObject }?.asJsonObject
+                val queue = data.get("queuedMessages")?.takeIf { it.isJsonObject }?.asJsonObject
+                fun queueTexts(key: String): List<String> {
+                    val arr = queue?.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+                    return arr.mapNotNull { el ->
+                        when {
+                            el.isJsonPrimitive -> el.asString
+                            el.isJsonObject -> el.asJsonObject.get("message")?.takeIf { !it.isJsonNull }?.asString
+                                ?: el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
+                            else -> null
+                        }
+                    }.filter { it.isNotBlank() }
+                }
+                val isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true
+                val isPromptRunning = data.get("isPromptRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
                 Result.success(
                     AgentRuntimeState(
                         percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
@@ -1648,9 +1696,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                         provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
                         modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString,
                         thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
-                        isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        isStreaming = isStreaming,
                         isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                        pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                        running = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean == true ||
+                            isStreaming || isPromptRunning,
+                        steering = queueTexts("steering"),
+                        followUp = queueTexts("followUp")
                     )
                 )
             }
@@ -1658,6 +1710,88 @@ class PiApiClient(private val prefs: AppPreferences) {
             Result.failure(e)
         }
     }
+
+    /**
+     * 读取 pi-web 的会话 UI 状态（置顶 / 归档）：GET /api/sessions/ui-state
+     *
+     * pi-web 把置顶与归档存在自己的状态文件里（带 revision），App 之前只在本地
+     * SharedPreferences 里自建一份，两边永远不同步 —— 这就是「手机上置顶了、PC 上没置顶」。
+     */
+    suspend fun getSessionUiState(): Result<Map<String, SessionUiFlags>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder().url("$baseUrl/api/sessions/ui-state").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取置顶/归档状态失败 (${response.code})"))
+                }
+                val raw = response.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("ui-state 响应无法解析"))
+                val state = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+                val sessions = state.get("sessions")?.takeIf { it.isJsonObject }?.asJsonObject
+                val out = mutableMapOf<String, SessionUiFlags>()
+                sessions?.entrySet()?.forEach { (id, el) ->
+                    if (!el.isJsonObject) return@forEach
+                    val o = el.asJsonObject
+                    out[id] = SessionUiFlags(
+                        pinned = o.get("pinnedAt")?.takeIf { !it.isJsonNull } != null,
+                        archived = o.get("archivedAt")?.takeIf { !it.isJsonNull } != null
+                    )
+                }
+                Result.success(out)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 置顶 / 取消置顶（写 pi-web 的 ui-state，与 PC 端共用同一份状态）
+     * POST /api/sessions/ui-state {"action":"set","ids":[...],"pinned":true|false}
+     */
+    suspend fun setSessionPinned(sessionId: String, pinned: Boolean): Result<Boolean> =
+        setSessionUiFlag(sessionId, "pinned", pinned)
+
+    /**
+     * 归档 / 取消归档
+     * POST /api/sessions/ui-state {"action":"set","ids":[...],"archived":true|false}
+     */
+    suspend fun setSessionArchived(sessionId: String, archived: Boolean): Result<Boolean> =
+        setSessionUiFlag(sessionId, "archived", archived)
+
+    private suspend fun setSessionUiFlag(sessionId: String, key: String, value: Boolean): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+            try {
+                val payload = JsonObject().apply {
+                    addProperty("action", "set")
+                    add("ids", JsonArray().apply { add(sessionId) })
+                    addProperty(key, value)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/api/sessions/ui-state")
+                    .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        Result.success(true)
+                    } else {
+                        val detail = resp.body?.string()?.take(200) ?: ""
+                        Result.failure(
+                            IOException(
+                                "同步到 PC 失败 (${resp.code})" + if (detail.isNotBlank()) "：$detail" else ""
+                            )
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
 
     private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
@@ -3295,7 +3429,18 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    Result.failure(IOException("Server HTTP ${resp.code}: $bodyStr"))
+                    // pi 在会话运行中会明确拒绝（HTTP 500 + "Cannot change tools while the session is running"），
+                    // 这不是故障，翻译成人话，别把 500 直接糊到用户脸上
+                    val serverMsg = runCatching {
+                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                    }.getOrNull() ?: ""
+                    val friendly = when {
+                        serverMsg.contains("while the session is running", ignoreCase = true) ->
+                            "任务运行中不能切换权限模式，请等本轮结束后再切换"
+                        serverMsg.isNotBlank() -> serverMsg
+                        else -> "权限切换失败 (HTTP ${resp.code})"
+                    }
+                    Result.failure(IOException(friendly))
                 } else {
                     val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
                     val dataObj = json?.getAsJsonObject("data")

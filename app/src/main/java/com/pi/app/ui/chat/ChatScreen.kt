@@ -65,8 +65,10 @@ import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.data.model.ToolPreset
 import com.pi.app.ui.theme.*
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -118,9 +120,9 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
-    onSendMessage: (String) -> Unit,
-    onSendSteer: (String) -> Unit,
-    onSendFollowUp: (String) -> Unit,
+    onSendMessage: (String, List<ChatImageInput>) -> Unit,
+    onSendSteer: (String, List<ChatImageInput>) -> Unit,
+    onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
     onClearQueue: () -> Unit,
     onApproveTool: (approved: Boolean) -> Unit,
     currentToolPreset: ToolPreset = ToolPreset.FULL,
@@ -171,13 +173,39 @@ fun ChatScreen(
         }
     }
 
-    fun buildMessageWithAttachments(rawText: String): String {
-        if (attachments.isEmpty()) return rawText
-        val attachHeader = attachments.joinToString(separator = "\n") { att ->
-            if (att.isImage) "[图片: ${att.name}]" else "[文件附件: ${att.name}]"
-        }
+    // 统一发送入口：图片真的读成 base64 走 pi 的 images 字段；非图片文件目前只能按名字引用
+    // （pi 的图片通道只收 image/*，文件要走 /api/files?type=upload 的 multipart 上传，后续补）
+    fun submitMessage(rawText: String, kind: SendKind) {
+        val picked = attachments.toList()
         attachments.clear()
-        return if (rawText.isBlank()) attachHeader else "$rawText\n\n$attachHeader"
+        if (picked.isEmpty()) {
+            dispatchSend(rawText, emptyList(), kind)
+            return
+        }
+        coroutineScope.launch {
+            val (images, skipped) = withContext(Dispatchers.IO) { encodePickedImages(context, picked) }
+            if (skipped > 0) {
+                android.widget.Toast.makeText(context, "$skipped 张图片超过 10MB 或读取失败，已跳过", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            val imagesCount = images.size
+            val fileNames = picked.filter { !it.isImage }.joinToString("\n") { "[文件附件: ${it.name}]" }
+            val text = when {
+                fileNames.isBlank() -> rawText
+                rawText.isBlank() -> fileNames
+                else -> "$rawText\n\n$fileNames"
+            }
+            // 纯图片消息也必须给 pi 一句可见文本，避免空 message 被拒
+            val finalText = if (text.isBlank() && imagesCount > 0) "（图片）" else text
+            dispatchSend(finalText, images, kind)
+        }
+    }
+
+    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind) {
+        when (kind) {
+            SendKind.SEND -> onSendMessage(text, images)
+            SendKind.STEER -> onSendSteer(text, images)
+            SendKind.FOLLOW_UP -> onSendFollowUp(text, images)
+        }
     }
 
     // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
@@ -639,8 +667,7 @@ fun ChatScreen(
                                     .size(28.dp)
                                     .clickable(enabled = canSend) {
                                         userJumpedToHistory = false
-                                        val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                        onSendSteer(fullMsg)
+                                        submitMessage(inputText.trim(), SendKind.STEER)
                                         inputText = ""
                                     }
                             ) {
@@ -666,8 +693,7 @@ fun ChatScreen(
                                     .size(28.dp)
                                     .clickable(enabled = canSend) {
                                         userJumpedToHistory = false
-                                        val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                        onSendFollowUp(fullMsg)
+                                        submitMessage(inputText.trim(), SendKind.FOLLOW_UP)
                                         inputText = ""
                                     }
                             ) {
@@ -813,8 +839,7 @@ fun ChatScreen(
                                         .size(34.dp)
                                         .clickable(enabled = canSend) {
                                             userJumpedToHistory = false
-                                            val fullMsg = buildMessageWithAttachments(inputText.trim())
-                                            onSendMessage(fullMsg)
+                                            submitMessage(inputText.trim(), SendKind.SEND)
                                             inputText = ""
                                         }
                                 ) {
@@ -2098,3 +2123,45 @@ private fun formatCompactTokenCount(tokens: Long): String {
         else -> tokens.toString()
     }
 }
+
+/** 提交类型：普通发送 / 实时引导 / 后续排队 */
+private enum class SendKind { SEND, STEER, FOLLOW_UP }
+
+/**
+ * 把用户挑的图片读成 pi 要求的格式：`{type:"image", data:<纯 base64>, mimeType:"image/*"}`。
+ * 返回 (可发送列表, 被跳过的张数)；超过 10MB 或读取失败的一律跳过，绝不把半截 base64 发上去。
+ */
+private fun encodePickedImages(
+    context: android.content.Context,
+    picked: List<ChatAttachment>
+): Pair<List<ChatImageInput>, Int> {
+    val images = mutableListOf<ChatImageInput>()
+    var skipped = 0
+    for (att in picked) {
+        if (!att.isImage) continue
+        if (images.size >= com.pi.app.network.PiApiClient.MAX_PROMPT_IMAGES) {
+            skipped++
+            continue
+        }
+        try {
+            val mime = context.contentResolver.getType(att.uri)?.takeIf { it.startsWith("image/") } ?: "image/png"
+            val bytes = context.contentResolver.openInputStream(att.uri)?.use { it.readBytes() }
+            if (bytes == null || bytes.isEmpty() || bytes.size > MAX_PROMPT_IMAGE_BYTES) {
+                skipped++
+                continue
+            }
+            images.add(
+                ChatImageInput(
+                    mimeType = mime,
+                    base64Data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                )
+            )
+        } catch (e: Exception) {
+            skipped++
+        }
+    }
+    return images to skipped
+}
+
+/** 单张图片上限：pi 服务端校验为解码后 ≤10MB */
+private const val MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024

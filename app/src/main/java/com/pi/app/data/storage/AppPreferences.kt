@@ -105,6 +105,11 @@ class AppPreferences(context: Context) {
         return getPinnedSessionIds().contains(sessionId)
     }
 
+    /** 用服务端 ui-state 覆盖本地镜像（置顶） */
+    fun setPinnedSessionIds(ids: Set<String>) {
+        prefs.edit().putStringSet(KEY_PINNED_SESSIONS, ids).apply()
+    }
+
     fun togglePinSession(sessionId: String): Boolean {
         val current = getPinnedSessionIds().toMutableSet()
         val willPin = !current.contains(sessionId)
@@ -124,6 +129,11 @@ class AppPreferences(context: Context) {
 
     fun isSessionArchived(sessionId: String): Boolean {
         return getArchivedSessionIds().contains(sessionId)
+    }
+
+    /** 用服务端 ui-state 覆盖本地镜像（归档） */
+    fun setArchivedSessionIds(ids: Set<String>) {
+        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, ids).apply()
     }
 
     fun toggleArchiveSession(sessionId: String): Boolean {

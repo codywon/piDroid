@@ -127,7 +127,36 @@ data class AgentRuntimeState(
     val thinkingLevel: String? = null,
     val isStreaming: Boolean = false,
     val isCompacting: Boolean = false,
-    val pendingMessageCount: Int = 0
+    val pendingMessageCount: Int = 0,
+    /** GET /api/sessions/{id}/state 顶层的 running（等价于 /api/sessions 的 runningSessionIds 判定） */
+    val running: Boolean = false,
+    /** 正在排队等待下发的引导消息（pi 的 queuedMessages.steering） */
+    val steering: List<String> = emptyList(),
+    /** 正在排队的后续消息（pi 的 queuedMessages.followUp） */
+    val followUp: List<String> = emptyList()
+)
+
+/**
+ * 发给 pi 的图片附件（严格遵循 pi-web 的请求校验规则）：
+ * `images: [{type:"image", data:<纯 base64，不带 data: 前缀>, mimeType:"image/png"}]`
+ * - 单条消息最多 10 张；
+ * - 每张解码后 ≤ 10 MB；
+ * - data 必须是合法 base64（不能带 `data:image/png;base64,` 前缀）。
+ */
+data class ChatImageInput(
+    val mimeType: String,
+    val base64Data: String
+)
+
+/**
+ * pi-web 的会话 UI 状态（GET /api/sessions/ui-state）：置顶 / 归档。
+ *
+ * pi-web 把这两项存在自己的状态文件里（`pi-web-session-state.json`，带 revision），
+ * App 之前只在本地 SharedPreferences 里自建一份，所以两边永远不同步。
+ */
+data class SessionUiFlags(
+    val pinned: Boolean = false,
+    val archived: Boolean = false
 )
 
 /**
