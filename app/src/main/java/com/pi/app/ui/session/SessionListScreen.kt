@@ -210,15 +210,26 @@ fun SessionListScreen(
         )
     }
 
-    val runningInWorkspace = remember(currentWorkspaceSessions) {
-        currentWorkspaceSessions.count { it.isLive || it.awaitingInput }
+    // pi-web 的侧栏模型：已置顶的会话只出现在「Pinned」区，**不再**混进各自项目分组。
+    // 这里对应到我们的「🌟 常用置顶」工作区，所以项目工作区里要把置顶会话整段排除。
+    val pinnedCountInWorkspace = remember(currentWorkspaceSessions, pinnedSessionIds) {
+        if (isPinnedWorkspaceSelected) 0
+        else currentWorkspaceSessions.count { pinnedSessionIds.contains(it.id) }
     }
-    val completedInWorkspace = remember(currentWorkspaceSessions, runningInWorkspace) {
-        (currentWorkspaceSessions.size - runningInWorkspace).coerceAtLeast(0)
+    val visibleWorkspaceSessions = remember(currentWorkspaceSessions, pinnedSessionIds, isPinnedWorkspaceSelected) {
+        if (isPinnedWorkspaceSelected) currentWorkspaceSessions
+        else currentWorkspaceSessions.filter { !pinnedSessionIds.contains(it.id) }
     }
 
-    val filteredSessions = remember(currentWorkspaceSessions, statusFilter, searchQuery, customTitles) {
-        currentWorkspaceSessions.filter { s ->
+    val runningInWorkspace = remember(visibleWorkspaceSessions) {
+        visibleWorkspaceSessions.count { it.isLive || it.awaitingInput }
+    }
+    val completedInWorkspace = remember(visibleWorkspaceSessions, runningInWorkspace) {
+        (visibleWorkspaceSessions.size - runningInWorkspace).coerceAtLeast(0)
+    }
+
+    val filteredSessions = remember(visibleWorkspaceSessions, statusFilter, searchQuery, customTitles) {
+        visibleWorkspaceSessions.filter { s ->
             val matchesStatus = when (statusFilter) {
                 SessionStatusFilter.ALL -> true
                 SessionStatusFilter.RUNNING -> s.isLive || s.awaitingInput
@@ -792,7 +803,7 @@ fun SessionListScreen(
                             FilterPill(
                                 selected = statusFilter == SessionStatusFilter.ALL,
                                 onClick = { statusFilter = SessionStatusFilter.ALL },
-                                label = "全部 (${currentWorkspaceSessions.size})"
+                                label = "全部 (${visibleWorkspaceSessions.size})"
                             )
                             FilterPill(
                                 selected = statusFilter == SessionStatusFilter.RUNNING,
@@ -938,6 +949,9 @@ fun SessionListScreen(
                                     text = when {
                                         searchQuery.isNotBlank() -> "未找到匹配任务"
                                         isPinnedZone -> "暂无置顶任务"
+                                        // 本工作区的任务全被置顶了：别让用户以为任务没了
+                                        pinnedCountInWorkspace > 0 && statusFilter == SessionStatusFilter.ALL ->
+                                            "本工作区的 $pinnedCountInWorkspace 个任务都已置顶，见「常用置顶」"
                                         statusFilter == SessionStatusFilter.RUNNING -> "暂无运行中的任务"
                                         statusFilter == SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
                                         else -> "当前工作区暂无任务"
@@ -970,9 +984,6 @@ fun SessionListScreen(
                             }
                         }
 
-                        val (pinnedList, normalList) = remember(activeSessions, pinnedSessionIds) {
-                            activeSessions.partition { pinnedSessionIds.contains(it.id) }
-                        }
 
                         LazyColumn(
                             modifier = Modifier
@@ -981,57 +992,41 @@ fun SessionListScreen(
                             contentPadding = PaddingValues(bottom = 84.dp, top = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            if (pinnedList.isNotEmpty()) {
-                                item(key = "section_pinned") {
+                            // 已置顶的会话不在这里出现（与 pi-web 一致：置顶只活在置顶区），
+                            // 给一行可点的轻提示，避免用户以为任务丢了。
+                            if (pinnedCountInWorkspace > 0 && searchQuery.isBlank() && !isPinnedWorkspaceSelected) {
+                                item(key = "pinned_moved_hint") {
                                     Row(
-                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .clickable { selectedWorkspacePath = PINNED_WORKSPACE_KEY }
+                                            .padding(horizontal = 4.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
-                                        Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color(0xFFEAB308))
-                                        Text(
-                                            text = "置顶任务 (${pinnedList.size})",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFEAB308)
+                                        Icon(
+                                            Icons.Default.PushPin,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(12.dp),
+                                            tint = Color(0xFFEAB308).copy(alpha = 0.9f)
                                         )
-                                    }
-                                }
-                                items(pinnedList, key = { "pin_${it.id}" }) { session ->
-                                    SessionCard(
-                                        session = session,
-                                        isPinned = true,
-                                        isArchived = archivedSessionIds.contains(session.id),
-                                        isUnread = unreadSessionIds.contains(session.id),
-                                        customTitle = customTitles[session.id],
-                                        onTogglePin = { onTogglePinSession(session.id) },
-                                        onRename = {
-                                            renamingSession = session
-                                            renameInputText = customTitles[session.id] ?: session.displayTitle
-                                        },
-                                        onFork = { onForkSession(session) },
-                                        onToggleArchive = { onToggleArchiveSession(session.id) },
-                                        onDelete = { deletingSession = session },
-                                        onClick = { onSessionClick(session) }
-                                    )
-                                }
-                                if (normalList.isNotEmpty()) {
-                                    item(key = "section_normal") {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 4.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "所有任务 (${normalList.size})",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = theme.textSecondary
-                                            )
-                                        }
+                                        Text(
+                                            text = "$pinnedCountInWorkspace 个置顶任务已归入「常用置顶」",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.textMuted
+                                        )
+                                        Spacer(modifier = Modifier.weight(1f))
+                                        Text(
+                                            text = "查看",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.primary
+                                        )
                                     }
                                 }
                             }
 
-                            items(if (pinnedList.isNotEmpty()) normalList else activeSessions, key = { it.id }) { session ->
+                            items(activeSessions, key = { it.id }) { session ->
                                 SessionCard(
                                     session = session,
                                     isPinned = pinnedSessionIds.contains(session.id),
@@ -2028,15 +2023,15 @@ fun SessionCard(
     val isAwaiting = session.awaitingInput
     val titleText = customTitle ?: session.displayTitle
 
+    // 置顶不再用底色/描边强调（置顶本身已有「置顶」小徽章与图钉图标），
+    // 只有「等待确认 / 运行中」这类**需要立刻注意**的状态才着色。
     val borderStroke = when {
-        isPinned -> BorderStroke(1.dp, theme.primary.copy(alpha = 0.55f))
         isAwaiting -> BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.55f))
         isRunning -> BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
         else -> BorderStroke(1.dp, theme.outline)
     }
 
     val cardBg = when {
-        isPinned -> theme.primary.copy(alpha = if (theme.isDark) 0.08f else 0.04f)
         isAwaiting -> Color(0xFFF59E0B).copy(alpha = if (theme.isDark) 0.07f else 0.04f)
         isRunning -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.06f else 0.03f)
         else -> theme.surfaceContainerLow
@@ -2091,27 +2086,11 @@ fun SessionCard(
                         }
                     }
 
-                    if (isPinned) {
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = theme.primary.copy(alpha = 0.16f),
-                            border = BorderStroke(0.5.dp, theme.primary.copy(alpha = 0.45f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(Icons.Default.PushPin, contentDescription = null, modifier = Modifier.size(9.dp), tint = theme.primary)
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text("置顶", fontSize = 9.sp, color = theme.primary, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
+                    // 置顶不再额外挂彩色胶囊：置顶区里每张都是置顶，右侧小图钉足够表达
                     Text(
                         text = titleText,
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = if (isRunning || isAwaiting || isPinned) FontWeight.Bold else FontWeight.SemiBold,
+                        fontWeight = if (isRunning || isAwaiting) FontWeight.Bold else FontWeight.SemiBold,
                         color = theme.textPrimary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
