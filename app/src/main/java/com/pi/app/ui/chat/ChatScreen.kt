@@ -2060,17 +2060,20 @@ fun ChatMessageItem(
                         if (item.mediaList.isEmpty()) tool.mediaList
                         else (tool.mediaList + item.mediaList).distinctBy { it.filePath ?: it.dataBase64?.take(48) ?: it.id }
                     }
+                    // 先落到局部变量：filePath 是自定义 getter，无法 smart cast
+                    val toolFilePath = tool.filePath
+                    val toolFullOutputPath = tool.fullOutputPath
                     PiWebToolCallCard(
                         tool = if (mergedMedia.size != tool.mediaList.size) tool.copy(mediaList = mergedMedia) else tool,
                         expanded = isToolExpanded || tool.requiresApproval,
                         onToggle = { isToolExpanded = !isToolExpanded },
                         onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
                         onApproveTool = onApproveTool,
-                        onOpenFullOutput = if (onOpenBashOutput == null || tool.fullOutputPath == null) null else {
-                            { onOpenBashOutput(tool.fullOutputPath, "${tool.toolName} 完整输出") }
+                        onOpenFullOutput = if (onOpenBashOutput == null || toolFullOutputPath == null) null else {
+                            { onOpenBashOutput(toolFullOutputPath, "${tool.toolName} 完整输出") }
                         },
-                        onOpenFile = if (onOpenFilePreview == null || tool.filePath == null) null else {
-                            { onOpenFilePreview(tool.filePath) }
+                        onOpenFile = if (onOpenFilePreview == null || toolFilePath == null) null else {
+                            { onOpenFilePreview(toolFilePath) }
                         }
                     )
                 }
