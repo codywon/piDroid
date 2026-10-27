@@ -2129,7 +2129,7 @@ private fun formatCompactTokenCount(tokens: Long): String {
 private enum class SendKind { SEND, STEER, FOLLOW_UP }
 
 /**
- * 把用户挑的图片读成 pi 要求的格式：`{type:"image", data:<纯 base64>, mimeType:"image/*"}`。
+ * 把用户挑的图片读成 pi 要求的格式：type=image、data=纯 base64、mimeType=image/xxx。
  * 返回 (可发送列表, 被跳过的张数)；超过 10MB 或读取失败的一律跳过，绝不把半截 base64 发上去。
  */
 private fun encodePickedImages(
