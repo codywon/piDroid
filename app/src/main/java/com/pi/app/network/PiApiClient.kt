@@ -198,6 +198,43 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
+    /**
+     * 轻量运行态对账：GET /api/agent/running（实测约 230 字节 / 4ms）。
+     *
+     * 返回正在运行 / 等待输入的会话 id 集合与 `sessionListVersion`。列表页和会话页
+     * 都用它做秒级同步；只有 version 变化时才值得重新拉一次 200KB+ 的完整会话列表。
+     */
+    suspend fun getRunningSessions(): Result<RunningSessionsSnapshot> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder().url("$baseUrl/api/agent/running").get().build()
+            client.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取运行态失败 (${response.code})"))
+                }
+                val root = runCatching {
+                    JsonParser.parseString(response.body?.string() ?: "{}").asJsonObject
+                }.getOrNull() ?: return@withContext Result.failure(IOException("运行态响应无法解析"))
+                fun idSet(key: String): Set<String> =
+                    root.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+                        ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+                        ?.toSet()
+                        ?: emptySet()
+                Result.success(
+                    RunningSessionsSnapshot(
+                        sessionListVersion = root.get("sessionListVersion")
+                            ?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                        runningIds = idSet("runningSessionIds"),
+                        awaitingInputIds = idSet("awaitingInputSessionIds")
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     // ==========================================
     // 2. 深入任务：加载完整任务历史 (GET /api/sessions/[id])
     // 对标 pi-web MessageView：配对 toolCall 与 toolResult，提取参数预览与每回合 Token 用量
@@ -206,7 +243,12 @@ class PiApiClient(private val prefs: AppPreferences) {
     suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
-            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId?tail=$tail&limit=$tail").get().build()
+            // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
+            // 这两个开关把首屏快照从 ~200KB 压到 ~150KB，手机端打开会话明显更快。
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary")
+                .get()
+                .build()
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
@@ -700,7 +742,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             val mediaList: List<MediaAttachment>,
             val durationMs: Long,
             val isError: Boolean,
-            val timestamp: Long
+            val timestamp: Long,
+            /** pi 把长命令输出落到临时文件时给出的路径（可用 bash-output 取全量） */
+            val fullOutputPath: String? = null
         )
         val toolResultById = mutableMapOf<String, ParsedToolResult>()
         val consumedResultIds = mutableSetOf<String>()
@@ -727,8 +771,12 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                 val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                 val ts = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
+                val fullOutPath = msgObj.get("fullOutputPath")?.takeIf { !it.isJsonNull }?.asString
+                    ?: msgObj.get("outputPath")?.takeIf { !it.isJsonNull }?.asString
+                    ?: rawObj.get("fullOutputPath")?.takeIf { !it.isJsonNull }?.asString
                 if (!tcId.isNullOrBlank()) {
-                    toolResultById[tcId] = ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts)
+                    toolResultById[tcId] =
+                        ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts, fullOutPath)
                 }
             }
         }
@@ -844,7 +892,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                                                 output = paired?.output,
                                                 mediaList = combinedMedia,
                                                 durationMs = paired?.durationMs ?: 0L,
-                                                isError = paired?.isError ?: false
+                                                isError = paired?.isError ?: false,
+                                                fullOutputPath = paired?.fullOutputPath
                                             )
                                         )
                                     }
@@ -1608,6 +1657,126 @@ class PiApiClient(private val prefs: AppPreferences) {
         sendAgentAction(sessionId, payload)
     }
 
+    /**
+     * 读取一次 bash 的**完整输出**（GET /api/agent/{id}/bash-output?path=<输出文件>）。
+     *
+     * pi 会把长命令输出落到临时文件，聊天里只塞截断预览；`path` 就是工具结果里的
+     * `fullOutputPath`。实测契约：`{success:true, data:{output:"…"}}`，
+     * 过大时返回 413（`Full output is too large`）。
+     */
+    suspend fun getBashFullOutput(sessionId: String, outputPath: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            if (outputPath.isBlank()) return@withContext Result.failure(Exception("缺少输出路径"))
+            try {
+                val req = Request.Builder()
+                    .url(
+                        "$baseUrl/api/agent/$sessionId/bash-output?path=" +
+                            URLEncoder.encode(outputPath, "UTF-8")
+                    )
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string() ?: "{}"
+                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    if (!resp.isSuccessful || root == null) {
+                        val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                        return@withContext Result.failure(IOException(err))
+                    }
+                    val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val out = data?.get("output")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    Result.success(out)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /** 文件元信息：GET /api/files/<绝对路径>?type=meta → {size, language, mime, previewKind} */
+    suspend fun getFileMeta(absPath: String): Result<FileMeta> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (absPath.isBlank()) return@withContext Result.failure(Exception("缺少文件路径"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=meta")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                if (!resp.isSuccessful || root == null) {
+                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException(err))
+                }
+                Result.success(
+                    FileMeta(
+                        size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                        language = root.get("language")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        mime = root.get("mime")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** 文件文本内容：GET /api/files/<绝对路径>?type=read → {content} */
+    suspend fun getFileText(absPath: String): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=read")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                if (!resp.isSuccessful || root == null) {
+                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException(err))
+                }
+                Result.success(root.get("content")?.takeIf { !it.isJsonNull }?.asString ?: "")
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /** 文件原始字节（图片预览用）：GET /api/files/<绝对路径>?type=download */
+    suspend fun getFileBytes(absPath: String, maxBytes: Long = 12L * 1024 * 1024): Result<ByteArray> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            try {
+                val req = Request.Builder()
+                    .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=download")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        return@withContext Result.failure(IOException("读取文件失败 (${resp.code})"))
+                    }
+                    val bytes = resp.body?.bytes() ?: ByteArray(0)
+                    if (bytes.size > maxBytes) {
+                        return@withContext Result.failure(IOException("文件过大（${bytes.size / 1024 / 1024} MB），暂不预览"))
+                    }
+                    Result.success(bytes)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /** 把绝对路径编码进 /api/files/<path> 的单段路径（保留分隔符语义，只转义特殊字符） */
+    private fun encodeFilePath(absPath: String): String =
+        absPath.trim().replace('\\', '/').split('/').joinToString("/") {
+            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
+
     /** 开关 pi 的自动上下文压缩（agent {"type":"set_auto_compaction","enabled":bool}） */
     suspend fun setAutoCompaction(sessionId: String, enabled: Boolean): Result<Boolean> =
         sendAgentAction(sessionId, mapOf("type" to "set_auto_compaction", "enabled" to enabled))
@@ -1867,6 +2036,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
                 val isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true
                 val isPromptRunning = data.get("isPromptRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
+                val isBashRunning = data.get("isBashRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
+                // 顶层 running = 「pi-web 里有没有活着的 agent 运行时」，不等于正在执行。
+                // 兼容 POST /api/agent/{id} 的 {success,data} 形态（没有顶层 running 字段）。
+                val runtimeAlive = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean
+                    ?: data.has("isStreaming")
                 Result.success(
                     AgentRuntimeState(
                         percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
@@ -1878,9 +2052,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                         thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
                         isStreaming = isStreaming,
                         isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        isBashRunning = isBashRunning,
                         pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                        running = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean == true ||
-                            isStreaming || isPromptRunning,
+                        // 与 pi-web 前端同一口径：运行态 = 有活跃运行时 且（流式生成 / 提示词在跑 / bash 在跑）
+                        running = runtimeAlive && (isStreaming || isPromptRunning || isBashRunning),
+                        runtimeAlive = runtimeAlive,
                         autoCompactionEnabled =
                             data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
                         autoRetryEnabled =

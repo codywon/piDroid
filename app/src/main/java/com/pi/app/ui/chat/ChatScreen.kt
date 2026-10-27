@@ -12,6 +12,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -43,8 +44,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -107,6 +110,8 @@ fun ChatScreen(
     onLoadOlder: () -> Unit = {},
     isAgentBusy: Boolean,
     agentPhaseLabel: String? = null,
+    /** 首屏历史正在从 PC 拉取（只用于画骨架，不向用户展示具体状态文案） */
+    isLoadingSessionHistory: Boolean = false,
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
     queuedMessages: List<QueuedMessage> = emptyList(),
     isCompacting: Boolean = false,
@@ -120,6 +125,12 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    /** 读取一次 bash 的完整输出（GET /api/agent/{id}/bash-output?path=） */
+    onLoadBashOutput: suspend (String) -> Result<String> = { Result.success("") },
+    /** 文件元信息 + 文本内容 + 原始字节（图片预览） */
+    onLoadFileMeta: suspend (String) -> Result<FileMeta> = { Result.failure(Exception("未接入")) },
+    onLoadFileText: suspend (String) -> Result<String> = { Result.success("") },
+    onLoadFileBytes: suspend (String) -> Result<ByteArray> = { Result.failure(Exception("未接入")) },
     /** 读取工作目录的 git 变更（GET /api/git/status?cwd=） */
     onLoadGitStatus: suspend () -> Result<GitStatusResult> = { Result.success(GitStatusResult()) },
     /** 读取单个文件的 diff（GET /api/git/diff?cwd=&path=） */
@@ -144,6 +155,7 @@ fun ChatScreen(
 
     val theme = LocalAppTheme.current
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     // 未发送的内容按会话持久化：切换深色模式、改系统字号、被系统回收进程后，
     // 输入框里的文字不会消失（这些场景都会重建 Activity，remember 里的状态会清零）。
     val draftPrefs = remember(context) { AppPreferences(context) }
@@ -160,6 +172,13 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
+    // 通用查看器（bash 完整输出 / 文件内容 / 图片）：一个面板复用，避免各处各弹一种 UI
+    var artifactTitle by remember { mutableStateOf<String?>(null) }
+    var artifactText by remember { mutableStateOf<String?>(null) }
+    var artifactImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var artifactMeta by remember { mutableStateOf<String?>(null) }
+    var isLoadingArtifact by remember { mutableStateOf(false) }
+
     // Git 变更面板
     var showGitSheet by remember { mutableStateOf(false) }
     var gitStatus by remember { mutableStateOf<GitStatusResult?>(null) }
@@ -168,8 +187,7 @@ fun ChatScreen(
     var gitDiffTitle by remember { mutableStateOf<String?>(null) }
     var isLoadingGitDiff by remember { mutableStateOf(false) }
 
-    // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）
-    var showCommandSheet by remember { mutableStateOf(false) }
+    // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）：跟随输入框里的 "/" 自动展开
     var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
     var isLoadingCommands by remember { mutableStateOf(false) }
 
@@ -258,6 +276,56 @@ fun ChatScreen(
         }
     }
 
+
+    /** 打开「bash 完整输出」查看器 */
+    fun openBashOutput(outputPath: String, titleLabel: String) {
+        artifactTitle = titleLabel
+        artifactText = null
+        artifactImage = null
+        artifactMeta = null
+        isLoadingArtifact = true
+        coroutineScope.launch {
+            onLoadBashOutput(outputPath)
+                .onSuccess { artifactText = it.ifBlank { "（输出为空）" } }
+                .onFailure { err ->
+                    artifactText = "读取完整输出失败：${err.message}"
+                }
+            isLoadingArtifact = false
+        }
+    }
+
+    /** 打开「文件预览」查看器：图片直接看图，其余读文本 */
+    fun openFilePreview(absPath: String) {
+        val name = absPath.replace('\\', '/').substringAfterLast('/')
+        artifactTitle = name
+        artifactText = null
+        artifactImage = null
+        artifactMeta = null
+        isLoadingArtifact = true
+        coroutineScope.launch {
+            val meta = onLoadFileMeta(absPath).getOrNull()
+            artifactMeta = meta?.let { m ->
+                listOfNotNull(m.sizeLabel, m.language.ifBlank { null }, m.mime.ifBlank { null })
+                    .joinToString(" · ")
+            }
+            if (meta?.isImage == true) {
+                onLoadFileBytes(absPath)
+                    .onSuccess { bytes ->
+                        artifactImage = runCatching {
+                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                ?.asImageBitmap()
+                        }.getOrNull()
+                        if (artifactImage == null) artifactText = "图片解码失败（可能过大或格式不支持）"
+                    }
+                    .onFailure { artifactText = "读取图片失败：${it.message}" }
+            } else {
+                onLoadFileText(absPath)
+                    .onSuccess { artifactText = it.ifBlank { "（空文件）" } }
+                    .onFailure { artifactText = "读取文件失败：${it.message}" }
+            }
+            isLoadingArtifact = false
+        }
+    }
 
     // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
     // 两者互不重叠（更早记录只 prepend、主快照只按下标对账更新），这里直接拼接渲染；
@@ -849,40 +917,115 @@ fun ChatScreen(
                             }
                         }
 
+                        // ── 斜杠命令：在输入框里敲 "/" 就地展开命令列表 ──
+                        // （不再于输入框左侧常驻一个命令按钮：日常输入用不上，还挤占一行）
+                        val slashQuery = inputText
+                            .takeIf { it.startsWith("/") && !it.contains('\n') }
+                            ?.drop(1)
+                        val showSlashMenu = slashQuery != null && !slashQuery.contains(' ')
+                        val matchedCommands = remember(commands, slashQuery) {
+                            val q = slashQuery?.trim().orEmpty()
+                            if (q.isEmpty()) {
+                                commands.take(8)
+                            } else {
+                                commands.filter {
+                                    it.name.contains(q, ignoreCase = true) ||
+                                        it.description.contains(q, ignoreCase = true)
+                                }.take(8)
+                            }
+                        }
+                        LaunchedEffect(showSlashMenu) {
+                            if (showSlashMenu && commands.isEmpty() && !isLoadingCommands) {
+                                isLoadingCommands = true
+                                onLoadCommands().onSuccess { commands = it }
+                                isLoadingCommands = false
+                            }
+                        }
+                        if (showSlashMenu) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = theme.surfaceContainerLow,
+                                border = BorderStroke(1.dp, theme.outline),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 2.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                    if (isLoadingCommands && commands.isEmpty()) {
+                                        Row(
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(12.dp),
+                                                strokeWidth = 1.6.dp,
+                                                color = theme.primary
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("正在读取命令列表…", fontSize = 11.sp, color = theme.textMuted)
+                                        }
+                                    } else if (matchedCommands.isEmpty()) {
+                                        Text(
+                                            text = "没有匹配的命令",
+                                            fontSize = 11.5.sp,
+                                            color = theme.textMuted,
+                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                                        )
+                                    } else {
+                                        LazyColumn(modifier = Modifier.heightIn(max = 216.dp)) {
+                                            items(matchedCommands, key = { it.source + ":" + it.name }) { cmd ->
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .clickable {
+                                                            // 选中即填入输入框；尾部空格会让菜单自然收起，光标在命令后
+                                                            inputText = "/${cmd.name} "
+                                                        }
+                                                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "/${cmd.name}",
+                                                        fontSize = 12.5.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontWeight = FontWeight.SemiBold,
+                                                        color = theme.primary
+                                                    )
+                                                    if (cmd.description.isNotBlank()) {
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text(
+                                                            text = cmd.description,
+                                                            fontSize = 10.5.sp,
+                                                            color = theme.textMuted,
+                                                            maxLines = 1,
+                                                            overflow = TextOverflow.Ellipsis,
+                                                            modifier = Modifier.weight(1f)
+                                                        )
+                                                    } else if (cmd.sourceLabel.isNotBlank()) {
+                                                        Spacer(modifier = Modifier.weight(1f))
+                                                    }
+                                                    if (cmd.sourceLabel.isNotBlank()) {
+                                                        Spacer(modifier = Modifier.width(6.dp))
+                                                        Text(
+                                                            text = cmd.sourceLabel,
+                                                            fontSize = 9.5.sp,
+                                                            color = theme.textMuted
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .heightIn(min = 38.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // 左侧：圆形「/」命令按钮（扩展命令 / prompt 模板 / 技能）
-                            Surface(
-                                shape = CircleShape,
-                                color = theme.surfaceContainer,
-                                modifier = Modifier
-                                    .size(34.dp)
-                                    .clickable {
-                                        showCommandSheet = true
-                                        if (commands.isEmpty() && !isLoadingCommands) {
-                                            isLoadingCommands = true
-                                            coroutineScope.launch {
-                                                onLoadCommands().onSuccess { commands = it }
-                                                isLoadingCommands = false
-                                            }
-                                        }
-                                    }
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Code,
-                                        contentDescription = "斜杠命令",
-                                        modifier = Modifier.size(17.dp),
-                                        tint = theme.textSecondary
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(6.dp))
-
                             // 左侧：圆形附件按钮
                             Surface(
                                 shape = CircleShape,
@@ -1254,31 +1397,35 @@ fun ChatScreen(
                     }
                 }
 
-                // 历史尚未到达（首屏同步中）时给一个轻量占位，避免整屏空白
+                // 历史尚未到达时只画一条静默骨架（对齐 pi-web：不显示「正在同步历史…」类文案）
                 if (conversation.isEmpty()) {
                     item(key = "chat_empty_hint") {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 48.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        if (isLoadingSessionHistory) {
+                            ChatHistorySkeleton()
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 48.dp),
+                                contentAlignment = Alignment.Center
                             ) {
-                                if (isAgentBusy) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(14.dp),
-                                        strokeWidth = 1.8.dp,
-                                        color = theme.primary
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    if (isAgentBusy) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 1.8.dp,
+                                            color = theme.primary
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isAgentBusy) "等待模型返回首条消息…" else "还没有对话，发送指令开始",
+                                        fontSize = 12.sp,
+                                        color = theme.textMuted
                                     )
                                 }
-                                Text(
-                                    text = if (isAgentBusy) "正在同步会话历史…" else "还没有对话，发送指令开始",
-                                    fontSize = 12.sp,
-                                    color = theme.textMuted
-                                )
                             }
                         }
                     }
@@ -1392,6 +1539,94 @@ fun ChatScreen(
             },
             onDismissRequest = { showToolPresetSheet = false }
         )
+    }
+
+    // ── 通用查看器：bash 完整输出 / 文件文本 / 图片 ──
+    if (artifactTitle != null) {
+        ModalBottomSheet(
+            onDismissRequest = { artifactTitle = null },
+            containerColor = theme.surfaceContainerLow
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 20.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text(
+                    text = artifactTitle ?: "",
+                    fontSize = 13.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                artifactMeta?.let {
+                    Text(text = it, fontSize = 10.5.sp, color = theme.textMuted)
+                }
+
+                if (isLoadingArtifact) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 1.8.dp,
+                            color = theme.primary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在读取…", fontSize = 11.5.sp, color = theme.textMuted)
+                    }
+                } else {
+                    artifactImage?.let { bmp ->
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = artifactTitle,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                    artifactText?.let { body ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.surfaceContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            LazyColumn(modifier = Modifier.heightIn(max = 440.dp)) {
+                                item {
+                                    Text(
+                                        text = body,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 10.5.sp,
+                                        lineHeight = 14.sp,
+                                        color = theme.textPrimary,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(8.dp)
+                                            .horizontalScroll(rememberScrollState())
+                                    )
+                                }
+                            }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
+                        ) {
+                            Text(
+                                text = "复制全部",
+                                fontSize = 11.5.sp,
+                                color = theme.primary,
+                                modifier = Modifier.clickable {
+                                    clipboardManager.setText(AnnotatedString(body))
+                                    android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if (showGitSheet) {
@@ -1560,90 +1795,6 @@ fun ChatScreen(
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (showCommandSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showCommandSheet = false },
-            containerColor = theme.surfaceContainerLow
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(
-                    text = "斜杠命令 · ${commands.size}",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = theme.textPrimary
-                )
-                Text(
-                    text = "来自 PC 的扩展命令 / prompt 模板 / 技能（agent get_commands）",
-                    fontSize = 10.5.sp,
-                    color = theme.textMuted
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                if (isLoadingCommands) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 1.8.dp,
-                            color = theme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("正在读取命令列表…", fontSize = 11.5.sp, color = theme.textMuted)
-                    }
-                } else if (commands.isEmpty()) {
-                    Text("PC 上暂无可用命令", fontSize = 11.5.sp, color = theme.textMuted)
-                } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 380.dp)) {
-                        items(commands, key = { it.source + ":" + it.name }) { cmd ->
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        // 选中即填入输入框，光标停在命令后面的空格处
-                                        inputText = "/${cmd.name} "
-                                        showCommandSheet = false
-                                    }
-                                    .padding(vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(2.dp)
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "/${cmd.name}",
-                                        fontSize = 12.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = theme.primary
-                                    )
-                                    if (cmd.sourceLabel.isNotBlank()) {
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text(
-                                            text = cmd.sourceLabel,
-                                            fontSize = 9.5.sp,
-                                            color = theme.textMuted
-                                        )
-                                    }
-                                }
-                                if (cmd.description.isNotBlank()) {
-                                    Text(
-                                        text = cmd.description,
-                                        fontSize = 10.5.sp,
-                                        color = theme.textMuted,
-                                        maxLines = 2,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
                                 }
                             }
                         }
@@ -1902,7 +2053,11 @@ fun ChatMessageItem(
                         expanded = isToolExpanded || tool.requiresApproval,
                         onToggle = { isToolExpanded = !isToolExpanded },
                         onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
-                        onApproveTool = onApproveTool
+                        onApproveTool = onApproveTool,
+                        onOpenFullOutput = tool.fullOutputPath?.let { p ->
+                            { openBashOutput(p, "${tool.toolName} 完整输出") }
+                        },
+                        onOpenFile = tool.filePath?.let { p -> { openFilePreview(p) } }
                     )
                 }
             }
@@ -2122,7 +2277,11 @@ fun PiWebToolCallCard(
     expanded: Boolean,
     onToggle: () -> Unit,
     onCopyText: (String) -> Unit,
-    onApproveTool: (approved: Boolean) -> Unit
+    onApproveTool: (approved: Boolean) -> Unit,
+    /** 有 fullOutputPath 时提供「完整输出」入口（bash 长命令聊天里只有截断预览） */
+    onOpenFullOutput: (() -> Unit)? = null,
+    /** 有绝对文件路径时提供「查看文件」入口 */
+    onOpenFile: (() -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     val hasResult = !tool.output.isNullOrBlank() || !tool.isRunning
@@ -2367,12 +2526,33 @@ fun PiWebToolCallCard(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = if (tool.isError) Color(0xFFEF4444) else theme.textMuted
                             )
-                            Text(
-                                text = "复制输出",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.primary,
-                                modifier = Modifier.clickable { onCopyText(tool.output) }
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                onOpenFile?.let { open ->
+                                    Text(
+                                        text = "查看文件",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = theme.primary,
+                                        modifier = Modifier.clickable { open() }
+                                    )
+                                }
+                                onOpenFullOutput?.let { open ->
+                                    Text(
+                                        text = "完整输出",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = theme.primary,
+                                        modifier = Modifier.clickable { open() }
+                                    )
+                                }
+                                Text(
+                                    text = "复制输出",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = theme.primary,
+                                    modifier = Modifier.clickable { onCopyText(tool.output) }
+                                )
+                            }
                         }
                         Surface(
                             color = theme.background,
@@ -2470,9 +2650,58 @@ private fun HistoryTopLoader(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = if (hiddenCount > 0) "更早的 $hiddenCount 轮还没加载 · 上滑加载" else "上滑加载更早的记录",
+                text = if (hiddenCount > 0) "上滑加载更早的 $hiddenCount 轮" else "上滑加载更早的记录",
                 fontSize = 11.sp,
                 color = theme.textMuted
+            )
+        }
+    }
+}
+
+/**
+ * 首屏历史骨架：跟 pi-web 一样，加载时只给一个安静的形状占位，不堆状态文案。
+ * 纯静态，不加动画帧，不干扰阅读。
+ */
+@Composable
+private fun ChatHistorySkeleton() {
+    val theme = LocalAppTheme.current
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // 用户提问（靠右的短条）
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.62f)
+                .align(Alignment.End)
+                .height(30.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(theme.surfaceContainer)
+        )
+        // 助手回复（靠左的多行条）
+        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.92f)
+                    .height(11.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(theme.surfaceContainer)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.78f)
+                    .height(11.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(theme.surfaceContainer)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(0.55f)
+                    .height(11.dp)
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(theme.surfaceContainer)
             )
         }
     }

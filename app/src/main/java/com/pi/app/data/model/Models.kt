@@ -86,6 +86,18 @@ data class Session(
 }
 
 /**
+ * GET /api/agent/running 的轻量运行态快照（实测约 230 字节）。
+ *
+ * 列表页/会话页的实时对账都用它，不再每几秒拉 200KB+ 的 /api/sessions：
+ * 只有 `sessionListVersion` 真的变了，才需要重新拉一次完整会话列表。
+ */
+data class RunningSessionsSnapshot(
+    val sessionListVersion: Long = 0L,
+    val runningIds: Set<String> = emptySet(),
+    val awaitingInputIds: Set<String> = emptySet()
+)
+
+/**
  * pi 凭据库中某个 Provider 的真实配置状态（GET /api/auth/providers → apiKeyProviders）。
  *
  * @param configured 是否已配置可用凭据
@@ -127,9 +139,19 @@ data class AgentRuntimeState(
     val thinkingLevel: String? = null,
     val isStreaming: Boolean = false,
     val isCompacting: Boolean = false,
+    val isBashRunning: Boolean = false,
     val pendingMessageCount: Int = 0,
-    /** GET /api/sessions/{id}/state 顶层的 running（等价于 /api/sessions 的 runningSessionIds 判定） */
+    /**
+     * 该会话在 pi-web 里是否**正在执行**（唯一可信的任务运行态）。
+     *
+     * 口径与 pi-web 前端完全一致：`running && (isStreaming || isPromptRunning)`。
+     * 注意 `GET /api/sessions/{id}/state` 顶层的 `running` **不是**运行态，它只表示
+     * 「pi-web 内存里有没有一个活着的 agent 进程」（会话被 PC 打开过就会是 true）。
+     * 早前把它当成运行态，导致所有打开过的会话在手机上永远显示「正在等待模型…」。
+     */
     val running: Boolean = false,
+    /** 顶层 running：pi-web 侧是否存在活跃 agent 运行时（不代表正在生成） */
+    val runtimeAlive: Boolean = false,
     /** pi 的自动上下文压缩开关（agent get_state.autoCompactionEnabled） */
     val autoCompactionEnabled: Boolean = false,
     /** pi 的自动重试开关（agent get_state.autoRetryEnabled） */
@@ -207,6 +229,21 @@ data class SlashCommand(
             "prompt" -> "模板"
             "skill" -> "技能"
             else -> source
+        }
+}
+
+/** 文件元信息（GET /api/files/<path>?type=meta） */
+data class FileMeta(
+    val size: Long = 0L,
+    val language: String = "",
+    val mime: String = ""
+) {
+    val isImage: Boolean get() = mime.startsWith("image/")
+    val sizeLabel: String
+        get() = when {
+            size >= 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", size / 1024.0 / 1024.0)
+            size >= 1024 -> String.format(java.util.Locale.US, "%.1f KB", size / 1024.0)
+            else -> "$size B"
         }
 }
 
@@ -526,8 +563,29 @@ data class ToolCallInfo(
     val isError: Boolean = false,
     val isRunning: Boolean = false,
     val requiresApproval: Boolean = false,
-    val isApproved: Boolean = false
+    val isApproved: Boolean = false,
+    /** 长输出的临时文件路径（pi 的 fullOutputPath），可用它取完整输出 */
+    val fullOutputPath: String? = null
 ) {
+    /**
+     * 从工具入参里认出「这次操作的文件绝对路径」，用于手机端一键预览。
+     * 只认 read/edit/write 这类明确带路径的工具，且必须以 / 或盘符开头，避免误判。
+     */
+    val filePath: String?
+        get() {
+            if (toolName !in PATH_TOOLS) return null
+            val candidate = fields.firstOrNull { (k, _) ->
+                k.equals("path", true) || k.equals("filePath", true) ||
+                    k.equals("file_path", true) || k.equals("target", true)
+            }?.second?.trim()?.trim('"') ?: return null
+            val isAbs = candidate.startsWith("/") || Regex("^[A-Za-z]:[\\\\/]").containsMatchIn(candidate)
+            return candidate.takeIf { isAbs && it.isNotBlank() }
+        }
+
+    companion object {
+        private val PATH_TOOLS = setOf("read", "edit", "write", "ls", "find", "grep")
+    }
+
     val formattedDuration: String?
         get() {
             if (durationMs < 100L) return null

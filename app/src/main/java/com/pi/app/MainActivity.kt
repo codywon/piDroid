@@ -36,6 +36,8 @@ import com.pi.app.ui.updater.UpdateUiState
 import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateCheckResult
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -231,6 +233,10 @@ class MainActivity : ComponentActivity() {
         }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         var isLoadingSessions by remember { mutableStateOf(false) }
+        // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
+        var isLoadingSessionHistory by remember { mutableStateOf(false) }
+        // /api/agent/running 的 sessionListVersion：只有它变了才值得重拉完整会话列表
+        var lastSessionListVersion by remember { mutableStateOf(0L) }
 
         var dynamicCatalog by remember { mutableStateOf(DynamicModelCatalog(emptyList(), emptyMap())) }
         var currentDefaultModelId by remember { mutableStateOf(prefs.defaultModelId) }
@@ -386,6 +392,44 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
+         * 把 /api/agent/running 的轻量快照合入本地列表（不重建列表，不做无意义的状态拷贝）。
+         *
+         * pi-web 的 `runningSessionIds` 才是「任务真的在跑」的真源，会话条目自带的
+         * `active` 字段服务端已经不再下发。
+         */
+        fun applyRunningSnapshot(snap: RunningSessionsSnapshot) {
+            fun merge(list: List<Session>): List<Session> = list.map { s ->
+                val running = snap.runningIds.contains(s.id)
+                val awaiting = snap.awaitingInputIds.contains(s.id)
+                if (s.isRunning == running && s.awaitingInput == awaiting) s
+                else s.copy(isRunning = running, awaitingInput = awaiting)
+            }
+            sessions = merge(sessions)
+            cachedSessions = merge(cachedSessions)
+            currentSession?.let { cur ->
+                val running = snap.runningIds.contains(cur.id)
+                val awaiting = snap.awaitingInputIds.contains(cur.id)
+                if (cur.isRunning != running || cur.awaitingInput != awaiting) {
+                    currentSession = cur.copy(isRunning = running, awaitingInput = awaiting)
+                }
+            }
+        }
+
+        /** 本会话刚结束/被停止：立刻把列表与当前会话的运行态置回已完成，不必等下一轮对账。 */
+        fun markSessionNotRunning(sessionId: String) {
+            fun clear(list: List<Session>): List<Session> = list.map { s ->
+                if (s.id == sessionId && (s.isRunning || s.active)) s.copy(isRunning = false, active = false) else s
+            }
+            sessions = clear(sessions)
+            cachedSessions = clear(cachedSessions)
+            currentSession?.let { cur ->
+                if (cur.id == sessionId && (cur.isRunning || cur.active)) {
+                    currentSession = cur.copy(isRunning = false, active = false)
+                }
+            }
+        }
+
+        /**
          * 上滑触顶时向 PC 拉取「更早的一页」记录（游标 = 当前最早一条的 entryId）。
          *
          * 页与页之间由服务端 excludeLeaf 保证不重叠；这里仍按「角色+时间戳+内容哈希」再兜一层去重，
@@ -507,6 +551,7 @@ class MainActivity : ComponentActivity() {
             isToolExecuting = false
             agentPhaseLabel = null
             consecutiveIdlePolls = 0
+            markSessionNotRunning(sessionId)
             keepAliveManager.releaseWakeLock()
             syncPersistentForegroundService(isBusy = false, project = currentProject)
 
@@ -575,7 +620,12 @@ class MainActivity : ComponentActivity() {
             // 运行态改由 /api/sessions/{id}/state 判定（39KB，实测 9ms），
             // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
             // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
-            val runtimeResult = apiClient.getAgentState(sessionId)
+            // 注意：状态与历史快照并行拉取（以前串行等待状态，多花一个 RTT 才出正文）。
+            val (runtimeResult, histResult) = coroutineScope {
+                val stateAsync = async { apiClient.getAgentState(sessionId) }
+                val histAsync = async { apiClient.getSessionDetail(sessionId) }
+                stateAsync.await() to histAsync.await()
+            }
             val runtime = runtimeResult.getOrNull()
             val runningResult = if (runtime != null) {
                 Result.success(runtime.running)
@@ -597,7 +647,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            apiClient.getSessionDetail(sessionId).onSuccess { hist ->
+            histResult.onSuccess { hist ->
                 isGatewayOnline = true
                 if (hist.messages.isNotEmpty()) {
                     val synced = hist.messages.mapIndexed { idx, item ->
@@ -745,6 +795,8 @@ class MainActivity : ComponentActivity() {
                     }
                     currentThinkingLevel = hist.thinkingLevel
                 }
+                // 首屏正文已真正落进 messages，可以收起骨架了
+                isLoadingSessionHistory = false
             }
 
             if (serverRunning) {
@@ -1104,6 +1156,14 @@ class MainActivity : ComponentActivity() {
                             if (prefs.hapticsEnabled) {
                                 hapticsAndNotify.vibrateApprovalRequired()
                             }
+                            // 高危命令待审批：独立高优先级通知，点一下直达该会话（不看任务完成通知开关）
+                            hapticsAndNotify.notifyApprovalNeeded(
+                                sessionTitle = currentSession?.displayTitle ?: "当前任务",
+                                project = currentProject,
+                                toolName = event.effectiveToolName,
+                                commandPreview = event.preview ?: event.effectiveCommand ?: "",
+                                sessionId = sessionId
+                            )
                             agentPhaseLabel = "等待人工安全审批..."
                             messages.add(
                                 ChatItem(
@@ -1179,8 +1239,11 @@ class MainActivity : ComponentActivity() {
                 earlierTurnCount = cached.turnsBefore
                 olderCursor = cached.oldestEntryId
                 olderLeafId = cached.leafId
+                isLoadingSessionHistory = false
             } else {
                 messages.clear()
+                // 没有缓存才需要等一次网络；期间只画一具骨架，不显示「正在同步…」类文案
+                isLoadingSessionHistory = true
             }
 
             startListeningEvents(session.id, session.isRunning)
@@ -1196,14 +1259,17 @@ class MainActivity : ComponentActivity() {
             val target = sessions.firstOrNull { it.id == pendingId }
             if (target != null) {
                 pendingTargetSessionId = null
+                // 从「完成 / 待审批」通知点进来：直接看最新运行结果，不要停在历史阅读位置
+                hapticsAndNotify.clearNotification()
                 openSessionWithHistory(target)
             }
         }
 
-        // 全场景实时同步循环：
-        // 1) 在首页时每 4 秒静默刷新会话状态（包含正在运行的任务 runningSessionIds 动态图标）与网关健康度
-        // 2) 在任务详情页时：无论当前是运行态还是空闲态，均保持轻量级增量对账（运行中 1.5s，空闲中 2.5s），
-        //    确保在 PC 端发消息或运行工具时，手机端无需点击右上角同步按钮即可自动捕获并实时流式呈现
+        // 全场景实时同步循环（与 pi-web 同一套机制：轻量 running 快照 + SSE 实时流）：
+        // 1) 首页：每 2.5s 只拉 /api/agent/running（约 230 字节）对账 runningSessionIds，
+        //    只有 sessionListVersion 变化时才重拉完整会话列表（240KB），不再每 4s 全量。
+        // 2) 会话页：运行中 1.5s 一轮快照；空闲时也只先拉轻量快照，只有「本会话在跑」
+        //    或列表版本变化时才拉完整历史，避免对着一个静止的会话每 2.5s 下载 200KB。
         LaunchedEffect(prefs.isConfigured, currentSession?.id) {
             if (!prefs.isConfigured) return@LaunchedEffect
             val activeSession = currentSession
@@ -1211,14 +1277,43 @@ class MainActivity : ComponentActivity() {
                 loadSessions(silent = true)
                 loadCapabilitiesAndModels()
                 while (true) {
-                    kotlinx.coroutines.delay(4_000L)
-                    loadSessions(silent = true)
+                    kotlinx.coroutines.delay(2_500L)
+                    val snap = apiClient.getRunningSessions().getOrNull()
+                    if (snap == null) {
+                        // 旧版网关没有 /api/agent/running：退回全量列表
+                        loadSessions(silent = true)
+                        continue
+                    }
+                    applyRunningSnapshot(snap)
+                    if (lastSessionListVersion == 0L) {
+                        // 首轮只记基准版本，不额外重拉一次完整列表
+                        lastSessionListVersion = snap.sessionListVersion
+                    } else if (snap.sessionListVersion != 0L && snap.sessionListVersion != lastSessionListVersion) {
+                        lastSessionListVersion = snap.sessionListVersion
+                        loadSessions(silent = true)
+                    }
                 }
             } else {
+                var lastDetailSyncAt = System.currentTimeMillis()
                 while (true) {
-                    val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 2_500L
+                    val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 3_000L
                     kotlinx.coroutines.delay(delayMs)
-                    syncSessionSnapshot(activeSession.id, restoreModelMeta = false, allowCompletionTransition = true)
+                    val snap = apiClient.getRunningSessions().getOrNull()
+                    if (snap != null) applyRunningSnapshot(snap)
+                    val versionChanged = snap != null && snap.sessionListVersion != 0L &&
+                        lastSessionListVersion != 0L && snap.sessionListVersion != lastSessionListVersion
+                    if (snap != null && lastSessionListVersion == 0L) {
+                        lastSessionListVersion = snap.sessionListVersion
+                    } else if (versionChanged && snap != null) {
+                        lastSessionListVersion = snap.sessionListVersion
+                    }
+                    val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
+                    val shouldSyncDetail = isAgentBusy || serverSaysRunning || versionChanged ||
+                        System.currentTimeMillis() - lastDetailSyncAt > 15_000L
+                    if (shouldSyncDetail) {
+                        lastDetailSyncAt = System.currentTimeMillis()
+                        syncSessionSnapshot(activeSession.id, restoreModelMeta = false, allowCompletionTransition = true)
+                    }
                 }
             }
         }
@@ -1606,6 +1701,7 @@ class MainActivity : ComponentActivity() {
                     onLoadOlder = { loadOlderHistory() },
                     isAgentBusy = isAgentBusy,
                     agentPhaseLabel = agentPhaseLabel,
+                    isLoadingSessionHistory = isLoadingSessionHistory,
                     sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
                     isCompacting = isCompacting,
@@ -1649,6 +1745,7 @@ class MainActivity : ComponentActivity() {
                         isAgentBusy = false
                         isAutoRetrying = false
                         isToolExecuting = false
+                        isLoadingSessionHistory = false
                         agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
@@ -1706,12 +1803,19 @@ class MainActivity : ComponentActivity() {
                                 isAutoRetrying = false
                                 isToolExecuting = false
                                 agentPhaseLabel = null
+                                markSessionNotRunning(currentSession!!.id)
                                 keepAliveManager.releaseWakeLock()
                                 syncPersistentForegroundService(isBusy = false, project = currentProject)
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
+                    onLoadBashOutput = { outputPath ->
+                        apiClient.getBashFullOutput(currentSession?.id ?: "", outputPath)
+                    },
+                    onLoadFileMeta = { path -> apiClient.getFileMeta(path) },
+                    onLoadFileText = { path -> apiClient.getFileText(path) },
+                    onLoadFileBytes = { path -> apiClient.getFileBytes(path) },
                     onLoadGitStatus = {
                         apiClient.getGitStatus(currentSession?.cwd ?: "")
                     },
@@ -2050,6 +2154,10 @@ class MainActivity : ComponentActivity() {
                                 currentSession = newSession
                                 currentProject = newSession.workspaceName
                                 messages.clear()
+                                isLoadingSessionHistory = false
+                                olderMessages = emptyList()
+                                hasEarlierOnServer = false
+                                earlierTurnCount = 0
                                 startListeningEvents(realSessionId)
                                 loadSessions(silent = true)
                             }.onFailure { err ->
