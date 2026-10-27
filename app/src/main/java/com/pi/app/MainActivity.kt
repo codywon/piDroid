@@ -657,6 +657,9 @@ class MainActivity : ComponentActivity() {
                             isGatewayOnline = true
                             if (event.isStreaming == true) {
                                 markAgentRunActive(phase = agentPhaseLabel ?: "正在接收实时流...")
+                            } else if (!isToolExecuting) {
+                                isAgentBusy = false
+                                agentPhaseLabel = null
                             }
                         }
                         "reconnected_sync" -> {
@@ -705,8 +708,12 @@ class MainActivity : ComponentActivity() {
                                 markAgentRunActive(phase = event.phaseLabel ?: "重试成功，正在继续...")
                             }
                         }
-                        "auto_compaction_start", "auto_compaction_end" -> {
+                        "auto_compaction_start" -> {
                             markAgentRunActive(phase = event.phaseLabel ?: "正在自动压缩上下文...")
+                        }
+                        "auto_compaction_end" -> {
+                            agentPhaseLabel = null
+                            syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = false)
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
                             val chunk = event.effectiveText
@@ -989,16 +996,31 @@ class MainActivity : ComponentActivity() {
             completionSettleJob = null
             currentSession = session
             currentProject = session.workspaceName
-            messages.clear()
             queuedMessages.clear()
             isAutoRetrying = false
             isToolExecuting = false
             consecutiveIdlePolls = 0
-            hasNotifiedCompletionForCurrentRun = !session.active
-            isAgentBusy = session.active
-            agentPhaseLabel = if (session.active) "正在等待模型..." else null
+            hasNotifiedCompletionForCurrentRun = !session.isRunning
+            isAgentBusy = session.isRunning
+            agentPhaseLabel = if (session.isRunning) "正在等待模型..." else null
 
-            startListeningEvents(session.id, session.active)
+            // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
+            val cached = apiClient.getCachedSessionDetail(session.id)
+            if (cached != null && cached.messages.isNotEmpty()) {
+                messages.clear()
+                messages.addAll(cached.messages)
+                selectedModel = ModelInfo(
+                    id = cached.modelId,
+                    name = cached.modelId,
+                    provider = cached.provider
+                )
+                currentThinkingLevel = cached.thinkingLevel
+                tokenStats = cached.stats
+            } else {
+                messages.clear()
+            }
+
+            startListeningEvents(session.id, session.isRunning)
 
             lifecycleScope.launch {
                 syncSessionSnapshot(session.id, restoreModelMeta = true, allowCompletionTransition = false)

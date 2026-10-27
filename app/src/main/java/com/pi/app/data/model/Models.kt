@@ -48,6 +48,7 @@ data class Session(
     @SerializedName("tokenUsage") val tokenUsage: Long = 0L,
     @SerializedName("cost") val cost: Double = 0.0,
     @SerializedName("active") val active: Boolean = false,
+    val isRunning: Boolean = false,
     val awaitingInput: Boolean = false
 ) {
     val displayTitle: String

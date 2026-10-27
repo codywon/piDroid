@@ -35,7 +35,8 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 session.tokenUsage.toString(),
                 session.cost.toString(),
                 session.active.toString(),
-                session.awaitingInput.toString()
+                session.awaitingInput.toString(),
+                session.isRunning.toString()
             )
         }
     },
@@ -61,7 +62,8 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 tokenUsage = text(12).toLongOrNull() ?: 0L,
                 cost = text(13).toDoubleOrNull() ?: 0.0,
                 active = text(14).toBooleanStrictOrNull() ?: false,
-                awaitingInput = text(15).toBooleanStrictOrNull() ?: false
+                awaitingInput = text(15).toBooleanStrictOrNull() ?: false,
+                isRunning = text(16).toBooleanStrictOrNull() ?: false
             )
         }
     }

@@ -52,6 +52,18 @@ data class DynamicModelCatalog(
 
 class PiApiClient(private val prefs: AppPreferences) {
     private val gson = Gson()
+    private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
+
+    fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
+
+    fun clearSessionCache(sessionId: String? = null) {
+        if (sessionId == null) {
+            sessionHistoryCache.clear()
+        } else {
+            sessionHistoryCache.remove(sessionId)
+        }
+    }
+
     private val client = OkHttpClient.Builder()
         .addInterceptor(AuthInterceptor(prefs))
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -128,7 +140,7 @@ class PiApiClient(private val prefs: AppPreferences) {
 
                     val enrichedList = rawList.map { s ->
                         s.copy(
-                            active = s.active || runningIds.contains(s.id),
+                            isRunning = runningIds.contains(s.id),
                             awaitingInput = s.awaitingInput || awaitingIds.contains(s.id)
                         )
                     }
@@ -147,7 +159,7 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 对标 pi-web MessageView：配对 toolCall 与 toolResult，提取参数预览与每回合 Token 用量
     // ==========================================
 
-    suspend fun getSessionDetail(sessionId: String, tail: Int = 5000): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
+    suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId?tail=$tail&limit=$tail").get().build()
@@ -196,9 +208,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                     ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
 
                 if (initialHasMore) {
-                    // 优先直接请求大窗口 context
-                    val pagedMessages = fetchFullContextPages(baseUrl, sessionId, leafId, tail, initialCtxMsgs, ctxObj)
-                    for (m in pagedMessages) rawContextMessages.add(m)
+                    if (tail > 100) {
+                        // 仅当明确需要加载大批量早期历史时才执行向上翻页拉取，首屏极速秒开模式仅使用当前返回的尾部
+                        val pagedMessages = fetchFullContextPages(baseUrl, sessionId, leafId, tail, initialCtxMsgs, ctxObj)
+                        for (m in pagedMessages) rawContextMessages.add(m)
+                    } else if (initialCtxMsgs != null) {
+                        for (m in initialCtxMsgs) rawContextMessages.add(m)
+                    }
                 } else if (initialCtxMsgs != null) {
                     for (m in initialCtxMsgs) rawContextMessages.add(m)
                 }
@@ -217,7 +233,27 @@ class PiApiClient(private val prefs: AppPreferences) {
                 } else JsonArray()
 
                 val chosenMessages = if (normalizedEntryMessages.size() > rawContextMessages.size()) {
-                    normalizedEntryMessages
+                    if (tail <= 100 && normalizedEntryMessages.size() > tail) {
+                        // 首屏快速分段：默认截取最近 tail 条；若尾部全是工具调用，向前延伸以确保包含用户对话
+                        var startIndex = (normalizedEntryMessages.size() - tail).coerceAtLeast(0)
+                        val nonToolCount = (startIndex until normalizedEntryMessages.size()).count { idx ->
+                            val el = normalizedEntryMessages.get(idx)
+                            if (el.isJsonObject) {
+                                val r = el.asJsonObject.get("role")?.takeIf { !it.isJsonNull }?.asString
+                                r == "user" || r == "assistant"
+                            } else false
+                        }
+                        if (nonToolCount < 3 && startIndex > 0) {
+                            startIndex = (startIndex - 40).coerceAtLeast(0)
+                        }
+                        val sliced = JsonArray()
+                        for (i in startIndex until normalizedEntryMessages.size()) {
+                            sliced.add(normalizedEntryMessages.get(i))
+                        }
+                        sliced
+                    } else {
+                        normalizedEntryMessages
+                    }
                 } else {
                     rawContextMessages
                 }
@@ -243,7 +279,19 @@ class PiApiClient(private val prefs: AppPreferences) {
 
                 if (json.has("stats") && json.get("stats").isJsonObject) {
                     val stats = json.getAsJsonObject("stats")
-                    cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                    cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.let { costElem ->
+                        if (costElem.isJsonPrimitive) {
+                            runCatching { costElem.asDouble }.getOrDefault(0.0)
+                        } else if (costElem.isJsonObject) {
+                            val cObj = costElem.asJsonObject
+                            val total = cObj.get("total") ?: cObj.get("cost")
+                            runCatching { total?.asDouble }.getOrNull() ?: runCatching {
+                                val inp = cObj.get("input")?.asDouble ?: 0.0
+                                val out = cObj.get("output")?.asDouble ?: 0.0
+                                inp + out
+                            }.getOrDefault(0.0)
+                        } else 0.0
+                    } ?: 0.0
                     if (stats.has("tokens") && stats.get("tokens").isJsonObject) {
                         val tok = stats.getAsJsonObject("tokens")
                         inTokens = tok.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
@@ -284,13 +332,15 @@ class PiApiClient(private val prefs: AppPreferences) {
                     cost = cost
                 )
 
-                Result.success(SessionHistoryData(
+                val historyData = SessionHistoryData(
                     messages = chatItems,
                     provider = currentProvider,
                     modelId = currentModelId,
                     thinkingLevel = currentThinkingLevel,
                     stats = tokenStats
-                ))
+                )
+                sessionHistoryCache[sessionId] = historyData
+                Result.success(historyData)
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -551,7 +601,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                     ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
                     ?: "tool"
                 val contentElem = msgObj.get("content") ?: msgObj.get("output")
-                val tOut = extractTextFromContent(contentElem)
+                val rawOut = extractTextFromContent(contentElem)
+                val tOut = if (rawOut.length > 12000) {
+                    rawOut.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
+                } else rawOut
                 val tMedia = extractMediaFromContent(contentElem, tOut)
                 val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                 val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
@@ -738,7 +791,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                             ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
                             ?: "tool"
                         val contentElem = msgObj.get("content") ?: msgObj.get("output")
-                        val toolOutput = extractTextFromContent(contentElem)
+                        val rawToolOutput = extractTextFromContent(contentElem)
+                        val toolOutput = if (rawToolOutput.length > 12000) {
+                            rawToolOutput.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
+                        } else rawToolOutput
                         val toolMedia = extractMediaFromContent(contentElem, toolOutput)
                         val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                         val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
@@ -1914,10 +1970,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                                 val sObj = el.asJsonObject
                                 val id = sObj.get("id")?.takeIf { !it.isJsonNull }?.asString
                                 if (id == sessionId) {
-                                    val active = sObj.get("active")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                                     val isRunning = sObj.get("isRunning")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                                     val isStreaming = sObj.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                    return@withContext Result.success(active || isRunning || isStreaming)
+                                    return@withContext Result.success(isRunning || isStreaming)
                                 }
                             }
                         }

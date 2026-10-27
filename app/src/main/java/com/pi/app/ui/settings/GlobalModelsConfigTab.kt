@@ -183,7 +183,7 @@ fun GlobalModelsConfigTab(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(horizontal = 12.dp, vertical = 6.dp)
-                    .padding(bottom = 76.dp),
+                    .padding(bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 // 1. 顶栏概览与操作
@@ -317,13 +317,19 @@ fun GlobalModelsConfigTab(
                             ) {
                                 ThinkingLevel.entries.forEach { level ->
                                     val isSel = currentDefaultThinkingLevel == level
+                                    val levelWeight = when (level.value) {
+                                        "minimal" -> 1.45f
+                                        "medium" -> 1.32f
+                                        "xhigh" -> 1.15f
+                                        else -> 0.92f
+                                    }
                                     Surface(
                                         shape = RoundedCornerShape(6.dp),
                                         color = if (isSel) theme.surfaceContainerLow else Color.Transparent,
                                         border = if (isSel) BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.4f)) else null,
                                         shadowElevation = if (isSel) 1.dp else 0.dp,
                                         modifier = Modifier
-                                            .weight(1f)
+                                            .weight(levelWeight)
                                             .clickable { onSetDefaultThinkingLevel(level) }
                                     ) {
                                         Box(
@@ -335,7 +341,9 @@ fun GlobalModelsConfigTab(
                                                 fontSize = 10.5.sp,
                                                 fontFamily = FontFamily.Monospace,
                                                 fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
-                                                color = if (isSel) theme.primary else theme.textSecondary
+                                                color = if (isSel) theme.primary else theme.textSecondary,
+                                                maxLines = 1,
+                                                softWrap = false
                                             )
                                         }
                                     }
@@ -471,7 +479,7 @@ fun GlobalModelsConfigTab(
                                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                                 ) {
                                                     Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(11.dp), tint = theme.textPrimary)
-                                                    Text("编辑", fontSize = 10.5.sp, color = theme.textPrimary)
+                                                    Text("编辑", fontSize = 10.5.sp, color = theme.textPrimary, maxLines = 1, softWrap = false)
                                                 }
                                             }
 
@@ -487,7 +495,7 @@ fun GlobalModelsConfigTab(
                                                     horizontalArrangement = Arrangement.spacedBy(3.dp)
                                                 ) {
                                                     Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(11.dp), tint = Color(0xFFEF5350))
-                                                    Text("删除", fontSize = 10.5.sp, color = Color(0xFFEF5350), fontWeight = FontWeight.Medium)
+                                                    Text("删除", fontSize = 10.5.sp, color = Color(0xFFEF5350), fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                                                 }
                                             }
                                         }
@@ -536,29 +544,34 @@ fun GlobalModelsConfigTab(
                                         }
                                     }
 
-                                    // API Key 状态与两枚快捷操作胶囊 (彻底消灭冗余重复按钮)
+                                    // API Key 状态与两枚快捷操作胶囊 (重构为独立双列均衡按钮栏，彻底消除竖条挤压)
                                     val hasKey = currentProvider.apiKey.isNotBlank()
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(text = "API Key: ", fontSize = 11.sp, color = theme.textMuted)
+                                        Text(
+                                            text = if (hasKey) "•••••••• (已配置)" else "未配置 API Key (可选)",
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 11.sp,
+                                            color = if (hasKey) Color(0xFF10B981) else theme.textMuted
+                                        )
+                                    }
+
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                            Text(text = "API Key: ", fontSize = 11.sp, color = theme.textMuted)
-                                            Text(
-                                                text = if (hasKey) "•••••••• (已配置)" else "未配置 API Key (可选)",
-                                                fontFamily = FontFamily.Monospace,
-                                                fontSize = 11.sp,
-                                                color = if (hasKey) Color(0xFF10B981) else theme.textMuted
-                                            )
-                                        }
-
-                                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = theme.primary.copy(alpha = 0.12f),
-                                                border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.4f)),
-                                                modifier = Modifier.clickable {
+                                        Surface(
+                                            shape = RoundedCornerShape(7.dp),
+                                            color = theme.primary.copy(alpha = 0.12f),
+                                            border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.4f)),
+                                            modifier = Modifier
+                                                .weight(1.15f)
+                                                .clickable {
                                                     showDiscoverDialog = true
                                                     isDiscovering = true
                                                     discoverError = null
@@ -578,22 +591,25 @@ fun GlobalModelsConfigTab(
                                                         }
                                                     }
                                                 }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(12.dp))
-                                                    Text("从 API 发现模型", fontSize = 10.5.sp, color = theme.primary, fontWeight = FontWeight.SemiBold)
-                                                }
+                                                Icon(Icons.Default.Bolt, contentDescription = null, tint = theme.primary, modifier = Modifier.size(13.dp))
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text("⚡ 从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
                                             }
+                                        }
 
-                                            Surface(
-                                                shape = RoundedCornerShape(6.dp),
-                                                color = theme.surfaceContainerHigh,
-                                                border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
-                                                modifier = Modifier.clickable {
+                                        Surface(
+                                            shape = RoundedCornerShape(7.dp),
+                                            color = theme.surfaceContainerHigh,
+                                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable {
                                                     var newId = "custom-model"
                                                     var idx = 1
                                                     while (currentProvider.models.any { it.id == newId }) {
@@ -607,15 +623,15 @@ fun GlobalModelsConfigTab(
                                                     testResultText = null
                                                     isTestSuccess = null
                                                 }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Row(
-                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                                ) {
-                                                    Icon(Icons.Default.Add, contentDescription = null, tint = theme.textPrimary, modifier = Modifier.size(12.dp))
-                                                    Text("添加模型", fontSize = 10.5.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium)
-                                                }
+                                                Icon(Icons.Default.Add, contentDescription = null, tint = theme.textPrimary, modifier = Modifier.size(13.dp))
+                                                Spacer(modifier = Modifier.width(3.dp))
+                                                Text("+ 新增模型", fontSize = 11.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
                                             }
                                         }
                                     }

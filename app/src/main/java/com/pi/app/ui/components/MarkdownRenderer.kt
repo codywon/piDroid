@@ -71,7 +71,8 @@ import java.util.Locale
  * 大模型友好型 CJK Markdown 与多行块级公式规整引擎
  */
 object CjkMarkdownNormalizer {
-    private val CODE_BLOCK_PATTERN = Regex("""(```[\s\S]*?```|`[^`\n]+`)""")
+    // 仅保护三反引号/三波浪线多行围栏代码块，避免单反引号保护导致外部粘连/孤立反引号把大片正文误识别为代码块
+    private val FENCED_CODE_BLOCK_PATTERN = Regex("""(?m)^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]*\1[ \t]*$|```[\s\S]*?```|~~~[\s\S]*?~~~""")
     private val BLOCK_MATH_DOLLAR_REGEX = Regex("""\$\$\s*([\s\S]+?)\s*\$\$""")
     private val BLOCK_MATH_BRACKET_REGEX = Regex("""\\\[\s*([\s\S]+?)\s*\\\]""")
     private val INLINE_MATH_PAREN_REGEX = Regex("""\\\(\s*([^\n]+?)\s*\\\)""")
@@ -79,19 +80,13 @@ object CjkMarkdownNormalizer {
     private val INNER_BOLD_WHITESPACE_ASTERISK = Regex("""\*\*[\t ]*([^*]+?)[\t ]*\*\*""")
     private val INNER_BOLD_WHITESPACE_UNDERSCORE = Regex("""__[\t ]*([^_]+?)[\t ]*__""")
 
-    private const val OPEN_PUNC = """[“‘（【《〈〔\[\(\{]"""
-    private const val CLOSE_PUNC = """[”’）】》〉〕\]\)\}。，！？；：]"""
-
-    private val OPEN_BOLD_REGEX = Regex("""([\u4e00-\u9fa5\w])(\*\*)($OPEN_PUNC)""")
-    private val CLOSE_BOLD_REGEX = Regex("""($CLOSE_PUNC)(\*\*)([\u4e00-\u9fa5\w])""")
-
     private val TABLE_STICKY_ROW_REGEX = Regex("""\|\s*\|(?=\s*[:\w\-\./*\$#@~`\u4e00-\u9fa5])""")
     private val TABLE_SEPARATOR_REGEX = Regex("""(?<!\n)(\|[^\n|]+?\|\s*)(\|(?:[\s:]*-+[\s:]*\|)+)""")
 
     fun normalize(rawMarkdown: String): String {
         if (rawMarkdown.isEmpty()) return rawMarkdown
 
-        val matches = CODE_BLOCK_PATTERN.findAll(rawMarkdown).toList()
+        val matches = FENCED_CODE_BLOCK_PATTERN.findAll(rawMarkdown).toList()
         if (matches.isEmpty()) {
             return fixSegment(rawMarkdown)
         }
@@ -115,8 +110,32 @@ object CjkMarkdownNormalizer {
 
     private val RAW_SVG_BLOCK_REGEX = Regex("""<svg\b[\s\S]*?</svg>""", RegexOption.IGNORE_CASE)
 
+    private fun healBrokenInlineBackticks(text: String): String {
+        // 1. 修复 SQL 单引号与反引号混写（如 status=`0' 或 status='0` ）
+        var s = text.replace(Regex("""`([^`'\n]+)'"""), "'$1'")
+            .replace(Regex("""'([^`'\n]+)`"""), "'$1'")
+
+        // 2. 检查跨中文句逗标点未闭合的孤立反引号，避免整段正文被误染成单行 Code 节点
+        val lines = s.split("\n")
+        val healed = lines.map { line ->
+            val count = line.count { it == '`' }
+            if (count % 2 != 0) {
+                val cleaned = line.replace(Regex("""(?<=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|^)`(?=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|$)"""), "'")
+                if (cleaned.count { it == '`' } % 2 != 0) {
+                    val lastIdx = cleaned.lastIndexOf('`')
+                    if (lastIdx >= 0) cleaned.substring(0, lastIdx) + "'" + cleaned.substring(lastIdx + 1) else cleaned
+                } else {
+                    cleaned
+                }
+            } else {
+                line
+            }
+        }
+        return healed.joinToString("\n")
+    }
+
     private fun fixSegment(text: String): String {
-        var s = text
+        var s = healBrokenInlineBackticks(text)
 
         // 0.0 将独立内联 <svg>...</svg> 转为 ```svg 代码块以便统一渲染矢量图与全屏预览
         if (s.contains("<svg", ignoreCase = true) && s.contains("</svg>", ignoreCase = true)) {
@@ -147,7 +166,10 @@ object CjkMarkdownNormalizer {
             }
         }
 
-        // 1. 自动修复大模型单行粘连表格
+        // 1. 自动修复表格：若首行紧贴上方普通文本，自动补充换行空行以触发 GFM 表格解析；修复单行粘连
+        s = s.replace(Regex("""(?m)^([^\n|]+)\n(\|[^\n]+\|\s*\n\|[\s:\-|]+\|)""")) { m ->
+            "${m.groupValues[1]}\n\n${m.groupValues[2]}"
+        }
         if (s.contains("|") && s.contains("-")) {
             s = TABLE_SEPARATOR_REGEX.replace(s) { "${it.groupValues[1]}\n${it.groupValues[2]}" }
             s = TABLE_STICKY_ROW_REGEX.replace(s, "|\n|")
@@ -158,12 +180,17 @@ object CjkMarkdownNormalizer {
             s = PSEUDO_LIST_REGEX.replace(s) { "${it.groupValues[1]}- " }
         }
 
-        // 3. 粗体与标点归一化
+        // 3. 粗体归一化与孤立清理（移除有损的强制插入空格正则，杜绝 ** ( 裸露）
         if (s.contains("*") || s.contains("_")) {
             s = INNER_BOLD_WHITESPACE_ASTERISK.replace(s) { "**${it.groupValues[1]}**" }
             s = INNER_BOLD_WHITESPACE_UNDERSCORE.replace(s) { "__${it.groupValues[1]}__" }
-            s = OPEN_BOLD_REGEX.replace(s) { m -> "${m.groupValues[1]} ${m.groupValues[2]}${m.groupValues[3]}" }
-            s = CLOSE_BOLD_REGEX.replace(s) { m -> "${m.groupValues[1]}${m.groupValues[2]} ${m.groupValues[3]}" }
+            val count = s.windowed(2).count { it == "**" }
+            if (count % 2 != 0) {
+                val lastIdx = s.lastIndexOf("**")
+                if (lastIdx >= 0) {
+                    s = s.substring(0, lastIdx) + s.substring(lastIdx + 2)
+                }
+            }
         }
 
         return s
