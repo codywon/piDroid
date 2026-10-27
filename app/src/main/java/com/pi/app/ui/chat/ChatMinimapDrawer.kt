@@ -94,7 +94,11 @@ data class TurnOutline(
 fun PiWebChatMinimap(
     turns: List<TurnOutline>,
     activeTurnNumber: Int,
-    hasHiddenHistory: Boolean = false,
+    /** PC 上是否还有更早的回合没加载（pi 的 context.hasMore） */
+    hasEarlierOnServer: Boolean = false,
+    /** 服务端统计的「更早但未加载的回合数」（pi 的 context.turnsBefore） */
+    earlierTurnCount: Int = 0,
+    isLoadingEarlier: Boolean = false,
     onLoadEarlier: () -> Unit = {},
     onJumpToUserMessage: (TurnOutline) -> Unit,
     onJumpToAssistant: (TurnOutline) -> Unit,
@@ -275,8 +279,8 @@ fun PiWebChatMinimap(
 
                         HorizontalDivider(color = theme.outline.copy(alpha = 0.25f), thickness = 0.5.dp)
 
-                        // 若主视图有未展开的折叠历史，提供一键在主界面展开全部历史的快捷横幅
-                        if (hasHiddenHistory) {
+                        // 更早的回合还没加载时，给一条一眼看懂的入口（文案/口径与 pi-web 一致：按「轮」计）
+                        if (hasEarlierOnServer || isLoadingEarlier) {
                             Surface(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -301,7 +305,9 @@ fun PiWebChatMinimap(
                                     )
                                     Spacer(modifier = Modifier.width(5.dp))
                                     Text(
-                                        text = "在主聊天视图中展开全部历史",
+                                        text = if (isLoadingEarlier) "正在加载更早的记录…"
+                                        else if (earlierTurnCount > 0) "更早的 $earlierTurnCount 轮还没加载 · 点击加载"
+                                        else "点击加载更早的记录",
                                         fontSize = 12.sp,
                                         color = theme.primary,
                                         fontWeight = FontWeight.Medium

@@ -273,6 +273,14 @@ class MainActivity : ComponentActivity() {
         var customWorkspaces by remember { mutableStateOf(prefs.getCustomWorkspaces()) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
+        // 「更早的记录」独立存放（由游标翻页追加），与主快照 messages 互不重叠：
+        // 主快照继续按下标对账更新，这里只做只增不减的 prepend，互不干扰。
+        var olderMessages by remember { mutableStateOf<List<ChatItem>>(emptyList()) }
+        var hasEarlierOnServer by remember { mutableStateOf(false) }
+        var earlierTurnCount by remember { mutableStateOf(0) }
+        var olderCursor by remember { mutableStateOf<String?>(null) }
+        var olderLeafId by remember { mutableStateOf<String?>(null) }
+        var isLoadingOlder by remember { mutableStateOf(false) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
@@ -347,6 +355,39 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 if (!silent) isLoadingSessions = false
+            }
+        }
+
+        /**
+         * 上滑触顶时向 PC 拉取「更早的一页」记录（游标 = 当前最早一条的 entryId）。
+         *
+         * 页与页之间由服务端 excludeLeaf 保证不重叠；这里仍按「角色+时间戳+内容哈希」再兜一层去重，
+         * 并把整页 prepend 到 olderMessages，主快照 messages 完全不动。
+         */
+        fun loadOlderHistory() {
+            val sid = currentSession?.id ?: return
+            if (isLoadingOlder || !hasEarlierOnServer) return
+            val cursor = olderCursor
+            if (cursor.isNullOrBlank()) return
+            isLoadingOlder = true
+            lifecycleScope.launch {
+                apiClient.getOlderContextPage(sid, cursor, tail = 60, leafId = olderLeafId)
+                    .onSuccess { page ->
+                        if (currentSession?.id != sid) return@onSuccess
+                        fun fingerprint(item: ChatItem) = "${item.role}|${item.timestamp}|${item.content.hashCode()}"
+                        val seen = (olderMessages + messages).map { fingerprint(it) }.toHashSet()
+                        val fresh = page.messages.filter { seen.add(fingerprint(it)) }
+                        if (fresh.isNotEmpty()) {
+                            olderMessages = fresh + olderMessages
+                        }
+                        olderCursor = page.oldestEntryId ?: cursor
+                        hasEarlierOnServer = page.hasMore
+                        earlierTurnCount = page.turnsBefore
+                    }
+                    .onFailure { err ->
+                        Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                    }
+                isLoadingOlder = false
             }
         }
 
@@ -592,6 +633,13 @@ class MainActivity : ComponentActivity() {
                     hist.stats.copy(maxContextWindow = preferredWindow)
                 } else {
                     hist.stats
+                }
+                // 翻页元数据：一旦已经往前翻过页，真·最老游标来自更早页，不能被快照覆盖
+                if (olderMessages.isEmpty()) {
+                    olderCursor = hist.oldestEntryId
+                    olderLeafId = hist.leafId
+                    hasEarlierOnServer = hist.hasMoreOnServer
+                    earlierTurnCount = hist.turnsBefore
                 }
                 // 上下文占用以 agent 运行时为准（pi 的 getContextUsage 自带模型真实窗口）：
                 // 会话快照的 context.model 不带 contextWindow，App 以前兜底 200k，
@@ -1032,6 +1080,14 @@ class MainActivity : ComponentActivity() {
             isAgentBusy = session.isRunning
             agentPhaseLabel = if (session.isRunning) "正在等待模型..." else null
 
+            // 切换会话必须清空上一场的「更早记录」，否则会把别人的历史拼进来
+            olderMessages = emptyList()
+            hasEarlierOnServer = false
+            earlierTurnCount = 0
+            olderCursor = null
+            olderLeafId = null
+            isLoadingOlder = false
+
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)
             if (cached != null && cached.messages.isNotEmpty()) {
@@ -1044,6 +1100,10 @@ class MainActivity : ComponentActivity() {
                 )
                 currentThinkingLevel = cached.thinkingLevel
                 tokenStats = cached.stats
+                hasEarlierOnServer = cached.hasMoreOnServer
+                earlierTurnCount = cached.turnsBefore
+                olderCursor = cached.oldestEntryId
+                olderLeafId = cached.leafId
             } else {
                 messages.clear()
             }
@@ -1434,6 +1494,11 @@ class MainActivity : ComponentActivity() {
                     thinkingLevel = currentThinkingLevel,
                     tokenStats = tokenStats,
                     messages = messages,
+                    olderMessages = olderMessages,
+                    hasEarlierOnServer = hasEarlierOnServer,
+                    earlierTurnCount = earlierTurnCount,
+                    isLoadingOlder = isLoadingOlder,
+                    onLoadOlder = { loadOlderHistory() },
                     isAgentBusy = isAgentBusy,
                     agentPhaseLabel = agentPhaseLabel,
                     sseState = sseConnectionState,

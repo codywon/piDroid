@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.7] - 2026-10-27
+
+### ⬆️ 上滑翻页真正接通 PC + 一键到底真正到底 (Release v1.7.7)
+
+- **上拉到顶只剩「本次已加载的起点 · 共 94 条记录」，再也翻不动**：
+  - **根因**：v1.7.4 的自动续批只在**本地已加载的那批记录**里扩容；顶到本地边界（`windowStartIndex == 0`）后没有任何通往 PC 的兜底路径 —— 旧版那个「展开全部」按钮也只是重新取一次同样的 tail=60。等于**根本没有服务端翻页**。
+  - **修复**：按 pi-web 的游标方案接上 `GET /api/sessions/{id}/context?tail=60&before=<oldestEntryId>`。新增 `PiApiClient.getOlderContextPage()`（返回 `messages / oldestEntryId / hasMore / turnsBefore`），`SessionHistoryData` 补上 `hasMoreOnServer / oldestEntryId / turnsBefore / leafId`。
+  - **数据隔离，绝不破坏快照对账**：翻回来的历史进**独立的 `olderMessages`**（只 prepend），主快照 `messages` 继续按原逻辑按下标对账 —— 两条通道互不重叠，避免把 `syncSessionSnapshot` 的按索引合并搞乱。
+  - **翻页后视口不跳**：前插一整页会让回合编号整体后移、行 key 全变（LazyColumn 基于首个可见 key 的索引维持失效）。翻页前记录「首个可见回合的提问消息 id + 像素偏移」，翻页回来后按该 id 找回新行号 `scrollToItem(row, offset)`，阅读位置钉住。
+  - 顶部提示改成 pi-web 同款口径：**「更早的 N 轮还没加载 · 上滑加载」**（N 来自服务端 `turnsBefore`），滑到顶自动拉页，加载中显示细圆圈。
+- **一键到底点完还是没到底**：
+  - **根因**：用「算出来的行数」`animateScrollToItem(count-1)`。行数估算偏一点、或者动画期间又来了新消息（截图里任务正在跑），就会停在半路。
+  - **修复**：改为**按像素滚到底** —— `while (canScrollForward) listState.scroll { scrollBy(6000f) }`（带 400 次护栏）。首屏定位、「跟随新消息」、编辑后回到最新、右下角回到底部按钮全部走这一条路径，不再依赖任何行号估算。
+- **顺带简化**：删掉 v1.7.4 引入的本地「渲染窗口」（`visibleWindowCount / isAllHistoryExpanded / turnRowCount 行数补偿` 那一整套）。LazyColumn 本身就是虚拟化列表（只组合可见项），这层窗口不但没省资源，还是「空白正文」「翻不动」「跳一半」的共同来源。现在：**加载多少就渲染多少，翻页交给游标，滚动交给像素**。
+- **右侧时间轴同步对齐**：抽屉里的入口改为「更早的 N 轮还没加载 · 点击加载」；跳转偏移改用 `turnStartRowIndex()` 精确行号（含起点横幅与提问前的系统消息行）。
+
+---
+
 ## [1.7.6] - 2026-10-27
 
 ### 📊 上下文占用恒为 100% 修复：改用 agent 运行时的真实窗口 (Release v1.7.6)

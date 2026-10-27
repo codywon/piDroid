@@ -15,6 +15,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -94,6 +95,14 @@ fun ChatScreen(
     thinkingLevel: ThinkingLevel,
     tokenStats: TokenStats,
     messages: List<ChatItem>,
+    /** PC 端游标翻页拉回来的更早记录（严格早于 [messages]，由外层 prepend） */
+    olderMessages: List<ChatItem> = emptyList(),
+    /** 服务端是否还有更早的记录可以继续翻页 */
+    hasEarlierOnServer: Boolean = false,
+    /** 服务端统计的「更早但未加载的回合数」（pi 的 context.turnsBefore） */
+    earlierTurnCount: Int = 0,
+    isLoadingOlder: Boolean = false,
+    onLoadOlder: () -> Unit = {},
     isAgentBusy: Boolean,
     agentPhaseLabel: String? = null,
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
@@ -171,16 +180,22 @@ fun ChatScreen(
         return if (rawText.isBlank()) attachHeader else "$rawText\n\n$attachHeader"
     }
 
+    // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
+    // 两者互不重叠（更早记录只 prepend、主快照只按下标对账更新），这里直接拼接渲染；
+    // 回合大纲也必须建立在拼接后的完整列表上，否则翻页拉回来的历史不进时间轴。
+    val conversation = remember(olderMessages, messages) { olderMessages + messages }
+
     // 1:1 对标 pi-web：将整场会话的消息按用户提问构建回合大纲列表 (TurnOutline)
     val allTurns = remember(
-        messages.size,
-        messages.lastOrNull()?.id,
-        messages.lastOrNull()?.content?.length,
-        messages.lastOrNull()?.thinking?.length,
+        conversation.size,
+        conversation.firstOrNull()?.id,
+        conversation.lastOrNull()?.id,
+        conversation.lastOrNull()?.content?.length,
+        conversation.lastOrNull()?.thinking?.length,
         isAgentBusy
     ) {
         val userIndices = mutableListOf<Int>()
-        messages.forEachIndexed { i, m ->
+        conversation.forEachIndexed { i, m ->
             if (m.role == MessageRole.USER) {
                 userIndices.add(i)
             }
@@ -188,9 +203,9 @@ fun ChatScreen(
 
         userIndices.mapIndexed { turnIdx, uIdx ->
             val turnNum = turnIdx + 1
-            val userMsg = messages[uIdx]
-            val nextUIdx = if (turnIdx + 1 < userIndices.size) userIndices[turnIdx + 1] else messages.size
-            val turnSlice = messages.subList(uIdx + 1, nextUIdx)
+            val userMsg = conversation[uIdx]
+            val nextUIdx = if (turnIdx + 1 < userIndices.size) userIndices[turnIdx + 1] else conversation.size
+            val turnSlice = conversation.subList(uIdx + 1, nextUIdx)
 
             // 从后往前找最后一个具有文本内容的 assistant 消息作为最终回答
             var finalAns: ChatItem? = null
@@ -207,7 +222,7 @@ fun ChatScreen(
             // 如果处于最后一轮且正在运行，且最后一条是工具调用或在流式生成，按 pi-web 规范视作中间过程
             val isCurrentRunning = (turnIdx == userIndices.lastIndex) && isAgentBusy
 
-            val processItems = if (finalAns != null && (!isCurrentRunning || finalAnsIdx != messages.lastIndex)) {
+            val processItems = if (finalAns != null && (!isCurrentRunning || finalAnsIdx != conversation.lastIndex)) {
                 val pEnd = finalAnsIdx!! - (uIdx + 1)
                 turnSlice.subList(0, pEnd)
             } else {
@@ -244,93 +259,63 @@ fun ChatScreen(
 
     // 记录用户是否正在通过时间轴或手动上翻回看历史，避免后台轮询或流式输出强制拉回底部打断阅读
     //
-    // 以下四个状态用 rememberSaveable：rememberLazyListState 自身会把滚动位置存进
-    // SavedState，而窗口大小若不留存、Activity 重建后回退到 50 条，就会出现
-    // "列表恢复到很深的索引、但只渲染了 50 条"的错位跳动。
+    // rememberSaveable：rememberLazyListState 自己会把滚动位置存进 SavedState，
+    // 这里额外记住「是否已经完成首屏定位」与「用户是否在上翻读历史」。
     var userJumpedToHistory by rememberSaveable(sessionTitle) { mutableStateOf(false) }
-
-    // 针对超长会话的分页按需加载窗口：默认首屏渲染最近 50 条记录；支持向上追加 50 条或一键展开全部完整历史
-    var visibleWindowCount by rememberSaveable(sessionTitle) { mutableStateOf(50) }
-    var isAllHistoryExpanded by rememberSaveable(sessionTitle) { mutableStateOf(false) }
     var hasInitialScrolled by rememberSaveable(sessionTitle) { mutableStateOf(false) }
 
-    // 上滑加载更早记录的加载态：顶部只留一枚细圆圈，不再占掉一整屏
-    var isLoadingMoreHistory by remember { mutableStateOf(false) }
-
-    // 窗口起点必须落在「回合边界」上。一个回合可能包含几十条 assistant / toolResult 记录，
-    // 早前按消息条数硬切（messages.size - 50）时，起点会掉进最后一个回合的内部：该回合的
-    // 提问（user 消息）落在窗口之外 → visibleTurns 直接为空 → 界面变成
-    // 「已折叠 N 条 + 正在等待模型… + 中间一片空白」。
-    val rawWindowStart = if (isAllHistoryExpanded) 0 else (messages.size - visibleWindowCount).coerceAtLeast(0)
-    val windowStartIndex = remember(allTurns, rawWindowStart) {
-        alignWindowToTurnStart(rawWindowStart, allTurns)
-    }
-    val hasHiddenHistory = windowStartIndex > 0
-    val showOriginBanner = !hasHiddenHistory && messages.size > 6
-
-    val visibleTurns = remember(allTurns, windowStartIndex) {
-        when {
-            windowStartIndex <= 0 -> allTurns
-            else -> allTurns.filter { it.userIndex >= windowStartIndex }.ifEmpty {
-                // 兜底：窗口起点即便算偏，也保证最后一个回合完整可见，绝不留白屏
-                listOfNotNull(allTurns.lastOrNull())
-            }
-        }
+    // 顶部哨兵行：有更早历史时是加载提示行，否则是「起点」分隔线（都只占一行）
+    val showTopSentinel = hasEarlierOnServer || isLoadingOlder || conversation.size > 6
+    val leadingRowCount = remember(conversation, allTurns) {
+        // 首个提问之前的系统消息（欢迎语、压缩摘要等）逐条渲染，各占一行
+        allTurns.firstOrNull()?.userIndex ?: conversation.size
     }
 
-    // 列表行数 ≠ 消息条数：一个回合至少一行，还可能多出「过程折叠组」与「最终答复」两行。
-    // 回到底部 / 上滑加载的视口锚定 / 时间轴跳转都要用精确的行索引，否则会跳偏。
+    // 一个回合不是一行：可能还有「过程折叠组」与「最终答复」
     fun turnRowCount(turn: TurnOutline): Int =
         1 + (if (turn.processItems.isNotEmpty()) 1 else 0) + (if (turn.finalAnswerItem != null) 1 else 0)
 
-    fun headerRowsFor(start: Int): Int {
-        val hidden = start > 0
-        val topBanner = if (hidden || messages.size > 6) 1 else 0
-        val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: messages.size
-        val leading = if (firstUserIdx > start) firstUserIdx - start else 0
-        return topBanner + leading
+    fun turnStartRowIndex(turnIdx: Int): Int {
+        var rows = (if (showTopSentinel) 1 else 0) + leadingRowCount
+        for (i in 0 until turnIdx.coerceIn(0, allTurns.size)) rows += turnRowCount(allTurns[i])
+        return rows
     }
 
-    fun visibleRowCount(): Int =
-        headerRowsFor(windowStartIndex) +
-            visibleTurns.sumOf { turnRowCount(it) } +
-            (if (isAgentBusy || isCompacting) 1 else 0)
+    // ── 翻页前后的视口锚点 ──
+    // 往前插一整页后，回合编号会整体后移、行 key 全变，LazyColumn 的「按首个可见 key 维持索引」
+    // 机制失效，视口会跳到最顶端。这里记下「首个可见回合的提问消息 id + 像素偏移」，
+    // 翻页回来后按这个 id 找回它在新列表里的行号，把视口钉回原处。
+    var pendingAnchorMessageId by remember { mutableStateOf<String?>(null) }
+    var pendingAnchorOffsetPx by remember { mutableStateOf(0) }
 
-    // 上滑触顶自动加载更早记录：把窗口往上扩一批，并保持当前阅读位置不跳动
-    fun loadEarlierHistory() {
-        if (isLoadingMoreHistory || isAllHistoryExpanded || !hasHiddenHistory) return
-        isLoadingMoreHistory = true
-        val firstIdx = listState.firstVisibleItemIndex
-        val firstOffset = listState.firstVisibleItemScrollOffset
-        val oldStart = windowStartIndex
-        // 一个回合可能横跨上百条记录：按 50 条续批时，起点可能落在同一个回合内部，
-        // 对齐后窗口完全没变（addedRows == 0）。此时必须继续往前扩，否则触顶效果会自旋。
-        var newVisibleCount = visibleWindowCount
-        var newStart = oldStart
-        while (newStart >= oldStart && newVisibleCount < messages.size) {
-            newVisibleCount = (newVisibleCount + HISTORY_LOAD_BATCH).coerceAtMost(messages.size)
-            newStart = alignWindowToTurnStart((messages.size - newVisibleCount).coerceAtLeast(0), allTurns)
+    fun captureViewportAnchor() {
+        val info = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { turnNumberFromRowKey(it.key) != null } ?: return
+        val turnNum = turnNumberFromRowKey(info.key) ?: return
+        val userMsgId = allTurns.getOrNull(turnNum - 1)?.userMessage?.id ?: return
+        pendingAnchorMessageId = userMsgId
+        pendingAnchorOffsetPx = info.offset
+    }
+
+    LaunchedEffect(olderMessages.size) {
+        val anchorId = pendingAnchorMessageId ?: return@LaunchedEffect
+        pendingAnchorMessageId = null
+        if (olderMessages.isEmpty()) return@LaunchedEffect
+        val newIdx = allTurns.indexOfFirst { it.userMessage.id == anchorId }
+        if (newIdx >= 0) {
+            listState.scrollToItem(turnStartRowIndex(newIdx), pendingAnchorOffsetPx.coerceAtLeast(0))
         }
-        if (newStart >= oldStart) {
-            // 已经没有更早的内容可露出来了（例如整段历史就一个回合且已全量渲染）
-            isAllHistoryExpanded = true
-            isLoadingMoreHistory = false
-            return
-        }
-        // 新增到视口上方的行数 = 新露出的回合行 + 顶部横幅/前置系统消息行数变化
-        val addedRows = allTurns.filter { it.userIndex in newStart until oldStart }.sumOf { turnRowCount(it) } +
-            (headerRowsFor(newStart) - headerRowsFor(oldStart))
-        userJumpedToHistory = true
-        visibleWindowCount = newVisibleCount
-        if (newStart <= 0) isAllHistoryExpanded = true
-        coroutineScope.launch {
-            kotlinx.coroutines.yield()
-            // 等一帧真正完成布局后再补偿滚动，否则锚点会漂移
-            kotlinx.coroutines.delay(16)
-            if (addedRows > 0) {
-                listState.scrollToItem((firstIdx + addedRows).coerceAtLeast(0), firstOffset)
-            }
-            isLoadingMoreHistory = false
+        pendingAnchorOffsetPx = 0
+    }
+
+    // 回到底部 / 跟随新消息：按像素一直滚到真正尽头。
+    // 之前用「算出来的行号」scrollToItem，行数估算偏一点、或者动画期间又来了新消息，
+    // 就会停在半路 —— 这正是「点了一键到底却没到底」的原因。
+    suspend fun scrollToVeryBottom() {
+        var guard = 0
+        while (listState.canScrollForward && guard < 400) {
+            guard++
+            listState.scroll { scrollBy(6_000f) }
         }
     }
 
@@ -340,34 +325,32 @@ fun ChatScreen(
     val isImeVisible = imeBottomPx > 0
 
     LaunchedEffect(
-        messages.size,
-        messages.lastOrNull()?.content?.length,
-        messages.lastOrNull()?.thinking?.length,
+        conversation.size,
+        conversation.lastOrNull()?.content?.length,
+        conversation.lastOrNull()?.thinking?.length,
         isAgentBusy,
         agentPhaseLabel,
         isImeVisible
     ) {
-        if (messages.isNotEmpty() && (!userJumpedToHistory || isImeVisible)) {
-            val targetIdx = (visibleRowCount() - 1).coerceAtLeast(0)
+        if (conversation.isNotEmpty() && (!userJumpedToHistory || isImeVisible)) {
             if (!hasInitialScrolled) {
                 // 首屏进入直接瞬间定位到底部，避免长列表逐条滚动造成的屏幕闪现
-                listState.scrollToItem(targetIdx)
+                scrollToVeryBottom()
                 hasInitialScrolled = true
             } else if (!listState.canScrollForward || isImeVisible || isAgentBusy) {
-                listState.animateScrollToItem(targetIdx)
+                scrollToVeryBottom()
             }
         }
     }
 
-    // 滑到最顶端就自动续批：顶部加载哨兵露头（索引 0）时补一批更早的记录。
-    // 必须等首屏「瞬间定位到底部」完成（hasInitialScrolled）——否则刚进会话时索引本来就是 0，
-    // 会立刻连打好几批，还会把视口钉在顶部而不是最新的对话上。
+    // 滑到最顶端就自动向 PC 续批更早的记录（IntersectionObserver 的 Compose 等价写法：
+    // 观察首个可见行索引）。必须等首屏「瞬间定位到底部」完成（hasInitialScrolled），
+    // 否则刚进会话时索引本来就是 0，会立刻狂拉页并把视口钉在顶部而不是最新对话上。
     val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(firstVisibleIndex, hasInitialScrolled, hasHiddenHistory, isAllHistoryExpanded, isLoadingMoreHistory) {
-        if (hasInitialScrolled && firstVisibleIndex <= 0 && hasHiddenHistory &&
-            !isAllHistoryExpanded && !isLoadingMoreHistory
-        ) {
-            loadEarlierHistory()
+    LaunchedEffect(firstVisibleIndex, hasInitialScrolled, hasEarlierOnServer, isLoadingOlder) {
+        if (hasInitialScrolled && !isLoadingOlder && hasEarlierOnServer && firstVisibleIndex <= 0) {
+            captureViewportAnchor()
+            onLoadOlder()
         }
     }
 
@@ -987,18 +970,20 @@ fun ChatScreen(
                 contentPadding = PaddingValues(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // 顶部加载哨兵：只占一行。触顶即自动续批，加载中显示一枚细圆圈
-                // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，
-                //   用户只能手动点按钮，且长回合下会整屏空白，已按大厂 App 惯例移除）
-                if (hasHiddenHistory) {
+                // 顶部加载哨兵：只占一行。触顶即自动向 PC 续批，加载中显示一枚细圆圈
+                // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，已按大厂 App 惯例移除）
+                if (hasEarlierOnServer || isLoadingOlder) {
                     item(key = "history_top_loader") {
                         HistoryTopLoader(
-                            isLoading = isLoadingMoreHistory,
-                            hiddenCount = windowStartIndex,
-                            onClick = { loadEarlierHistory() }
+                            isLoading = isLoadingOlder,
+                            hiddenCount = earlierTurnCount,
+                            onClick = {
+                                captureViewportAnchor()
+                                onLoadOlder()
+                            }
                         )
                     }
-                } else if (showOriginBanner) {
+                } else if (conversation.size > 6) {
                     item(key = "history_origin_banner") {
                         Row(
                             modifier = Modifier
@@ -1030,7 +1015,7 @@ fun ChatScreen(
                                         modifier = Modifier.size(11.dp)
                                     )
                                     Text(
-                                        text = "本次已加载的起点 · 共 ${messages.size} 条记录",
+                                        text = "本次已加载的起点 · 共 ${conversation.size} 条记录",
                                         fontSize = 10.5.sp,
                                         color = theme.textMuted
                                     )
@@ -1046,9 +1031,9 @@ fun ChatScreen(
                 }
 
                 // 若首个提问前有系统前置消息 (例如欢饮语)
-                val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: messages.size
-                if (firstUserIdx > windowStartIndex) {
-                    val leadingSlice = messages.subList(windowStartIndex, firstUserIdx.coerceAtMost(messages.size))
+                val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: conversation.size
+                if (firstUserIdx > 0) {
+                    val leadingSlice = conversation.subList(0, firstUserIdx.coerceAtMost(conversation.size))
                     items(leadingSlice, key = { it.id }) { item ->
                         ChatMessageItem(
                             item = item,
@@ -1058,7 +1043,7 @@ fun ChatScreen(
                             onEditFromHere = { text ->
                                 inputText = text
                                 coroutineScope.launch {
-                                    listState.animateScrollToItem(messages.size)
+                                    scrollToVeryBottom()
                                 }
                             },
                             onForkFromHere = onForkFromMessage
@@ -1066,8 +1051,10 @@ fun ChatScreen(
                     }
                 }
 
-                // 遍历渲染当前可见窗口内的每个回合 (对标 pi-web ProcessDetailsGroup 与最终回答)
-                visibleTurns.forEach { turn ->
+                // 遍历渲染每个回合（对标 pi-web ProcessDetailsGroup 与最终回答）。
+                // 全量渲染：LazyColumn 本身只组合可见项，无需再自己维护窗口 —— 之前那套
+                // 「按条数切窗口 / 行数补偿锚定」正是各种空白与停半路的来源。
+                allTurns.forEach { turn ->
                     // 1. 用户提问
                     item(key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}") {
                         ChatMessageItem(
@@ -1078,7 +1065,7 @@ fun ChatScreen(
                             onEditFromHere = { text ->
                                 inputText = text
                                 coroutineScope.launch {
-                                    listState.animateScrollToItem(messages.size)
+                                    scrollToVeryBottom()
                                 }
                                 android.widget.Toast.makeText(context, "已填入输入框，修改后可直接发送", android.widget.Toast.LENGTH_SHORT).show()
                             },
@@ -1106,7 +1093,7 @@ fun ChatScreen(
                                         onEditFromHere = { text ->
                                             inputText = text
                                             coroutineScope.launch {
-                                                listState.animateScrollToItem(messages.size)
+                                                scrollToVeryBottom()
                                             }
                                         },
                                         onForkFromHere = onForkFromMessage
@@ -1129,7 +1116,7 @@ fun ChatScreen(
                                 onEditFromHere = { text ->
                                     inputText = text
                                     coroutineScope.launch {
-                                        listState.animateScrollToItem(messages.size)
+                                        scrollToVeryBottom()
                                     }
                                 },
                                 onForkFromHere = onForkFromMessage
@@ -1139,7 +1126,7 @@ fun ChatScreen(
                 }
 
                 // 历史尚未到达（首屏同步中）时给一个轻量占位，避免整屏空白
-                if (messages.isEmpty()) {
+                if (conversation.isEmpty()) {
                     item(key = "chat_empty_hint") {
                         Box(
                             modifier = Modifier
@@ -1194,63 +1181,35 @@ fun ChatScreen(
                             .firstNotNullOfOrNull { info -> turnNumberFromRowKey(info.key) }
                     }.collect { num ->
                         if (num != null) activeTurnNumber = num
-                        else if (visibleTurns.isNotEmpty()) activeTurnNumber = visibleTurns.last().turnNumber
+                        else if (allTurns.isNotEmpty()) activeTurnNumber = allTurns.last().turnNumber
                     }
                 }
 
                 PiWebChatMinimap(
                     turns = allTurns,
                     activeTurnNumber = activeTurnNumber,
-                    hasHiddenHistory = hasHiddenHistory,
-                    onLoadEarlier = {
-                        userJumpedToHistory = true
-                        isAllHistoryExpanded = true
-                        visibleWindowCount = messages.size + 5000
-                        onRefreshSession()
-                        coroutineScope.launch {
-                            kotlinx.coroutines.yield()
-                            listState.scrollToItem(0)
-                        }
-                    },
+                    hasEarlierOnServer = hasEarlierOnServer,
+                    earlierTurnCount = earlierTurnCount,
+                    isLoadingEarlier = isLoadingOlder,
+                    onLoadEarlier = onLoadOlder,
                     onJumpToUserMessage = { turn ->
-                        userJumpedToHistory = turn.turnNumber < allTurns.size
+                        userJumpedToHistory = true
                         coroutineScope.launch {
-                            if (turn.userIndex < windowStartIndex) {
-                                isAllHistoryExpanded = true
-                                visibleWindowCount = messages.size + 5000
-                                kotlinx.coroutines.yield()
-                            }
-                            val allTurnsList = allTurns
-                            val turnIdx = allTurnsList.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
                             if (turnIdx >= 0) {
-                                // 展开后首行是起始横幅（若有），其下还可能跟着提问前的系统消息
-                                var itemOffset = headerRowsFor(0)
-                                for (i in 0 until turnIdx) {
-                                    itemOffset += turnRowCount(allTurnsList[i])
-                                }
-                                listState.animateScrollToItem(itemOffset.coerceAtLeast(0))
+                                listState.animateScrollToItem(turnStartRowIndex(turnIdx))
                             }
                         }
                     },
                     onJumpToAssistant = { turn ->
-                        userJumpedToHistory = turn.turnNumber < allTurns.size
+                        userJumpedToHistory = true
                         coroutineScope.launch {
-                            if (turn.userIndex < windowStartIndex) {
-                                isAllHistoryExpanded = true
-                                visibleWindowCount = messages.size + 5000
-                                kotlinx.coroutines.yield()
-                            }
-                            val allTurnsList = allTurns
-                            val turnIdx = allTurnsList.indexOfFirst { it.turnNumber == turn.turnNumber }
+                            val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
                             if (turnIdx >= 0) {
-                                var itemOffset = headerRowsFor(0)
-                                for (i in 0 until turnIdx) {
-                                    itemOffset += turnRowCount(allTurnsList[i])
-                                }
                                 // 越过「用户提问」与可能的「过程折叠组」，落到最终答复
-                                itemOffset += 1
-                                if (allTurnsList[turnIdx].processItems.isNotEmpty()) itemOffset += 1
-                                listState.animateScrollToItem(itemOffset.coerceAtLeast(0))
+                                var row = turnStartRowIndex(turnIdx) + 1
+                                if (allTurns[turnIdx].processItems.isNotEmpty()) row += 1
+                                listState.animateScrollToItem(row)
                             }
                         }
                     },
@@ -1278,9 +1237,7 @@ fun ChatScreen(
                         .clickable {
                             userJumpedToHistory = false
                             coroutineScope.launch {
-                                if (messages.isNotEmpty()) {
-                                    listState.animateScrollToItem((visibleRowCount() - 1).coerceAtLeast(0))
-                                }
+                                if (conversation.isNotEmpty()) scrollToVeryBottom()
                             }
                         }
                 ) {
@@ -2077,23 +2034,6 @@ fun PiWebToolCallCard(
     }
 }
 
-/** 单次上滑续批的条数（按消息条数计，实际会向上对齐到最近的回合起点）。 */
-private const val HISTORY_LOAD_BATCH = 50
-
-/**
- * 把「按消息条数算出的窗口起点」向上对齐到回合起点。
- *
- * 一个回合里可能夹着几十条 assistant / toolResult 记录（长工具链），如果直接按
- * `messages.size - 50` 切，起点会落进最后一个回合内部 —— 该回合的提问（user 消息）
- * 被切到窗口外，`visibleTurns` 就变空了，界面表现为「已折叠 N 条 + 中间一片空白」。
- */
-private fun alignWindowToTurnStart(rawStart: Int, turns: List<TurnOutline>): Int {
-    if (rawStart <= 0 || turns.isEmpty()) return 0
-    // 最后一个「提问位置不晚于 rawStart」的回合，就是包含该位置的回合
-    val owner = turns.lastOrNull { it.userIndex <= rawStart } ?: return 0
-    return owner.userIndex.coerceAtMost(rawStart)
-}
-
 /**
  * 从 LazyColumn 的行 key 解析回合号（key 形如 `turn_3_user_<id>` / `turn_3_process` / `turn_3_ans_<id>`）。
  * 顶部横幅、加载哨兵、阶段提示等非回合行返回 null。
@@ -2142,7 +2082,7 @@ private fun HistoryTopLoader(
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text(
-                text = "上滑加载更早的 $hiddenCount 条",
+                text = if (hiddenCount > 0) "更早的 $hiddenCount 轮还没加载 · 上滑加载" else "上滑加载更早的记录",
                 fontSize = 11.sp,
                 color = theme.textMuted
             )

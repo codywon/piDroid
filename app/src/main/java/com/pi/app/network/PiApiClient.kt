@@ -23,7 +23,24 @@ data class SessionHistoryData(
     val provider: String,
     val modelId: String,
     val thinkingLevel: ThinkingLevel,
-    val stats: TokenStats
+    val stats: TokenStats,
+    /** 服务端是否还有更早的记录（游标 before=oldestEntryId 继续往前翻） */
+    val hasMoreOnServer: Boolean = false,
+    /** 更早页的游标：本批最早一条记录的 entryId */
+    val oldestEntryId: String? = null,
+    /** 服务端自己统计的「还没加载的回合数」（pi 的 context.turnsBefore） */
+    val turnsBefore: Int = 0,
+    val leafId: String? = null
+)
+
+/**
+ * 游标翻页返回的一页更早记录（GET /api/sessions/{id}/context?before=<entryId>）。
+ */
+data class OlderContextPage(
+    val messages: List<ChatItem>,
+    val oldestEntryId: String? = null,
+    val hasMore: Boolean = false,
+    val turnsBefore: Int = 0
 )
 
 
@@ -366,10 +383,73 @@ class PiApiClient(private val prefs: AppPreferences) {
                     provider = currentProvider,
                     modelId = currentModelId,
                     thinkingLevel = currentThinkingLevel,
-                    stats = tokenStats
+                    stats = tokenStats,
+                    hasMoreOnServer = initialHasMore,
+                    oldestEntryId = extractOldestEntryId(ctxObj, initialCtxMsgs),
+                    turnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                    leafId = leafId
                 )
                 sessionHistoryCache[sessionId] = historyData
                 Result.success(historyData)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 游标翻页拉取「更早的一页」记录：
+     * GET /api/sessions/{id}/context?tail=<n>&before=<oldestEntryId>
+     *
+     * pi-web 官方前端就是这么往前翻的（`before` 传当前最早一条的 entryId，服务端
+     * `excludeLeaf=true` 保证页与页不重叠），返回里带 `hasMore` / `turnsBefore` / 新的
+     * `oldestEntryId` 继续往前翻的游标。
+     *
+     * 拉回来的这页只追加到「更早记录」独立列表，**不**混进主快照 messages，
+     * 免得破坏 MainActivity 按下标对账的合并逻辑。
+     */
+    suspend fun getOlderContextPage(
+        sessionId: String,
+        beforeEntryId: String,
+        tail: Int = 60,
+        leafId: String? = null
+    ): Result<OlderContextPage> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (beforeEntryId.isBlank()) return@withContext Result.failure(Exception("缺少翻页游标"))
+        try {
+            val encBefore = URLEncoder.encode(beforeEntryId, "UTF-8")
+            val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&before=$encBefore$leafParam")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("加载更早记录失败 (${resp.code})"))
+                }
+                val body = resp.body?.string() ?: "{}"
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("更早记录响应无法解析"))
+                val ctx = root.get("context")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+                val arr = ctx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+                val parsed = parseRawMessagesToChatItems(
+                    sessionId = sessionId,
+                    msgs = arr ?: JsonArray(),
+                    defaultModelId = ""
+                )
+                // 每页的 id 都是以页内序号生成的，直接拼进同一个列表会和主列表撞 key
+                // （LazyColumn 重复 key 会直接崩），所以统一加游标前缀
+                val prefix = beforeEntryId.take(8)
+                val items = parsed.items.map { it.copy(id = "older_${prefix}_${it.id}") }
+                Result.success(
+                    OlderContextPage(
+                        messages = items,
+                        oldestEntryId = extractOldestEntryId(ctx, arr),
+                        hasMore = ctx.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                        turnsBefore = ctx.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                    )
+                )
             }
         } catch (e: Exception) {
             Result.failure(e)
