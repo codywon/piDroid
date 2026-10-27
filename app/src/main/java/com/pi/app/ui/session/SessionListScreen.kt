@@ -249,7 +249,7 @@ fun SessionListScreen(
 
     val currentWorkspaceName = remember(workspaces, selectedWorkspacePath) {
         if (selectedWorkspacePath == PINNED_WORKSPACE_KEY) {
-            "🌟 常用置顶"
+            "常用置顶"
         } else {
             workspaces.firstOrNull { it.path == selectedWorkspacePath }?.displayName ?: "全部工作区"
         }
@@ -347,7 +347,7 @@ fun SessionListScreen(
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // 🌟 常用置顶（永远排在工作区列表第 1 项，与常规工作区尺寸风格完全一致）
+                        // 常用置顶（永远排在工作区列表第 1 项，与常规工作区样式完全一致）
                         item(key = "workspace_pinned_item") {
                             val isPinnedSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY
                             Surface(
@@ -362,38 +362,41 @@ fun SessionListScreen(
                                     }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.PushPin,
+                                        imageVector = Icons.Default.Folder,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
-                                        tint = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary
+                                        tint = if (isPinnedSelected) theme.primary else theme.textSecondary
                                     )
-                                    Spacer(modifier = Modifier.width(10.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
                                         Text(
                                             text = "常用置顶",
                                             style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = if (isPinnedSelected) FontWeight.Bold else FontWeight.Normal,
-                                            color = if (isPinnedSelected) theme.textPrimary else theme.textSecondary
+                                            fontWeight = if (isPinnedSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isPinnedSelected) theme.primary else theme.textPrimary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
                                         )
                                         Text(
                                             text = "跨工作区聚合置顶",
                                             style = MaterialTheme.typography.labelSmall,
+                                            fontSize = 11.sp,
                                             color = theme.textMuted,
                                             maxLines = 1,
                                             overflow = TextOverflow.Ellipsis
                                         )
                                     }
                                     if (sessions.any { pinnedSessionIds.contains(it.id) && it.isLive }) {
-                                        PiWebRunningSpinner(size = 12.dp)
+                                        PiWebRunningSpinner(size = 10.dp, color = Color(0xFF16A34A), strokeWidth = 1.8.dp)
                                         Spacer(modifier = Modifier.width(4.dp))
                                     }
                                     Surface(
                                         shape = CircleShape,
-                                        color = if (isPinnedSelected) Color(0xFFEAB308).copy(alpha = 0.22f) else theme.surfaceContainerHigh,
+                                        color = if (isPinnedSelected) theme.primary.copy(alpha = 0.22f) else theme.surfaceContainerHigh,
                                         modifier = Modifier.padding(start = 4.dp)
                                     ) {
                                         Text(
@@ -401,7 +404,7 @@ fun SessionListScreen(
                                             style = MaterialTheme.typography.labelSmall,
                                             fontSize = 11.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = if (isPinnedSelected) Color(0xFFEAB308) else theme.textSecondary,
+                                            color = if (isPinnedSelected) theme.primary else theme.textSecondary,
                                             modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                         )
                                     }
