@@ -1243,10 +1243,51 @@ class PiApiClient(private val prefs: AppPreferences) {
                     defaultThinkingLevel = defaultThinking
                 )
                 val merged = applyModelOverrides(baseCatalog, serverModelsConfig)
-                catalogContextWindows = merged.models
+
+                // ── 过滤「已经不存在」的 provider ──
+                // pi 的模型清单会把**历史会话里用过的模型**也并进来（刷不掉，实测 refresh 返回 changed:false），
+                // 于是像已删除的 CloseAI 这类幽灵 provider 会一直出现在模型的弹窗里。
+                // 判定「还活着」的标准：models.json 里声明过，或者 pi 凭据库里已配置 Key。
+                val liveProviders = mutableSetOf<String>()
+                serverModelsConfig?.get("providers")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?.keySet()?.forEach { liveProviders.add(it.lowercase()) }
+                val authStates = getProviderAuthStates().getOrNull()
+                authStates?.forEach { (id, st) -> if (st.configured) liveProviders.add(id.lowercase()) }
+                val finalModels = if (liveProviders.isEmpty()) {
+                    merged.models
+                } else {
+                    merged.models.filter { liveProviders.contains(it.provider.lowercase()) }
+                }
+
+                catalogContextWindows = finalModels
                     .filter { it.contextWindow > 0L }
                     .associate { "${it.provider.lowercase()}:${it.id.lowercase()}" to it.contextWindow }
-                Result.success(merged)
+
+                // 服务端默认模型若落在被过滤掉的 provider 上（例如默认还是 CloseAI/deepseek-flash），
+                // 回退到「同名模型」或第一个可用模型，避免选择器一进来就是幽灵模型。
+                var effectiveDefault = defaultModelRef
+                if (effectiveDefault != null && finalModels.none {
+                        it.provider.equals(effectiveDefault!!.provider, ignoreCase = true) &&
+                            it.id.equals(effectiveDefault!!.modelId, ignoreCase = true)
+                    }
+                ) {
+                    val sameId = finalModels.firstOrNull { it.id.equals(effectiveDefault!!.modelId, ignoreCase = true) }
+                    val fallback = sameId ?: finalModels.firstOrNull()
+                    if (fallback != null) {
+                        effectiveDefault = DefaultModelRef(provider = fallback.provider, modelId = fallback.id)
+                        prefs.defaultProvider = fallback.provider
+                        prefs.defaultModelId = fallback.id
+                    } else {
+                        effectiveDefault = null
+                    }
+                }
+
+                Result.success(
+                    merged.copy(
+                        models = finalModels,
+                        defaultModel = effectiveDefault
+                    )
+                )
             }
         } catch (e: Exception) {
             Result.success(applyModelOverrides(getDefaultCatalog(), null))

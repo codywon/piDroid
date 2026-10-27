@@ -2,6 +2,18 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.14] - 2026-10-27
+
+### 🧹 模型弹窗里不再出现已删除的 CloseAI (Release v1.7.14)
+
+- **现象**：`models.json` 里早就只有 `codywon` 了，但「模型切换」弹窗里仍能看到 `CloseAI`（17 个模型）。
+- **根因（实测）**：`GET /api/models` 的 `modelList` 里确实还有 `CloseAI` —— pi 的模型清单会把**历史会话里用过的模型**一并并进来（`CloseAI:gpt-5.6-terra` 这类键出现在 174 个历史会话里），所以 `POST /api/models/refresh` 返回 `changed:false`，清 `models.json` 也刷不掉。另外 `~/.pi/agent/settings.json` 的 `defaultProvider` 还指着 `CloseAI`，导致 `/api/models` 的 `defaultModel` 也是幽灵模型。
+- **修复（App 侧，自包含）**：`getDynamicModels()` 只保留「**在 models.json 里声明过** 或 **pi 凭据库里已配置 Key**」的 provider —— 其余（历史遗留/幽灵）一律不展示。实测本机过滤后只剩 `codywon` 的 7 个模型；带 Key 的内置 provider 不受影响。
+- **顺带修默认模型**：若服务端默认模型落在被过滤的 provider 上，自动回退到「同名模型」或第一个可用模型（例如 `CloseAI/deepseek-flash` → `codywon/deepseek-flash`），选择器一打开不会再是幽灵模型。
+- **本机配置清理**：`~/.pi/agent/settings.json` 的 `defaultProvider/defaultModel` 由 `CloseAI/deepseek-flash` 改为 `codywon/deepseek-flash`（改前已备份 `settings.json.bak-before-closeai-cleanup-*`），刷新后 `/api/models` 的 `defaultModel` 已变为 `codywon/deepseek-flash`。
+
+---
+
 ## [1.7.13] - 2026-10-27
 
 ### 📌 置顶任务只活在「常用置顶」，置顶卡片不再着色 (Release v1.7.13)
