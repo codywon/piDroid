@@ -22,6 +22,16 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_DEVICE_NAME, "My PC") ?: "My PC"
         set(value) = prefs.edit().putString(KEY_DEVICE_NAME, value).apply()
 
+    /**
+     * 最近一次用到的会话工作目录。
+     *
+     * 技能类接口（GET/PATCH /api/skills 等）需要 cwd；当页面上拿不到有效 cwd 时用它兜底，
+     * 否则项目级技能会被当“全局”处理。
+     */
+    var lastSelectedCwd: String
+        get() = prefs.getString(KEY_LAST_SELECTED_CWD, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_SELECTED_CWD, value.trim()).apply()
+
     // 语音播报开关：默认关闭自动播报，支持手动按需点击播报
     var autoSpeakEnabled: Boolean
         get() = prefs.getBoolean(KEY_AUTO_SPEAK, false)
@@ -363,6 +373,7 @@ class AppPreferences(context: Context) {
             private const val KEY_PINNED_WORKSPACES = "pinned_workspaces"
     private const val KEY_WORKSPACE_ORDER = "workspace_order"
     private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
+    private const val KEY_LAST_SELECTED_CWD = "key_last_selected_cwd"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     }
 }

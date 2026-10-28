@@ -1295,6 +1295,7 @@ class MainActivity : ComponentActivity() {
             currentSession = session
             currentProject = session.workspaceName
             lastOpenedWorkspacePath = session.workspacePath
+            session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
             queuedMessages.clear()
             isAutoRetrying = false
             isToolExecuting = false
@@ -2306,6 +2307,7 @@ class MainActivity : ComponentActivity() {
                                 currentSession = newSession
                                 currentProject = newSession.workspaceName
                                 lastOpenedWorkspacePath = newSession.workspacePath
+                                newSession.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
                                 messages.clear()
                                 isLoadingSessionHistory = false
                                 olderMessages = emptyList()

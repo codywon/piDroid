@@ -1401,7 +1401,7 @@ fun GlobalSkillsTab(
         isCheckingUpdates = true
         coroutineScope.launch {
             apiClient.checkSkillUpdates(cwd = currentProject).onSuccess { list ->
-                val map = list.associateBy { it.package }
+                val map = list.associateBy { it.`package` }
                 updatesMap = map
                 isCheckingUpdates = false
                 val updateCount = list.count { it.state == "update-available" }
@@ -1418,7 +1418,7 @@ fun GlobalSkillsTab(
     }
 
     fun doUpdateSkill(skill: SkillInfo) {
-        val pkg = skill.install?.package ?: skill.name
+        val pkg = skill.install?.`package` ?: skill.name
         val scope = skill.scope ?: if (skill.isProjectScope) "project" else "global"
         if (updatingPackage != null || apiClient == null) return
         updatingPackage = pkg
@@ -1650,8 +1650,8 @@ fun GlobalSkillsTab(
                             SkillCardItem(
                                 skill = skill,
                                 isProject = true,
-                                isUpdateAvailable = updatesMap[skill.install?.package]?.state == "update-available",
-                                isUpdating = updatingPackage == (skill.install?.package ?: skill.name),
+                                isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
+                                isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
                                 onToggle = { onToggleSkill(skill, it) },
                                 onEditAlias = { onEditAlias(skill) },
                                 onViewDetail = { onViewDetail(skill) },
@@ -1719,8 +1719,8 @@ fun GlobalSkillsTab(
                         SkillCardItem(
                             skill = skill,
                             isProject = false,
-                            isUpdateAvailable = updatesMap[skill.install?.package]?.state == "update-available",
-                            isUpdating = updatingPackage == (skill.install?.package ?: skill.name),
+                            isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
+                            isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
                             onToggle = { onToggleSkill(skill, it) },
                             onEditAlias = { onEditAlias(skill) },
                             onViewDetail = { onViewDetail(skill) },
@@ -1969,12 +1969,12 @@ fun GlobalSkillsTab(
                             )
                         }
 
-                        items(searchResults, key = { it.package }) { result ->
+                        items(searchResults, key = { it.`package` }) { result ->
                             val isAlreadyInstalled = skills.any {
                                 it.scope.equals(addSkillTargetScope, true) &&
-                                    (it.install?.package == result.package || it.name.equals(result.skillName, ignoreCase = true))
+                                    (it.install?.`package` == result.`package` || it.name.equals(result.skillName, ignoreCase = true))
                             }
-                            val isInstallingThis = installingPackage == result.package
+                            val isInstallingThis = installingPackage == result.`package`
 
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
@@ -2056,8 +2056,8 @@ fun GlobalSkillsTab(
                                     } else {
                                         Button(
                                             onClick = {
-                                                installingPackage = result.package
-                                                onInstallSkill(result.package, addSkillTargetScope)
+                                                installingPackage = result.`package`
+                                                onInstallSkill(result.`package`, addSkillTargetScope)
                                                 coroutineScope.launch {
                                                     delay(1500)
                                                     installingPackage = null

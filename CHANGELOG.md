@@ -30,6 +30,13 @@ All notable changes to the piDroid application will be documented in this file.
 - 会话内容没到之前，屏幕正中展示一枚 28dp 加载圆圈（不再是一整片空白或骨架条），
   加载完成后自然消失；真·空会话仍会提示“还没有对话，发送指令开始”。
 
+**D. 顺带修掉 v1.7.21 技能功能的编译错误（那次发版因此没出包）**
+
+- `GlobalSettingsScreen` 里 12 处 `xxx.package` 改为 `` xxx.`package` ``：`package` 是 Kotlin 硬关键字，
+  不加反引号是语法错误（编译器报 “Qualified expression without selector”）；
+- `PiApiClient.sanitizeCwd()` 用到的 `prefs.lastSelectedCwd` 之前根本没定义，已补上该偏好项，
+  并在打开/创建会话时记录当前 cwd（技能接口拿不到 cwd 时的兜底）。
+
 ---
 
 ## [1.7.21] - 2026-10-28
