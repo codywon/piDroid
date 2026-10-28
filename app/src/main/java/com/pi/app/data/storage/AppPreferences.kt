@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 
 class AppPreferences(context: Context) {
+    /** 应用缓存目录：会话快照离线缓存放在这里（不占用户可见空间，系统可回收） */
+    val cacheDir: java.io.File = context.cacheDir
+
     private val prefs: SharedPreferences =
         context.getSharedPreferences("pidroid_prefs", Context.MODE_PRIVATE)
 

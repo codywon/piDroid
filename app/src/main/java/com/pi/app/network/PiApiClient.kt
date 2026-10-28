@@ -15,6 +15,7 @@ import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -240,6 +241,201 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 对标 pi-web MessageView：配对 toolCall 与 toolResult，提取参数预览与每回合 Token 用量
     // ==========================================
 
+    /**
+     * 解析 `GET /api/sessions/{id}` 的快照 JSON。
+     *
+     * 网络首屏与磁盘离线缓存共用同一套解析：打开会话时先用上次落盘的 body 回放，
+     * 再让网络结果覆盖，避免「每次点进去都要等一次网络才有正文」。
+     */
+    private fun parseSessionHistoryBody(
+        sessionId: String,
+        body: String,
+        tail: Int
+    ): SessionHistoryData {
+        val baseUrl = prefs.serverUrl
+        val json = JsonParser.parseString(body).asJsonObject
+
+        var currentProvider = "codywon"
+        var currentModelId = "gpt-6.1-sol"
+        var currentThinkingLevel = ThinkingLevel.HIGH
+        var modelContextWindow = 0L
+
+        var lastAssistantContextTokens = 0L
+        var lastAssistantInTokens = 0L
+        var lastAssistantOutTokens = 0L
+
+        val ctxObj = if (json.has("context") && json.get("context").isJsonObject) {
+            json.getAsJsonObject("context")
+        } else null
+
+        if (ctxObj != null) {
+            if (ctxObj.has("model") && ctxObj.get("model").isJsonObject) {
+                val mObj = ctxObj.getAsJsonObject("model")
+                currentProvider = mObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: currentProvider
+                currentModelId = mObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString
+                    ?: mObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    ?: currentModelId
+                modelContextWindow = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+            }
+            if (ctxObj.has("thinkingLevel") && !ctxObj.get("thinkingLevel").isJsonNull) {
+                currentThinkingLevel = ThinkingLevel.fromValue(ctxObj.get("thinkingLevel")?.asString)
+            }
+        }
+
+        // 收集完整的原始消息数组：
+        // 1) 如果服务端 /api/sessions/[id] 默认只返回最近 50 条 (hasMore == true)，主动通过 /api/sessions/[id]/context?tail=... 及 before=... 向上翻页拉取全量历史
+        // 2) 同时支持解析 entries（包含上下文压缩 Compaction 之前的完整早期对话与压缩摘要节点），确保用户点击“展开全部”或“加载前50条”能看到从第 1 条提问开始的整个任务全貌
+        val rawContextMessages = JsonArray()
+        val initialCtxMsgs = ctxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+        val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
+            (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
+        val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+            ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+
+        if (initialHasMore) {
+            if (tail > 100) {
+                // 仅当明确需要加载大批量早期历史时才执行向上翻页拉取，首屏极速秒开模式仅使用当前返回的尾部
+                val pagedMessages = fetchFullContextPages(baseUrl, sessionId, leafId, tail, initialCtxMsgs, ctxObj)
+                for (m in pagedMessages) rawContextMessages.add(m)
+            } else if (initialCtxMsgs != null) {
+                for (m in initialCtxMsgs) rawContextMessages.add(m)
+            }
+        } else if (initialCtxMsgs != null) {
+            for (m in initialCtxMsgs) rawContextMessages.add(m)
+        }
+
+        // 检查是否存在完整 entries 树（包含被 compaction 折叠前的早期历史记录）
+        val entriesArr = when {
+            json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
+            json.has("tree") && json.get("tree").isJsonObject && json.getAsJsonObject("tree").has("entries") ->
+                json.getAsJsonObject("tree").getAsJsonArray("entries")
+            json.has("messages") && json.get("messages").isJsonArray -> json.getAsJsonArray("messages")
+            else -> null
+        }
+
+        val normalizedEntryMessages = if (entriesArr != null && entriesArr.size() > 0) {
+            extractChronologicalMessagesFromEntries(entriesArr, leafId)
+        } else JsonArray()
+
+        val chosenMessages = if (normalizedEntryMessages.size() > rawContextMessages.size()) {
+            if (tail <= 100 && normalizedEntryMessages.size() > tail) {
+                // 首屏快速分段：默认截取最近 tail 条；若尾部全是工具调用，向前延伸以确保包含用户对话
+                var startIndex = (normalizedEntryMessages.size() - tail).coerceAtLeast(0)
+                val nonToolCount = (startIndex until normalizedEntryMessages.size()).count { idx ->
+                    val el = normalizedEntryMessages.get(idx)
+                    if (el.isJsonObject) {
+                        val r = el.asJsonObject.get("role")?.takeIf { !it.isJsonNull }?.asString
+                        r == "user" || r == "assistant"
+                    } else false
+                }
+                if (nonToolCount < 3 && startIndex > 0) {
+                    startIndex = (startIndex - 40).coerceAtLeast(0)
+                }
+                val sliced = JsonArray()
+                for (i in startIndex until normalizedEntryMessages.size()) {
+                    sliced.add(normalizedEntryMessages.get(i))
+                }
+                sliced
+            } else {
+                normalizedEntryMessages
+            }
+        } else {
+            rawContextMessages
+        }
+
+        val parsedResult = parseRawMessagesToChatItems(
+            sessionId = sessionId,
+            msgs = chosenMessages,
+            defaultModelId = currentModelId
+        )
+        val chatItems = parsedResult.items
+        if (parsedResult.lastContextTokens > 0) {
+            lastAssistantContextTokens = parsedResult.lastContextTokens
+            lastAssistantInTokens = parsedResult.lastInTokens
+            lastAssistantOutTokens = parsedResult.lastOutTokens
+        }
+
+        // 2. 解析详细 Token 与监控用量
+        var inTokens = 0L
+        var outTokens = 0L
+        var cacheRead = 0L
+        var cacheWrite = 0L
+        var cost = 0.0
+
+        if (json.has("stats") && json.get("stats").isJsonObject) {
+            val stats = json.getAsJsonObject("stats")
+            cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.let { costElem ->
+                if (costElem.isJsonPrimitive) {
+                    runCatching { costElem.asDouble }.getOrDefault(0.0)
+                } else if (costElem.isJsonObject) {
+                    val cObj = costElem.asJsonObject
+                    val total = cObj.get("total") ?: cObj.get("cost")
+                    runCatching { total?.asDouble }.getOrNull() ?: runCatching {
+                        val inp = cObj.get("input")?.asDouble ?: 0.0
+                        val out = cObj.get("output")?.asDouble ?: 0.0
+                        inp + out
+                    }.getOrDefault(0.0)
+                } else 0.0
+            } ?: 0.0
+            if (stats.has("tokens") && stats.get("tokens").isJsonObject) {
+                val tok = stats.getAsJsonObject("tokens")
+                inTokens = tok.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                outTokens = tok.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                cacheRead = tok.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                cacheWrite = tok.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+            }
+        }
+
+        // 动态匹配该模型配置的上下文窗口上限（优先读取用户保存的模型覆盖配置）
+        val overrides = prefs.getModelOverrides()
+        val overrideModel = overrides["$currentProvider:$currentModelId"]
+            ?: overrides.values.firstOrNull { it.modelId.equals(currentModelId, ignoreCase = true) }
+        val catalogWindow = catalogContextWindows["${currentProvider.lowercase()}:${currentModelId.lowercase()}"]
+            ?: catalogContextWindows.entries.firstOrNull {
+                it.key.substringAfter(':') == currentModelId.lowercase()
+            }?.value
+            ?: 0L
+        val effectiveMaxContext = when {
+            overrideModel != null && overrideModel.contextWindow > 0L -> overrideModel.contextWindow
+            modelContextWindow > 0L -> modelContextWindow
+            catalogWindow > 0L -> catalogWindow
+            else -> 200000L
+        }
+
+        val realContext = if (lastAssistantContextTokens > 0) {
+            lastAssistantContextTokens
+        } else if (inTokens > effectiveMaxContext) {
+            (inTokens % 80000L).coerceAtLeast(24000L)
+        } else {
+            inTokens.coerceAtLeast(0L)
+        }
+
+        val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else inTokens
+        val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else outTokens
+
+        val tokenStats = TokenStats(
+            contextTokens = realContext,
+            maxContextWindow = effectiveMaxContext,
+            inputTokens = currentInTokens,
+            outputTokens = currentOutTokens,
+            cacheReadTokens = cacheRead,
+            cacheWriteTokens = cacheWrite,
+            cost = cost
+        )
+
+        return SessionHistoryData(
+            messages = chatItems,
+            provider = currentProvider,
+            modelId = currentModelId,
+            thinkingLevel = currentThinkingLevel,
+            stats = tokenStats,
+            hasMoreOnServer = initialHasMore,
+            oldestEntryId = extractOldestEntryId(ctxObj, initialCtxMsgs),
+            turnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+            leafId = leafId
+        )
+    }
+
     suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
@@ -254,193 +450,63 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
                 }
                 val body = response.body?.string() ?: "{}"
-                val json = JsonParser.parseString(body).asJsonObject
-
-                var currentProvider = "codywon"
-                var currentModelId = "gpt-6.1-sol"
-                var currentThinkingLevel = ThinkingLevel.HIGH
-                var modelContextWindow = 0L
-
-                var lastAssistantContextTokens = 0L
-                var lastAssistantInTokens = 0L
-                var lastAssistantOutTokens = 0L
-
-                val ctxObj = if (json.has("context") && json.get("context").isJsonObject) {
-                    json.getAsJsonObject("context")
-                } else null
-
-                if (ctxObj != null) {
-                    if (ctxObj.has("model") && ctxObj.get("model").isJsonObject) {
-                        val mObj = ctxObj.getAsJsonObject("model")
-                        currentProvider = mObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: currentProvider
-                        currentModelId = mObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString
-                            ?: mObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                            ?: currentModelId
-                        modelContextWindow = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                    }
-                    if (ctxObj.has("thinkingLevel") && !ctxObj.get("thinkingLevel").isJsonNull) {
-                        currentThinkingLevel = ThinkingLevel.fromValue(ctxObj.get("thinkingLevel")?.asString)
-                    }
-                }
-
-                // 收集完整的原始消息数组：
-                // 1) 如果服务端 /api/sessions/[id] 默认只返回最近 50 条 (hasMore == true)，主动通过 /api/sessions/[id]/context?tail=... 及 before=... 向上翻页拉取全量历史
-                // 2) 同时支持解析 entries（包含上下文压缩 Compaction 之前的完整早期对话与压缩摘要节点），确保用户点击“展开全部”或“加载前50条”能看到从第 1 条提问开始的整个任务全貌
-                val rawContextMessages = JsonArray()
-                val initialCtxMsgs = ctxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
-                val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
-                    (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
-                val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
-                    ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
-
-                if (initialHasMore) {
-                    if (tail > 100) {
-                        // 仅当明确需要加载大批量早期历史时才执行向上翻页拉取，首屏极速秒开模式仅使用当前返回的尾部
-                        val pagedMessages = fetchFullContextPages(baseUrl, sessionId, leafId, tail, initialCtxMsgs, ctxObj)
-                        for (m in pagedMessages) rawContextMessages.add(m)
-                    } else if (initialCtxMsgs != null) {
-                        for (m in initialCtxMsgs) rawContextMessages.add(m)
-                    }
-                } else if (initialCtxMsgs != null) {
-                    for (m in initialCtxMsgs) rawContextMessages.add(m)
-                }
-
-                // 检查是否存在完整 entries 树（包含被 compaction 折叠前的早期历史记录）
-                val entriesArr = when {
-                    json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
-                    json.has("tree") && json.get("tree").isJsonObject && json.getAsJsonObject("tree").has("entries") ->
-                        json.getAsJsonObject("tree").getAsJsonArray("entries")
-                    json.has("messages") && json.get("messages").isJsonArray -> json.getAsJsonArray("messages")
-                    else -> null
-                }
-
-                val normalizedEntryMessages = if (entriesArr != null && entriesArr.size() > 0) {
-                    extractChronologicalMessagesFromEntries(entriesArr, leafId)
-                } else JsonArray()
-
-                val chosenMessages = if (normalizedEntryMessages.size() > rawContextMessages.size()) {
-                    if (tail <= 100 && normalizedEntryMessages.size() > tail) {
-                        // 首屏快速分段：默认截取最近 tail 条；若尾部全是工具调用，向前延伸以确保包含用户对话
-                        var startIndex = (normalizedEntryMessages.size() - tail).coerceAtLeast(0)
-                        val nonToolCount = (startIndex until normalizedEntryMessages.size()).count { idx ->
-                            val el = normalizedEntryMessages.get(idx)
-                            if (el.isJsonObject) {
-                                val r = el.asJsonObject.get("role")?.takeIf { !it.isJsonNull }?.asString
-                                r == "user" || r == "assistant"
-                            } else false
-                        }
-                        if (nonToolCount < 3 && startIndex > 0) {
-                            startIndex = (startIndex - 40).coerceAtLeast(0)
-                        }
-                        val sliced = JsonArray()
-                        for (i in startIndex until normalizedEntryMessages.size()) {
-                            sliced.add(normalizedEntryMessages.get(i))
-                        }
-                        sliced
-                    } else {
-                        normalizedEntryMessages
-                    }
-                } else {
-                    rawContextMessages
-                }
-
-                val parsedResult = parseRawMessagesToChatItems(
-                    sessionId = sessionId,
-                    msgs = chosenMessages,
-                    defaultModelId = currentModelId
-                )
-                val chatItems = parsedResult.items
-                if (parsedResult.lastContextTokens > 0) {
-                    lastAssistantContextTokens = parsedResult.lastContextTokens
-                    lastAssistantInTokens = parsedResult.lastInTokens
-                    lastAssistantOutTokens = parsedResult.lastOutTokens
-                }
-
-                // 2. 解析详细 Token 与监控用量
-                var inTokens = 0L
-                var outTokens = 0L
-                var cacheRead = 0L
-                var cacheWrite = 0L
-                var cost = 0.0
-
-                if (json.has("stats") && json.get("stats").isJsonObject) {
-                    val stats = json.getAsJsonObject("stats")
-                    cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.let { costElem ->
-                        if (costElem.isJsonPrimitive) {
-                            runCatching { costElem.asDouble }.getOrDefault(0.0)
-                        } else if (costElem.isJsonObject) {
-                            val cObj = costElem.asJsonObject
-                            val total = cObj.get("total") ?: cObj.get("cost")
-                            runCatching { total?.asDouble }.getOrNull() ?: runCatching {
-                                val inp = cObj.get("input")?.asDouble ?: 0.0
-                                val out = cObj.get("output")?.asDouble ?: 0.0
-                                inp + out
-                            }.getOrDefault(0.0)
-                        } else 0.0
-                    } ?: 0.0
-                    if (stats.has("tokens") && stats.get("tokens").isJsonObject) {
-                        val tok = stats.getAsJsonObject("tokens")
-                        inTokens = tok.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                        outTokens = tok.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                        cacheRead = tok.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                        cacheWrite = tok.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                    }
-                }
-
-                // 动态匹配该模型配置的上下文窗口上限（优先读取用户保存的模型覆盖配置）
-                val overrides = prefs.getModelOverrides()
-                val overrideModel = overrides["$currentProvider:$currentModelId"]
-                    ?: overrides.values.firstOrNull { it.modelId.equals(currentModelId, ignoreCase = true) }
-                val catalogWindow = catalogContextWindows["${currentProvider.lowercase()}:${currentModelId.lowercase()}"]
-                    ?: catalogContextWindows.entries.firstOrNull {
-                        it.key.substringAfter(':') == currentModelId.lowercase()
-                    }?.value
-                    ?: 0L
-                val effectiveMaxContext = when {
-                    overrideModel != null && overrideModel.contextWindow > 0L -> overrideModel.contextWindow
-                    modelContextWindow > 0L -> modelContextWindow
-                    catalogWindow > 0L -> catalogWindow
-                    else -> 200000L
-                }
-
-                val realContext = if (lastAssistantContextTokens > 0) {
-                    lastAssistantContextTokens
-                } else if (inTokens > effectiveMaxContext) {
-                    (inTokens % 80000L).coerceAtLeast(24000L)
-                } else {
-                    inTokens.coerceAtLeast(0L)
-                }
-
-                val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else inTokens
-                val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else outTokens
-
-                val tokenStats = TokenStats(
-                    contextTokens = realContext,
-                    maxContextWindow = effectiveMaxContext,
-                    inputTokens = currentInTokens,
-                    outputTokens = currentOutTokens,
-                    cacheReadTokens = cacheRead,
-                    cacheWriteTokens = cacheWrite,
-                    cost = cost
-                )
-
-                val historyData = SessionHistoryData(
-                    messages = chatItems,
-                    provider = currentProvider,
-                    modelId = currentModelId,
-                    thinkingLevel = currentThinkingLevel,
-                    stats = tokenStats,
-                    hasMoreOnServer = initialHasMore,
-                    oldestEntryId = extractOldestEntryId(ctxObj, initialCtxMsgs),
-                    turnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                    leafId = leafId
-                )
+                val historyData = parseSessionHistoryBody(sessionId, body, tail)
                 sessionHistoryCache[sessionId] = historyData
+                persistSessionSnapshot(sessionId, body)
                 Result.success(historyData)
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    // ── 会话快照磁盘缓存：再次打开会话时先回放上次的正文，不必等网络 ──
+    private val snapshotLastWriteAt = mutableMapOf<String, Long>()
+
+    private fun snapshotDir(): File {
+        val dir = File(prefs.cacheDir, "session-snapshots")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    private fun snapshotFile(sessionId: String): File = File(snapshotDir(), "$sessionId.json")
+
+    /**
+     * 把最近一次快照 body 落盘（同一会话 10s 内最多写一次；只保留最近 8 个会话）。
+     * 存的是服务端原始 JSON，回放时走同一套解析，不另建一份容易走样的模型。
+     */
+    private fun persistSessionSnapshot(sessionId: String, body: String) {
+        if (body.length < 64) return
+        val now = System.currentTimeMillis()
+        val last = snapshotLastWriteAt[sessionId] ?: 0L
+        if (now - last < 10_000L) return
+        snapshotLastWriteAt[sessionId] = now
+        runCatching {
+            val dir = snapshotDir()
+            val target = snapshotFile(sessionId)
+            val tmp = File(dir, "$sessionId.json.tmp")
+            tmp.writeText(body)
+            if (!tmp.renameTo(target)) {
+                target.writeText(body)
+                tmp.delete()
+            }
+            dir.listFiles()
+                ?.filter { it.isFile && it.name.endsWith(".json") }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(8)
+                ?.forEach { it.delete() }
+        }
+    }
+
+    /** 读取上次落盘的会话快照（进程被回收后再打开也能秒出正文）。没有/解析失败返回 null。 */
+    suspend fun getDiskCachedSessionDetail(sessionId: String): SessionHistoryData? = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = snapshotFile(sessionId)
+            if (!file.exists() || file.length() < 64L) return@runCatching null
+            parseSessionHistoryBody(sessionId, file.readText(), 60).also {
+                sessionHistoryCache[sessionId] = it
+            }
+        }.getOrNull()
     }
 
     /**
@@ -2347,7 +2413,13 @@ class PiApiClient(private val prefs: AppPreferences) {
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     val errBody = response.body?.string() ?: ""
-                    Result.failure(IOException("Server HTTP ${response.code}: $errBody"))
+                    // 优先用服务端的人类可读错误（如 "Model not found: CloseAI/deepseek-flash"），
+                    // 否则原样显示 {error:…} 的 JSON 片段
+                    val msg = runCatching {
+                        JsonParser.parseString(errBody).asJsonObject.get("error")
+                            ?.takeIf { !it.isJsonNull }?.asString
+                    }.getOrNull() ?: "HTTP ${response.code}: $errBody"
+                    Result.failure(IOException(msg))
                 } else {
                     Result.success(true)
                 }

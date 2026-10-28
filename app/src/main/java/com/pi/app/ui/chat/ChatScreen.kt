@@ -332,6 +332,10 @@ fun ChatScreen(
     // 回合大纲也必须建立在拼接后的完整列表上，否则翻页拉回来的历史不进时间轴。
     val conversation = remember(olderMessages, messages) { olderMessages + messages }
 
+    // 首屏还没有任何正文时，不投射「正在等待模型…」式的状态噪音，只给静默骨架。
+    // （会话在 PC 侧确实在跑时，isAgentBusy 也为真，但正文还在路上，报「等待模型」纯属噪声）
+    val isFirstScreenLoading = conversation.isEmpty() && (isLoadingSessionHistory || isAgentBusy)
+
     // 1:1 对标 pi-web：将整场会话的消息按用户提问构建回合大纲列表 (TurnOutline)
     val allTurns = remember(
         conversation.size,
@@ -544,7 +548,7 @@ fun ChatScreen(
                             Text(
                                 text = when {
                                     sseState == SseConnectionState.RECONNECTING -> "事件流自动重连并同步中..."
-                                    isAgentBusy -> (agentPhaseLabel ?: "Agent 正在实时执行任务...")
+                                    isAgentBusy && !isFirstScreenLoading -> (agentPhaseLabel ?: "Agent 正在实时执行任务...")
                                     else -> sessionTitle.take(26)
                                 },
                                 style = MaterialTheme.typography.bodySmall,
@@ -1408,7 +1412,7 @@ fun ChatScreen(
                 // 历史尚未到达时只画一条静默骨架（对齐 pi-web：不显示「正在同步历史…」类文案）
                 if (conversation.isEmpty()) {
                     item(key = "chat_empty_hint") {
-                        if (isLoadingSessionHistory) {
+                        if (isFirstScreenLoading) {
                             ChatHistorySkeleton()
                         } else {
                             Box(
@@ -1417,30 +1421,18 @@ fun ChatScreen(
                                     .padding(vertical = 48.dp),
                                 contentAlignment = Alignment.Center
                             ) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    if (isAgentBusy) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(14.dp),
-                                            strokeWidth = 1.8.dp,
-                                            color = theme.primary
-                                        )
-                                    }
-                                    Text(
-                                        text = if (isAgentBusy) "等待模型返回首条消息…" else "还没有对话，发送指令开始",
-                                        fontSize = 12.sp,
-                                        color = theme.textMuted
-                                    )
-                                }
+                                Text(
+                                    text = "还没有对话，发送指令开始",
+                                    fontSize = 12.sp,
+                                    color = theme.textMuted
+                                )
                             }
                         }
                     }
                 }
 
-                // 对标 pi-web ChatWindow.tsx：当 Agent 正在运行或等待模型响应时，底部展示脉冲状态文字（如 "正在等待模型..."）
-                if (isAgentBusy || isCompacting) {
+                // 对标 pi-web：底部脉冲状态只在「已经有正文」时展示，首屏空白不再刷「正在等待模型...」
+                if ((isAgentBusy || isCompacting) && conversation.isNotEmpty()) {
                     item(key = "pi_web_agent_phase_indicator") {
                         PiWebPhaseIndicator(
                             text = when {

@@ -25,6 +25,7 @@ import com.pi.app.keepalive.PiForegroundService
 import com.pi.app.network.DynamicModelCatalog
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
+import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
@@ -235,6 +236,7 @@ class MainActivity : ComponentActivity() {
         var isLoadingSessions by remember { mutableStateOf(false) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
+        var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
         // /api/agent/running 的 sessionListVersion：只有它变了才值得重拉完整会话列表
         var lastSessionListVersion by remember { mutableStateOf(0L) }
 
@@ -435,7 +437,7 @@ class MainActivity : ComponentActivity() {
          * 页与页之间由服务端 excludeLeaf 保证不重叠；这里仍按「角色+时间戳+内容哈希」再兜一层去重，
          * 并把整页 prepend 到 olderMessages，主快照 messages 完全不动。
          */
-        fun loadOlderHistory() {
+        fun loadOlderHistory(silent: Boolean = false) {
             val sid = currentSession?.id ?: return
             if (isLoadingOlder || !hasEarlierOnServer) return
             val cursor = olderCursor
@@ -456,9 +458,41 @@ class MainActivity : ComponentActivity() {
                         earlierTurnCount = page.turnsBefore
                     }
                     .onFailure { err ->
-                        Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                        if (!silent) {
+                            Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                        }
                     }
                 isLoadingOlder = false
+            }
+        }
+
+        /**
+         * 首屏自动补齐：服务端快照解析不出任何消息时（历史上确实出现过），
+         * 自动向前翻几页直到有内容可渲染 —— 用户不需要再手点顶部「上滑加载」。
+         */
+        fun autoFillFirstScreen(sessionId: String) {
+            if (isAutoFillingFirstScreen) return
+            isAutoFillingFirstScreen = true
+            isLoadingSessionHistory = true
+            lifecycleScope.launch {
+                try {
+                    repeat(3) {
+                        if (currentSession?.id != sessionId) return@launch
+                        if (messages.isNotEmpty() || olderMessages.isNotEmpty()) return@launch
+                        if (!hasEarlierOnServer) return@launch
+                        val before = olderMessages.size
+                        loadOlderHistory(silent = true)
+                        var waited = 0
+                        while (olderMessages.size == before && isLoadingOlder && waited < 5_000) {
+                            kotlinx.coroutines.delay(100)
+                            waited += 100
+                        }
+                        if (messages.isNotEmpty() || olderMessages.isNotEmpty()) return@launch
+                    }
+                } finally {
+                    isAutoFillingFirstScreen = false
+                    isLoadingSessionHistory = false
+                }
             }
         }
 
@@ -795,8 +829,20 @@ class MainActivity : ComponentActivity() {
                     }
                     currentThinkingLevel = hist.thinkingLevel
                 }
-                // 首屏正文已真正落进 messages，可以收起骨架了
-                isLoadingSessionHistory = false
+                // 首屏是否真的渲染得出内容？
+                if (messages.isNotEmpty() || olderMessages.isNotEmpty()) {
+                    isLoadingSessionHistory = false
+                } else if (hist.hasMoreOnServer) {
+                    // 快照解析不出任何消息，而服务端明确说还有更早的记录：
+                    // 自动向前补几页（否则用户必须自己点顶部「上滑加载」才能看到正文）
+                    android.util.Log.w(
+                        "PiSync",
+                        "first screen empty for $sessionId (hasMore=true, turnsBefore=${hist.turnsBefore}) → auto-fill"
+                    )
+                    autoFillFirstScreen(sessionId)
+                } else {
+                    isLoadingSessionHistory = false
+                }
             }
 
             if (serverRunning) {
@@ -1196,6 +1242,17 @@ class MainActivity : ComponentActivity() {
             startListeningEvents(sid, initialBusy = busy)
         }
 
+        /** 把快照里的模型/统计/翻页游标落到 UI 状态（内存缓存、磁盘缓存、网络快照共用） */
+        fun applyHistoryMeta(hist: SessionHistoryData) {
+            selectedModel = ModelInfo(id = hist.modelId, name = hist.modelId, provider = hist.provider)
+            currentThinkingLevel = hist.thinkingLevel
+            tokenStats = hist.stats
+            hasEarlierOnServer = hist.hasMoreOnServer
+            earlierTurnCount = hist.turnsBefore
+            olderCursor = hist.oldestEntryId
+            olderLeafId = hist.leafId
+        }
+
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
         fun openSessionWithHistory(session: Session) {
             completionSettleJob?.cancel()
@@ -1225,25 +1282,23 @@ class MainActivity : ComponentActivity() {
 
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)
+            messages.clear()
             if (cached != null && cached.messages.isNotEmpty()) {
-                messages.clear()
                 messages.addAll(cached.messages)
-                selectedModel = ModelInfo(
-                    id = cached.modelId,
-                    name = cached.modelId,
-                    provider = cached.provider
-                )
-                currentThinkingLevel = cached.thinkingLevel
-                tokenStats = cached.stats
-                hasEarlierOnServer = cached.hasMoreOnServer
-                earlierTurnCount = cached.turnsBefore
-                olderCursor = cached.oldestEntryId
-                olderLeafId = cached.leafId
+                applyHistoryMeta(cached)
                 isLoadingSessionHistory = false
             } else {
-                messages.clear()
-                // 没有缓存才需要等一次网络；期间只画一具骨架，不显示「正在同步…」类文案
+                // 没有内存缓存：先试着回放上次落盘的快照（进程被回收后也能秒出正文），
+                // 同时由 syncSessionSnapshot 拉网络最新内容覆盖。
                 isLoadingSessionHistory = true
+                lifecycleScope.launch {
+                    val disk = apiClient.getDiskCachedSessionDetail(session.id) ?: return@launch
+                    if (disk.messages.isEmpty()) return@launch
+                    if (currentSession?.id != session.id || messages.isNotEmpty()) return@launch
+                    messages.addAll(disk.messages)
+                    applyHistoryMeta(disk)
+                    isLoadingSessionHistory = false
+                }
             }
 
             startListeningEvents(session.id, session.isRunning)
@@ -1951,11 +2006,21 @@ class MainActivity : ComponentActivity() {
                         defaultModelId = currentDefaultModelId,
                         defaultProvider = currentDefaultProvider,
                         onModelSelected = { model ->
+                            val previous = selectedModel
                             selectedModel = model
                             currentSession?.let { sess ->
                                 lifecycleScope.launch {
+                                    // pi 侧可能拒绝（典型：provider 已在 models.json 里改名，
+                                    // 服务端返回 "Model not found"）。失败必须回滚，否则手机
+                                    // 显示的模型与 PC/会话保存的模型永久错位。
                                     apiClient.updateModel(sess.id, model.provider, model.id)
-                                    Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                        .onSuccess {
+                                            Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .onFailure { err ->
+                                            selectedModel = previous
+                                            Toast.makeText(this@MainActivity, "模型切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                        }
                                 }
                             }
                         },
