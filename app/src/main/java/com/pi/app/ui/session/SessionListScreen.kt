@@ -1,5 +1,6 @@
 package com.pi.app.ui.session
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
@@ -113,6 +114,8 @@ fun SessionListScreen(
     onToggleArchiveSession: (String) -> Unit = {},
     /** 批量归档（一次提交全部 id 到 pi-web 的 ui-state） */
     onBulkArchive: (List<String>) -> Unit = {},
+    /** 批量恢复归档（一次提交全部 id 到 pi-web 的 ui-state） */
+    onBulkRestore: (List<String>) -> Unit = {},
     /** 服务端全文搜索命中（GET /api/sessions/search） */
     searchHits: List<SessionSearchHit> = emptyList(),
     isSearching: Boolean = false,
@@ -161,6 +164,22 @@ fun SessionListScreen(
     var renameInputText by remember { mutableStateOf("") }
     var deletingSession by remember { mutableStateOf<Session?>(null) }
     var isArchivedExpanded by remember { mutableStateOf(false) }
+
+    // 🌟 对标 pi-web SessionSidebar.tsx 中的 archiveView 状态：左侧抽屉内查看全量已归档任务
+    var isArchiveViewOpen by remember { mutableStateOf(false) }
+    var showConfirmDeleteAllArchived by remember { mutableStateOf(false) }
+
+    val allArchivedSessions = remember(sessions, archivedSessionIds) {
+        sessions.filter { archivedSessionIds.contains(it.id) }
+            .sortedByDescending { it.modified ?: it.created ?: "" }
+    }
+    val totalArchivedCount = allArchivedSessions.size
+
+    LaunchedEffect(drawerState.isClosed) {
+        if (drawerState.isClosed) {
+            isArchiveViewOpen = false
+        }
+    }
 
     // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
     val workspaces = remember(sessions, customWorkspaces) {
@@ -285,12 +304,241 @@ fun SessionListScreen(
                 drawerContentColor = theme.textPrimary,
                 modifier = Modifier.width(305.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .statusBarsPadding()
-                        .padding(16.dp)
-                ) {
+                if (isArchiveViewOpen) {
+                    // 🌟 归档视图：1:1 完全对标 pi-web SessionSidebar.tsx 中的 sidebar-archive-view
+                    BackHandler(enabled = drawerState.isOpen) {
+                        isArchiveViewOpen = false
+                    }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .padding(16.dp)
+                    ) {
+                        // 顶部导航栏 (对标 pi-web sidebar-archive-bar)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable { isArchiveViewOpen = false }
+                                    .padding(horizontal = 4.dp, vertical = 4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowBack,
+                                    contentDescription = "返回工作区",
+                                    tint = theme.textSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "已归档",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.textPrimary
+                                )
+                                if (totalArchivedCount > 0) {
+                                    Text(
+                                        text = " · $totalArchivedCount",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Normal,
+                                        color = theme.textMuted
+                                    )
+                                }
+                            }
+
+                            // 右侧操作菜单（对标 pi-web sidebar-archive-menu-button: 全部恢复 / 清空）
+                            if (totalArchivedCount > 0) {
+                                var showArchiveMenu by remember { mutableStateOf(false) }
+                                Box {
+                                    IconButton(
+                                        onClick = { showArchiveMenu = true },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.MoreVert,
+                                            contentDescription = "归档操作",
+                                            tint = theme.textSecondary,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
+                                    DropdownMenu(
+                                        expanded = showArchiveMenu,
+                                        onDismissRequest = { showArchiveMenu = false }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("全部恢复", style = MaterialTheme.typography.bodyMedium) },
+                                            leadingIcon = {
+                                                Icon(Icons.Default.Unarchive, contentDescription = null, tint = theme.primary)
+                                            },
+                                            onClick = {
+                                                showArchiveMenu = false
+                                                val allIds = allArchivedSessions.map { it.id }
+                                                onBulkRestore(allIds)
+                                            }
+                                        )
+                                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                                        DropdownMenuItem(
+                                            text = { Text("清空已归档", color = Color(0xFFDC2626), style = MaterialTheme.typography.bodyMedium) },
+                                            leadingIcon = {
+                                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFDC2626))
+                                            },
+                                            onClick = {
+                                                showArchiveMenu = false
+                                                showConfirmDeleteAllArchived = true
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        if (allArchivedSessions.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(32.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Icon(
+                                        imageVector = Icons.Default.Archive,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(36.dp),
+                                        tint = theme.textMuted.copy(alpha = 0.45f)
+                                    )
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text(
+                                        text = "暂无已归档任务",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = theme.textMuted
+                                    )
+                                }
+                            }
+                        } else {
+                            // 归档列表按项目分组展示 (完全对标 pi-web buildArchiveRows)
+                            val archivedByProject = remember(allArchivedSessions) {
+                                allArchivedSessions.groupBy { it.workspacePath }
+                            }
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                archivedByProject.forEach { (wsPath, sList) ->
+                                    val wsName = workspaces.firstOrNull { it.path == wsPath }?.displayName
+                                        ?: sList.firstOrNull()?.workspaceName
+                                        ?: wsPath.takeLast(24)
+                                    item(key = "arch_group_$wsPath") {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 4.dp, vertical = 4.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Icon(
+                                                Icons.Default.Folder,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = theme.textMuted
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Text(
+                                                text = wsName,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = theme.textMuted,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Text(
+                                                text = "${sList.size}",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = theme.textMuted
+                                            )
+                                        }
+                                    }
+                                    items(sList, key = { "arch_${it.id}" }) { session ->
+                                        Surface(
+                                            shape = RoundedCornerShape(8.dp),
+                                            color = theme.surfaceContainer,
+                                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    isArchiveViewOpen = false
+                                                    coroutineScope.launch { drawerState.close() }
+                                                    onSessionClick(session)
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        text = customTitles[session.id] ?: session.displayTitle,
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        fontWeight = FontWeight.Medium,
+                                                        color = theme.textPrimary,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                    val timeStr = session.modified ?: session.created ?: ""
+                                                    Text(
+                                                        text = if (timeStr.length >= 10) timeStr.take(10) else timeStr,
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        fontSize = 10.sp,
+                                                        color = theme.textMuted
+                                                    )
+                                                }
+                                                // 单项恢复按钮 (对标 pi-web restoreFamily，写回 ui-state 同步到 PC)
+                                                IconButton(
+                                                    onClick = { onToggleArchiveSession(session.id) },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.Unarchive,
+                                                        contentDescription = "恢复任务",
+                                                        tint = theme.primary,
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                }
+                                                // 单项删除按钮
+                                                IconButton(
+                                                    onClick = { deletingSession = session },
+                                                    modifier = Modifier.size(28.dp)
+                                                ) {
+                                                    Icon(
+                                                        Icons.Default.DeleteOutline,
+                                                        contentDescription = "删除任务",
+                                                        tint = Color(0xFFDC2626),
+                                                        modifier = Modifier.size(15.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .statusBarsPadding()
+                            .padding(16.dp)
+                    ) {
                     // 🌟 顶栏：标题 + 右侧新增项目 [+] 小图标 + 关闭按钮 (释放顶部宝贵高度)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -540,34 +788,81 @@ fun SessionListScreen(
                             }
                         }
 
-                        // 🌟 底部常驻轻量入口：打开 / 添加其他项目 (1:1 对标 pi-web 底部架构)
-                        item(key = "workspace_add_bottom_item") {
-                            Spacer(modifier = Modifier.height(4.dp))
+                        // ── 底部页脚操作 (完全对标 pi-web SessionTree.tsx footer-open & footer-archived) ──
+                        item(key = "footer_divider") {
+                            HorizontalDivider(
+                                color = theme.outline.copy(alpha = 0.35f),
+                                thickness = 0.5.dp,
+                                modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
+                            )
+                        }
+
+                        // 1. 小图标 + 打开其他项目... (对标 pi-web footer-open)
+                        item(key = "footer_open_project") {
                             Surface(
-                                shape = RoundedCornerShape(10.dp),
+                                shape = RoundedCornerShape(8.dp),
                                 color = Color.Transparent,
-                                border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.6f)),
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable { showAddWorkspaceDialog = true }
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.Center
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.CreateNewFolder,
+                                        imageVector = Icons.Default.CreateNewFolder,
                                         contentDescription = null,
-                                        modifier = Modifier.size(15.dp),
-                                        tint = theme.primary
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
                                     )
-                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = "打开 / 添加其他项目...",
-                                        fontSize = 11.5.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = theme.primary
+                                        text = "打开其他项目...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontSize = 12.5.sp,
+                                        color = theme.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+
+                        // 2. 小图标 + 已归档 (对标 pi-web footer-archived)
+                        item(key = "footer_archived") {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Transparent,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { isArchiveViewOpen = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Archive,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = if (totalArchivedCount > 0) "已归档 · $totalArchivedCount" else "已归档",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontSize = 12.5.sp,
+                                        color = theme.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.ChevronRight,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = theme.textMuted
                                     )
                                 }
                             }
@@ -577,6 +872,7 @@ fun SessionListScreen(
                 }
             }
         }
+    }
     ) {
         Scaffold(
             containerColor = theme.background,
@@ -1713,6 +2009,32 @@ fun SessionListScreen(
             },
             dismissButton = {
                 OutlinedButton(onClick = { deletingSession = null }) {
+                    Text("取消", color = theme.textSecondary)
+                }
+            }
+        )
+    }
+
+    if (showConfirmDeleteAllArchived) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDeleteAllArchived = false },
+            containerColor = theme.surfaceContainerLow,
+            title = { Text("清空已归档会话", fontWeight = FontWeight.Bold, color = Color(0xFFDC2626)) },
+            text = { Text("确定要彻底删除全部 ${allArchivedSessions.size} 个已归档任务吗？\n删除后任务上下文与历史记录将无法恢复。") },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val ids = allArchivedSessions.map { it.id }
+                        showConfirmDeleteAllArchived = false
+                        ids.forEach { onDeleteSession(it) }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                ) {
+                    Text("确认清空", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { showConfirmDeleteAllArchived = false }) {
                     Text("取消", color = theme.textSecondary)
                 }
             }

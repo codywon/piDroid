@@ -66,6 +66,7 @@
    ```bash
    npx @agegr/pi-web@latest
    ```
+   Windows 下可直接双击项目根目录的 `start-piweb.bat`（只启动 pi-web，端口 30141）。
 2. 进入本项目 `server/` 目录：
    ```bash
    cd server
@@ -86,6 +87,10 @@ set TUNNEL_URL=https://your-tunnel-name.trycloudflare.com
 node gateway.js
 ```
 终端将自动生成带有外网安全域名的配对二维码！
+
+> ⚠️ Quick Tunnel 每次重启都会换一个随机域名，二维码随之失效。
+> 想做到「扫码一次、长期可用」，请按 [docs/PERMANENT_TUNNEL.md](docs/PERMANENT_TUNNEL.md)
+> 配置固定域名的 Cloudflare Named Tunnel。
 
 ---
 

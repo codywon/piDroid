@@ -14,6 +14,17 @@ const DEFAULT_TARGET = process.env.PI_WEB_URL || 'http://127.0.0.1:30141';
 let TARGET = DEFAULT_TARGET;
 const TOKEN_FILE = path.join(__dirname, '.token');
 
+// 固定域名隧道（Cloudflare Named Tunnel）：
+// 同时设置 PI_TUNNEL_NAME + PI_TUNNEL_HOSTNAME 后，网关不再启动临时 trycloudflare
+// 隧道，而是直接拉起已绑定自有域名的命名隧道。公网地址每次重启都相同，
+// 手机只需扫码/手动填写一次即可长期复用。
+const STABLE_TUNNEL_NAME = (process.env.PI_TUNNEL_NAME || '').trim();
+const STABLE_TUNNEL_HOSTNAME = (process.env.PI_TUNNEL_HOSTNAME || '')
+  .trim()
+  .replace(/^https?:\/\//i, '')
+  .replace(/\/+$/, '');
+const hasStableTunnel = Boolean(STABLE_TUNNEL_NAME && STABLE_TUNNEL_HOSTNAME);
+
 // 命令行参数解析
 const args = process.argv.slice(2);
 const autoTunnel = args.includes('--tunnel');
@@ -432,7 +443,29 @@ async function start(options = {}) {
       const localIp = getLocalIp();
       const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${listenPort}`;
 
-      if (isTunnelEnabled) {
+      if (isTunnelEnabled && hasStableTunnel) {
+        // 固定域名隧道：地址由 Cloudflare 配置决定，无需再监听输出解析临时域名
+        const publicUrl = `https://${STABLE_TUNNEL_HOSTNAME}`;
+        console.log(`\n🌐 正在启动固定域名隧道 "${STABLE_TUNNEL_NAME}" -> ${publicUrl} ...`);
+        const tunnelProcess = spawn(
+          'cloudflared',
+          ['tunnel', 'run', STABLE_TUNNEL_NAME],
+          { shell: true }
+        );
+
+        // cloudflared 把运行日志写在 stderr，这里原样透传便于排查 404/1033 等问题
+        tunnelProcess.stdout.on('data', (data) => process.stdout.write(`    [tunnel] ${data}`));
+        tunnelProcess.stderr.on('data', (data) => process.stderr.write(`    [tunnel] ${data}`));
+
+        tunnelProcess.on('error', (err) => {
+          console.error(`\n[tunnel] 启动 ${STABLE_TUNNEL_NAME} 失败: ${err.message}`);
+          console.error('[tunnel] 请确认 cloudflared 已安装且已完成 cloudflared tunnel login / create / route dns');
+          printBannerAndQr(publicUrl, isAlive);
+        });
+
+        printBannerAndQr(publicUrl, isAlive);
+        resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
+      } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
         const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
           shell: true
@@ -471,6 +504,23 @@ async function start(options = {}) {
       } else {
         printBannerAndQr(defaultHost, isAlive);
         resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+      }
+    });
+
+    // WebSocket 升级请求不经过 Express 中间件，ws:true 的代理会绕过 authMiddleware。
+    // 这里在 server 层单独校验一次 token，未授权直接断开。
+    server.on('upgrade', (req, socket) => {
+      const authHeader = req.headers['authorization'] || '';
+      let token = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : null;
+      if (!token && typeof req.url === 'string') {
+        const queryIndex = req.url.indexOf('?');
+        if (queryIndex !== -1) {
+          token = new URLSearchParams(req.url.slice(queryIndex + 1)).get('token');
+        }
+      }
+      if (!safeTokenEquals(token, AUTH_TOKEN)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.destroy();
       }
     });
 

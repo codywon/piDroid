@@ -168,6 +168,18 @@ class AppPreferences(context: Context) {
         prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, ids).apply()
     }
 
+    fun addArchivedSessionIds(ids: Collection<String>) {
+        val current = getArchivedSessionIds().toMutableSet()
+        current.addAll(ids)
+        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, current).apply()
+    }
+
+    fun removeArchivedSessionIds(ids: Collection<String>) {
+        val current = getArchivedSessionIds().toMutableSet()
+        current.removeAll(ids.toSet())
+        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, current).apply()
+    }
+
     fun toggleArchiveSession(sessionId: String): Boolean {
         val current = getArchivedSessionIds().toMutableSet()
         val willArchive = !current.contains(sessionId)

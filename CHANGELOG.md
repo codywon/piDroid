@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.24] - 2026-10-28
+
+### 🗄️ 左边栏页脚完全对标 pi-web：打开其他项目与全量归档同步视图 (Release v1.7.24)
+
+- **左侧工作区抽屉底部页脚重构（1:1 严格对标 pi-web `SessionTree.tsx`）**：
+  - 废除原先居中粗边框的大卡片样式，改为与 pi-web 侧边栏一致的轻量无框左对齐列表项（`footer-open` 与 `footer-archived`）；
+  - **打开其他项目**：小图标（16dp 文件夹）+ `打开其他项目...`，点击直达项目添加/浏览选择弹窗；
+  - **已归档**：小图标（16dp 归档箱）+ `已归档 · {count}` + 右侧 `ChevronRight` 小箭头。
+- **全量归档管理视图（1:1 对标 pi-web `SessionSidebar.tsx` `sidebar-archive-view`）**：
+  - 点击「已归档」抽屉平滑切入归档专属视图，顶部为 `← 已归档 · {count}` 返回按钮与 `⋯` 操作菜单（支持一键「全部恢复」与「清空已归档」）；
+  - 归档列表按项目分组展示（完全对标 `buildArchiveRows` 结构），每项展示完整标题与时间戳，右侧附单项「恢复」（`Unarchive`）与「删除」图标；
+  - 恢复/归档操作通过 `POST /api/sessions/ui-state` 实时写回 pi-web 服务端，与 PC 网页端双向即时对齐；点击任意归档会话自动关闭抽屉并进入会话。
+- **网关 Cloudflare 固定域名命名隧道支持**：
+  - 网关接入 `PI_TUNNEL_NAME` + `PI_TUNNEL_HOSTNAME` 环境变量，支持固定域名 Named Tunnel，彻底解决临时 Quick Tunnel 重启换域名的痛点；
+  - 补全 WebSocket 协议升级握手独立鉴权拦截。
+
+---
+
 ## [1.7.23] - 2026-10-28
 
 ### 🎨 技能中心 · skills.sh 搜索结果排版重做 (Release v1.7.23)

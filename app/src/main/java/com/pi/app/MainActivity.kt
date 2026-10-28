@@ -2171,12 +2171,26 @@ class MainActivity : ComponentActivity() {
                         if (sids.isNotEmpty()) {
                             lifecycleScope.launch {
                                 apiClient.setSessionsArchived(sids, true).onSuccess {
-                                    sids.forEach { prefs.toggleArchiveSession(it) }
+                                    prefs.addArchivedSessionIds(sids)
                                     archivedSessionIds = prefs.getArchivedSessionIds()
                                     loadSessions(silent = true)
                                     Toast.makeText(this@MainActivity, "已归档 ${sids.size} 个会话", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
                                     Toast.makeText(this@MainActivity, "归档失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
+                    onBulkRestore = { sids ->
+                        if (sids.isNotEmpty()) {
+                            lifecycleScope.launch {
+                                apiClient.setSessionsArchived(sids, false).onSuccess {
+                                    prefs.removeArchivedSessionIds(sids)
+                                    archivedSessionIds = prefs.getArchivedSessionIds()
+                                    loadSessions(silent = true)
+                                    Toast.makeText(this@MainActivity, "已恢复 ${sids.size} 个会话", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "恢复失败: ${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
