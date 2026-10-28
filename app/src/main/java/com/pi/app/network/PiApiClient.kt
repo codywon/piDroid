@@ -288,6 +288,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 2) 同时支持解析 entries（包含上下文压缩 Compaction 之前的完整早期对话与压缩摘要节点），确保用户点击“展开全部”或“加载前50条”能看到从第 1 条提问开始的整个任务全貌
         val rawContextMessages = JsonArray()
         val initialCtxMsgs = ctxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+        val initialEntryIds = ctxObj?.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+        attachEntryIds(initialCtxMsgs, initialEntryIds)
         val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
             (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
         val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
@@ -613,6 +615,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         } else initialCtxObj
 
         val baseMsgs = activeCtxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray ?: initialMsgs
+        val baseEntryIds = activeCtxObj?.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+        attachEntryIds(baseMsgs, baseEntryIds)
         if (baseMsgs != null) {
             for (el in baseMsgs) collected.add(el)
         }
@@ -643,6 +647,8 @@ class PiApiClient(private val prefs: AppPreferences) {
             } else olderJson
 
             val olderMsgs = olderCtx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+            val olderEntryIds = olderCtx.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+            attachEntryIds(olderMsgs, olderEntryIds)
             if (olderMsgs == null || olderMsgs.size() == 0) break
 
             val prependList = mutableListOf<com.google.gson.JsonElement>()
@@ -655,6 +661,21 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
 
         return collected
+    }
+
+    private fun attachEntryIds(msgs: JsonArray?, ids: JsonArray?) {
+        if (msgs == null || ids == null) return
+        val count = minOf(msgs.size(), ids.size())
+        for (i in 0 until count) {
+            val m = msgs.get(i)
+            val id = ids.get(i)?.takeIf { !it.isJsonNull }?.asString
+            if (m != null && m.isJsonObject && !id.isNullOrBlank()) {
+                val obj = m.asJsonObject
+                if (!obj.has("entryId")) {
+                    obj.addProperty("entryId", id)
+                }
+            }
+        }
     }
 
     private fun extractOldestEntryId(ctxObj: JsonObject?, msgs: JsonArray?): String? {
@@ -724,11 +745,15 @@ class PiApiClient(private val prefs: AppPreferences) {
         for (entry in orderedEntries) {
             val entryType = entry.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
             val entryTs = parseFlexibleTimestamp(entry.get("timestamp"))
+            val eId = entry.get("id")?.takeIf { !it.isJsonNull }?.asString
             when {
                 entryType == "message" && entry.has("message") && entry.get("message").isJsonObject -> {
                     val mObj = entry.getAsJsonObject("message").deepCopy()
                     if (!mObj.has("timestamp") && entryTs > 0L) {
                         mObj.addProperty("timestamp", entryTs)
+                    }
+                    if (!eId.isNullOrBlank()) {
+                        mObj.addProperty("entryId", eId)
                     }
                     result.add(mObj)
                 }
@@ -740,6 +765,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         addProperty("summary", summary)
                         addProperty("tokensBefore", tokensBefore)
                         if (entryTs > 0L) addProperty("timestamp", entryTs)
+                        if (!eId.isNullOrBlank()) addProperty("entryId", eId)
                     }
                     result.add(synthetic)
                 }
@@ -750,6 +776,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             addProperty("role", "branchSummary")
                             addProperty("summary", summary)
                             if (entryTs > 0L) addProperty("timestamp", entryTs)
+                            if (!eId.isNullOrBlank()) addProperty("entryId", eId)
                         }
                         result.add(synthetic)
                     }
@@ -766,12 +793,17 @@ class PiApiClient(private val prefs: AppPreferences) {
                             addProperty("role", "system")
                             addProperty("content", contentText)
                             if (entryTs > 0L) addProperty("timestamp", entryTs)
+                            if (!eId.isNullOrBlank()) addProperty("entryId", eId)
                         }
                         result.add(synthetic)
                     }
                 }
                 entry.has("role") -> {
-                    result.add(entry)
+                    val copy = entry.deepCopy()
+                    if (!eId.isNullOrBlank() && !copy.has("entryId")) {
+                        copy.addProperty("entryId", eId)
+                    }
+                    result.add(copy)
                 }
             }
         }
@@ -858,8 +890,10 @@ class PiApiClient(private val prefs: AppPreferences) {
             val timestamp = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
             // pi 会话条目的真实 ID（entry.id）：从历史快照过来的消息都要带上，
             // 「从此处编辑」才能调 navigate_tree 把会话树切到这个节点。
-            val entryId = rawObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                ?: rawObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+            val entryId = rawObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+                ?: rawObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                ?: msgObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+                ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
 
             var turnUsageStr: String? = null
             if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {

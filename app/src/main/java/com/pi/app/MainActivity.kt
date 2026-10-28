@@ -756,7 +756,7 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
-                if (hist.messages.isNotEmpty()) {
+                if (hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
                         if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
                             item.copy(isStreaming = true)
@@ -775,6 +775,19 @@ class MainActivity : ComponentActivity() {
                             a.usageSummary == b.usageSummary
                     }
 
+                    // 合并单条消息：角色相同时尽量保留本地稳定 ID 与时间戳，内容一致但本地缺失 entryId 时自动补齐
+                    fun mergeItem(localItem: ChatItem, diskItem: ChatItem): ChatItem {
+                        return if (!isSameChatContent(localItem, diskItem)) {
+                            val keepId = if (localItem.role == diskItem.role) localItem.id else diskItem.id
+                            val keepTs = if (localItem.role == diskItem.role) localItem.timestamp else diskItem.timestamp
+                            diskItem.copy(id = keepId, timestamp = keepTs)
+                        } else if (localItem.entryId.isNullOrBlank() && !diskItem.entryId.isNullOrBlank()) {
+                            localItem.copy(entryId = diskItem.entryId)
+                        } else {
+                            localItem
+                        }
+                    }
+
                     // 保存当前内存中尚未落盘的流式尾部消息（例如 SSE 正在推送 delta，但服务端 .jsonl 只在 message_end 才写入）
                     val inFlightTail = if (effectiveRunning && messages.isNotEmpty()) {
                         val tail = messages.last()
@@ -790,8 +803,9 @@ class MainActivity : ComponentActivity() {
                             for (i in messages.indices) {
                                 val localItem = messages[i]
                                 val diskItem = synced[i]
-                                if (!isSameChatContent(localItem, diskItem)) {
-                                    messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                val updated = mergeItem(localItem, diskItem)
+                                if (messages[i] != updated) {
+                                    messages[i] = updated
                                 }
                             }
                             for (i in messages.size until synced.size) {
@@ -816,29 +830,34 @@ class MainActivity : ComponentActivity() {
                                     if (!isSameChatContent(localItem, updated)) {
                                         messages[i] = updated
                                     }
-                                } else if (!isSameChatContent(localItem, diskItem)) {
-                                    messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                } else {
+                                    val updated = mergeItem(localItem, diskItem)
+                                    if (messages[i] != updated) {
+                                        messages[i] = updated
+                                    }
                                 }
                             }
                         }
                         else -> {
-                            // messages.size > synced.size：说明本地有乐观发送的消息或正在流式输出的尾部消息
+                            // messages.size > synced.size：说明本地有乐观发送的消息、流式输出尾部、或树分支回退导航截断
                             if (effectiveRunning && inFlightTail != null && messages.size == synced.size + 1) {
                                 for (i in synced.indices) {
                                     val localItem = messages[i]
                                     val diskItem = synced[i]
-                                    if (!isSameChatContent(localItem, diskItem)) {
-                                        messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                    val updated = mergeItem(localItem, diskItem)
+                                    if (messages[i] != updated) {
+                                        messages[i] = updated
                                     }
                                 }
                                 messages[synced.size] = inFlightTail
                             } else if (!effectiveRunning) {
-                                // 保持已存在索引的 id 稳定，仅截断多余尾部
+                                // 空闲状态下，严格以服务端活跃分支为权威基准截断多余历史
                                 for (i in synced.indices) {
                                     val localItem = messages[i]
                                     val diskItem = synced[i]
-                                    if (!isSameChatContent(localItem, diskItem)) {
-                                        messages[i] = diskItem.copy(id = localItem.id, timestamp = localItem.timestamp)
+                                    val updated = mergeItem(localItem, diskItem)
+                                    if (messages[i] != updated) {
+                                        messages[i] = updated
                                     }
                                 }
                                 while (messages.size > synced.size) {
@@ -1938,44 +1957,10 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onOpenModelSheet = { showModelSheet = true },
-                    // 「从此处编辑」：对标 pi-web 的 editFromHere —— 先 navigate_tree 把会话树切到
-                    // 该条 entry，再刷新快照，于是它后面那些条目不再是活跃分支（变成被放弃的分支），
-                    // 界面上就不会再挂着「已经作废的旧尾巴」。输入框填充由 ChatScreen 本地完成。
-                    onEditFromMessage = { msg ->
-                        val sid = activeSessionId
-                        val entryId = msg.entryId
-                        when {
-                            isAgentBusy || isToolExecuting -> Toast.makeText(
-                                this@MainActivity,
-                                "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",
-                                Toast.LENGTH_LONG
-                            ).show()
-
-                            entryId.isNullOrBlank() -> Toast.makeText(
-                                this@MainActivity,
-                                "这条消息没有条目 ID（可能是本地实时气泡），已只填入输入框",
-                                Toast.LENGTH_SHORT
-                            ).show()
-
-                            else -> lifecycleScope.launch {
-                                apiClient.navigateTree(sid, entryId)
-                                    .onSuccess {
-                                        // 重新拉一次快照：服务端现在只返回编辑点之前的活跃分支
-                                        syncSessionSnapshot(
-                                            sid,
-                                            allowCompletionTransition = false
-                                        )
-                                    }
-                                    .onFailure { err ->
-                                        Toast.makeText(
-                                            this@MainActivity,
-                                            "回退分支失败: ${err.message ?: "未知错误"}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                            }
-                        }
-                    },
+                    // 「从此处编辑」：1:1 对标 pi-web 的 handleEditContent —— 点击只预填输入框并记录 entryId，
+                    // 真正的会话树导航（navigate_tree）推迟到用户点击「发送」（onSendMessage）时原子执行，
+                    // 发送时将分支截断到该节点之前，旧过程输出随即消失，且取消编辑绝不会导致历史丢失。
+                    onEditFromMessage = { _ -> },
                     onCompactContext = {
                         // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
                         // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。
@@ -2027,6 +2012,8 @@ class MainActivity : ComponentActivity() {
                                 }
                                 markSessionNotRunning(sid)
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
+                                // 停止后立即拉取一次权威快照，使服务端中断落盘后的 entries 与 entryId 立即同步到本地列表
+                                syncSessionSnapshot(sid, allowCompletionTransition = true)
                             }
                         }
                     },
@@ -2065,31 +2052,45 @@ class MainActivity : ComponentActivity() {
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
                     },
-                    onSendMessage = { prompt, images ->
+                    onSendMessage = { prompt, images, editEntryId ->
                         // 绑定到「这条输入框所属的会话」：带附件发送要先上传/编码，
                         // 若期间用户切了会话，旧代码会在 await 后重新读 currentSession，
                         // 把正文发到另一个会话里 —— 这里改成编译期捕获的 activeSessionId。
                         val sid = activeSessionId
-                        val stillHere = currentSession?.id == sid
-                        if (stillHere && messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
-                            val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
-                            val autoTitle = clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
-                            if (autoTitle.isNotBlank()) {
-                                prefs.saveSessionCustomTitle(sid, autoTitle)
-                                customTitles = customTitles + (sid to autoTitle)
-                            }
-                        }
-                        if (stillHere) {
-                            messages.add(ChatItem(role = MessageRole.USER, content = prompt))
-                            isAutoRetrying = false
-                            hasNotifiedCompletionForCurrentRun = false
-                            markAgentRunActive(phase = "正在等待模型...")
-                            // 确保 SSE 已连接
-                            if (sseConnectionState != SseConnectionState.CONNECTED) {
-                                startListeningEvents(sid, initialBusy = true)
-                            }
-                        }
                         lifecycleScope.launch {
+                            // 1:1 对标 pi-web 的 handleSend 链路：若存在 editEntryId，发送前先执行会话树导航回退分支！
+                            if (!editEntryId.isNullOrBlank()) {
+                                val navResult = apiClient.navigateTree(sid, editEntryId)
+                                if (navResult.isFailure) {
+                                    val err = navResult.exceptionOrNull()?.message ?: "未知错误"
+                                    Toast.makeText(this@MainActivity, "回退分支失败: $err", Toast.LENGTH_LONG).show()
+                                    return@launch
+                                }
+                                // 分支回退成功：立即同步服务端快照，将本地活跃消息截断到该提问的父节点之前，
+                                // 原先被中断或废弃的旧执行过程输出在界面上瞬间彻底消失！
+                                syncSessionSnapshot(sid, allowCompletionTransition = false)
+                            }
+
+                            val stillHere = currentSession?.id == sid
+                            if (stillHere && messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
+                                val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
+                                val autoTitle = clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
+                                if (autoTitle.isNotBlank()) {
+                                    prefs.saveSessionCustomTitle(sid, autoTitle)
+                                    customTitles = customTitles + (sid to autoTitle)
+                                }
+                            }
+                            if (stillHere) {
+                                messages.add(ChatItem(role = MessageRole.USER, content = prompt))
+                                isAutoRetrying = false
+                                hasNotifiedCompletionForCurrentRun = false
+                                markAgentRunActive(phase = "正在等待模型...")
+                                // 确保 SSE 已连接
+                                if (sseConnectionState != SseConnectionState.CONNECTED) {
+                                    startListeningEvents(sid, initialBusy = true)
+                                }
+                            }
+
                             apiClient.sendCommand(sid, prompt, images).onFailure { err ->
                                 val errText = err.message ?: "网络或服务端异常"
                                 if (currentSession?.id == sid) {

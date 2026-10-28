@@ -168,7 +168,7 @@ fun ChatScreen(
     onLoadCommands: suspend () -> Result<List<SlashCommand>> = { Result.success(emptyList()) },
     /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
     onUploadFiles: suspend (List<UploadFileInput>) -> Result<UploadFilesResult> = { Result.success(UploadFilesResult()) },
-    onSendMessage: (String, List<ChatImageInput>) -> Unit,
+    onSendMessage: (String, List<ChatImageInput>, String?) -> Unit,
     onSendSteer: (String, List<ChatImageInput>) -> Unit,
     onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
     onClearQueue: () -> Unit,
@@ -193,6 +193,8 @@ fun ChatScreen(
     var inputText by remember(sessionId) {
         mutableStateOf(if (sessionId.isBlank()) "" else draftPrefs.getSessionDraft(sessionId))
     }
+    /** 当前待从此处编辑并切分支的消息条目 ID（对标 pi-web 的 editEntryId）：发送时切分支 */
+    var editingEntryId by remember(sessionId) { mutableStateOf<String?>(null) }
     LaunchedEffect(sessionId, inputText) {
         if (sessionId.isBlank()) return@LaunchedEffect
         // 防抖：连续打字时不要每个字符都写一次 SharedPreferences
@@ -258,19 +260,21 @@ fun ChatScreen(
 
     // 统一发送入口：图片真的读成 base64 走 pi 的 images 字段；非图片文件目前只能按名字引用
     // （pi 的图片通道只收 image/*，文件要走 /api/files?type=upload 的 multipart 上传，后续补）
-    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind) {
+    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind, editEntryId: String? = null) {
         when (kind) {
-            SendKind.SEND -> onSendMessage(text, images)
+            SendKind.SEND -> onSendMessage(text, images, editEntryId)
             SendKind.STEER -> onSendSteer(text, images)
             SendKind.FOLLOW_UP -> onSendFollowUp(text, images)
         }
     }
 
     fun submitMessage(rawText: String, kind: SendKind) {
+        val currentEditId = editingEntryId
+        editingEntryId = null
         val picked = attachments.toList()
         attachments.clear()
         if (picked.isEmpty()) {
-            dispatchSend(rawText, emptyList(), kind)
+            dispatchSend(rawText, emptyList(), kind, currentEditId)
             return
         }
         coroutineScope.launch {
@@ -317,7 +321,7 @@ fun ChatScreen(
             val text = listOf(rawText, uploadedNote).filter { it.isNotBlank() }.joinToString("\n\n")
             // 纯图片消息也必须给 pi 一句可见文本，避免空 message 被拒
             val finalText = if (text.isBlank() && images.isNotEmpty()) "（图片）" else text
-            dispatchSend(finalText, images, kind)
+            dispatchSend(finalText, images, kind, currentEditId)
         }
     }
 
@@ -686,16 +690,31 @@ fun ChatScreen(
     }
 
     /**
-     * 「从此处编辑」统一入口（1:1 对标 pi-web）：
+     * 「从此处编辑」统一入口（1:1 对标 pi-web 的 handleEditContent）：
      * 1) 把该条正文填回输入框（本地行为，立即生效）；
-     * 2) 交给外层的 onEditFromMessage 做会话树导航（navigate_tree）——
-     *    导航后这个节点之后的内容变成被放弃的分支，不再是活跃分支，所以刷新后就看不见了。
-     *    之前只填输入框、后面的内容一直留着，继续发就是「旧尾巴 + 新分支」重复，与 pi-web 不一致。
+     * 2) 记录待回退条目 ID（editingEntryId）—— 绝不提前切分支，等用户真正点击「发送」时
+     *    才执行 navigate_tree 回退分支并截断活跃历史，彻底避免中途取消或未发送造成历史丢失。
      */
     val editFromMessage: (ChatItem) -> Unit = { msg ->
-        inputText = msg.content
-        coroutineScope.launch { scrollToVeryBottom() }
-        onEditFromMessage?.invoke(msg)
+        if (isAgentBusy || isToolExecuting) {
+            android.widget.Toast.makeText(
+                context,
+                "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        } else {
+            inputText = msg.content
+            // 优先使用当前消息的 entryId；若当前对象缺失，尝试从已同步列表中按内容匹配
+            val resolvedEntryId = msg.entryId?.takeIf { it.isNotBlank() }
+                ?: conversation.lastOrNull { it.role == MessageRole.USER && it.content == msg.content && !it.entryId.isNullOrBlank() }?.entryId
+            editingEntryId = resolvedEntryId
+            coroutineScope.launch { scrollToVeryBottom() }
+            android.widget.Toast.makeText(
+                context,
+                "已填入输入框，修改后发送将从此处开启新分支",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+        }
     }
 
     // 监听软键盘 (IME) 弹出高度：当软键盘弹起时，自动将底部输入框与最新对话内容整体往上推，防止遮挡
@@ -1132,6 +1151,65 @@ fun ChatScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 10.dp, vertical = 8.dp)
                     ) {
+                        // 1:1 对标 pi-web 的 Edit Mode 提示横条（正在从某条历史消息编辑分支）
+                        if (!editingEntryId.isNullOrBlank()) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = theme.primary.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.25f)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(bottom = 6.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        modifier = Modifier.weight(1f),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Edit,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(12.dp),
+                                            tint = theme.primary
+                                        )
+                                        Text(
+                                            text = "从历史提问编辑分支（发送时将清除后续过程）",
+                                            fontSize = 11.sp,
+                                            color = theme.primary,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .clickable { editingEntryId = null }
+                                            .padding(horizontal = 4.dp, vertical = 2.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "取消编辑",
+                                            modifier = Modifier.size(11.dp),
+                                            tint = theme.primary
+                                        )
+                                        Text(
+                                            text = "取消",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = theme.primary
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
                         // 附件预览列表 (支持图片预览与普通文件标签)
                         if (attachments.isNotEmpty()) {
                             Row(

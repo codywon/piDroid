@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.33] - 2026-10-29
+
+### 🌲 会话树分支回退与历史消息编辑体验 1:1 对齐 pi-web (Edit from here)
+
+- **1:1 复刻 pi-web 会话树导航与分支回退闭环（In-session Branching）**：
+  - **延迟切分支策略（Delayed Branch Switch）**：点击用户提问底部的「从此处编辑」时，严格遵循 pi-web 行为仅预填输入框并记录待编辑目标，绝不提前调用接口切除历史；用户取消编辑或刷新页面绝不丢弃后续会话；
+  - **发送前原子树导航（navigate_tree on Send）**：用户在输入框修改内容点击「发送」时，前置触发 `navigate_tree` 指令回退会话树 Leaf，服务端自动将活跃分支指针移动至被编辑消息的父节点；
+  - **权威快照截断对齐**：分支切换成功后即刻全量同步权威快照，客户端界面瞬间彻底清除该提问之后所有的历史、工具调用与中途停止产生的中断过程输出，旧输出不再滞留或串入新分支；
+  - **编辑态 UI 状态提示**：输入框上方新增专属 Edit Mode 指示横条（显示“从历史提问编辑分支”与快捷“取消”按钮），视觉与交互彻底消除歧义。
+- **底层条目 ID（entryId）解析与对账彻底修复**（`PiApiClient.kt`）：
+  - 根因修复：解决服务端 `/api/sessions/[id]` 返回中消息条目位于 `context.messages` 而条目 ID 位于平行数组 `context.entryIds`，导致历史消息解析出的 `entryId` 全面丢失为 `null` 的重大 Bug；
+  - 建立 `initialCtxMsgs`、分页上下文 `olderMsgs` 与 `entryIds` 的严格索引配对绑定，并在 `extractChronologicalMessagesFromEntries` 中正确保留 `entry.id`；
+  - **本地乐观消息静默补全**：在快照比对合并中，当服务端快照落盘并给出 `entryId` 时，自动无感为本地刚发送的消息补全 `entryId`。
+- **停止执行（Abort）态即刻对账**（`MainActivity.kt`）：
+  - 用户点击停止 Agent 执行（`onStopAgent`）成功后，立即触发一次权威快照同步，确保停止态中断记录与分配好的 `entryId` 瞬间全部同步到本地内存。
+- **单元测试覆盖**：新增 `SessionTreeNavigationTest.kt` 纯 JVM 单元测试，全面覆盖消息条目 ID 绑定、乐观条目补全与分支回退截断逻辑。
+
 ## [1.7.32] - 2026-10-28
 
 ### 🔍 移动端 Git Diff 体验专项重构（深度对标 GitHub Mobile 规范）
