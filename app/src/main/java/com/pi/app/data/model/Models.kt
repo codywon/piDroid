@@ -677,12 +677,13 @@ data class ToolCallInfo(
                 k.equals("path", true) || k.equals("filePath", true) ||
                     k.equals("file_path", true) || k.equals("target", true)
             }?.second?.trim()?.trim('"') ?: return null
-            val isAbs = candidate.startsWith("/") || Regex("^[A-Za-z]:[\\\\/]").containsMatchIn(candidate)
+            val isAbs = candidate.startsWith("/") || WINDOWS_DRIVE_PATTERN.containsMatchIn(candidate)
             return candidate.takeIf { isAbs && it.isNotBlank() }
         }
 
     companion object {
         private val PATH_TOOLS = setOf("read", "edit", "write", "ls", "find", "grep")
+        private val WINDOWS_DRIVE_PATTERN = Regex("^[A-Za-z]:[\\\\/]")
     }
 
     val formattedDuration: String?

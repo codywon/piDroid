@@ -20,7 +20,7 @@ internal object MediaAttachmentParsing {
         "read", "view_file", "read_file", "write", "write_file", "open"
     )
 
-    private val IMAGE_EXTENSIONS = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".pdf")
+    private val IMAGE_EXTENSIONS = listOf(".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".pdf")
 
     /**
      * 从工具的输入参数或预览文本里解析出一个媒体附件（图片 / SVG / PDF）。

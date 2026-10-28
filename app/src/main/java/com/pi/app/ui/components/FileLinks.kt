@@ -29,6 +29,8 @@ object FileLinks {
     private val SOURCE_LOCATION_SUFFIX = Regex(":\\d+(?::\\d+)?$")
     private val RELATIVE_FILE_HREF = Regex("""(^|/)\.?[^/]+\.[^/.]+$""")
     private val PDF_PAGE_FRAGMENT = Regex("^page=(\\d+)$", RegexOption.IGNORE_CASE)
+    private val WINDOWS_ROOT_REGEX = Regex("^([a-zA-Z]:)(?:/|$)")
+    private val UNC_ROOT_REGEX = Regex("^(//[^/]+/[^/]+)(?:/|$)")
 
     /** Unicode 千分位不需要；这里只做大小写归一，便于前缀比较。 */
     private fun lower(value: String): String = value.lowercase(Locale.ROOT)
@@ -64,7 +66,7 @@ object FileLinks {
             when {
                 part.isEmpty() || part == "." -> Unit
                 part == ".." -> {
-                    if (parts.isNotEmpty() && parts.last() != "..") {
+                    if (parts.isNotEmpty() && (!isWindowsDrive || parts.size > 1) && parts.last() != "..") {
                         parts.removeAt(parts.size - 1)
                     } else if (!leadingSlash && !isWindowsDrive && !isUnc) {
                         parts.add(part)
@@ -195,8 +197,8 @@ object FileLinks {
                 normalizedPath
             normalizedPath.startsWith("/") -> {
                 val windowsRoot = normalizedBase?.let { base ->
-                    Regex("^([a-zA-Z]:)(?:/|$)").find(base)?.groupValues?.get(1)
-                        ?: Regex("^(//[^/]+/[^/]+)(?:/|$)").find(base)?.groupValues?.get(1)
+                    WINDOWS_ROOT_REGEX.find(base)?.groupValues?.get(1)
+                        ?: UNC_ROOT_REGEX.find(base)?.groupValues?.get(1)
                 }
                 if (windowsRoot != null) "$windowsRoot$normalizedPath" else normalizedPath
             }

@@ -1991,11 +1991,25 @@ class PiApiClient(private val prefs: AppPreferences) {
                     if (!resp.isSuccessful) {
                         return@withContext Result.failure(IOException("读取文件失败 (${resp.code})"))
                     }
-                    val bytes = resp.body?.bytes() ?: ByteArray(0)
-                    if (bytes.size > maxBytes) {
-                        return@withContext Result.failure(IOException("文件过大（${bytes.size / 1024 / 1024} MB），暂不预览"))
+                    val body = resp.body ?: return@withContext Result.failure(IOException("响应为空"))
+                    val cl = body.contentLength()
+                    if (cl > maxBytes) {
+                        return@withContext Result.failure(IOException("文件过大（${cl / 1024 / 1024} MB），暂不预览"))
                     }
-                    Result.success(bytes)
+                    val stream = body.byteStream()
+                    val output = java.io.ByteArrayOutputStream()
+                    val buffer = ByteArray(32 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val read = stream.read(buffer)
+                        if (read <= 0) break
+                        total += read
+                        if (total > maxBytes) {
+                            return@withContext Result.failure(IOException("文件过大，暂不预览"))
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                    Result.success(output.toByteArray())
                 }
             } catch (e: Exception) {
                 Result.failure(e)
@@ -2451,7 +2465,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (directoryPath.isBlank()) return@withContext Result.failure(Exception("会话缺少工作目录，无法上传"))
         if (files.isEmpty()) return@withContext Result.success(UploadFilesResult())
         try {
-            val dirSegment = URLEncoder.encode(directoryPath.trim().replace('\\', '/'), "UTF-8")
+            val dirSegment = encodeFilePath(directoryPath)
             val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
             files.forEach { f ->
                 builder.addFormDataPart(
@@ -4116,11 +4130,16 @@ data class CatalogPreset(
 
             if (!putOk) {
                 val patchReq = Request.Builder().url("$baseUrl/api/skills").patch(body).build()
-                runCatching { client.newCall(patchReq).execute().close() }
+                val patchOk = runCatching {
+                    client.newCall(patchReq).execute().use { it.isSuccessful }
+                }.getOrDefault(false)
+                if (!patchOk) {
+                    return@withContext Result.failure(IOException("同步保存到网关失败，已保留本地修改"))
+                }
             }
             Result.success(true)
         } catch (e: Exception) {
-            Result.success(true)
+            Result.failure(e)
         }
     }
 

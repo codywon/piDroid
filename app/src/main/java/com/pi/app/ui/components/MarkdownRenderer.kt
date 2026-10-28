@@ -86,6 +86,10 @@ object CjkMarkdownNormalizer {
 
     /** 行内分隔行（如 `|---|`）——仅在它之前还有表头内容、且后面再无内容时才会被断行。 */
     private val TABLE_INLINE_DELIMITER = Regex("""\|(?:\s*:?-{2,}:?\s*\|)+""")
+    private val TABLE_ATTACHED_HEADER_REGEX = Regex("""(?m)^([^\n|]+)\n(\|[^\n]+\|\s*\n\|[\s:\-|]+\|)""")
+    private val SQL_BACKTICK_QUOTE_1 = Regex("""`([^`'\n]+)'""")
+    private val SQL_BACKTICK_QUOTE_2 = Regex("""'([^`'\n]+)`""")
+    private val CHINESE_ISOLATED_BACKTICK_REGEX = Regex("""(?<=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|^)`(?=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|$)""")
 
     fun normalize(rawMarkdown: String): String {
         if (rawMarkdown.isEmpty()) return rawMarkdown
@@ -145,15 +149,15 @@ object CjkMarkdownNormalizer {
     private fun healLooseBackticks(text: String): String {
         if (!text.contains('`')) return text
         // 1. 修复 SQL 单引号与反引号混写（如 status=`0' 或 status='0` ）
-        val s = text.replace(Regex("""`([^`'\n]+)'"""), "'$1'")
-            .replace(Regex("""'([^`'\n]+)`"""), "'$1'")
+        val s = text.replace(SQL_BACKTICK_QUOTE_1, "'$1'")
+            .replace(SQL_BACKTICK_QUOTE_2, "'$1'")
 
         // 2. 检查跨中文句逗标点未闭合的孤立反引号，避免整段正文被误染成单行 Code 节点
         val lines = s.split("\n")
         val healed = lines.map { line ->
             val count = line.count { it == '`' }
             if (count % 2 != 0) {
-                val cleaned = line.replace(Regex("""(?<=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|^)`(?=[\u4e00-\u9fa5，。！？；：“”‘’（）\s]|$)"""), "'")
+                val cleaned = line.replace(CHINESE_ISOLATED_BACKTICK_REGEX, "'")
                 if (cleaned.count { it == '`' } % 2 != 0) {
                     val lastIdx = cleaned.lastIndexOf('`')
                     if (lastIdx >= 0) cleaned.substring(0, lastIdx) + "'" + cleaned.substring(lastIdx + 1) else cleaned
@@ -243,7 +247,7 @@ object CjkMarkdownNormalizer {
         }
 
         // 1. 自动修复表格：若首行紧贴上方普通文本，自动补充换行空行以触发 GFM 表格解析
-        s = s.replace(Regex("""(?m)^([^\n|]+)\n(\|[^\n]+\|\s*\n\|[\s:\-|]+\|)""")) { m ->
+        s = s.replace(TABLE_ATTACHED_HEADER_REGEX) { m ->
             "${m.groupValues[1]}\n\n${m.groupValues[2]}"
         }
         if (s.contains("|") && s.contains("-")) {

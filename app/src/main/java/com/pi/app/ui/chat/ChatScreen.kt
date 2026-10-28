@@ -82,6 +82,7 @@ import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.data.model.ToolPreset
+import com.pi.app.ui.git.GitChangesFullScreen
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -228,13 +229,8 @@ fun ChatScreen(
     var artifactTruncated by remember { mutableStateOf(false) }
     var isLoadingMoreArtifact by remember { mutableStateOf(false) }
 
-    // Git 变更面板
-    var showGitSheet by remember { mutableStateOf(false) }
-    var gitStatus by remember { mutableStateOf<GitStatusResult?>(null) }
-    var isLoadingGit by remember { mutableStateOf(false) }
-    var gitDiff by remember { mutableStateOf<GitDiffResult?>(null) }
-    var gitDiffTitle by remember { mutableStateOf<String?>(null) }
-    var isLoadingGitDiff by remember { mutableStateOf(false) }
+    // Git 变更全屏阅读面板
+    var showGitChangesScreen by remember { mutableStateOf(false) }
 
     // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）：跟随输入框里的 "/" 自动展开
     var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
@@ -801,17 +797,9 @@ fun ChatScreen(
                     }
                 },
                 actions = {
-                    // 顶栏只留会话级动作，图标统一 18dp + 34dp 紧凑热区，尽可能把宽度让给项目名。
-                    // 顺序：置顶 → 用模型重写标题 → 工作目录变更 → 同步刷新（最右）。
-                    // 「能力与设置中心」已从这里移除：会话列表顶栏的齿轮仍是入口，避免同屏两个入口。
-                    IconButton(onClick = onTogglePin, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
-                            contentDescription = if (isPinned) "取消置顶" else "置顶会话",
-                            tint = if (isPinned) theme.primary else theme.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                    // 顶栏只留核心高频动作，图标统一 18dp + 34dp 紧凑热区，将宝贵宽度让给会话标题。
+                    // 顺序：用模型重写标题 → 工作目录变更（全屏沉浸式） → 同步刷新（最右）。
+                    // 置顶操作已收敛至会话列表卡片的三点菜单中，避免顶栏拥挤导致标题被大量省略截断。
                     IconButton(onClick = onAutoGenerateTitle, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = Icons.Default.AutoFixHigh,
@@ -820,25 +808,9 @@ fun ChatScreen(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    // 工作目录 git 变更（GET /api/git/status + /api/git/diff）
+                    // 工作目录 git 变更：直接唤起独立全屏阅读界面，彻底消除弹层狭窄和下滑误退冲突
                     IconButton(
-                        onClick = {
-                            showGitSheet = true
-                            gitDiff = null
-                            gitDiffTitle = null
-                            isLoadingGit = true
-                            coroutineScope.launch {
-                                onLoadGitStatus().onSuccess { gitStatus = it }
-                                    .onFailure { err ->
-                                        android.widget.Toast.makeText(
-                                            context,
-                                            "读取 git 状态失败: ${err.message}",
-                                            android.widget.Toast.LENGTH_SHORT
-                                        ).show()
-                                    }
-                                isLoadingGit = false
-                            }
-                        },
+                        onClick = { showGitChangesScreen = true },
                         modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
@@ -2115,179 +2087,16 @@ fun ChatScreen(
         }
     }
 
-    if (showGitSheet) {
-        ModalBottomSheet(
-            onDismissRequest = {
-                showGitSheet = false
-                gitDiff = null
-                gitDiffTitle = null
-            },
-            containerColor = theme.surfaceContainerLow
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 24.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                val st = gitStatus
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Default.AccountTree,
-                        contentDescription = null,
-                        tint = theme.primary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = gitDiffTitle?.let { it.substringAfterLast('/').substringAfterLast('\\') }
-                            ?: "工作目录变更",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = theme.textPrimary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
-                    if (gitDiffTitle != null) {
-                        Text(
-                            text = "返回列表",
-                            fontSize = 11.5.sp,
-                            color = theme.primary,
-                            modifier = Modifier.clickable {
-                                gitDiff = null
-                                gitDiffTitle = null
-                            }
-                        )
-                    }
-                }
-
-                // ── diff 视图 ──
-                if (gitDiffTitle != null) {
-                    if (isLoadingGitDiff) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 1.8.dp,
-                                color = theme.primary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("正在读取 diff…", fontSize = 11.5.sp, color = theme.textMuted)
-                        }
-                    } else {
-                        val d = gitDiff
-                        if (d == null || !d.supported || d.patch.isBlank()) {
-                            Text(
-                                text = if (d != null && !d.supported) "该文件不支持 diff（可能是二进制）" else "没有可显示的 diff",
-                                fontSize = 11.5.sp,
-                                color = theme.textMuted
-                            )
-                        } else {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = theme.surfaceContainer,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
-                                    item {
-                                        Text(
-                                            text = d.patch,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.5.sp,
-                                            lineHeight = 14.sp,
-                                            color = theme.textPrimary,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(8.dp)
-                                                .horizontalScroll(rememberScrollState())
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    // ── 文件列表视图 ──
-                    if (isLoadingGit) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(14.dp),
-                                strokeWidth = 1.8.dp,
-                                color = theme.primary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("正在读取 git 状态…", fontSize = 11.5.sp, color = theme.textMuted)
-                        }
-                    } else if (st == null || !st.isGitRepository) {
-                        Text(
-                            text = "当前工作目录不是 git 仓库",
-                            fontSize = 11.5.sp,
-                            color = theme.textMuted
-                        )
-                    } else {
-                        Text(
-                            text = "＋${st.additions}  －${st.deletions} · ${st.files.size} 个文件变更",
-                            fontSize = 11.sp,
-                            color = theme.textMuted
-                        )
-                        if (st.files.isEmpty()) {
-                            Text("工作目录干净，没有未提交变更", fontSize = 11.5.sp, color = theme.textMuted)
-                        } else {
-                            LazyColumn(modifier = Modifier.heightIn(max = 420.dp)) {
-                                items(st.files, key = { it.filePath }) { f ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable {
-                                                gitDiffTitle = f.filePath
-                                                gitDiff = null
-                                                isLoadingGitDiff = true
-                                                coroutineScope.launch {
-                                                    onLoadGitDiff(f.filePath).onSuccess { gitDiff = it }
-                                                        .onFailure { err ->
-                                                            android.widget.Toast.makeText(
-                                                                context,
-                                                                "读取 diff 失败: ${err.message}",
-                                                                android.widget.Toast.LENGTH_SHORT
-                                                            ).show()
-                                                        }
-                                                    isLoadingGitDiff = false
-                                                }
-                                            }
-                                            .padding(vertical = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(
-                                            text = (f.code.ifBlank { f.status }).take(2),
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = when {
-                                                f.code.startsWith("D") || f.status == "deleted" -> Color(0xFFCF222E)
-                                                f.code.startsWith("A") || f.status == "added" || f.code == "??" -> Color(0xFF2EA043)
-                                                else -> Color(0xFFD29922)
-                                            },
-                                            modifier = Modifier.width(26.dp)
-                                        )
-                                        Text(
-                                            text = f.filePath
-                                                .removePrefix(st.repositoryRoot)
-                                                .trimStart('/', '\\'),
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                            color = theme.textPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+    // 工作目录 Git 变更全屏界面（替换原有的 ModalBottomSheet 狭窄弹窗）
+    if (showGitChangesScreen) {
+        GitChangesFullScreen(
+            cwd = sessionCwd.ifBlank { currentProject },
+            onBack = { showGitChangesScreen = false },
+            onLoadGitStatus = onLoadGitStatus,
+            onLoadGitDiff = onLoadGitDiff,
+            onLoadFileText = onLoadFileText,
+            onOpenLinkTarget = { href, baseDir -> openLinkTarget(href, baseDir) }
+        )
     }
 
     if (showHudDialog) {
@@ -3190,6 +2999,38 @@ private fun formatCompactTokenCount(tokens: Long): String {
 private enum class SendKind { SEND, STEER, FOLLOW_UP }
 
 /**
+ * 有上限地读取 Uri 字节，防止选入超大文件导致移动端 OutOfMemoryError 闪退。
+ */
+private fun readBoundedBytes(
+    context: android.content.Context,
+    uri: android.net.Uri,
+    maxBytes: Int
+): ByteArray? {
+    return try {
+        val stream = context.contentResolver.openInputStream(uri) ?: return null
+        val output = java.io.ByteArrayOutputStream()
+        val chunk = ByteArray(64 * 1024)
+        var total = 0
+        var oversized = false
+        stream.use { input ->
+            while (true) {
+                val r = input.read(chunk)
+                if (r <= 0) break
+                total += r
+                if (total > maxBytes) {
+                    oversized = true
+                    break
+                }
+                output.write(chunk, 0, r)
+            }
+        }
+        if (oversized || total == 0) null else output.toByteArray()
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
  * 把用户挑的图片读成 pi 要求的格式：type=image、data=纯 base64、mimeType=image/xxx。
  * 返回 (可发送列表, 被跳过的张数)；超过 10MB 或读取失败的一律跳过，绝不把半截 base64 发上去。
  */
@@ -3207,8 +3048,8 @@ private fun encodePickedImages(
         }
         try {
             val mime = context.contentResolver.getType(att.uri)?.takeIf { it.startsWith("image/") } ?: "image/png"
-            val bytes = context.contentResolver.openInputStream(att.uri)?.use { it.readBytes() }
-            if (bytes == null || bytes.isEmpty() || bytes.size > MAX_PROMPT_IMAGE_BYTES) {
+            val bytes = readBoundedBytes(context, att.uri, MAX_PROMPT_IMAGE_BYTES)
+            if (bytes == null) {
                 skipped++
                 continue
             }
@@ -3236,8 +3077,7 @@ private fun readPickedFiles(
     val out = mutableListOf<UploadFileInput>()
     for (att in picked) {
         try {
-            val bytes = context.contentResolver.openInputStream(att.uri)?.use { it.readBytes() } ?: continue
-            if (bytes.isEmpty() || bytes.size > MAX_UPLOAD_FILE_BYTES) continue
+            val bytes = readBoundedBytes(context, att.uri, MAX_UPLOAD_FILE_BYTES) ?: continue
             out.add(UploadFileInput(name = att.name.ifBlank { "attachment" }, bytes = bytes))
         } catch (e: Exception) {
             // 单个文件失败不影响其它文件

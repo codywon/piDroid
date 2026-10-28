@@ -346,6 +346,10 @@ app.put('/api/skills/content', authMiddleware, express.json({ limit: '5mb' }), (
     if (!resolved) {
       return res.status(400).json({ error: 'Missing filePath' });
     }
+    // 安全防护：该接口仅用于保存技能 Markdown 源码，严禁覆写非 .md 文件
+    if (!resolved.toLowerCase().endsWith('.md')) {
+      return res.status(400).json({ error: 'Invalid filePath: only markdown files (.md) can be modified' });
+    }
     const dir = path.dirname(resolved);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -397,9 +401,8 @@ app.get('/api/files/raw', authMiddleware, (req, res, next) => {
         '.svg': 'image/svg+xml',
         '.pdf': 'application/pdf'
       };
-      if (mimeMap[ext]) {
-        res.setHeader('Content-Type', mimeMap[ext]);
-      }
+      if (!mimeMap[ext]) return next();
+      res.setHeader('Content-Type', mimeMap[ext]);
       res.setHeader('Cache-Control', 'private, max-age=300');
       return res.sendFile(path.resolve(resolved));
     }
@@ -573,8 +576,8 @@ async function start(options = {}) {
     });
 
     // WebSocket 升级请求不经过 Express 中间件，ws:true 的代理会绕过 authMiddleware。
-    // 这里在 server 层单独校验一次 token，未授权直接断开。
-    server.on('upgrade', (req, socket) => {
+    // 这里在 server 层单独校验一次 token，未授权直接断开；授权通过后转交 proxy.upgrade。
+    server.on('upgrade', (req, socket, head) => {
       const authHeader = req.headers['authorization'] || '';
       let token = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : null;
       if (!token && typeof req.url === 'string') {
@@ -584,8 +587,11 @@ async function start(options = {}) {
         }
       }
       if (!safeTokenEquals(token, AUTH_TOKEN)) {
-        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
-        socket.destroy();
+        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        return;
+      }
+      if (typeof proxy.upgrade === 'function') {
+        proxy.upgrade(req, socket, head);
       }
     });
 

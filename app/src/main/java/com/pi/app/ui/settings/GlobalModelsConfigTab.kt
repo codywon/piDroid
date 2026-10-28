@@ -1471,8 +1471,8 @@ fun GlobalModelsConfigTab(
                         isSavingApiKey = true
                         apiKeyInputError = null
                         coroutineScope.launch {
-                            var verified = !canVerify || allowUnverifiedSave
-                            if (!verified) {
+                            var verified = allowUnverifiedSave
+                            if (!verified && canVerify) {
                                 apiKeyVerifyPhase = "正在用 ${prov.name} 实测该 Key…"
                                 apiClient.verifyProviderApiKey(
                                     provider = prov.name,
