@@ -696,7 +696,7 @@ fun ChatScreen(
      *    才执行 navigate_tree 回退分支并截断活跃历史，彻底避免中途取消或未发送造成历史丢失。
      */
     val editFromMessage: (ChatItem) -> Unit = { msg ->
-        if (isAgentBusy || isToolExecuting) {
+        if (isAgentBusy) {
             android.widget.Toast.makeText(
                 context,
                 "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",

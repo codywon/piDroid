@@ -2,6 +2,14 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.34] - 2026-10-29
+
+### 🛠️ 修复分支编辑状态判定并发布正式 Release（Release v1.7.34）
+
+- **修复编译与分支编辑执行态判定**（`ChatScreen.kt`）：
+  - 修复 `ChatScreen` 内部错误引用未在参数表声明的 `isToolExecuting` 变量导致的 CI 编译错误；
+  - 严格以 `isAgentBusy` 作为任务执行态拦截标准，在 Agent 运行时阻止回退分支，避免并发状态冲突。
+
 ## [1.7.33] - 2026-10-29
 
 ### 🌲 会话树分支回退与历史消息编辑体验 1:1 对齐 pi-web (Edit from here)
