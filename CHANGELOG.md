@@ -2,6 +2,32 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.16] - 2026-10-28
+
+### 🩺 运行态校准 · 打开会话秒开 · 斜杠命令改为 "/" 触发 (Release v1.7.16)
+
+**A. 已完成的任务点进去也永远显示「正在等待模型…」（根因已实测确认）**
+
+- `GET /api/sessions/{id}/state` 顶层的 `running` 只表示「pi-web 内存里有一个活着的 agent 运行时」，**不是「正在执行」**；pi-web 前端自己的判定口径是 `running && (state.isStreaming || state.isPromptRunning)`。
+- 关键实验：挑 3 个磁盘老会话（`running:false`）只订阅 `/api/agent/{id}/events` 2.5s 再断开，三个会话全部变成 `running:true`，但 `isStreaming / isPromptRunning` 仍为 `false`，也**不会**进入 `runningSessionIds`。也就是说：**App 打开任何会话都会给它唤醒一个运行时**，旧代码把顶层 `running` 当运行态 → 每个点进去的任务都成了「正在等待模型…」，而列表徽章又是对的，看起来像「状态没同步」。
+- 现在严格按 pi-web 口径判定运行态，并把「有运行时」单独记为 `runtimeAlive`；`isBashRunning` 一并纳入（命令还在跑时不会误判完成）。
+- 任务结束 / 手动停止后立即把列表与当前会话的运行态置回「已完成」，不再依赖下一轮对账。
+
+**B. 打开会话不再「空白 + 正在同步 + 等待模型 + 历史没加载」四连**
+
+- 状态与历史快照**并行**拉取（原先串行，正文白等一个 RTT）；
+- 快照请求改用 pi-web 同款参数 `deferMedia=1&tree=summary`（单个会话实测 200KB → 150KB）；
+- 列表页每 4s 拉 240KB 的 `/api/sessions` → 改为每 2.5s 只拉 `/api/agent/running`（**约 230 字节**），只有 `sessionListVersion` 变化才重拉完整列表；
+- 会话页空闲时不再每 2.5s 下载 200KB 快照：只有「本会话在跑 / 列表版本变化 / 15s 兜底」才拉；
+- 首屏加载态改为**静默骨架**，删除「正在同步会话历史…」；顶部提示由「更早的 N 轮还没加载 · 上滑加载」改为中性的「上滑加载更早的 N 轮」。
+
+**C. 输入框左侧的「/」按钮已移除，改为输入 `/` 就地唤出命令列表**
+
+- 列表在输入框上方展开，按命令名/描述实时过滤，带「正在读取命令列表…」轻态与「没有匹配的命令」空态；
+- 选中即填入 `/命令 `（尾随空格让列表自然收起）；底部弹层整段删除，输入行更干净。
+
+---
+
 ## [1.7.15] - 2026-10-28
 
 ### 📂 常用置顶完全对齐普通项目目录样式 (Release v1.7.15)
