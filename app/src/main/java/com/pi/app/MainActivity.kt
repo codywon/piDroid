@@ -283,6 +283,24 @@ class MainActivity : ComponentActivity() {
         var customWorkspaces by remember { mutableStateOf(prefs.getCustomWorkspaces()) }
 
         val messages = remember { mutableStateListOf<ChatItem>() }
+
+        /**
+         * 对标 pi-web 的**单数** `streamingMessage`：任何时刻只允许一条 AGENT 气泡处于流式态。
+         *
+         * 之前 `isStreaming` 是逐条粘住的 —— 一回合里插了工具卡、或多段正文分成了多个气泡，
+         * 就会有好几条同时为 true，于是每一条都挂着「↓ token + t/s」：
+         * 前面那些早就停止增长，停在自己停下来那一刻的旧值（看起来“很快”），
+         * 最新那条才刚起算（看起来“很慢 / 0”），这就是屏幕上出现多个 t/s 的直接原因。
+         * 现在：一旦出现新的流式气泡、或插入工具卡（说明上一条正文已经讲完），旧的立即收尾。
+         */
+        fun settleStaleStreamingAgents() {
+            for (i in messages.indices) {
+                val m = messages[i]
+                if (m.role == MessageRole.AGENT && m.isStreaming) {
+                    messages[i] = m.copy(isStreaming = false)
+                }
+            }
+        }
         // 「更早的记录」独立存放（由游标翻页追加），与主快照 messages 互不重叠：
         // 主快照继续按下标对账更新，这里只做只增不减的 prepend，互不干扰。
         var olderMessages by remember { mutableStateOf<List<ChatItem>>(emptyList()) }
@@ -992,6 +1010,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     messages[messages.size - 1] = updated
                                 } else {
+                                    settleStaleStreamingAgents()
                                     messages.add(
                                         ChatItem(
                                             role = MessageRole.AGENT,
@@ -1042,6 +1061,7 @@ class MainActivity : ComponentActivity() {
                                     )
                                     messages[messages.size - 1] = updated
                                 } else {
+                                    settleStaleStreamingAgents()
                                     messages.add(
                                         ChatItem(
                                             role = MessageRole.AGENT,
@@ -1070,6 +1090,8 @@ class MainActivity : ComponentActivity() {
                             isToolExecuting = true
                             val toolName = event.effectiveToolName
                             markAgentRunActive(phase = event.phaseLabel ?: "正在准备工具 $toolName...")
+                            // 工具开始执行 = 上一条正文已经讲完（pi-web 的 message_end 语义）
+                            settleStaleStreamingAgents()
                             val existingIdx = if (!event.toolCallId.isNullOrBlank()) {
                                 messages.indexOfLast { it.role == MessageRole.TOOL && it.toolCall?.toolCallId == event.toolCallId }
                             } else -1

@@ -344,6 +344,21 @@ fun ChatScreen(
     // 才突然全部出现。这就是「打开历史会话必须点一下上滑加载才出正文」的根因。
     val conversation = olderMessages + messages
 
+    /**
+     * pi-web 的 reducer 里 `streamingMessage` 是**单数**（一个 store 只持一条正在流式的消息），
+     * 渲染时也只有那一条会被传 `isStreaming: true`（`jsx(sv,{message:d,isStreaming:!0})`），
+     * 所以界面上永远最多只有一个「↓ token + t/s」徽标。
+     *
+     * 本地的 `ChatItem.isStreaming` 是逐条粘住的：一回合里插了工具卡 / 多段正文，
+     * 就会有好几个 AGENT 气泡同时为 true → 同时挂出多个徽标。前面那些早已不再增长，
+     * 显示的是它们停下来时的旧值（看起来“很快”），最新的那个才刚起算（看起来“慢/0”）。
+     * 这里显式只认「会话最后一条且正在流式」，把徽标收敛到一条，与 pi-web 一致。
+     */
+    val liveStreamingItemId = remember(messages.size, messages.lastOrNull()?.id, messages.lastOrNull()?.isStreaming) {
+        val tail = messages.lastOrNull()
+        if (tail != null && tail.role == MessageRole.AGENT && tail.isStreaming) tail.id else null
+    }
+
     // 首屏还没有任何正文时，不投射「正在等待模型…」式的状态噪音，只给静默骨架。
     // （会话在 PC 侧确实在跑时，isAgentBusy 也为真，但正文还在路上，报「等待模型」纯属噪声）
     val isFirstScreenLoading = conversation.isEmpty() && (isLoadingSessionHistory || isAgentBusy)
@@ -1407,7 +1422,8 @@ fun ChatScreen(
                             onEditFromHere = editFromMessage,
                             onForkFromHere = onForkFromMessage,
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                            onOpenFilePreview = { p -> openFilePreview(p) }
+                            onOpenFilePreview = { p -> openFilePreview(p) },
+                            isLiveStreamingTail = item.id == liveStreamingItemId
                         )
                     }
                 }
@@ -1457,7 +1473,8 @@ fun ChatScreen(
                                         onEditFromHere = editFromMessage,
                                         onForkFromHere = onForkFromMessage,
                                         onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                                        onOpenFilePreview = { p -> openFilePreview(p) }
+                                        onOpenFilePreview = { p -> openFilePreview(p) },
+                                        isLiveStreamingTail = procItem.id == liveStreamingItemId
                                     )
                                 }
                             }
@@ -1477,7 +1494,8 @@ fun ChatScreen(
                                 onEditFromHere = editFromMessage,
                                 onForkFromHere = onForkFromMessage,
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                                onOpenFilePreview = { p -> openFilePreview(p) }
+                                onOpenFilePreview = { p -> openFilePreview(p) },
+                                isLiveStreamingTail = ans.id == liveStreamingItemId
                             )
                         }
                     }
@@ -1943,7 +1961,9 @@ fun ChatMessageItem(
     /** 打开 bash 完整输出：由 ChatScreen 注入，工具卡里才有入口 */
     onOpenBashOutput: ((path: String, title: String) -> Unit)? = null,
     /** 打开文件预览：由 ChatScreen 注入 */
-    onOpenFilePreview: ((path: String) -> Unit)? = null
+    onOpenFilePreview: ((path: String) -> Unit)? = null,
+    /** 是否为「当前唯一在流式的那条」（对标 pi-web 的单数 streamingMessage）：只有它为真才挂实时指标 */
+    isLiveStreamingTail: Boolean = false
 ) {
     val theme = LocalAppTheme.current
     var isThinkingExpanded by remember { mutableStateOf(false) }
@@ -1958,7 +1978,7 @@ fun ChatMessageItem(
         // 流式期间在模型名右侧追加「↓ 估算 token + 彩色 t/s」(StreamingSpeedBadge)。
         // 注意：过程折叠组里 showModelHeader=false，所以流式徽标的显示条件不能挂在它上面，
         // 否则「最后一轮正在跑」时（那条流式气泡被算进 processItems）根本看不到速度。
-        val showSpeedBadge = item.role == MessageRole.AGENT && item.isStreaming
+        val showSpeedBadge = item.role == MessageRole.AGENT && item.isStreaming && isLiveStreamingTail
         if (showModelHeader || showSpeedBadge) {
             Row(
                 modifier = Modifier

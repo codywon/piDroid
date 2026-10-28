@@ -2,6 +2,48 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.28] - 2026-10-28
+
+### 🐛 「屏幕上出现很多个 t/s，后面几个很慢或为 0」——已定位根因并修复 (Release v1.7.28)
+
+**pi-web 源码依据**（`.next/static/chunks/app/page-*.js`）：
+
+```js
+// 1) 状态是「单数」的：一个 store 只持一条正在流式的消息
+let l2 = { isStreaming: !1, streamingMessage: null }
+
+// 2) 只有那一条被写死传 isStreaming:!0（渲染入口 ap 是 memo，整页只此一处）
+let ap = memo(function(e){ let d = ar(t, ao)   // 取当前正在流式的那一条
+  return d ? jsx(sv, { message: d, ..., isStreaming: !0 }) : null })
+
+// 3) 历史消息走另一条路径，根本不传 isStreaming → falsy → 不渲染徽标
+jsx(sv, { message: n, toolResults: nu, ... })          // 没有 isStreaming
+
+// 4) 徽标（token 数 + 胶囊）被整个包在 isStreaming 里 → 一结束就双双消失
+h && (d = Math.round(Z), … ↓d … [_!=null && <span t/s>])
+```
+
+所以 pi-web 界面上**永远最多一个**徽标，而且它是「唯一正在增长的那条消息」的实时值。
+
+**本地为何会冒出多个**：`ChatItem.isStreaming` 是逐条**粘住**的 —— 一回合里插了工具卡、
+或多段正文被拆成多个 AGENT 气泡，就会同时有好几条为 true，于是每一条都挂了一个徽标：
+前面的早已停止增长、停在停下那一刻的旧值（看起来“很快”），最新的那条才刚起算
+（看起来“很慢 / 0”），完全对上你看到的现象。
+
+**修复**：
+- `MainActivity` 新增 `settleStaleStreamingAgents()`：新建流式气泡前、以及插入工具卡前
+  （= pi-web 的 `message_end` 语义），把之前那些 AGENT 气泡的 `isStreaming` 收尾；
+- `ChatScreen` 再兜一层：只有「会话最后一条且正在流式」的那条才能挂徽标
+  （`liveStreamingItemId`），与 pi-web 的单数 `streamingMessage` 一致。
+
+### 📏 徽标高度降低
+
+Android 的文字行高由字体度量决定（比 fontSize 大 4~5sp），只改 fontSize 降不下来。
+现在：`lineHeight` 钉成与字号相同、关掉 `includeFontPadding`、字号 11→10.5sp、
+上下内边距 1→0.5dp、圆角 4→3dp、与箭头/数字的间距同步收紧（4/6→3/5dp）。
+
+---
+
 ## [1.7.27] - 2026-10-28
 
 ### 🐛 流式速度徽标一直显示 0.0 t/s → 采样机制重做 (Release v1.7.27)

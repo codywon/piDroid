@@ -25,6 +25,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -148,6 +151,20 @@ private const val SPEED_MAX_WINDOW_S = 3.0
 /** 新值与旧值的权重：EMA 平滑，避免批量到达时数字乱跳 */
 private const val SPEED_EMA_OLD = 0.55
 
+/**
+ * 徽标文字专用样式：比 pi-web 的 11px 再紧凑一点。
+ * Android 默认的文字行高由字体度量决定（比 fontSize 大 4~5sp），
+ * 所以只看 fontSize 的胶囊看起来偏高 —— 这里把 lineHeight 钉成跟字号一致，
+ * 并关掉 includeFontPadding，高度就只剩真正字高 + 1dp 上下边。
+ */
+@OptIn(ExperimentalTextApi::class)
+private val BadgeTextStyle = TextStyle(
+    fontSize = 10.5.sp,
+    lineHeight = 10.5.sp,
+    fontWeight = FontWeight.Normal,
+    platformStyle = PlatformTextStyle(includeFontPadding = false)
+)
+
 /** pi-web 阈值：>=50 青、>=30 绿、>=15 黄、其余红 */
 private fun tpsColor(v: Double): Color = when {
     v >= 50.0 -> Color(0xFF53B3CB)
@@ -235,24 +252,22 @@ fun StreamingSpeedBadge(item: ChatItem, modifier: Modifier = Modifier) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         DownArrowGlyph(color = theme.textPrimary)
-        Spacer(modifier = Modifier.width(4.dp))
+        Spacer(modifier = Modifier.width(3.dp))
         Text(
             text = rounded.toString(),
-            fontSize = 11.sp,
-            fontWeight = FontWeight.Normal,
+            style = BadgeTextStyle,
             color = theme.textPrimary
         )
         tps?.let { v ->
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(5.dp))
             Box(
                 modifier = Modifier
-                    .background(tpsColor(v), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                    .background(tpsColor(v), RoundedCornerShape(3.dp))
+                    .padding(horizontal = 5.dp, vertical = 0.5.dp)
             ) {
                 Text(
                     text = "${String.format(Locale.US, "%.1f", v)} t/s",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Normal,
+                    style = BadgeTextStyle,
                     color = Color.White
                 )
             }
