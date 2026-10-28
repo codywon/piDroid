@@ -240,12 +240,42 @@ data class FileMeta(
 ) {
     val isImage: Boolean get() = mime.startsWith("image/")
     val sizeLabel: String
-        get() = when {
-            size >= 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", size / 1024.0 / 1024.0)
-            size >= 1024 -> String.format(java.util.Locale.US, "%.1f KB", size / 1024.0)
-            else -> "$size B"
-        }
+        get() = formatBytes(size)
 }
+
+/**
+ * 文本预览分块（GET /api/files/<path>?type=read&offset=）。
+ *
+ * pi-web 的 `readTextPreviewChunk` 一次最多返回 256KB（`TEXT_PREVIEW_MAX_BYTES`），
+ * 并把「下一块起点」与「是否还有剩余」一并告给前端；前端底部那个
+ * `nextOffset / size` + 「Load more」按钮就靠这两个字段续读。
+ * 解析 JSON 时不能只取 content，否则长报告会在 256KB 处静默截断。
+ */
+data class FileTextChunk(
+    val content: String = "",
+    val nextOffset: Long = 0L,
+    val truncated: Boolean = false,
+    val size: Long = 0L
+)
+
+/** 人类可读体积（B / KB / MB） */
+fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+    bytes >= 1024 -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
+    else -> "$bytes B"
+}
+
+/**
+ * 媒体播放源：URL + 鉴权头。
+ *
+ * `MediaPlayer` / `VideoView` 自己发 HTTP 请求，走不了 [com.pi.app.network.PiApiClient] 的
+ * OkHttp 客户端（也就没有了 AuthInterceptor）；而伴侣网关除了 `/events` 之外只认
+ * `Authorization: Bearer`（不接受 `?token=`），所以播放器必须显式带上这个头。
+ */
+data class FilePlaybackSource(
+    val url: String,
+    val headers: Map<String, String> = emptyMap()
+)
 
 /**
  * PC 上工作目录的 git 变更（GET /api/git/status?cwd=）。

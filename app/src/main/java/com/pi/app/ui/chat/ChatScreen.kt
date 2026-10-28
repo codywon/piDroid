@@ -1,7 +1,15 @@
 package com.pi.app.ui.chat
 
+import android.content.Context
+import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.webkit.MimeTypeMap
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.MediaController
+import android.widget.VideoView
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -52,6 +60,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -64,17 +73,21 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import com.pi.app.data.model.*
+import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.LocalMediaGatewayConfig
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
+import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.data.model.ToolPreset
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -97,6 +110,8 @@ data class PromptTimelineEntry(
 fun ChatScreen(
     sessionId: String = "",
     sessionTitle: String = "",
+    /** 会话工作目录（绝对路径）：Markdown 里的相对链接按它换算成本机文件路径 */
+    sessionCwd: String = "",
     currentProject: String,
     projects: List<ProjectInfo> = emptyList(),
     selectedModel: ModelInfo,
@@ -132,6 +147,17 @@ fun ChatScreen(
     /** 文件元信息 + 文本内容 + 原始字节（图片预览） */
     onLoadFileMeta: suspend (String) -> Result<FileMeta> = { Result.failure(Exception("未接入")) },
     onLoadFileText: suspend (String) -> Result<String> = { Result.success("") },
+    /** 分块续读：GET /api/files/<path>?type=read&offset=（pi-web 一次最多 256KB） */
+    onLoadFileTextChunk: suspend (String, Long) -> Result<FileTextChunk> =
+        { _, _ -> Result.failure(Exception("未接入")) },
+    /** Word 预览 HTML：GET /api/files/<path>?type=preview（服务端 mammoth 转换） */
+    onLoadFilePreviewHtml: suspend (String) -> Result<String> =
+        { Result.failure(Exception("未接入")) },
+    /** 把文件落到手机缓存（交给 WPS / 系统阅读器打开） */
+    onDownloadFileToCache: suspend (String) -> Result<java.io.File> =
+        { Result.failure(Exception("未接入")) },
+    /** 媒体播放源：URL + 鉴权头（MediaPlayer / VideoView 自己发请求） */
+    onResolveFileSource: (String) -> FilePlaybackSource? = { null },
     onLoadFileBytes: suspend (String) -> Result<ByteArray> = { Result.failure(Exception("未接入")) },
     /** 读取工作目录的 git 变更（GET /api/git/status?cwd=） */
     onLoadGitStatus: suspend () -> Result<GitStatusResult> = { Result.success(GitStatusResult()) },
@@ -184,6 +210,23 @@ fun ChatScreen(
     var artifactImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var artifactMeta by remember { mutableStateOf<String?>(null) }
     var isLoadingArtifact by remember { mutableStateOf(false) }
+    /** 当前预览的文件绝对路径（Markdown 文档里的相对链接以它所在目录为基准） */
+    var artifactPath by remember { mutableStateOf<String?>(null) }
+    /** 当前预览的文件类型（对标 pi-web FileViewer 的按类型分派：图片 / 文档 / PDF / 媒体 / 文本） */
+    var artifactKind by remember { mutableStateOf(ArtifactKind.TEXT) }
+    var artifactMime by remember { mutableStateOf("") }
+    /** Word 预览：服务端转好的整页 HTML，直接给 WebView */
+    var artifactDocxHtml by remember { mutableStateOf<String?>(null) }
+    /** 非文本类型（Word / PDF / 媒体）的提示与错误文案 */
+    var artifactMessage by remember { mutableStateOf<String?>(null) }
+    /** 正在把文件下载到缓存交给外部应用 */
+    var isOpeningExternally by remember { mutableStateOf(false) }
+    var artifactRawMode by remember { mutableStateOf(false) }
+    /** 文本预览的分块续读状态（对标 pi-web FileViewer 的 nextOffset / size / Load more） */
+    var artifactNextOffset by remember { mutableStateOf(0L) }
+    var artifactSizeBytes by remember { mutableStateOf(0L) }
+    var artifactTruncated by remember { mutableStateOf(false) }
+    var isLoadingMoreArtifact by remember { mutableStateOf(false) }
 
     // Git 变更面板
     var showGitSheet by remember { mutableStateOf(false) }
@@ -289,6 +332,17 @@ fun ChatScreen(
         artifactText = null
         artifactImage = null
         artifactMeta = null
+        artifactPath = null
+        artifactKind = ArtifactKind.TEXT
+        artifactMime = ""
+        artifactDocxHtml = null
+        artifactMessage = null
+        isOpeningExternally = false
+        artifactRawMode = false
+        artifactNextOffset = 0L
+        artifactSizeBytes = 0L
+        artifactTruncated = false
+        isLoadingMoreArtifact = false
         isLoadingArtifact = true
         coroutineScope.launch {
             onLoadBashOutput(outputPath)
@@ -300,37 +354,178 @@ fun ChatScreen(
         }
     }
 
-    /** 打开「文件预览」查看器：图片直接看图，其余读文本 */
+    /**
+     * 续读下一块：pi-web FileViewer 底部「Load more」按钮的同款语义
+     * —— 用上一块的 `nextOffset` 作为下一请求的 offset，把新块拼到已有文本后面。
+     */
+    fun loadMoreArtifact() {
+        val path = artifactPath ?: return
+        if (isLoadingMoreArtifact || !artifactTruncated) return
+        isLoadingMoreArtifact = true
+        coroutineScope.launch {
+            onLoadFileTextChunk(path, artifactNextOffset)
+                .onSuccess { chunk ->
+                    artifactText = (artifactText ?: "") + chunk.content
+                    artifactNextOffset = chunk.nextOffset
+                    artifactTruncated = chunk.truncated
+                    if (chunk.size > 0L) artifactSizeBytes = chunk.size
+                }
+                .onFailure { err ->
+                    android.widget.Toast.makeText(
+                        context,
+                        "加载更多失败：${err.message}",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            isLoadingMoreArtifact = false
+        }
+    }
+
+    /**
+     * 打开「文件预览」查看器：按类型分派（对标 pi-web FileViewer 的
+     * ImageViewer / AudioViewer / VideoViewer / DocumentViewer / TextFileViewer）。
+     */
     fun openFilePreview(absPath: String) {
         val name = absPath.replace('\\', '/').substringAfterLast('/')
         artifactTitle = name
         artifactText = null
         artifactImage = null
         artifactMeta = null
+        artifactPath = absPath
+        artifactKind = ArtifactKind.TEXT
+        artifactMime = ""
+        artifactDocxHtml = null
+        artifactMessage = null
+        isOpeningExternally = false
+        artifactRawMode = false
+        artifactNextOffset = 0L
+        artifactSizeBytes = 0L
+        artifactTruncated = false
+        isLoadingMoreArtifact = false
         isLoadingArtifact = true
         coroutineScope.launch {
             val meta = onLoadFileMeta(absPath).getOrNull()
+            val metaMime = meta?.mime.orEmpty()
+            val kind = artifactKindOf(absPath, metaMime)
+            artifactMime = metaMime.ifBlank {
+                MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                    FileLinks.displayName(absPath).substringAfterLast('.', "").lowercase(Locale.ROOT)
+                ).orEmpty()
+            }
+            artifactKind = kind
             artifactMeta = meta?.let { m ->
                 listOfNotNull(m.sizeLabel, m.language.ifBlank { null }, m.mime.ifBlank { null })
                     .joinToString(" · ")
             }
-            if (meta?.isImage == true) {
-                onLoadFileBytes(absPath)
-                    .onSuccess { bytes ->
-                        artifactImage = runCatching {
-                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                ?.asImageBitmap()
-                        }.getOrNull()
-                        if (artifactImage == null) artifactText = "图片解码失败（可能过大或格式不支持）"
+            when (kind) {
+                ArtifactKind.IMAGE -> {
+                    onLoadFileBytes(absPath)
+                        .onSuccess { bytes ->
+                            artifactImage = runCatching {
+                                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                    ?.asImageBitmap()
+                            }.getOrNull()
+                            if (artifactImage == null) artifactMessage = "图片解码失败（可能过大或格式不支持）"
+                        }
+                        .onFailure { artifactMessage = "读取图片失败：${it.message}" }
+                }
+                ArtifactKind.DOCX -> {
+                    // pi-web 的 docx 预览上限 10MB（DOCX_PREVIEW_MAX_BYTES），超了服务端会拒
+                    if (meta != null && meta.size > 10L * 1024 * 1024) {
+                        artifactMessage = "Word 预览上限 10MB，可用下方「用其他应用打开」交给 WPS"
+                    } else {
+                        onLoadFilePreviewHtml(absPath)
+                            .onSuccess { artifactDocxHtml = it }
+                            .onFailure { artifactMessage = "Word 预览失败：${it.message}" }
                     }
-                    .onFailure { artifactText = "读取图片失败：${it.message}" }
-            } else {
-                onLoadFileText(absPath)
-                    .onSuccess { artifactText = it.ifBlank { "（空文件）" } }
-                    .onFailure { artifactText = "读取文件失败：${it.message}" }
+                }
+                ArtifactKind.PDF -> {
+                    // 手机端没有内置 PDF 渲染器（pi-web 是借桌面浏览器的），
+                    // 所以这里不做内嵌渲染，交给系统/WPS —— 见下方「用其他应用打开」
+                }
+                ArtifactKind.AUDIO, ArtifactKind.VIDEO -> {
+                    // 播放器自己按 URL 拉流（同 pi-web 的 <audio>/<video> src），无需预读
+                }
+                else -> {
+                    onLoadFileTextChunk(absPath, 0L)
+                        .onSuccess { chunk ->
+                            artifactText = chunk.content.ifBlank { "（空文件）" }
+                            artifactNextOffset = chunk.nextOffset
+                            artifactTruncated = chunk.truncated
+                            artifactSizeBytes = chunk.size
+                        }
+                        .onFailure { artifactText = "读取文件失败：${it.message}" }
+                }
             }
             isLoadingArtifact = false
         }
+    }
+
+    /** 交给系统/第三方应用打开（PDF → WPS/系统阅读器；Word → WPS；音视频 → 本地播放器） */
+    fun openArtifactExternally() {
+        val path = artifactPath ?: return
+        if (isOpeningExternally) return
+        isOpeningExternally = true
+        coroutineScope.launch {
+            onDownloadFileToCache(path)
+                .onSuccess { file ->
+                    val mime = artifactMime.ifBlank {
+                        MimeTypeMap.getSingleton().getMimeTypeFromExtension(
+                            FileLinks.displayName(path).substringAfterLast('.', "").lowercase(Locale.ROOT)
+                        ).orEmpty()
+                    }
+                    val opened = openFileWithOtherApp(context, file, mime)
+                    if (!opened) {
+                        android.widget.Toast.makeText(
+                            context,
+                            "没有可打开该文件的应用（可安装 WPS）",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+                .onFailure { err ->
+                    android.widget.Toast.makeText(
+                        context,
+                        "下载失败：${err.message}",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            isOpeningExternally = false
+        }
+    }
+
+    /**
+     * 复刻 pi-web MarkdownBody 的链接语义（`onOpenFile`）：
+     * 本地文件不跳转、直接在预览面板打开；http(s) 交给系统浏览器；其余忽略。
+     *
+     * 为什么不能只改样式：pi-web 的 `<a href>` 被 `resolveLocalFileHref` 命中后
+     * `preventDefault()` 再 `onOpenFile(path)` —— 手机上没有任何“浏览器能打开的 file://”，
+     * 所以必须自己算出绝对路径再走 `/api/files?type=read`。
+     */
+    fun openLinkTarget(href: String, baseDir: String) {
+        val trimmed = href.trim()
+        if (trimmed.isEmpty() || trimmed.startsWith("#")) return
+        val resolved = FileLinks.resolveLocalFileHref(trimmed, baseDir)
+        if (resolved != null) {
+            openFilePreview(resolved)
+            return
+        }
+        if (FileLinks.isWebUrl(trimmed)) {
+            val opened = runCatching {
+                context.startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(trimmed))
+                )
+            }.isSuccess
+            if (!opened) {
+                android.widget.Toast.makeText(context, "没有可打开该链接的应用", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
+        android.widget.Toast.makeText(
+            context,
+            "无法打开的链接：${trimmed.take(80)}",
+            android.widget.Toast.LENGTH_SHORT
+        ).show()
     }
 
     // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
@@ -1423,6 +1618,7 @@ fun ChatScreen(
                             onForkFromHere = onForkFromMessage,
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                             onOpenFilePreview = { p -> openFilePreview(p) },
+                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                             isLiveStreamingTail = item.id == liveStreamingItemId
                         )
                     }
@@ -1451,7 +1647,8 @@ fun ChatScreen(
                                 onForkFromMessage?.invoke(userItem)
                             },
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                            onOpenFilePreview = { p -> openFilePreview(p) }
+                            onOpenFilePreview = { p -> openFilePreview(p) },
+                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) }
                         )
                     }
 
@@ -1474,6 +1671,7 @@ fun ChatScreen(
                                         onForkFromHere = onForkFromMessage,
                                         onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                         onOpenFilePreview = { p -> openFilePreview(p) },
+                                        onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                                         isLiveStreamingTail = procItem.id == liveStreamingItemId
                                     )
                                 }
@@ -1495,6 +1693,7 @@ fun ChatScreen(
                                 onForkFromHere = onForkFromMessage,
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                 onOpenFilePreview = { p -> openFilePreview(p) },
+                                onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                                 isLiveStreamingTail = ans.id == liveStreamingItemId
                             )
                         }
@@ -1676,6 +1875,26 @@ fun ChatScreen(
                         Text("正在读取…", fontSize = 11.5.sp, color = theme.textMuted)
                     }
                 } else {
+                    // 按类型分派：音频 / 视频 / Word / PDF 各有专属渲染器
+                    // （pi-web 靠浏览器的 <audio>/<video>/<iframe>，手机端要自己接）
+                    when (artifactKind) {
+                        ArtifactKind.AUDIO -> AudioArtifactCard(
+                            source = artifactPath?.let { onResolveFileSource(it) },
+                            errorText = artifactMessage
+                        )
+                        ArtifactKind.VIDEO -> VideoArtifactCard(
+                            source = artifactPath?.let { onResolveFileSource(it) },
+                            errorText = artifactMessage
+                        )
+                        ArtifactKind.DOCX -> DocxArtifactCard(
+                            html = artifactDocxHtml,
+                            message = artifactMessage
+                        )
+                        ArtifactKind.PDF -> ArtifactHintCard(
+                            text = artifactMessage ?: "PDF 由手机上的阅读器打开：下方「用其他应用打开」会把文件下载到本机，交给 WPS / 系统 PDF 阅读器展示（可缩放、可搜文本）"
+                        )
+                        else -> Unit
+                    }
                     artifactImage?.let { bmp ->
                         Image(
                             bitmap = bmp,
@@ -1686,25 +1905,158 @@ fun ChatScreen(
                             contentScale = ContentScale.Fit
                         )
                     }
+                    if (artifactKind == ArtifactKind.IMAGE && artifactMessage != null) {
+                        ArtifactHintCard(text = artifactMessage.orEmpty())
+                    }
                     artifactText?.let { body ->
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = theme.surfaceContainer,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            LazyColumn(modifier = Modifier.heightIn(max = 440.dp)) {
-                                item {
-                                    Text(
-                                        text = body,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 10.5.sp,
-                                        lineHeight = 14.sp,
-                                        color = theme.textPrimary,
+                        // 读取失败时的文案不是文档，不要当成 Markdown 渲染，也不给预览/源码开关
+                        val isErrorBody = body.startsWith("读取文件失败") || body.startsWith("读取图片失败")
+                        // 可「渲染预览」的类型：Markdown 文档与 SVG 矢量图。
+                        // 对标 pi-web：必须整篇加载完（!truncated）才渲染，
+                        // 否则未闭合的代码围栏/表格/未封口的 <svg> 会渲染成错乱的样子。
+                        val richPreviewKind = artifactKind == ArtifactKind.MARKDOWN ||
+                            artifactKind == ArtifactKind.SVG
+                        val richPreviewReady = richPreviewKind && !artifactTruncated
+                        val showRenderedPreview = richPreviewReady && !artifactRawMode && !isErrorBody
+                        if (richPreviewReady && !isErrorBody) {
+                            // 对标 pi-web FileViewer：.md / .svg 默认按「预览」打开，可切回源码。
+                            // 手机上如果只给等宽文本，报告里的链接/表格与 pi 画的 SVG 流程图全是裸标记。
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf("预览" to false, "源码" to true).forEach { (label, raw) ->
+                                    val selected = artifactRawMode == raw
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = if (selected) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                                        border = BorderStroke(
+                                            0.7.dp,
+                                            if (selected) theme.primary.copy(alpha = 0.5f) else theme.outline.copy(alpha = 0.4f)
+                                        ),
+                                        modifier = Modifier.clickable { artifactRawMode = raw }
+                                    ) {
+                                        Text(
+                                            text = label,
+                                            fontSize = 10.5.sp,
+                                            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
+                                            color = if (selected) theme.primary else theme.textSecondary,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (showRenderedPreview) {
+                            if (artifactKind == ArtifactKind.SVG) {
+                                // SVG 交矢量渲染（WebView 里的原生 SVG 引擎）：
+                                // 与聊天里 ```svg / <svg> 代码块用的是同一个渲染器，
+                                // 不引入新依赖，支持 path/text/gradient/filter。
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = theme.surfaceContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    SvgWebViewCanvas(
+                                        svgContent = body,
+                                        enableZoom = true,
                                         modifier = Modifier
                                             .fillMaxWidth()
-                                            .padding(8.dp)
-                                            .horizontalScroll(rememberScrollState())
+                                            .height(360.dp)
                                     )
+                                }
+                            } else {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = theme.surfaceContainer,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    LazyColumn(modifier = Modifier.heightIn(max = 520.dp)) {
+                                        item {
+                                            MarkdownRenderer(
+                                                content = body,
+                                                modifier = Modifier.fillMaxWidth().padding(10.dp),
+                                                isUser = false,
+                                                onOpenLink = { href ->
+                                                    // 文档内部链接以该文档所在目录为基准
+                                                    // （pi-web FileViewer 的 markdownDirectory），
+                                                    // 目录外才回退到会话工作目录。
+                                                    val docDir = artifactPath?.let { FileLinks.parentDirectory(it) }.orEmpty()
+                                                    openLinkTarget(href, docDir.ifBlank { sessionCwd })
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = theme.surfaceContainer,
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                LazyColumn(modifier = Modifier.heightIn(max = 440.dp)) {
+                                    item {
+                                        Text(
+                                            text = body,
+                                            fontFamily = FontFamily.Monospace,
+                                            fontSize = 10.5.sp,
+                                            lineHeight = 14.sp,
+                                            color = theme.textPrimary,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(8.dp)
+                                                .horizontalScroll(rememberScrollState())
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (richPreviewKind && artifactTruncated && !isErrorBody) {
+                            Text(
+                                text = "内容尚未完整加载：先按源码显示，点下方「加载更多」后可切换预览",
+                                fontSize = 10.5.sp,
+                                color = theme.textMuted
+                            )
+                        }
+                        // 对标 pi-web FileViewer 的 Load more：nextOffset / size + 按钮
+                        if (artifactTruncated) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = "${formatBytes(artifactNextOffset)} / ${formatBytes(artifactSizeBytes)}",
+                                    fontSize = 10.5.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = theme.textMuted
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = theme.primary.copy(alpha = 0.14f),
+                                    border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.45f)),
+                                    modifier = Modifier.clickable(enabled = !isLoadingMoreArtifact) { loadMoreArtifact() }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        if (isLoadingMoreArtifact) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(10.dp),
+                                                strokeWidth = 1.4.dp,
+                                                color = theme.primary
+                                            )
+                                        }
+                                        Text(
+                                            text = if (isLoadingMoreArtifact) "加载中…" else "加载更多",
+                                            fontSize = 10.5.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = theme.primary
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1721,6 +2073,41 @@ fun ChatScreen(
                                     android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
                                 }
                             )
+                        }
+                    }
+                    // 通用出口：把文件落到缓存再用 FileProvider 交给系统/WPS
+                    // （PDF 没有内嵌渲染器、Word 太大、或就是想用惯用应用看时都走这里）
+                    if (artifactPath != null) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = theme.primary.copy(alpha = 0.12f),
+                                border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.4f)),
+                                modifier = Modifier.clickable(enabled = !isOpeningExternally) { openArtifactExternally() }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                ) {
+                                    if (isOpeningExternally) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(10.dp),
+                                            strokeWidth = 1.4.dp,
+                                            color = theme.primary
+                                        )
+                                    }
+                                    Text(
+                                        text = if (isOpeningExternally) "正在准备…" else "用其他应用打开（WPS / 系统）",
+                                        fontSize = 10.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = theme.primary
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -1962,6 +2349,8 @@ fun ChatMessageItem(
     onOpenBashOutput: ((path: String, title: String) -> Unit)? = null,
     /** 打开文件预览：由 ChatScreen 注入 */
     onOpenFilePreview: ((path: String) -> Unit)? = null,
+    /** Markdown 链接点击（对标 pi-web MarkdownBody 的 onOpenFile）：由 ChatScreen 注入 */
+    onOpenLink: ((href: String) -> Unit)? = null,
     /** 是否为「当前唯一在流式的那条」（对标 pi-web 的单数 streamingMessage）：只有它为真才挂实时指标 */
     isLiveStreamingTail: Boolean = false
 ) {
@@ -2026,7 +2415,8 @@ fun ChatMessageItem(
                             if (item.content.isNotBlank()) {
                                 MarkdownRenderer(
                                     content = item.content,
-                                    isUser = true
+                                    isUser = true,
+                                    onOpenLink = onOpenLink
                                 )
                             }
                             if (item.mediaList.isNotEmpty()) {
@@ -2123,7 +2513,8 @@ fun ChatMessageItem(
                         if (item.content.isNotBlank()) {
                             MarkdownRenderer(
                                 content = item.content,
-                                isUser = false
+                                isUser = false,
+                                onOpenLink = onOpenLink
                             )
                         }
 
@@ -2269,7 +2660,8 @@ fun ChatMessageItem(
                             MarkdownRenderer(
                                 content = bodyMarkdown,
                                 modifier = Modifier.fillMaxWidth(),
-                                isUser = false
+                                isUser = false,
+                                onOpenLink = onOpenLink
                             )
                         }
                     }
@@ -2856,3 +3248,271 @@ private fun readPickedFiles(
 
 /** 单文件上限：pi 服务端限制 25MB */
 private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
+
+// ==========================================
+// 文件预览面板：按类型分派（对标 pi-web FileViewer）
+// ==========================================
+
+/**
+ * 预览类型。pi-web 的 FileViewer 在入口处按扩展名分派到
+ * ImageViewer / AudioViewer / VideoViewer / DocumentViewer(pdf|docx) / TextFileViewer；
+ * 那五种「查看器」在桌面浏览器里分别由 <img> / <audio> / <video> / <iframe> 兜底，
+ * 手机上没有任何一个能白拿，所以要各自落地成原生实现。
+ */
+private enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO }
+
+private val IMAGE_FILE_EXTS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
+private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "amr")
+private val VIDEO_FILE_EXTS = setOf("mp4", "m4v", "mov", "webm", "mkv", "3gp", "avi")
+
+/**
+ * 判定预览类型：mime 优先，扩展名兜底（meta 拿不到时仍然能分派）。
+ * `.svg` 故意不算图片 —— BitmapFactory 解不了矢量图，当文本看源码比「解码失败」有用。
+ */
+private fun artifactKindOf(absPath: String, mime: String): ArtifactKind {
+    val ext = FileLinks.displayName(absPath).substringAfterLast('.', '').lowercase(Locale.ROOT)
+    val lowerMime = mime.lowercase(Locale.ROOT)
+    return when {
+        // SVG 是矢量图，必须交给渲染器而不是 BitmapFactory（那只会得到“解码失败”）
+        ext == "svg" || lowerMime.contains("svg") -> ArtifactKind.SVG
+        lowerMime.startsWith("image/") || ext in IMAGE_FILE_EXTS -> ArtifactKind.IMAGE
+        FileLinks.isMarkdownPath(absPath) -> ArtifactKind.MARKDOWN
+        lowerMime == "application/pdf" || ext == "pdf" -> ArtifactKind.PDF
+        lowerMime.contains("wordprocessingml") || ext == "docx" -> ArtifactKind.DOCX
+        lowerMime.startsWith("audio/") || ext in AUDIO_FILE_EXTS -> ArtifactKind.AUDIO
+        lowerMime.startsWith("video/") || ext in VIDEO_FILE_EXTS -> ArtifactKind.VIDEO
+        else -> ArtifactKind.TEXT
+    }
+}
+
+@Composable
+private fun ArtifactHintCard(text: String) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = theme.surfaceContainer.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(
+            text = text,
+            fontSize = 11.5.sp,
+            lineHeight = 16.sp,
+            color = theme.textSecondary,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+        )
+    }
+}
+
+/**
+ * 音频播放器：pi-web 只是把 `/api/files/<path>?type=read` 塞给浏览器的 <audio>，
+ * 手机端的等价物是 MediaPlayer —— 但网关只认 `Authorization: Bearer`
+ * （`QUERY_TOKEN_PATH_PATTERN` 只对 `/events` 放行 `?token=`），
+ * 所以必须用带 headers 的 setDataSource，不能只给一个裸 URL。
+ */
+@Composable
+private fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) {
+    val theme = LocalAppTheme.current
+    val context = LocalContext.current
+    if (source == null) {
+        ArtifactHintCard(errorText ?: "无法获取音频地址（请检查网关配置）")
+        return
+    }
+
+    var isPlaying by remember(source.url) { mutableStateOf(false) }
+    var isPreparing by remember(source.url) { mutableStateOf(true) }
+    var durationMs by remember(source.url) { mutableStateOf(0) }
+    var positionMs by remember(source.url) { mutableStateOf(0) }
+    var failure by remember(source.url) { mutableStateOf<String?>(null) }
+    val playerHolder = remember(source.url) { mutableStateOf<MediaPlayer?>(null) }
+
+    DisposableEffect(source.url) {
+        val player = MediaPlayer()
+        playerHolder.value = player
+        runCatching {
+            player.setDataSource(context, Uri.parse(source.url), source.headers)
+            player.setOnPreparedListener { mp ->
+                isPreparing = false
+                durationMs = mp.duration.coerceAtLeast(0)
+            }
+            player.setOnCompletionListener {
+                isPlaying = false
+                positionMs = durationMs
+            }
+            player.setOnErrorListener { _, what, extra ->
+                failure = "播放失败（$what/$extra）"
+                isPlaying = false
+                isPreparing = false
+                true
+            }
+            player.prepareAsync()
+        }.onFailure {
+            failure = "无法加载音频：${it.message}"
+            isPreparing = false
+        }
+        onDispose {
+            runCatching { player.release() }
+            playerHolder.value = null
+        }
+    }
+
+    // 进度轮询（MediaPlayer 没有进度回调）
+    LaunchedEffect(source.url) {
+        while (true) {
+            val player = playerHolder.value
+            if (player != null && isPlaying) {
+                positionMs = runCatching { player.currentPosition }.getOrDefault(positionMs)
+            }
+            delay(400)
+        }
+    }
+
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = theme.surfaceContainer,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                IconButton(
+                    onClick = {
+                        val player = playerHolder.value
+                        if (player != null) {
+                            if (isPlaying) {
+                                runCatching { player.pause() }
+                                isPlaying = false
+                            } else {
+                                runCatching {
+                                    if (durationMs > 0 && positionMs >= durationMs) player.seekTo(0)
+                                    player.start()
+                                }
+                                isPlaying = true
+                            }
+                        }
+                    },
+                    enabled = !isPreparing && failure == null
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "暂停" else "播放",
+                        tint = theme.primary,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Slider(
+                    value = if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f,
+                    onValueChange = { fraction ->
+                        if (durationMs > 0) positionMs = (fraction * durationMs).toInt()
+                    },
+                    onValueChangeFinished = {
+                        playerHolder.value?.let { player -> runCatching { player.seekTo(positionMs) } }
+                    },
+                    enabled = durationMs > 0,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    text = "${formatClock(positionMs)} / ${formatClock(durationMs)}",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = theme.textMuted
+                )
+            }
+            if (isPreparing) {
+                Text(text = "正在缓冲…", fontSize = 10.5.sp, color = theme.textMuted)
+            }
+            val hint = failure ?: errorText
+            if (hint != null) {
+                Text(text = hint, fontSize = 10.5.sp, color = theme.textMuted)
+            }
+        }
+    }
+}
+
+/**
+ * 视频播放器：VideoView 自带 Surface 生命周期与缩放，
+ * 并能把鉴权头透传给底层的 MediaPlayer（`setVideoURI(uri, headers)`）。
+ */
+@Composable
+private fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) {
+    if (source == null) {
+        ArtifactHintCard(errorText ?: "无法获取视频地址（请检查网关配置）")
+        return
+    }
+    AndroidView(
+        factory = { ctx ->
+            VideoView(ctx).apply {
+                val controller = MediaController(ctx)
+                controller.setAnchorView(this)
+                setMediaController(controller)
+                setOnPreparedListener { mp -> runCatching { mp.start() } }
+                setOnErrorListener { _, _, _ -> true }
+                runCatching { setVideoURI(Uri.parse(source.url), source.headers) }
+            }
+        },
+        // VideoView 靠 onDetachedFromWindow 不一定释放 MediaPlayer，显式停掉避免浮在后台放
+        onRelease = { view -> runCatching { view.stopPlayback() } },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(220.dp)
+    )
+}
+
+/**
+ * Word（.docx）预览：pi-web 在服务端用 mammoth 转成整页 HTML 再交给 <iframe>，
+ * 所以手机端不需要解析 docx —— 拿同一份 HTML 丢进 WebView 即可。
+ * 该 HTML 的图片已内联为 data URI，并带 CSP（禁脚本），因此这里也关掉 JS。
+ */
+@Composable
+private fun DocxArtifactCard(html: String?, message: String?) {
+    if (html.isNullOrBlank()) {
+        ArtifactHintCard(message ?: "Word 预览暂不可用")
+        return
+    }
+    AndroidView(
+        factory = { ctx ->
+            WebView(ctx).apply {
+                settings.javaScriptEnabled = false
+                settings.allowFileAccess = false
+                settings.allowContentAccess = false
+                setWebViewClient(WebViewClient())
+                loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+            }
+        },
+        onRelease = { view -> runCatching { view.destroy() } },
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(380.dp)
+    )
+}
+
+/** 毫秒 → m:ss */
+private fun formatClock(ms: Int): String {
+    val totalSeconds = (ms / 1000).coerceAtLeast(0)
+    return String.format(Locale.US, "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+}
+
+/**
+ * 把缓存文件交给系统/第三方应用打开（WPS、系统 PDF 阅读器、相册…）。
+ *
+ * 复用 Manifest 里已有的 FileProvider（`${applicationId}.fileprovider`，
+ * 其 `internal_cache` 路径已在 res/xml/file_paths.xml 声明），
+ * 与 AppUpdateManager 拉起安装器是同一套做法。
+ */
+private fun openFileWithOtherApp(context: Context, file: File, mime: String): Boolean = try {
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    val intent = Intent(Intent.ACTION_VIEW).apply {
+        setDataAndType(uri, mime.ifBlank { "*/*" })
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+    context.startActivity(Intent.createChooser(intent, "打开方式"))
+    true
+} catch (e: Exception) {
+    false
+}

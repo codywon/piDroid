@@ -2,6 +2,93 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.30] - 2026-10-28
+
+### 🔗 消息里的 Markdown 链接可点了：复刻 pi-web 的「链接即文件预览」（Release v1.7.30）
+
+**pi-web 源码依据**（`components/MarkdownBody.tsx` + `lib/file-links.ts`）：
+
+```tsx
+// MarkdownBody.tsx：<a> 不是跳转，命中本地文件就拦下来开预览
+const filePath = onOpenFile ? resolveLocalFileHref(href, cwd) : null;
+const handleClick = (event) => {
+  if (!shouldOpenLocalFileInApp(event)) return;
+  event.preventDefault();
+  openFile(path, parsePdfPageFragment(href) ?? undefined);
+};
+```
+
+```ts
+// lib/file-links.ts：href → 本机绝对路径（相对路径以会话 cwd 为基准，禁止越界）
+resolveLocalFileHref(href, baseDir, relativeRoot = baseDir)
+```
+
+也就是说 pi-web 里 `[远端上线报告](docs/S5-远程上线报告.md)` 点下去是 **右侧面板的文件预览**
+（`.md` 走文档渲染、带 Markdown 正文与内部链接），而不是浏览器跳转。
+
+**本地为何点了没反应**：`MarkdownRenderer` 的 `is Link` 分支只 `pushStyle`
+（蓝字 + 下划线），一个字符的点击语义都没有；CommonMark AST 里 `Link.destination`
+被读完就丢了。手机上又没有“浏览器能打开的 `file://`”，于是链接永远是一行好看的死字。
+
+**修复**：
+- 新增 `ui/components/FileLinks.kt`：`lib/file-links.ts` 的 Kotlin 移植
+  （`file://` URL / Windows 盘符 / UNC / POSIX 绝对路径 / 相对路径按 cwd 拼接 /
+  越界拒绝 / 剥离 `:12:3` 行列后缀 / `#page=` 解析）。
+  移植后用 pi-web `lib/file-links.test.mjs` 的 **全部用例** 在 JVM 上回放，41 项全通过。
+- `MarkdownRenderer` 新增 `onOpenLink`：链接内字符挂 `LinkAnnotation.Clickable`
+  （Compose 1.7 的官方链接 API），回调沿 `MarkdownRenderer → MarkdownBlock →
+  RenderAstBlockNode → buildInlineAnnotatedString → appendInlineChildren` 逐层透传，
+  标题 / 正文 / 引用 / 列表 / 表格单元格里的链接全部生效。
+- `ChatScreen`：`openLinkTarget(href, baseDir)` —— 本地文件 → 打开预览面板；
+  `http(s)` → 系统浏览器；其余忽略。新增 `sessionCwd` 参数（`MainActivity` 传
+  `currentSession.cwd`，缺失时回退 `projectRoot`）作为相对路径的基准目录。
+- 预览面板补齐「文档形态」：`.md/.markdown/.mdx` 默认用 `MarkdownRenderer` 渲染而不是
+  等宽文本（对标 pi-web FileViewer 的 `isMarkdown && preview` 分支），并提供「预览 / 源码」切换；
+  文档内部的相对链接以**该文档所在目录**为基准（对标 `markdownDirectory`），越界时才回退工作目录。
+- 长文件「加载更多」续读：`type=read` 一次只返回 256KB（pi-web `TEXT_PREVIEW_MAX_BYTES`）
+  并带回 `nextOffset / truncated / size`，旧代码只读 `content`，于是超长报告被**静默截断**。
+  现在按 pi-web `Load more` 的语义补上：底部显示 `已加载 / 总大小` + 「加载更多」按钮，
+  用上一块的 `nextOffset` 续读并拼接；同时对齐 pi-web 的判断 —— **文档未加载完整时不给 Markdown 渲染**
+  （半篇文档里未闭合的代码围栏、表格会渲染成错乱样子），加载完整后自动可切预览。
+- PDF / Word / 音视频不再报误导性的「HTTP 200」：按 pi-web FileViewer 的分派补齐了各自的预览器（见下条）。
+
+### 🎞 PDF / Word / 音频 / 视频预览（Release v1.7.30）
+
+pi-web 的这四种「支持」其实来源不同，复刻方式也不同：
+
+- **PDF**：`FileViewer.tsx` 只是 `<iframe src="/api/files/<path>?type=read#page=12">`——
+  靠的是**桌面浏览器自带的 PDF 阅读器**，pi-web 自己不解码 PDF。手机端同理：
+  把文件流式落到应用缓存，再用 **FileProvider + ACTION_VIEW 选择器** 交给 WPS / 系统 PDF 阅读器
+  （可缩放、可搜文本、可批注）。与 `AppUpdateManager` 拉起安装器是同一套 FileProvider 机制。
+- **Word（.docx）**：pi-web 在**服务端**用 mammoth 转 HTML（`?type=preview`，图片内联 data URI，
+  上限 `DOCX_PREVIEW_MAX_BYTES = 10MB`），前端只是塞 iframe。手机端复用同一接口，
+  拿 HTML 塞 `WebView`（关 JS / 关 file access，符合该响应的 CSP）。
+- **音频**：pi-web 是浏览器 `<audio>`；手机端用 `MediaPlayer` 流式播放。
+  **关键坑**：网关除 `/events` 外只认 `Authorization: Bearer`（不接受 `?token=`），
+  所以必须用 `setDataSource(context, uri, headers)`，只给 URL 会 401。
+- **视频**：`VideoView` + `setVideoURI(uri, headers)`（自带 Surface 生命周期与 MediaController）。
+
+`ChatScreen` 的预览面板改为按类型分派（`ArtifactKind`：mime 优先、扩展名兜底），
+并把任意文件都补了一个「用其他应用打开（WPS / 系统）」的通用出口。
+
+### 🖼 SVG 一律矢量渲染（不是当源码看）
+
+pi 画的流程图/架构图常以三种形态出现，之前只有前两种会画出来， `.svg` 文件被当文本看源码：
+
+1. Chat 里的 ```svg 、`<svg>` HTML 块 —— 已由 `MediaAttachmentGallery → SvgPreviewCard`
+   （`SvgWebViewCanvas`，WebView 原生 SVG 引擎）渲染；
+2. `![图](chart.svg)` 图片语法 —— 走 `MediaKind.SVG` 从网关取字节后渲染；
+3. **这轮补上**：`.svg` 文件被链接/staging 打开时，预览面板新增 `ArtifactKind.SVG`，
+   用同一个 `SvgWebViewCanvas` 渲染（`enableZoom = true`，可双指缩放）+ 「预览 / 源码」切换。
+
+顺手补的两个真实缺口：
+- ````html / ```xml / 无语言标记的围栏里只要是完整 `<svg>...</svg>`（包括带 `<?xml?>` 头的 .svg 本体）
+  也按矢量图渲染，而不是展示源码；
+- 聊天内联 SVG 卡片高度 200dp → 260dp（上限 300dp）：流程图本来比插图高，
+  之前被 CSS `max-height` 压成窄带、文字看不清。
+
+---
+
 ## [1.7.29] - 2026-10-28
 
 ### ✨ 扫码即替换旧 Token + 访问令牌可查看（两个体验小改进）

@@ -1850,6 +1850,10 @@ class MainActivity : ComponentActivity() {
                 ChatScreen(
                     sessionId = activeSessionId,
                     sessionTitle = activeCustomTitle ?: currentSession?.displayTitle ?: "任务控制台",
+                    // 会话工作目录：Markdown 里的相对链接（如 `docs/报告.md`）靠它换算成绝对路径
+                    sessionCwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
+                        ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }
+                        ?: "",
                     currentProject = currentProject,
                     selectedModel = selectedModel,
                     thinkingLevel = currentThinkingLevel,
@@ -2019,6 +2023,15 @@ class MainActivity : ComponentActivity() {
                     },
                     onLoadFileMeta = { path -> apiClient.getFileMeta(path) },
                     onLoadFileText = { path -> apiClient.getFileText(path) },
+                    onLoadFileTextChunk = { path, offset -> apiClient.getFileTextChunk(path, offset) },
+                    onLoadFilePreviewHtml = { path -> apiClient.getFilePreviewHtml(path) },
+                    onDownloadFileToCache = { path -> apiClient.downloadFileToCache(path) },
+                    onResolveFileSource = { path ->
+                        // 媒体播放器自己发请求（行为同 pi-web 的 <audio>/<video> src），
+                        // 但网关只认 Authorization 头，所以 URL 和 token 要一起给
+                        val url = apiClient.fileApiUrl(path)
+                        if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
+                    },
                     onLoadFileBytes = { path -> apiClient.getFileBytes(path) },
                     onLoadGitStatus = {
                         apiClient.getGitStatus(currentSession?.cwd ?: "")

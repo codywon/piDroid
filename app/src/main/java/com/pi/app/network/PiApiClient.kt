@@ -1839,24 +1839,140 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /** 文件文本内容：GET /api/files/<绝对路径>?type=read → {content} */
-    suspend fun getFileText(absPath: String): Result<String> = withContext(Dispatchers.IO) {
+    suspend fun getFileText(absPath: String): Result<String> =
+        getFileTextChunk(absPath, 0L).map { it.content }
+
+    /**
+     * 文本预览分块（对应 pi-web `readTextPreviewChunk`）：
+     * GET /api/files/<绝对路径>?type=read&offset=<字节> →
+     * { content, nextOffset, truncated, size, language, mtime }
+     *
+     * 服务端一次最多返回 256KB 并保留 UTF-8 字符边界，所以超长报告要点「加载更多」
+     * 用上一块的 nextOffset 续读；只读 content 会把截断当成读完了。
+     */
+    suspend fun getFileTextChunk(absPath: String, offset: Long = 0L): Result<FileTextChunk> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            try {
+                val offsetQuery = if (offset > 0L) "&offset=$offset" else ""
+                val req = Request.Builder()
+                    .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=read$offsetQuery")
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string() ?: "{}"
+                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    if (!resp.isSuccessful || root == null) {
+                        val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                        return@withContext Result.failure(IOException(err))
+                    }
+                    val content = root.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    Result.success(
+                        FileTextChunk(
+                            content = content,
+                            nextOffset = root.get("nextOffset")?.takeIf { !it.isJsonNull }?.asLong
+                                ?: (offset + content.toByteArray(Charsets.UTF_8).size),
+                            truncated = root.get("truncated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+                            size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                        )
+                    )
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    /**
+     * 文件 API 的绝对 URL。媒体播放器（MediaPlayer / VideoView）自己发请求，
+     * 走不了 OkHttp 客户端，所以需要单独拿 URL + 鉴权头的入口。
+     */
+    fun fileApiUrl(absPath: String, type: String = "read"): String {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return ""
+        return "$baseUrl/api/files/${encodeFilePath(absPath)}?type=$type"
+    }
+
+    /** 网关只认 `Authorization: Bearer`（除 /events 外不接受 ?token=），播放器要显式带上 */
+    fun authHeaders(): Map<String, String> {
+        val token = prefs.authToken.trim()
+        return if (token.isEmpty()) emptyMap() else mapOf("Authorization" to "Bearer $token")
+    }
+
+    /**
+     * Word（.docx）预览：GET /api/files/<路径>?type=preview
+     *
+     * pi-web 在服务端用 mammoth 把 docx 转成整页 HTML（图片内联为 data URI，
+     * `DOCX_PREVIEW_MAX_BYTES = 10MB` 上限），前端只是把它塞进 <iframe>。
+     * 手机端复用同一个接口，拿到的就是现成的 HTML 字符串。
+     */
+    suspend fun getFilePreviewHtml(absPath: String): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder()
-                .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=read")
+                .url(fileApiUrl(absPath, "preview"))
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
-                if (!resp.isSuccessful || root == null) {
-                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
-                    return@withContext Result.failure(IOException(err))
+                val body = resp.body?.string() ?: ""
+                if (!resp.isSuccessful) {
+                    val err = runCatching {
+                        JsonParser.parseString(body).asJsonObject.get("error")?.asString
+                    }.getOrNull()
+                    return@withContext Result.failure(IOException(err ?: "HTTP ${resp.code}"))
                 }
-                Result.success(root.get("content")?.takeIf { !it.isJsonNull }?.asString ?: "")
+                Result.success(body)
             }
         } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 把远端文件流式落到应用缓存目录，用于「用其他应用打开」（WPS / 系统 PDF 阅读器）。
+     * 外部阅读器需要完整的本地文件，所以这里不做 256KB 分块；超过上限则直接报错。
+     */
+    suspend fun downloadFileToCache(
+        absPath: String,
+        maxBytes: Long = 128L * 1024 * 1024
+    ): Result<File> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val name = absPath.replace('\\', '/').substringAfterLast('/').ifBlank { "file" }
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        val dir = File(prefs.cacheDir, "opened")
+        if (!dir.exists() && !dir.mkdirs()) {
+            return@withContext Result.failure(IOException("无法创建缓存目录"))
+        }
+        val target = File(dir, name)
+        try {
+            val req = Request.Builder().url(fileApiUrl(absPath, "download")).get().build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("下载失败 (${resp.code})"))
+                }
+                val body = resp.body ?: return@withContext Result.failure(IOException("响应为空"))
+                if (body.contentLength() > maxBytes) {
+                    return@withContext Result.failure(IOException("文件过大，暂不支持外部打开"))
+                }
+                body.byteStream().use { input ->
+                    target.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+                            total += read
+                            if (total > maxBytes) throw IOException("文件过大，暂不支持外部打开")
+                            output.write(buffer, 0, read)
+                        }
+                    }
+                }
+            }
+            Result.success(target)
+        } catch (e: Exception) {
+            runCatching { target.delete() }
             Result.failure(e)
         }
     }

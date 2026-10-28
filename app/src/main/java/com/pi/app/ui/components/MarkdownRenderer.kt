@@ -23,7 +23,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -365,7 +367,13 @@ internal fun splitTopLevelMarkdownBlocks(markdown: String): List<String> {
 fun MarkdownRenderer(
     content: String,
     modifier: Modifier = Modifier,
-    isUser: Boolean = false
+    isUser: Boolean = false,
+    /**
+     * 链接点击回调：由调用方决定「本地文件 → 打开预览 / 网页 → 浏览器」。
+     * 复刻 pi-web MarkdownBody 的 `onOpenFile`：链接在 pi-web 里不是跳转，而是拦下来开预览。
+     * 传 null 时链接只做样式（保持旧行为），设置面板等场景不需要可点。
+     */
+    onOpenLink: ((href: String) -> Unit)? = null
 ) {
     if (content.isBlank()) return
 
@@ -384,7 +392,7 @@ fun MarkdownRenderer(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             blocks.forEach { block ->
-                MarkdownBlock(block, isUser)
+                MarkdownBlock(block, isUser, onOpenLink)
             }
         }
     }
@@ -392,17 +400,26 @@ fun MarkdownRenderer(
 
 /** 一个顶层块。只在此块文本变化时重解析，流式输出时其余块命中缓存。 */
 @Composable
-private fun MarkdownBlock(markdown: String, isUser: Boolean) {
+private fun MarkdownBlock(
+    markdown: String,
+    isUser: Boolean,
+    onOpenLink: ((String) -> Unit)? = null
+) {
+    // 解析结果与回调无关，链接点击在渲染时注入，所以 remember 的 key 里不放 onOpenLink。
     val document = remember(markdown) { MARKDOWN_PARSER.parse(markdown) }
     var childNode = document.firstChild
     while (childNode != null) {
-        RenderAstBlockNode(node = childNode, isUser = isUser)
+        RenderAstBlockNode(node = childNode, isUser = isUser, onOpenLink = onOpenLink)
         childNode = childNode.next
     }
 }
 
 @Composable
-private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
+private fun RenderAstBlockNode(
+    node: Node,
+    isUser: Boolean,
+    onOpenLink: ((String) -> Unit)? = null
+) {
     val theme = LocalAppTheme.current
 
     when (node) {
@@ -413,7 +430,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                 3 -> 14.sp
                 else -> 13.sp
             }
-            val annotated = buildInlineAnnotatedString(node, isUser)
+            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -441,7 +458,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
 
         is Paragraph -> {
             val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
-            val annotated = buildInlineAnnotatedString(node, isUser)
+            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink)
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
                 MathFormulaBlockCard(formula = rawTrimmed.removeSurrounding("$$").trim())
@@ -484,9 +501,15 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
         is FencedCodeBlock -> {
             val lang = (node.info ?: "").trim().lowercase(Locale.ROOT)
             val codeText = node.literal.trimEnd()
+            // SVG 可能是 ```svg、也可能是 ```html / ```xml / 无语言标记的贴图，
+            // 甚至带 `<?xml ...?>` 头（`.svg` 文件本体就是这样）。这些都应该画出来，
+            // 而不是当成一段源码展示。
+            val looksLikeSvgMarkup = codeText.contains("<svg", ignoreCase = true) &&
+                codeText.contains("</svg>", ignoreCase = true)
             when {
                 lang in listOf("svg", "xml+svg") ||
-                    (codeText.trimStart().startsWith("<svg", ignoreCase = true) && codeText.contains("</svg>", ignoreCase = true)) -> {
+                    (codeText.trimStart().startsWith("<svg", ignoreCase = true) && looksLikeSvgMarkup) ||
+                    (looksLikeSvgMarkup && lang in listOf("", "html", "htm", "xml")) -> {
                     val svgAttachment = remember(codeText) {
                         listOf(
                             MediaAttachment(
@@ -523,7 +546,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
         }
 
         is TableBlock -> {
-            AstTableCard(tableNode = node, isUser = isUser)
+            AstTableCard(tableNode = node, isUser = isUser, onOpenLink = onOpenLink)
         }
 
         is ThematicBreak -> {
@@ -601,7 +624,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             var quoteChild = node.firstChild
                             while (quoteChild != null) {
-                                RenderAstBlockNode(node = quoteChild, isUser = isUser)
+                                RenderAstBlockNode(node = quoteChild, isUser = isUser, onOpenLink = onOpenLink)
                                 quoteChild = quoteChild.next
                             }
                         }
@@ -652,7 +675,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                             ) {
                                 var itemChild = item.firstChild
                                 while (itemChild != null) {
-                                    RenderAstBlockNode(node = itemChild, isUser = isUser)
+                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = onOpenLink)
                                     itemChild = itemChild.next
                                 }
                             }
@@ -696,7 +719,7 @@ private fun RenderAstBlockNode(node: Node, isUser: Boolean) {
                             ) {
                                 var itemChild = item.firstChild
                                 while (itemChild != null) {
-                                    RenderAstBlockNode(node = itemChild, isUser = isUser)
+                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = onOpenLink)
                                     itemChild = itemChild.next
                                 }
                             }
@@ -782,9 +805,13 @@ private fun extractInlineMediaFromNode(parentNode: Node): List<MediaAttachment> 
     return list
 }
 
-private fun buildInlineAnnotatedString(parentNode: Node, isUser: Boolean): AnnotatedString {
+private fun buildInlineAnnotatedString(
+    parentNode: Node,
+    isUser: Boolean,
+    onOpenLink: ((String) -> Unit)? = null
+): AnnotatedString {
     val initial = buildAnnotatedString {
-        appendInlineChildren(parentNode, this, isUser)
+        appendInlineChildren(parentNode, this, isUser, onOpenLink)
     }
     return fixUnrenderedBoldInAnnotatedString(initial)
 }
@@ -819,7 +846,12 @@ private fun fixUnrenderedBoldInAnnotatedString(source: AnnotatedString): Annotat
     }
 }
 
-private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder, isUser: Boolean) {
+private fun appendInlineChildren(
+    parent: Node,
+    builder: AnnotatedString.Builder,
+    isUser: Boolean,
+    onOpenLink: ((String) -> Unit)? = null
+) {
     var child = parent.firstChild
     var isFirstChild = true
     while (child != null) {
@@ -834,17 +866,17 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
             }
             is StrongEmphasis -> {
                 builder.pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                appendInlineChildren(child, builder, isUser)
+                appendInlineChildren(child, builder, isUser, onOpenLink)
                 builder.pop()
             }
             is Emphasis -> {
                 builder.pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                appendInlineChildren(child, builder, isUser)
+                appendInlineChildren(child, builder, isUser, onOpenLink)
                 builder.pop()
             }
             is Strikethrough -> {
                 builder.pushStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-                appendInlineChildren(child, builder, isUser)
+                appendInlineChildren(child, builder, isUser, onOpenLink)
                 builder.pop()
             }
             is Code -> {
@@ -864,14 +896,34 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
                 builder.pop()
             }
             is Link -> {
-                builder.pushStyle(
-                    SpanStyle(
-                        color = Color(0xFF3B82F6),
-                        fontWeight = FontWeight.Medium,
-                        textDecoration = TextDecoration.Underline
-                    )
+                val href = child.destination?.trim().orEmpty()
+                val linkStyle = SpanStyle(
+                    color = Color(0xFF3B82F6),
+                    fontWeight = FontWeight.Medium,
+                    textDecoration = TextDecoration.Underline
                 )
-                appendInlineChildren(child, builder, isUser)
+                val linkHandler = onOpenLink
+                builder.pushStyle(linkStyle)
+                if (linkHandler != null && href.isNotBlank()) {
+                    // 对标 pi-web MarkdownBody 的 <a onClick>：链接不跳转，而是拦下来开预览。
+                    // 用 AnnotatedString 上的 LinkAnnotation（Compose 1.7 的官方链接 API，
+                    // 文字自带点击命中与无障碍「链接」语义），范围用 addLink 显式标出。
+                    val linkStart = builder.length
+                    appendInlineChildren(child, builder, isUser, onOpenLink)
+                    if (builder.length > linkStart) {
+                        builder.addLink(
+                            LinkAnnotation.Clickable(
+                                tag = href,
+                                styles = TextLinkStyles(style = linkStyle),
+                                linkInteractionListener = { linkHandler(href) }
+                            ),
+                            start = linkStart,
+                            end = builder.length
+                        )
+                    }
+                } else {
+                    appendInlineChildren(child, builder, isUser, onOpenLink)
+                }
                 builder.pop()
             }
             is MdImage -> {
@@ -879,7 +931,7 @@ private fun appendInlineChildren(parent: Node, builder: AnnotatedString.Builder,
             }
             is SoftLineBreak -> builder.append(" ")
             is HardLineBreak -> builder.append("\n")
-            else -> appendInlineChildren(child, builder, isUser)
+            else -> appendInlineChildren(child, builder, isUser, onOpenLink)
         }
         isFirstChild = false
         child = child.next
@@ -1676,7 +1728,11 @@ private fun DiffCodeBlockCard(code: String, language: String) {
  * CommonMark GFM 结构化运维表格卡片
  */
 @Composable
-private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
+private fun AstTableCard(
+    tableNode: TableBlock,
+    isUser: Boolean,
+    onOpenLink: ((String) -> Unit)? = null
+) {
     val theme = LocalAppTheme.current
 
     val headerCells = mutableListOf<AnnotatedString>()
@@ -1692,7 +1748,7 @@ private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
                         var cellNode = rowNode.firstChild
                         while (cellNode != null) {
                             if (cellNode is TableCell) {
-                                headerCells.add(buildInlineAnnotatedString(cellNode, isUser = false))
+                                headerCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink))
                             }
                             cellNode = cellNode.next
                         }
@@ -1709,7 +1765,7 @@ private fun AstTableCard(tableNode: TableBlock, isUser: Boolean) {
                         var cellNode = rowNode.firstChild
                         while (cellNode != null) {
                             if (cellNode is TableCell) {
-                                rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false))
+                                rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink))
                             }
                             cellNode = cellNode.next
                         }

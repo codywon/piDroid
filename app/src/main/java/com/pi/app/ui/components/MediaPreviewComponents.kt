@@ -498,7 +498,9 @@ fun SvgPreviewCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 120.dp, max = 260.dp)
+                        // pi 画的流程图往往比插图高：给到 300dp（点开还能全屏缩放），
+                        // 否则 SVG 会被 CSS 的 max-height 压成一条窄带看不清文字
+                        .heightIn(min = 120.dp, max = 300.dp)
                         .clickable { onOpenFullscreen() }
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
@@ -508,7 +510,7 @@ fun SvgPreviewCard(
                         enableZoom = false,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(200.dp)
+                            .height(260.dp)
                     )
                 }
             } else {
@@ -527,7 +529,7 @@ fun SvgPreviewCard(
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun SvgWebViewCanvas(
+internal fun SvgWebViewCanvas(
     svgContent: String,
     enableZoom: Boolean,
     modifier: Modifier = Modifier
