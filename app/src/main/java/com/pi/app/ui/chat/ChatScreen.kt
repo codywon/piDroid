@@ -3270,7 +3270,7 @@ private val VIDEO_FILE_EXTS = setOf("mp4", "m4v", "mov", "webm", "mkv", "3gp", "
  * `.svg` 故意不算图片 —— BitmapFactory 解不了矢量图，当文本看源码比「解码失败」有用。
  */
 private fun artifactKindOf(absPath: String, mime: String): ArtifactKind {
-    val ext = FileLinks.displayName(absPath).substringAfterLast('.', '').lowercase(Locale.ROOT)
+    val ext = FileLinks.displayName(absPath).substringAfterLast('.', "").lowercase(Locale.ROOT)
     val lowerMime = mime.lowercase(Locale.ROOT)
     return when {
         // SVG 是矢量图，必须交给渲染器而不是 BitmapFactory（那只会得到“解码失败”）
