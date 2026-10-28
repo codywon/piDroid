@@ -91,6 +91,9 @@ node gateway.js
 > ⚠️ Quick Tunnel 每次重启都会换一个随机域名，二维码随之失效。
 > 想做到「扫码一次、长期可用」，请按 [docs/PERMANENT_TUNNEL.md](docs/PERMANENT_TUNNEL.md)
 > 配置固定域名的 Cloudflare Named Tunnel。
+>
+> 🔐 安全加固路线（Access + Service Token、Tailscale、WAF）与取舍记录见
+> [docs/SECURITY_UPGRADES.md](docs/SECURITY_UPGRADES.md)。
 
 ---
 

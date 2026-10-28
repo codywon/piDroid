@@ -129,14 +129,52 @@ Token 保持不变即可，不必重新扫码。后续若需要，可以在 App 
 
 ## 安全建议（对应「外网是否容易被入侵」）
 
-1. **优先用命名隧道 + Cloudflare Access**：在 Cloudflare Zero Trust 里给
-   `pi.example.com` 建一个 Access 应用，加一条邮箱 OTP / Google 登录策略。
-   这样外网访问者连「输入 Token」的机会都没有，要先进过 SSO，Token 成为第二道锁。
-   免费额度 50 用户，个人完全够用。
-2. **不要在公共 WiFi 下用局域网模式**：网关的局域网入口是明文 HTTP，同一网络里的
+1. **Cloudflare Access 目前会挡住手机 App**（重要）：Access 的 OTP/SSO 走的是浏览器
+   登录 Cookie 流程，而 App 的 `PiApiClient` / `PiSseClient` 是 OkHttp 直连、只带
+   `Authorization: Bearer <token>`。开了 Access 后 App 会收到 302 / 登录页而直接失败。
+   要用 Access，需要先给 App 加 **Service Token** 支持（请求头带
+   `CF-Access-Client-Id` / `CF-Access-Client-Secret`），这是 App 侧改造，当前版本没有。
+2. **零公网暴露的替代方案：Tailscale Serve**（App 无需改造）。
+   手机和 PC 登录同一个 tailnet 后：
+   ```bat
+   winget install Tailscale.Tailscale
+   tailscale up
+   tailscale serve --bg 4100     :: 仅 tailnet 内可达的 HTTPS 地址
+   ```
+   得到固定的 `https://<主机名>.<你的tailnet>.ts.net`，只有你自己的设备能访问，
+   外网扫描器连端口都看不到，Token 仍需正确。注意不要用 `tailscale funnel`
+   （funnel 是公网发布，serve 才是仅内网）。
+3. **不要在公共 WiFi 下用局域网模式**：网关的局域网入口是明文 HTTP，同一网络里的
    其他人做 ARP 欺骗/抓包就能拿到 Token。外出请走 HTTPS 隧道。
-3. **Token 等同于本机命令行权限**：网关背后是 `pi-web`，它能执行 shell 命令、读写
+4. **Token 等同于本机命令行权限**：网关背后是 `pi-web`，它能执行 shell 命令、读写
    任意文件。请按「SSH 私钥」的级别对待 Token，不要放进聊天记录、截图或 Issue。
-4. **只在自己信任的网络里开隧道**：Quick Tunnel 的地址虽然是随机生成，但仍是公网可达；
-   不想被任何人扫到时把隧道关掉，或者只开命名隧道 + Access。
-5. **定期轮换**：怀疑泄露时删除 `server/.token` 并重启网关，旧 Token 立刻失效。
+5. **用完就关**：外网隧道是最直接的暴露面。不需要远程访问时直接关掉
+   `start-server-tunnel.bat` 的窗口，比任何加固都有效。
+6. **定期轮换**：怀疑泄露时删除 `server/.token` 并重启网关，旧 Token 立刻失效。
+
+> 以上加固的完整升级方案（Cloudflare Access + Service Token 的无感接法、Tailscale Serve、
+> WAF 收紧、App 侧改动清单与回滚步骤）见 **[SECURITY_UPGRADES.md](SECURITY_UPGRADES.md)**。
+> 当前决策：**先用 Token 方案，Access 待需要时再上**。
+
+---
+
+## 本机当前部署记录（2026-10-28 配置）
+
+| 项目 | 值 |
+| --- | --- |
+| 固定公网地址 | `https://pi.codywon.top` |
+| Cloudflare 区域 | `codywon.top`（zone `8b8150ea…`，Free） |
+| 隧道名 / ID | `pi` / `8e192463-4636-4ec1-9664-e9cea401ef9a` |
+| DNS | `pi.codywon.top` → CNAME → 上述隧道（显式记录，优先于 `*.codywon.top` 泛解析） |
+| 配置文件 | `C:\Users\29092\.cloudflared\config.yml`（ingress → `http://127.0.0.1:4100`） |
+| 用户环境变量 | `PI_TUNNEL_NAME=pi`、`PI_TUNNEL_HOSTNAME=pi.codywon.top` |
+
+验证方式（应分别返回 401 / 200）：
+
+```bat
+curl -i https://pi.codywon.top/api/ping
+curl -i -H "Authorization: Bearer <server/.token 里的值>" https://pi.codywon.top/api/ping
+```
+
+改地址只需改三处：`config.yml` 的 `hostname`、`cloudflared tunnel route dns`、
+`PI_TUNNEL_HOSTNAME` 环境变量。

@@ -230,10 +230,20 @@ async function main() {
   // 步骤 B: 检查伴侣网关是否已在运行
   const isGatewayRunning = await checkGatewayRunning(gatewayPort);
   if (isGatewayRunning) {
+    // 网关由其他窗口托管。若已配置固定域名隧道，直接展示公网地址，
+    // 避免用户看到局域网 IP 误以为外网不可用。
+    const stableHost = (process.env.PI_TUNNEL_HOSTNAME || '')
+      .trim()
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/+$/, '');
+    const connectHost = stableHost
+      ? `https://${stableHost}`
+      : `http://${gateway.getLocalIp()}:${gatewayPort}`;
     console.log(`[2/2] ✓ 检测到伴侣安全网关已在端口 ${gatewayPort} 运行中，直接呈现连接凭据：`);
-    const localIp = gateway.getLocalIp();
-    const defaultHost = `http://${localIp}:${gatewayPort}`;
-    gateway.printBannerAndQr(defaultHost, true);
+    gateway.printBannerAndQr(connectHost, true);
+    if (stableHost && autoTunnel) {
+      console.log('💡 已有网关进程不负责隧道进程。若公网地址打不开，请关掉旧网关窗口后重新运行本脚本。');
+    }
     console.log('💡 提示: 网关服务已在后台常驻。随时按 Ctrl+C 可退出此查看窗口。\n');
     // 保持挂起，等待用户扫码或按 Ctrl+C
     if (process.stdin.isTTY) {
