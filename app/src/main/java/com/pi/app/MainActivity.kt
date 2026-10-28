@@ -1561,17 +1561,36 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     skills = skills,
+                    currentProject = currentProject,
                     onToggleSkill = { skill, enabled ->
-                        skills = skills.map { if (it.name == skill.name) it.copy(enabled = enabled) else it }
+                        skills = skills.map { if (it.name == skill.name) it.copy(enabled = enabled, disableModelInvocation = !enabled) else it }
                         lifecycleScope.launch {
                             apiClient.toggleSkillOnServer(skill.filePath, disableModelInvocation = !enabled).onSuccess {
                                 Toast.makeText(
                                     this@MainActivity,
-                                    if (enabled) "已启用技能: ${skill.name}" else "已禁用技能: ${skill.name}",
+                                    if (enabled) "已开启模型调用: ${skill.name}" else "已设为对模型隐藏(仍可手动调用): ${skill.name}",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }
+                    },
+                    onToggleSkillsBatch = { skillList, enabled ->
+                        val filePaths = skillList.mapNotNull { it.filePath }
+                        val names = skillList.map { it.name }.toSet()
+                        skills = skills.map { if (names.contains(it.name)) it.copy(enabled = enabled, disableModelInvocation = !enabled) else it }
+                        lifecycleScope.launch {
+                            apiClient.toggleSkillsBatchOnServer(filePaths, disableModelInvocation = !enabled).onSuccess {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (enabled) "已批量开启 ${skillList.size} 项技能" else "已批量对模型隐藏 ${skillList.size} 项技能",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                loadCapabilitiesAndModels()
+                            }
+                        }
+                    },
+                    onRefreshSkills = {
+                        loadCapabilitiesAndModels()
                     },
                     onUpdateSkillAlias = { name, alias ->
                         prefs.saveSkillAlias(name, alias)

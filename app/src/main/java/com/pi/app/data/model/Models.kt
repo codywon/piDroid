@@ -418,6 +418,52 @@ data class QueuedMessage(
 /**
  * 技能 (Skills)
  */
+data class SkillInstallInfo(
+    @SerializedName("package") val `package`: String? = null,
+    @SerializedName("scope") val scope: String? = null,
+    @SerializedName("source") val source: String? = null,
+    @SerializedName("sourceType") val sourceType: String? = null,
+    @SerializedName("skillsShUrl") val skillsShUrl: String? = null,
+    @SerializedName("skillPath") val skillPath: String? = null,
+    @SerializedName("ref") val ref: String? = null,
+    @SerializedName("versionHash") val versionHash: String? = null,
+    @SerializedName("canCheckForUpdates") val canCheckForUpdates: Boolean = false
+)
+
+data class SkillSourceInfo(
+    @SerializedName("path") val path: String? = null,
+    @SerializedName("source") val source: String? = null,
+    @SerializedName("scope") val scope: String? = null,
+    @SerializedName("origin") val origin: String? = null,
+    @SerializedName("baseDir") val baseDir: String? = null
+)
+
+data class SkillSearchResult(
+    @SerializedName("package") val `package`: String,
+    @SerializedName("installs") val installs: String = "",
+    @SerializedName("url") val url: String = ""
+) {
+    val skillName: String
+        get() {
+            val atIdx = `package`.lastIndexOf('@')
+            return if (atIdx >= 0) `package`.substring(atIdx + 1) else `package`
+        }
+    val repoName: String
+        get() {
+            val atIdx = `package`.lastIndexOf('@')
+            return if (atIdx >= 0) `package`.substring(0, atIdx) else ""
+        }
+}
+
+data class SkillUpdateInfo(
+    @SerializedName("package") val `package`: String,
+    @SerializedName("scope") val scope: String = "global",
+    @SerializedName("state") val state: String = "up-to-date", // "up-to-date", "update-available", "error", "unsupported"
+    @SerializedName("currentVersion") val currentVersion: String? = null,
+    @SerializedName("latestVersion") val latestVersion: String? = null,
+    @SerializedName("message") val message: String? = null
+)
+
 data class SkillInfo(
     @SerializedName("name") val name: String,
     @SerializedName("description") val description: String? = null,
@@ -426,11 +472,32 @@ data class SkillInfo(
     @SerializedName("baseDir") val baseDir: String? = null,
     @SerializedName("enabled") var enabled: Boolean = true,
     @SerializedName("category") val category: String? = "全局技能",
-    @SerializedName("disableModelInvocation") val disableModelInvocation: Boolean = false,
-    @SerializedName("content") val content: String? = null
+    @SerializedName("disableModelInvocation") var disableModelInvocation: Boolean = false,
+    @SerializedName("content") val content: String? = null,
+    @SerializedName("scope") val scope: String? = "global",
+    @SerializedName("install") val install: SkillInstallInfo? = null,
+    @SerializedName("sourceInfo") val sourceInfo: SkillSourceInfo? = null
 ) {
     val displayTitle: String
         get() = alias?.takeIf { it.isNotBlank() } ?: name
+
+    val isProjectScope: Boolean
+        get() = scope.equals("project", true) || category?.contains("项目") == true || category?.contains("工作区") == true
+
+    val isGlobalScope: Boolean
+        get() = !isProjectScope
+
+    val isVisibleToModel: Boolean
+        get() = !disableModelInvocation && enabled
+
+    val skillsShUrl: String?
+        get() = install?.skillsShUrl
+
+    val versionShort: String?
+        get() = install?.versionHash?.take(8)
+
+    val canCheckForUpdates: Boolean
+        get() = install?.canCheckForUpdates == true
 }
 
 /**

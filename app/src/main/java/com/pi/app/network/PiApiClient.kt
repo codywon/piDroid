@@ -2449,9 +2449,14 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun sanitizeCwd(cwd: String): String {
         val trimmed = cwd.trim()
-        if (trimmed.isBlank() || trimmed == "默认工作区" || trimmed == "全部工作区") return ""
-        if (!trimmed.contains('/') && !trimmed.contains('\\')) return ""
-        return trimmed
+        if (trimmed.isNotBlank() && trimmed != "默认工作区" && trimmed != "全部工作区" && (trimmed.contains('/') || trimmed.contains('\\'))) {
+            return trimmed
+        }
+        val last = prefs.lastSelectedCwd.trim()
+        if (last.isNotBlank() && last != "默认工作区" && last != "全部工作区" && (last.contains('/') || last.contains('\\'))) {
+            return last
+        }
+        return ""
     }
 
     // ==========================================
@@ -2512,11 +2517,32 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val disabled = obj.get("disableModelInvocation")?.takeIf { !it.isJsonNull }?.asBoolean
                             ?: obj.get("disabled")?.takeIf { !it.isJsonNull }?.asBoolean
                             ?: false
-                        val scopeStr = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        val isGlobal = scopeStr.equals("global", true) ||
-                            scopeStr.equals("user", true) ||
-                            resolvedFilePath?.contains(".pi", true) == true ||
-                            resolvedFilePath?.contains("global", true) == true
+
+                        val installObj = obj.get("install")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val install = installObj?.let { runCatching { gson.fromJson(it, SkillInstallInfo::class.java) }.getOrNull() }
+
+                        val sourceInfoObj = obj.get("sourceInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val sourceInfo = sourceInfoObj?.let { runCatching { gson.fromJson(it, SkillSourceInfo::class.java) }.getOrNull() }
+
+                        val scopeStr = install?.scope?.takeIf { it.isNotBlank() }
+                            ?: obj.get("scope")?.takeIf { !it.isJsonNull }?.asString
+                            ?: sourceInfo?.scope
+                            ?: ""
+
+                        val normPath = (resolvedFilePath ?: "").replace('\\', '/').lowercase()
+                        val normCwd = validCwd.replace('\\', '/').lowercase().trimEnd('/')
+
+                        val isProject = when {
+                            scopeStr.equals("project", true) -> true
+                            scopeStr.equals("workspace", true) -> true
+                            sourceInfo?.source.equals("project", true) -> true
+                            scopeStr.equals("global", true) || scopeStr.equals("user", true) -> false
+                            normCwd.isNotBlank() && normPath.startsWith(normCwd) -> true
+                            normPath.contains("/.pi/skills/") || (normPath.contains("/skills/") && !normPath.contains("/.pi/agent/") && !normPath.contains("/.agents/")) -> true
+                            else -> false
+                        }
+                        val resolvedScope = if (isProject) "project" else "global"
+
                         list.add(
                             SkillInfo(
                                 name = name,
@@ -2524,9 +2550,12 @@ class PiApiClient(private val prefs: AppPreferences) {
                                 filePath = resolvedFilePath,
                                 baseDir = baseDir,
                                 enabled = !disabled,
-                                category = if (isGlobal) "全局技能" else "工作区技能",
+                                category = if (isProject) "项目技能" else "全局技能",
                                 disableModelInvocation = disabled,
-                                content = inlineContent
+                                content = inlineContent,
+                                scope = resolvedScope,
+                                install = install,
+                                sourceInfo = sourceInfo
                             )
                         )
                     }
@@ -3265,6 +3294,30 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
+     * 批量切换技能启用/禁用状态 (PATCH /api/skills)
+     * 支持项目或全局技能一键批量对模型可见/隐藏
+     */
+    suspend fun toggleSkillsBatchOnServer(filePaths: List<String>, disableModelInvocation: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || filePaths.isEmpty()) return@withContext Result.success(true)
+        try {
+            val payload = mapOf(
+                "filePaths" to filePaths,
+                "disableModelInvocation" to disableModelInvocation
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/skills")
+                .patch(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                Result.success(resp.isSuccessful)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * 读取技能完整 SKILL.md 文档内容 (多策略兼容 pi-web /api/skills/content 与伴侣网关 + 本地持久化覆盖)
      */
     suspend fun getSkillContent(skill: SkillInfo, cwd: String = ""): Result<String> = withContext(Dispatchers.IO) {
@@ -3371,6 +3424,87 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
+     * 搜索 skills.sh 技能市场所有技能 (POST /api/skills/search)
+     */
+    suspend fun searchSkills(query: String): Result<List<SkillSearchResult>> = withContext(Dispatchers.IO) {
+        val q = query.trim()
+        if (q.isBlank()) return@withContext Result.success(emptyList())
+        val baseUrl = prefs.serverUrl
+
+        // 1. 优先通过网关与 pi-web 的 /api/skills/search 代理搜索
+        if (baseUrl.isNotBlank()) {
+            try {
+                val payload = mapOf("query" to q)
+                val req = Request.Builder()
+                    .url("$baseUrl/api/skills/search")
+                    .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                    .build()
+                val parsed = client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return@use null
+                    val body = resp.body?.string() ?: return@use null
+                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
+                    val resultsArr = root.getAsJsonArray("results") ?: return@use null
+                    val list = mutableListOf<SkillSearchResult>()
+                    for (el in resultsArr) {
+                        if (!el.isJsonObject) continue
+                        val obj = el.asJsonObject
+                        val pkg = obj.get("package")?.takeIf { !it.isJsonNull }?.asString ?: continue
+                        val installs = obj.get("installs")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val url = obj.get("url")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        list.add(SkillSearchResult(`package` = pkg, installs = installs, url = url))
+                    }
+                    list
+                }
+                if (!parsed.isNullOrEmpty()) {
+                    return@withContext Result.success(parsed)
+                }
+            } catch (e: Exception) {
+                Log.w("PiApiClient", "本地网关技能搜索失败，尝试直连 skills.sh: ${e.message}")
+            }
+        }
+
+        // 2. 兜底高可用：直接请求官方 skills.sh 开放 API
+        try {
+            val encQ = URLEncoder.encode(q, "UTF-8")
+            val req = Request.Builder()
+                .url("https://skills.sh/api/search?q=$encQ&limit=50")
+                .header("User-Agent", "piDroid")
+                .get()
+                .build()
+            val list = client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use null
+                val body = resp.body?.string() ?: return@use null
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
+                val skillsArr = root.getAsJsonArray("skills") ?: return@use null
+                val resList = mutableListOf<SkillSearchResult>()
+                for (el in skillsArr) {
+                    if (!el.isJsonObject) continue
+                    val obj = el.asJsonObject
+                    val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                    val source = obj.get("source")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                    val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                    val repo = source ?: id ?: continue
+                    val installsNum = obj.get("installs")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 0L
+                    val installsStr = when {
+                        installsNum >= 1_000_000 -> "${String.format("%.1f", installsNum / 1_000_000.0).replace(".0", "")}M installs"
+                        installsNum >= 1_000 -> "${String.format("%.1f", installsNum / 1_000.0).replace(".0", "")}K installs"
+                        installsNum > 0 -> "$installsNum installs"
+                        else -> ""
+                    }
+                    val url = if (!id.isNullOrBlank()) "https://skills.sh/$id" else ""
+                    resList.add(SkillSearchResult(`package` = "$repo@$name", installs = installsStr, url = url))
+                }
+                resList
+            }
+            if (list != null) return@withContext Result.success(list)
+        } catch (e: Exception) {
+            Log.w("PiApiClient", "直连 skills.sh 失败: ${e.message}")
+        }
+
+        Result.success(emptyList())
+    }
+
+    /**
      * 安装新技能包 (POST /api/skills/install)
      */
     suspend fun installSkill(packageSource: String, scope: String = "global", cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -3380,15 +3514,95 @@ class PiApiClient(private val prefs: AppPreferences) {
             val payload = mapOf(
                 "package" to packageSource.trim(),
                 "scope" to scope,
-                "cwd" to cwd
+                "cwd" to sanitizeCwd(cwd)
             )
             val req = Request.Builder()
                 .url("$baseUrl/api/skills/install")
                 .post(gson.toJson(payload).toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { resp ->
-                if (resp.isSuccessful) Result.success(true)
-                else Result.failure(IOException("安装技能失败 (${resp.code})"))
+                val bodyStr = resp.body?.string() ?: ""
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    val errMsg = runCatching {
+                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "安装技能失败 (${resp.code})"
+                    Result.failure(IOException(errMsg))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 检查技能更新 (POST /api/skills/check)
+     */
+    suspend fun checkSkillUpdates(packageSource: String? = null, scope: String? = null, cwd: String = ""): Result<List<SkillUpdateInfo>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.success(emptyList())
+        try {
+            val payload = mutableMapOf<String, Any?>("cwd" to sanitizeCwd(cwd))
+            if (!packageSource.isNullOrBlank() && !scope.isNullOrBlank()) {
+                payload["package"] = packageSource
+                payload["scope"] = scope
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/skills/check")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            val list = client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) return@use emptyList<SkillUpdateInfo>()
+                val body = resp.body?.string() ?: return@use emptyList<SkillUpdateInfo>()
+                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use emptyList<SkillUpdateInfo>()
+                val arr = root.getAsJsonArray("updates") ?: return@use emptyList<SkillUpdateInfo>()
+                val resList = mutableListOf<SkillUpdateInfo>()
+                for (el in arr) {
+                    if (!el.isJsonObject) continue
+                    val obj = el.asJsonObject
+                    val pkg = obj.get("package")?.takeIf { !it.isJsonNull }?.asString ?: continue
+                    val sc = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: "global"
+                    val st = obj.get("state")?.takeIf { !it.isJsonNull }?.asString ?: "up-to-date"
+                    val cur = obj.get("currentVersion")?.takeIf { !it.isJsonNull }?.asString
+                    val lat = obj.get("latestVersion")?.takeIf { !it.isJsonNull }?.asString
+                    val msg = obj.get("message")?.takeIf { !it.isJsonNull }?.asString
+                    resList.add(SkillUpdateInfo(`package` = pkg, scope = sc, state = st, currentVersion = cur, latestVersion = lat, message = msg))
+                }
+                resList
+            }
+            Result.success(list)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 更新指定技能 (POST /api/skills/update)
+     */
+    suspend fun updateSkill(packageSource: String, scope: String = "global", cwd: String = ""): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = mapOf(
+                "package" to packageSource.trim(),
+                "scope" to scope,
+                "cwd" to sanitizeCwd(cwd)
+            )
+            val req = Request.Builder()
+                .url("$baseUrl/api/skills/update")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: ""
+                if (resp.isSuccessful) {
+                    Result.success(true)
+                } else {
+                    val errMsg = runCatching {
+                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                    }.getOrNull()?.takeIf { it.isNotBlank() } ?: "更新技能失败 (${resp.code})"
+                    Result.failure(IOException(errMsg))
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)

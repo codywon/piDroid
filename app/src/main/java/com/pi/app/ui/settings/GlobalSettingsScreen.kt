@@ -1,5 +1,7 @@
 package com.pi.app.ui.settings
 
+import android.content.Intent
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -72,11 +74,14 @@ fun GlobalSettingsScreen(
     onLoadModelsRawConfig: suspend () -> String? = { null },
     onSaveModelsRawConfig: (String) -> Unit = {},
     skills: List<SkillInfo>,
+    currentProject: String = "",
     onToggleSkill: (SkillInfo, Boolean) -> Unit,
+    onToggleSkillsBatch: (List<SkillInfo>, Boolean) -> Unit = { _, _ -> },
     onUpdateSkillAlias: (skillName: String, alias: String) -> Unit,
     onLoadSkillContent: suspend (SkillInfo) -> String? = { null },
     onSaveSkillContent: (SkillInfo, String) -> Unit = { _, _ -> },
     onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> },
+    onRefreshSkills: () -> Unit = {},
     plugins: List<PluginPackage>,
     onManagePlugin: (action: String, source: String, scope: String) -> Unit = { _, _, _ -> },
     onEditPlugin: (oldPkg: PluginPackage, newSource: String, newVersion: String, newDesc: String, newScope: String) -> Unit = { _, _, _, _, _ -> },
@@ -237,14 +242,17 @@ fun GlobalSettingsScreen(
                 }
                 1 -> GlobalSkillsTab(
                     skills = skills,
+                    currentProject = currentProject,
+                    apiClient = apiClient,
                     onToggleSkill = onToggleSkill,
+                    onToggleSkillsBatch = onToggleSkillsBatch,
                     onEditAlias = {
                         editingSkillAlias = it
                         aliasInput = it.alias ?: ""
                     },
                     onViewDetail = { skill ->
                         selectedSkillForDetail = skill
-                        isEditingSkillMd = true
+                        isEditingSkillMd = false
                         val initialMd = skill.content?.takeIf { it.isNotBlank() }
                             ?: buildString {
                                 appendLine("---")
@@ -268,7 +276,8 @@ fun GlobalSettingsScreen(
                             isLoadingSkillMd = false
                         }
                     },
-                    onInstallSkill = onInstallSkill
+                    onInstallSkill = onInstallSkill,
+                    onRefreshSkills = onRefreshSkills
                 )
                 2 -> GlobalMcpTab(
                     mcpConfig = mcpConfig,
@@ -390,6 +399,9 @@ fun GlobalSettingsScreen(
 
     // 技能说明与 SKILL.md 查看/在线编辑弹窗
     selectedSkillForDetail?.let { skill ->
+        val isProject = skill.isProjectScope
+        val isVisible = skill.isVisibleToModel
+
         AlertDialog(
             onDismissRequest = { selectedSkillForDetail = null },
             containerColor = theme.surfaceContainerLow,
@@ -400,7 +412,11 @@ fun GlobalSettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Icon(Icons.Default.Extension, contentDescription = null, tint = theme.primary)
+                        Icon(
+                            Icons.Default.Extension,
+                            contentDescription = null,
+                            tint = if (isVisible) Color(0xFF2EA043) else theme.textMuted
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
                             text = skill.displayTitle,
@@ -410,22 +426,22 @@ fun GlobalSettingsScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Spacer(modifier = Modifier.width(6.dp))
                         Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                            border = BorderStroke(1.dp, if (isEditingSkillMd) theme.primary else theme.outline),
-                            modifier = Modifier.clickable { isEditingSkillMd = true }
+                            shape = RoundedCornerShape(4.dp),
+                            color = if (isProject) Color(0xFF8250DF).copy(alpha = 0.18f) else Color(0xFF1F6FEB).copy(alpha = 0.18f),
+                            border = BorderStroke(0.5.dp, if (isProject) Color(0xFF8250DF) else Color(0xFF1F6FEB))
                         ) {
                             Text(
-                                text = "源码编辑 ✎",
-                                fontSize = 11.sp,
-                                fontWeight = if (isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isEditingSkillMd) theme.primary else theme.textSecondary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                                text = if (isProject) "项目" else "全局",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (isProject) Color(0xFFD2A8FF) else Color(0xFF58A6FF),
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
                             )
                         }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
                             color = if (!isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
@@ -440,6 +456,20 @@ fun GlobalSettingsScreen(
                                 modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
                             )
                         }
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (isEditingSkillMd) theme.primary else theme.outline),
+                            modifier = Modifier.clickable { isEditingSkillMd = true }
+                        ) {
+                            Text(
+                                text = "源码编辑 ✎",
+                                fontSize = 11.sp,
+                                fontWeight = if (isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isEditingSkillMd) theme.primary else theme.textSecondary,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
+                            )
+                        }
                     }
                 }
             },
@@ -448,22 +478,110 @@ fun GlobalSettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
+                    // 模型调用开关卡片（对应 pi-web 中在模型提示词中隐藏/可见开关）
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = if (isVisible) Color(0xFF2EA043).copy(alpha = 0.08f) else theme.surfaceContainer,
+                        border = BorderStroke(1.dp, if (isVisible) Color(0xFF2EA043).copy(alpha = 0.35f) else theme.outline)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (isVisible) "在模型提示词中可见" else "对模型隐藏",
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isVisible) Color(0xFF3FB950) else theme.textPrimary
+                                )
+                                Text(
+                                    text = if (isVisible) "模型可在系统提示词中发现并主动调用该技能" else "对模型隐藏，仍可在对话框手动输入 /${skill.name} 调用",
+                                    fontSize = 11.sp,
+                                    color = if (isVisible) theme.textSecondary else Color(0xFF8B949E)
+                                )
+                            }
+                            Switch(
+                                checked = isVisible,
+                                onCheckedChange = { checked ->
+                                    onToggleSkill(skill, checked)
+                                    selectedSkillForDetail = skill.copy(enabled = checked, disableModelInvocation = !checked)
+                                },
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = Color(0xFF2EA043),
+                                    checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                                    uncheckedThumbColor = theme.textMuted,
+                                    uncheckedTrackColor = theme.surfaceContainerHigh
+                                )
+                            )
+                        }
+                    }
+
+                    // 路径展示
                     val displayPath = skill.filePath?.takeIf { it.isNotBlank() }
                         ?: skill.baseDir?.takeIf { it.isNotBlank() }?.let { "${it.trimEnd('/', '\\')}/SKILL.md" }
-                        ?: "~/.pi/agent/skills/${skill.name}/SKILL.md"
+                        ?: if (isProject) "./.pi/skills/${skill.name}/SKILL.md" else "~/.pi/agent/skills/${skill.name}/SKILL.md"
                     Surface(
                         color = theme.surfaceContainer,
                         shape = RoundedCornerShape(6.dp),
                         border = BorderStroke(0.5.dp, theme.outline)
                     ) {
-                        Text(
-                            text = displayPath,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 10.5.sp,
-                            color = theme.textMuted,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "路径: $displayPath",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 10.5.sp,
+                                color = theme.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // skills.sh 来源与版本
+                    if (!skill.skillsShUrl.isNullOrBlank() || skill.versionShort != null) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(0.5.dp, theme.outline)
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                    Text("版本: ", fontSize = 11.sp, color = theme.textMuted)
+                                    Text(
+                                        skill.versionShort ?: "本地",
+                                        fontSize = 11.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = theme.textPrimary,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    skill.skillsShUrl?.let { url ->
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text(
+                                            text = "skills.sh ↗",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF58A6FF),
+                                            fontWeight = FontWeight.Bold,
+                                            modifier = Modifier.clickable {
+                                                runCatching {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     if (isLoadingSkillMd) {
@@ -1219,186 +1337,885 @@ fun GlobalModelsTab(
 }
 
 // ==========================================
-// Tab 2: 全局技能中心
+// Tab 2: 全局与项目技能中心 (复刻 pi-web 技能管理)
 // ==========================================
+enum class SkillSection {
+    INSTALLED,  // 已安装技能（分项目与全局分组，支持模型可见性开关）
+    ADD_SKILL   // 添加技能（搜索 skills.sh 技能市场并安装）
+}
+
 @Composable
 fun GlobalSkillsTab(
     skills: List<SkillInfo>,
+    currentProject: String = "",
+    apiClient: PiApiClient? = null,
     onToggleSkill: (SkillInfo, Boolean) -> Unit,
+    onToggleSkillsBatch: (List<SkillInfo>, Boolean) -> Unit = { _, _ -> },
     onEditAlias: (SkillInfo) -> Unit,
     onViewDetail: (SkillInfo) -> Unit,
-    onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> }
+    onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> },
+    onRefreshSkills: () -> Unit = {}
 ) {
     val theme = LocalAppTheme.current
-    var showInstallSkillDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    InfoTitle(
-                        title = "智能体技能包 (${skills.size} 项)",
-                        infoDescription = "全局与工作区技能包，点卡片编辑 SKILL.md",
-                        style = MaterialTheme.typography.titleMedium
-                    )
+    var currentSection by remember { mutableStateOf(SkillSection.INSTALLED) }
+    var addSkillTargetScope by remember { mutableStateOf("global") } // "global" | "project"
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<SkillSearchResult>>(emptyList()) }
+    var isSearching by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
+    var hasSearched by remember { mutableStateOf(false) }
+    var installingPackage by remember { mutableStateOf<String?>(null) }
+
+    // 技能版本更新检测状态
+    var updatesMap by remember { mutableStateOf<Map<String, SkillUpdateInfo>>(emptyMap()) }
+    var isCheckingUpdates by remember { mutableStateOf(false) }
+    var updatingPackage by remember { mutableStateOf<String?>(null) }
+
+    fun doSearch(queryText: String = searchQuery) {
+        val q = queryText.trim()
+        if (q.isBlank() || isSearching) return
+        isSearching = true
+        searchError = null
+        hasSearched = true
+        coroutineScope.launch {
+            if (apiClient != null) {
+                apiClient.searchSkills(q).onSuccess { list ->
+                    searchResults = list
+                    isSearching = false
+                }.onFailure { err ->
+                    searchError = err.message ?: "搜索失败"
+                    isSearching = false
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = { showInstallSkillDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("安装技能", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
-                }
+            } else {
+                isSearching = false
+                searchError = "未连接后端网关"
             }
-            Spacer(modifier = Modifier.height(4.dp))
         }
+    }
 
-        items(skills, key = { it.name }) { skill ->
+    fun doCheckUpdates() {
+        if (isCheckingUpdates || apiClient == null) return
+        isCheckingUpdates = true
+        coroutineScope.launch {
+            apiClient.checkSkillUpdates(cwd = currentProject).onSuccess { list ->
+                val map = list.associateBy { it.package }
+                updatesMap = map
+                isCheckingUpdates = false
+                val updateCount = list.count { it.state == "update-available" }
+                Toast.makeText(
+                    context,
+                    if (updateCount > 0) "发现 $updateCount 项技能可更新" else "所有技能均为最新版本",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }.onFailure { err ->
+                isCheckingUpdates = false
+                Toast.makeText(context, "检查更新失败: ${err.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun doUpdateSkill(skill: SkillInfo) {
+        val pkg = skill.install?.package ?: skill.name
+        val scope = skill.scope ?: if (skill.isProjectScope) "project" else "global"
+        if (updatingPackage != null || apiClient == null) return
+        updatingPackage = pkg
+        coroutineScope.launch {
+            Toast.makeText(context, "正在更新技能: ${skill.name}...", Toast.LENGTH_SHORT).show()
+            apiClient.updateSkill(pkg, scope, currentProject).onSuccess {
+                Toast.makeText(context, "已成功更新技能: ${skill.name}", Toast.LENGTH_SHORT).show()
+                updatingPackage = null
+                onRefreshSkills()
+            }.onFailure { err ->
+                updatingPackage = null
+                Toast.makeText(context, "更新失败: ${err.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    val projectSkills = remember(skills) { skills.filter { it.isProjectScope } }
+    val globalSkills = remember(skills) { skills.filter { it.isGlobalScope } }
+
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+        // 顶部模式切换 Pills: [ 📦 技能列表 (11) ] [ ➕ 添加技能 (skills.sh) ]
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
+                shape = RoundedCornerShape(8.dp),
+                color = if (currentSection == SkillSection.INSTALLED) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                border = BorderStroke(1.dp, if (currentSection == SkillSection.INSTALLED) theme.primary else theme.outline),
+                modifier = Modifier.weight(1f).clickable { currentSection = SkillSection.INSTALLED }
             ) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(
-                        modifier = Modifier.weight(1f).clickable { onViewDetail(skill) }
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Extension, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color(0xFF2EA043))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = skill.name,
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
+                    Icon(
+                        Icons.Default.Extension,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = if (currentSection == SkillSection.INSTALLED) theme.primary else theme.textSecondary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "已安装技能 (${skills.size})",
+                        fontSize = 12.5.sp,
+                        fontWeight = if (currentSection == SkillSection.INSTALLED) FontWeight.Bold else FontWeight.Normal,
+                        color = if (currentSection == SkillSection.INSTALLED) theme.primary else theme.textSecondary
+                    )
+                }
+            }
 
-                            Spacer(modifier = Modifier.width(6.dp))
+            Surface(
+                shape = RoundedCornerShape(8.dp),
+                color = if (currentSection == SkillSection.ADD_SKILL) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                border = BorderStroke(1.dp, if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.outline),
+                modifier = Modifier.weight(1f).clickable { currentSection = SkillSection.ADD_SKILL }
+            ) {
+                Row(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = null,
+                        modifier = Modifier.size(15.dp),
+                        tint = if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.textSecondary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "添加技能 (skills.sh)",
+                        fontSize = 12.5.sp,
+                        fontWeight = if (currentSection == SkillSection.ADD_SKILL) FontWeight.Bold else FontWeight.Normal,
+                        color = if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.textSecondary
+                    )
+                }
+            }
+        }
+
+        when (currentSection) {
+            SkillSection.INSTALLED -> {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 顶栏操作区
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(modifier = Modifier.weight(1f)) {
+                                InfoTitle(
+                                    title = "技能管理中心 (${skills.size} 项)",
+                                    infoDescription = "可分别控制项目与全局技能。开启后模型可在系统提示词中发现；关闭后对模型隐藏（不消耗提示词 Token），仍可在对话框通过 /<技能名> 手动调用。",
+                                    style = MaterialTheme.typography.titleMedium
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { doCheckUpdates() },
+                                    enabled = !isCheckingUpdates,
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    border = BorderStroke(1.dp, theme.outline)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.textSecondary)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("检查更新", fontSize = 11.5.sp, color = theme.textSecondary)
+                                }
+                                Button(
+                                    onClick = { currentSection = SkillSection.ADD_SKILL },
+                                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) {
+                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(13.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("添加技能", fontSize = 11.5.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    // 更新提示条
+                    val updatesAvailable = updatesMap.values.filter { it.state == "update-available" }
+                    if (updatesAvailable.isNotEmpty()) {
+                        item {
                             Surface(
-                                color = if (skill.alias.isNullOrBlank()) theme.surfaceContainer else theme.primary.copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(4.dp),
-                                modifier = Modifier.clickable { onEditAlias(skill) }
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFFD29922).copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, Color(0xFFD29922).copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = skill.alias?.takeIf { it.isNotBlank() } ?: "别名 ✎",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (skill.alias.isNullOrBlank()) theme.textMuted else theme.primary,
-                                        maxLines = 1,
-                                        softWrap = false
+                                        text = "发现 ${updatesAvailable.size} 项技能可升级更新",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFFD29922)
+                                    )
+                                    Text(
+                                        text = "点击卡片可单独更新",
+                                        fontSize = 11.sp,
+                                        color = theme.textMuted
                                     )
                                 }
                             }
                         }
+                    }
 
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = skill.description ?: "点开查看 / 编辑 SKILL.md",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = theme.textSecondary,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                    // ==========================================
+                    // 1. 项目技能分组 (Project)
+                    // ==========================================
+                    item {
+                        val allProjectEnabled = projectSkills.isNotEmpty() && projectSkills.all { it.isVisibleToModel }
+                        val projectEnabledCount = projectSkills.count { it.isVisibleToModel }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(0.5.dp, theme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF8250DF))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("项目技能", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = theme.textPrimary)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFF8250DF).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "$projectEnabledCount/${projectSkills.size}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFD2A8FF),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+
+                                Switch(
+                                    checked = allProjectEnabled,
+                                    enabled = projectSkills.isNotEmpty(),
+                                    onCheckedChange = { checked ->
+                                        onToggleSkillsBatch(projectSkills, checked)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color(0xFF2EA043),
+                                        checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                                        uncheckedThumbColor = theme.textMuted,
+                                        uncheckedTrackColor = theme.surfaceContainerHigh
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    if (projectSkills.isEmpty()) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = theme.surfaceContainerLow,
+                                border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.5f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "当前工作区暂无项目独立技能。在【添加技能】中选择【项目】范围即可安装至当前工作区 (.pi/skills)",
+                                    fontSize = 11.5.sp,
+                                    color = theme.textMuted,
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    } else {
+                        items(projectSkills, key = { it.filePath ?: it.name }) { skill ->
+                            SkillCardItem(
+                                skill = skill,
+                                isProject = true,
+                                isUpdateAvailable = updatesMap[skill.install?.package]?.state == "update-available",
+                                isUpdating = updatingPackage == (skill.install?.package ?: skill.name),
+                                onToggle = { onToggleSkill(skill, it) },
+                                onEditAlias = { onEditAlias(skill) },
+                                onViewDetail = { onViewDetail(skill) },
+                                onUpdate = { doUpdateSkill(skill) }
+                            )
+                        }
+                    }
+
+                    item { Spacer(modifier = Modifier.height(6.dp)) }
+
+                    // ==========================================
+                    // 2. 全局技能分组 (Global)
+                    // ==========================================
+                    item {
+                        val allGlobalEnabled = globalSkills.isNotEmpty() && globalSkills.all { it.isVisibleToModel }
+                        val globalEnabledCount = globalSkills.count { it.isVisibleToModel }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(0.5.dp, theme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF58A6FF))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("全局技能", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = theme.textPrimary)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = Color(0xFF1F6FEB).copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = "$globalEnabledCount/${globalSkills.size}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF58A6FF),
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                        )
+                                    }
+                                }
+
+                                Switch(
+                                    checked = allGlobalEnabled,
+                                    enabled = globalSkills.isNotEmpty(),
+                                    onCheckedChange = { checked ->
+                                        onToggleSkillsBatch(globalSkills, checked)
+                                    },
+                                    colors = SwitchDefaults.colors(
+                                        checkedThumbColor = Color(0xFF2EA043),
+                                        checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                                        uncheckedThumbColor = theme.textMuted,
+                                        uncheckedTrackColor = theme.surfaceContainerHigh
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    items(globalSkills, key = { it.filePath ?: it.name }) { skill ->
+                        SkillCardItem(
+                            skill = skill,
+                            isProject = false,
+                            isUpdateAvailable = updatesMap[skill.install?.package]?.state == "update-available",
+                            isUpdating = updatingPackage == (skill.install?.package ?: skill.name),
+                            onToggle = { onToggleSkill(skill, it) },
+                            onEditAlias = { onEditAlias(skill) },
+                            onViewDetail = { onViewDetail(skill) },
+                            onUpdate = { doUpdateSkill(skill) }
                         )
                     }
 
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(
-                            onClick = { onViewDetail(skill) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                    // 底部 "+ 添加技能" 大按钮（完全复刻 pi-web 底部入口）
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { currentSection = SkillSection.ADD_SKILL }
                         ) {
-                            Icon(Icons.Default.Edit, contentDescription = "编辑技能", modifier = Modifier.size(13.dp), tint = theme.primary)
-                            Spacer(modifier = Modifier.width(2.dp))
-                            Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(Icons.Default.Add, contentDescription = null, tint = theme.primary, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("添加技能 (搜索 skills.sh 技能市场)", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = theme.primary)
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                    }
+                }
+            }
+
+            SkillSection.ADD_SKILL -> {
+                // ==========================================
+                // 添加技能 (完全复刻 pi-web 添加技能面板)
+                // ==========================================
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            TextButton(
+                                onClick = { currentSection = SkillSection.INSTALLED },
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = null, modifier = Modifier.size(14.dp), tint = theme.primary)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("返回已安装列表", fontSize = 12.sp, color = theme.primary)
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable {
+                                    runCatching {
+                                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://skills.sh")))
+                                    }
+                                }
+                            ) {
+                                Text("skills.sh", fontSize = 12.sp, color = Color(0xFF58A6FF), fontWeight = FontWeight.Bold)
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color(0xFF58A6FF))
+                            }
+                        }
+                    }
+
+                    // 目标安装范围选择与目录预览
+                    item {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("添加技能", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = theme.textPrimary)
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        listOf("global" to "全局", "project" to "项目").forEach { (sc, label) ->
+                                            val isSel = addSkillTargetScope == sc
+                                            Surface(
+                                                shape = RoundedCornerShape(6.dp),
+                                                color = if (isSel) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
+                                                border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
+                                                modifier = Modifier.clickable { addSkillTargetScope = sc }
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    fontSize = 11.5.sp,
+                                                    fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (isSel) theme.primary else theme.textSecondary,
+                                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val pathPreview = if (addSkillTargetScope == "global") {
+                                    "~/.pi/agent/skills/"
+                                } else {
+                                    "${currentProject.ifBlank { "当前项目" }}/.pi/skills/"
+                                }
+                                Surface(
+                                    color = theme.surfaceContainer,
+                                    shape = RoundedCornerShape(4.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "安装路径: $pathPreview",
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        color = theme.textMuted,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 搜索输入栏 (例如 react、testing、deploy)
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                placeholder = { Text("例如 react、testing、deploy", fontSize = 12.sp, color = theme.textMuted) },
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = theme.textMuted) },
+                                trailingIcon = {
+                                    if (searchQuery.isNotBlank()) {
+                                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
+                                            Icon(Icons.Default.Clear, contentDescription = "清除", modifier = Modifier.size(14.dp), tint = theme.textMuted)
+                                        }
+                                    }
+                                },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = theme.textPrimary),
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = theme.primary,
+                                    unfocusedBorderColor = theme.outline,
+                                    focusedTextColor = theme.textPrimary,
+                                    unfocusedTextColor = theme.textPrimary
+                                )
+                            )
+
+                            Button(
+                                onClick = { doSearch() },
+                                enabled = searchQuery.isNotBlank() && !isSearching,
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                if (isSearching) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("搜索中", fontSize = 12.sp)
+                                } else {
+                                    Text("搜索", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+
+                    // 快速热门标签
+                    item {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            listOf("react", "testing", "deploy", "git", "python", "hindsight", "docker", "review").forEach { tag ->
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = theme.surfaceContainer,
+                                    border = BorderStroke(0.5.dp, theme.outline),
+                                    modifier = Modifier.clickable {
+                                        searchQuery = tag
+                                        doSearch(tag)
+                                    }
+                                ) {
+                                    Text(
+                                        text = tag,
+                                        fontSize = 11.sp,
+                                        color = theme.textSecondary,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 搜索结果列表
+                    if (isSearching) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = theme.primary, strokeWidth = 2.dp)
+                                    Text("正在从 skills.sh 技能市场搜索...", fontSize = 12.sp, color = theme.textMuted)
+                                }
+                            }
+                        }
+                    } else if (searchError != null) {
+                        item {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color(0xFFF85149).copy(alpha = 0.1f),
+                                border = BorderStroke(1.dp, Color(0xFFF85149).copy(alpha = 0.4f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "搜索遇到错误: $searchError",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFF85149),
+                                    modifier = Modifier.padding(12.dp)
+                                )
+                            }
+                        }
+                    } else if (hasSearched && searchResults.isEmpty()) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
+                                Text("未在 skills.sh 找到匹配的技能，请更换关键词搜索", fontSize = 12.sp, color = theme.textMuted)
+                            }
+                        }
+                    } else if (searchResults.isNotEmpty()) {
+                        item {
+                            Text(
+                                text = "搜索结果 (${searchResults.size} 项)",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textSecondary,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
                         }
 
-                        Switch(
-                            checked = skill.enabled,
-                            onCheckedChange = { onToggleSkill(skill, it) },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                uncheckedThumbColor = theme.textMuted,
-                                uncheckedTrackColor = theme.surfaceContainer
-                            )
-                        )
+                        items(searchResults, key = { it.package }) { result ->
+                            val isAlreadyInstalled = skills.any {
+                                it.scope.equals(addSkillTargetScope, true) &&
+                                    (it.install?.package == result.package || it.name.equals(result.skillName, ignoreCase = true))
+                            }
+                            val isInstallingThis = installingPackage == result.package
+
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = theme.surfaceContainerLow,
+                                border = BorderStroke(1.dp, theme.outline),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = result.skillName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold,
+                                            color = theme.textPrimary
+                                        )
+                                        Spacer(modifier = Modifier.height(2.dp))
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = result.repoName,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontSize = 11.sp,
+                                                color = theme.textMuted
+                                            )
+                                            if (result.installs.isNotBlank()) {
+                                                Text(
+                                                    text = result.installs,
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = Color(0xFF3FB950)
+                                                )
+                                            }
+                                            if (result.url.isNotBlank()) {
+                                                Text(
+                                                    text = "skills.sh ↗",
+                                                    fontSize = 11.sp,
+                                                    color = Color(0xFF58A6FF),
+                                                    modifier = Modifier.clickable {
+                                                        runCatching {
+                                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.url)))
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.width(8.dp))
+
+                                    if (isAlreadyInstalled) {
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = Color(0xFF2EA043).copy(alpha = 0.15f),
+                                            border = BorderStroke(1.dp, Color(0xFF2EA043).copy(alpha = 0.4f))
+                                        ) {
+                                            Text(
+                                                text = "✓ 已安装",
+                                                fontSize = 11.5.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFF2EA043),
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+                                    } else if (isInstallingThis) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier.padding(horizontal = 4.dp)
+                                        ) {
+                                            CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 2.dp, color = theme.primary)
+                                            Text("安装中...", fontSize = 11.5.sp, color = theme.primary)
+                                        }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                installingPackage = result.package
+                                                onInstallSkill(result.package, addSkillTargetScope)
+                                                coroutineScope.launch {
+                                                    delay(1500)
+                                                    installingPackage = null
+                                                }
+                                            },
+                                            enabled = installingPackage == null,
+                                            colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                                            shape = RoundedCornerShape(6.dp),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                        ) {
+                                            Text("安装", fontSize = 11.5.sp)
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
+}
 
-    if (showInstallSkillDialog) {
-        var pkgInput by remember { mutableStateOf("") }
-        var scopeInput by remember { mutableStateOf("global") }
-        AlertDialog(
-            onDismissRequest = { showInstallSkillDialog = false },
-            containerColor = theme.surfaceContainerLow,
-            title = { Text("安装技能包", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 16.sp) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = pkgInput,
-                        onValueChange = { pkgInput = it },
-                        label = { Text("技能包来源", fontSize = 11.5.sp, color = theme.textSecondary, maxLines = 1, softWrap = false) },
-                        placeholder = { Text("如 npm:xxx / git:xxx / 本地路径", fontSize = 11.5.sp, color = theme.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+/**
+ * 技能卡片组件（带模型调用开关、对模型隐藏但仍可手动调用提示、别名、更新指示器）
+ */
+@Composable
+private fun SkillCardItem(
+    skill: SkillInfo,
+    isProject: Boolean,
+    isUpdateAvailable: Boolean,
+    isUpdating: Boolean,
+    onToggle: (Boolean) -> Unit,
+    onEditAlias: () -> Unit,
+    onViewDetail: () -> Unit,
+    onUpdate: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    val isVisible = skill.isVisibleToModel
+
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(1.dp, if (isVisible) theme.outline else theme.outline.copy(alpha = 0.5f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(
+                modifier = Modifier.weight(1f).clickable { onViewDetail() }
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // 状态指示圆点：绿色 = 模型可见；灰色 = 对模型隐藏
+                    Box(
+                        modifier = Modifier
+                            .size(7.5.dp)
+                            .background(
+                                color = if (isVisible) Color(0xFF2EA043) else Color(0xFF6E7681),
+                                shape = CircleShape
+                            )
                     )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("global" to "全局安装", "project" to "当前工作区").forEach { (sc, label) ->
-                            val isSel = scopeInput == sc
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (isSel) theme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
-                                border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
-                                modifier = Modifier.weight(1f).clickable { scopeInput = sc }
-                            ) {
-                                Box(modifier = Modifier.padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
-                                    Text(label, fontSize = 11.5.sp, color = if (isSel) theme.primary else theme.textSecondary, maxLines = 1, softWrap = false)
-                                }
-                            }
+                    Spacer(modifier = Modifier.width(7.dp))
+                    Text(
+                        text = skill.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isVisible) theme.textPrimary else theme.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+
+                    Spacer(modifier = Modifier.width(6.dp))
+                    // 自定义别名
+                    Surface(
+                        color = if (skill.alias.isNullOrBlank()) theme.surfaceContainer else theme.primary.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier.clickable { onEditAlias() }
+                    ) {
+                        Text(
+                            text = skill.alias?.takeIf { it.isNotBlank() } ?: "别名 ✎",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (skill.alias.isNullOrBlank()) theme.textMuted else theme.primary,
+                            fontSize = 10.sp,
+                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                        )
+                    }
+
+                    if (isUpdateAvailable) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = Color(0xFFD29922).copy(alpha = 0.15f),
+                            border = BorderStroke(0.5.dp, Color(0xFFD29922).copy(alpha = 0.5f)),
+                            modifier = Modifier.clickable { onUpdate() }
+                        ) {
+                            Text(
+                                text = if (isUpdating) "更新中..." else "↑ 可更新",
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFD29922),
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                            )
                         }
                     }
                 }
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (pkgInput.isNotBlank()) {
-                        onInstallSkill(pkgInput.trim(), scopeInput)
-                        showInstallSkillDialog = false
+
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = skill.description?.takeIf { it.isNotBlank() } ?: "点开查看 / 编辑 SKILL.md",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+                // 模型调用状态行（核心：对模型隐藏但仍可手动调用的说明）
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isVisible) {
+                        Text(
+                            text = "🟢 模型可见 (可由模型主动调用)",
+                            fontSize = 10.5.sp,
+                            color = Color(0xFF3FB950)
+                        )
+                    } else {
+                        Text(
+                            text = "⚪ 对模型隐藏 (仍可手动输入命令调用)",
+                            fontSize = 10.5.sp,
+                            color = Color(0xFF8B949E)
+                        )
                     }
-                }) {
-                    Text("安装", color = theme.primary, fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showInstallSkillDialog = false }) {
-                    Text("取消", color = theme.textMuted)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "详情 ✎",
+                        fontSize = 10.5.sp,
+                        color = theme.primary,
+                        modifier = Modifier.clickable { onViewDetail() }
+                    )
                 }
             }
-        )
+
+            Spacer(modifier = Modifier.width(6.dp))
+
+            // 单个技能模型调用开关
+            Switch(
+                checked = isVisible,
+                onCheckedChange = { onToggle(it) },
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = Color(0xFF2EA043),
+                    checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                    uncheckedThumbColor = theme.textMuted,
+                    uncheckedTrackColor = theme.surfaceContainer
+                )
+            )
+        }
     }
 }
 
