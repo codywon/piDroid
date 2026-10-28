@@ -2,6 +2,32 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.19] - 2026-10-28
+
+### 🔄 发送后一直「正在等待模型」而正文不同步（自己踩掉自己的 SSE）+ 排队面板压缩 (Release v1.7.19)
+
+**A. 发送指令后一直「正在等待模型」，而 PC 侧已经在跑**
+
+- 根因（自我踩踏的死循环）：
+  1. pi 执行工具/等 bash 时 `isStreaming=false`，但 `isPromptRunning=true` —— pi-web 前端也是这么区分的（`isStreaming ? waiting_model : running_command`）；
+  2. 旧代码把 SSE `connected` 里的 `isStreaming=false` 当成「任务结束」，直接把 `isAgentBusy` 清成 false；
+  3. 下一轮巡检（1.5s）又看到服务端 `runningSessionIds` 包含本会话，以「服务端在跑、本地没在跑」为由 **重新挂载 SSE**；
+  4. 重挂会 `cancel()` 掉正在收事件的那条流 —— 于是每 1.5s 自我踩踏一次，增量事件全落在断开窗口里，正文永远同步不下来，标签永远停在「正在等待模型…」。
+- 修复：
+  - `connected.isStreaming=false` **不再**修改运行态（是否结束只由 `/api/sessions/{id}/state` 的 `running` 与 `agent_end` 防抖判定）；
+  - 移除 `syncSessionSnapshot` 里「服务端在跑就无条件重挂 SSE」的逻辑；
+  - 改为巡检里的**健康检查重挂**：流已断，或连上了但 >15s 没有任何事件，才重挂，且 15s 节流；
+  - 重挂能真的补回正文：pi-web 重连会下发 `message_start`（当前生成中的 message 快照），现在把它解析成 `text_replace` 整段回填；`text_replace` 在本地还没有 agent 气泡时会新建一条（以前直接丢掉）。
+
+**B. 排队消息面板按 pi-web 重做（不再是一张大卡片）**
+
+- 头部：左侧 `QUEUED (n)`（10sp 等宽小字），右侧一枚小的 **放回输入框** 按钮（图标 + 文字，pi-web 的 recall）；
+- 每条：左侧是 `steer` / `follow-up` 胶囊标签（steer 用主色、follow-up 用弱色，与 pi-web 同款），右侧单行文本超长省略；
+- 容器只留 1dp 描边 + 6dp 圆角，去掉原来的大色块；超过 4 条时只铺前 4 条并提示「还有 N 条排队中」；
+- 点「放回输入框」会把 steering + follow-up **全部**按空行拼回输入框（与 pi-web 的 recall 行为一致），同时清空服务端队列。
+
+---
+
 ## [1.7.18] - 2026-10-28
 
 ### 🎯 根因找到了：打开会话必须点一下「上滑加载」才出正文（v1.7.7 引入） (Release v1.7.18)

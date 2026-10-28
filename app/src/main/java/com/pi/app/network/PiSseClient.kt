@@ -471,17 +471,46 @@ class PiSseClient(private val prefs: AppPreferences) {
                 it.isJsonObject && it.asJsonObject.get("type")?.takeIf { !it.isJsonNull }?.asString == "toolCall"
             } == true)
 
-        if (isFinal) {
-            events.add(
-                AgentSseEvent(
-                    type = "message_end_sync",
-                    modelName = modelName,
-                    usageSummary = usageSummary,
-                    isStreaming = hasToolCalls,
-                    phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型..."
+        if (!isFinal) {
+            // 重连时 pi-web 会下发「当前正在生成的 message 快照」（message_start）。
+            // 把其中正文一次性作为 text_replace 交给上层，断流期间丢的增量能立即补齐。
+            val sb = StringBuilder()
+            msgObj.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { item ->
+                if (item.isJsonObject) {
+                    val o = item.asJsonObject
+                    val t = o.get("type")?.takeIf { !it.isJsonNull }?.asString
+                    if (t == "text" || t == "output_text") {
+                        val str = o.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        if (str.isNotEmpty()) {
+                            if (sb.isNotEmpty()) sb.append('\n')
+                            sb.append(str)
+                        }
+                    }
+                }
+            }
+            return if (sb.isEmpty()) {
+                emptyList()
+            } else {
+                listOf(
+                    AgentSseEvent(
+                        type = "text_replace",
+                        content = sb.toString(),
+                        isStreaming = true,
+                        modelName = modelName
+                    )
                 )
-            )
+            }
         }
+
+        events.add(
+            AgentSseEvent(
+                type = "message_end_sync",
+                modelName = modelName,
+                usageSummary = usageSummary,
+                isStreaming = hasToolCalls,
+                phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型..."
+            )
+        )
         return events
     }
 

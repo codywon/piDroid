@@ -14,6 +14,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
@@ -626,59 +627,100 @@ fun ChatScreen(
                     .navigationBarsPadding()
                     .imePadding()
             ) {
-                // 1. 排队消息提示栏
+                // 1. 排队消息：对齐 pi-web 的紧凑面板（左侧 kind 标签 + 单行文本 + 右上角「放回输入框」）
                 if (queuedMessages.isNotEmpty()) {
-                    Surface(
-                        color = theme.surfaceContainerHigh,
-                        border = BorderStroke(1.dp, theme.outline),
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 2.dp),
-                        shape = RoundedCornerShape(6.dp)
+                            .padding(horizontal = 12.dp, vertical = 2.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(theme.surfaceContainerLow)
+                            .border(1.dp, theme.outline, RoundedCornerShape(6.dp))
+                            .padding(vertical = 4.dp),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                                .padding(start = 10.dp, end = 6.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "QUEUED (${queuedMessages.size})",
+                                fontSize = 9.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                letterSpacing = 0.4.sp,
+                                color = theme.textMuted
+                            )
+                            // pi-web 的 recall：把排队内容全部放回输入框（服务端队列同步清空）
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .clickable {
+                                        val recalled = queuedMessages.joinToString("\n\n") { it.text }
+                                        inputText = if (inputText.isBlank()) recalled else "$recalled\n\n$inputText"
+                                        onClearQueue()
+                                    }
+                                    .padding(horizontal = 8.dp, vertical = 3.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardReturn,
+                                    contentDescription = "放回输入框",
+                                    modifier = Modifier.size(12.dp),
+                                    tint = theme.textSecondary
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "放回输入框",
+                                    fontSize = 10.5.sp,
+                                    color = theme.textSecondary
+                                )
+                            }
+                        }
+                        // 只铺前 4 条，避免排队把输入区顶到屏幕外（pi-web 桌面端不受此限）
+                        queuedMessages.take(4).forEach { q ->
+                            val isSteer = q.kind == "steer"
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 10.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
                                 Surface(
-                                    color = theme.primary.copy(alpha = 0.2f),
-                                    shape = RoundedCornerShape(4.dp)
+                                    shape = CircleShape,
+                                    color = Color.Transparent,
+                                    border = BorderStroke(
+                                        1.dp,
+                                        if (isSteer) theme.primary.copy(alpha = 0.45f) else theme.outline
+                                    )
                                 ) {
                                     Text(
-                                        text = "${queuedMessages.size} 条排队",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        color = theme.primary
+                                        text = if (isSteer) "steer" else "follow-up",
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = if (isSteer) theme.primary else theme.textMuted,
+                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
                                     )
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
-                                    text = queuedMessages.first().text.take(24),
-                                    style = MaterialTheme.typography.bodySmall,
+                                    text = q.text.replace('\n', ' ').trim(),
+                                    fontSize = 11.5.sp,
                                     color = theme.textSecondary,
-                                    maxLines = 1
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
                                 )
                             }
-
+                        }
+                        if (queuedMessages.size > 4) {
                             Text(
-                                text = "撤回 ↺",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.primary,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable {
-                                    val lastMsg = queuedMessages.lastOrNull()
-                                    if (lastMsg != null) {
-                                        inputText = if (inputText.isBlank()) lastMsg.text else "$inputText\n${lastMsg.text}"
-                                        onClearQueue()
-                                        android.widget.Toast.makeText(context, "已撤回排队消息并恢复至输入框", android.widget.Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        onClearQueue()
-                                    }
-                                }
+                                text = "还有 ${queuedMessages.size - 4} 条排队中…",
+                                fontSize = 10.sp,
+                                color = theme.textMuted,
+                                modifier = Modifier.padding(start = 10.dp, top = 1.dp)
                             )
                         }
                     }

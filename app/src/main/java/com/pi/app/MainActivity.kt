@@ -309,6 +309,8 @@ class MainActivity : ComponentActivity() {
         var isAutoRetrying by remember { mutableStateOf(false) }
         var isToolExecuting by remember { mutableStateOf(false) }
         var lastSseActivityAt by remember { mutableStateOf(0L) }
+        // 上一次主动重挂 SSE 的时间（避免巡检反复重挂、自己踩掉正在收事件的流）
+        var lastSseReattachAt by remember { mutableStateOf(0L) }
         var taskStartedAt by remember { mutableStateOf(0L) }
         var consecutiveIdlePolls by remember { mutableStateOf(0) }
         var hasNotifiedCompletionForCurrentRun by remember { mutableStateOf(false) }
@@ -848,10 +850,14 @@ class MainActivity : ComponentActivity() {
             if (serverRunning) {
                 consecutiveIdlePolls = 0
                 if (!isAgentBusy) {
-                    // PC 端或远端刚启动了任务：立即切换为运行态并重新挂载 SSE 实时流
+                    // PC 端或远端刚启动了任务：本地切到运行态
                     markAgentRunActive(phase = agentPhaseLabel ?: "正在同步实时输出...")
-                    reattachSseCallback?.invoke(sessionId, true)
                 }
+                // 不再在这里无条件重挂 SSE：connected 事件里的 isStreaming=false 只代表
+                // 「当前没在产出 token」（pi 执行工具时 isPromptRunning 仍为 true），
+                // 以前它会把 isAgentBusy 清成 false，下一轮巡检又以「服务端在跑、本地没跑」
+                // 为由重挂 → 取消掉正在收事件的那条流 → 1.5s 一次自我踩踏，正文永远同步不下来。
+                // 重挂统一交给巡检里的「流确实断了/长时间无事件」判断。
             } else if (isAgentBusy && allowCompletionTransition && runningResult.isSuccess) {
                 val now = System.currentTimeMillis()
                 val hasRunningToolCard = messages.any { it.role == MessageRole.TOOL && it.toolCall?.isRunning == true }
@@ -900,11 +906,11 @@ class MainActivity : ComponentActivity() {
                         "connected" -> {
                             isGatewayOnline = true
                             if (event.isStreaming == true) {
-                                markAgentRunActive(phase = agentPhaseLabel ?: "正在接收实时流...")
-                            } else if (!isToolExecuting) {
-                                isAgentBusy = false
-                                agentPhaseLabel = null
+                                markAgentRunActive(phase = "正在接收实时流...")
                             }
+                            // isStreaming=false 时什么都不做（绝不能清 isAgentBusy）：
+                            // pi 在工具执行/等 bash 时 isPromptRunning 仍为 true，只是没在产 token。
+                            // 运行态的收尾统一由 /api/sessions/{id}/state + agent_end 防抖判定。
                         }
                         "reconnected_sync" -> {
                             syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = true)
@@ -995,6 +1001,17 @@ class MainActivity : ComponentActivity() {
                                         content = fullText.ifEmpty { last.content },
                                         mediaList = if (event.mediaList.isNotEmpty()) event.mediaList else last.mediaList,
                                         isStreaming = event.isStreaming ?: false
+                                    )
+                                } else {
+                                    // 重连/断流恢复时当前还没建立 agent 气泡：直接用快照正文开一条
+                                    messages.add(
+                                        ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = fullText,
+                                            modelName = event.modelName ?: selectedModel.displayName,
+                                            mediaList = event.mediaList,
+                                            isStreaming = event.isStreaming ?: true
+                                        )
                                     )
                                 }
                             }
@@ -1363,6 +1380,20 @@ class MainActivity : ComponentActivity() {
                         lastSessionListVersion = snap.sessionListVersion
                     }
                     val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
+                    // 事件流健康检查：服务端确实在跑，而流已断或者长时间没有任何事件 →
+                    // 重挂一次（pi-web 重连会补发当前正在生成的 message 快照，丢的正文能补回来）。
+                    // 15s 节流，避免反复重挂把自己踩死。
+                    val nowMs = System.currentTimeMillis()
+                    if (serverSaysRunning) {
+                        val streamDown = sseConnectionState != SseConnectionState.CONNECTED
+                        val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
+                            lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 15_000L
+                        if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
+                            lastSseReattachAt = nowMs
+                            lastSseActivityAt = nowMs
+                            reattachSseCallback?.invoke(activeSession.id, true)
+                        }
+                    }
                     val shouldSyncDetail = isAgentBusy || serverSaysRunning || versionChanged ||
                         System.currentTimeMillis() - lastDetailSyncAt > 15_000L
                     if (shouldSyncDetail) {
