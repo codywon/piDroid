@@ -118,7 +118,10 @@ fun StructuredDiffView(
                         .fillMaxSize()
                         .then(if (!softWrap) Modifier.horizontalScroll(scrollState) else Modifier)
                 ) {
-                    items(allLines) { line ->
+                    items(
+                        items = allLines,
+                        contentType = { it.type }
+                    ) { line ->
                         DiffLineItem(
                             line = line,
                             softWrap = softWrap,

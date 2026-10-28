@@ -257,6 +257,18 @@ object UnifiedDiffParser {
             suffix++
         }
 
+        // 防御 Unicode 代理对（Surrogate Pairs，如 emoji 或生僻字）被截断
+        if (prefix > 0 && prefix < oldText.length &&
+            oldText[prefix - 1].isHighSurrogate() && oldText[prefix].isLowSurrogate()
+        ) {
+            prefix--
+        }
+        if (suffix > 0 && suffix < oldText.length &&
+            oldText[oldText.length - suffix - 1].isHighSurrogate() && oldText[oldText.length - suffix].isLowSurrogate()
+        ) {
+            suffix--
+        }
+
         // 仅在存在有效共有前缀或后缀（说明为局部修改）时才高亮差异词，避免整行不同时出现大面积冗余双重高亮
         if (prefix > 0 || suffix > 0) {
             val oldRange = if (prefix < oldText.length - suffix) {

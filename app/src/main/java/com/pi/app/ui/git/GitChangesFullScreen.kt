@@ -348,8 +348,9 @@ private fun GitFileRowItem(
     onClick: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val isDeleted = file.code.startsWith("D") || file.status == "deleted"
-    val isAdded = file.code.startsWith("A") || file.status == "added" || file.code == "??"
+    val isDeleted = file.code.contains('D') || file.status.equals("deleted", ignoreCase = true)
+    val isAdded = file.code.contains('A') || file.code.contains('?') ||
+        file.status.equals("added", ignoreCase = true) || file.status.equals("untracked", ignoreCase = true)
 
     val badgeColor = when {
         isDeleted -> Color(0xFFCF222E)
@@ -465,7 +466,7 @@ private fun GitFileDetailView(
     // 请求序号防乱序
     var currentRequestSeq by remember { mutableIntStateOf(0) }
 
-    val isDeleted = file.code.startsWith("D") || file.status == "deleted"
+    val isDeleted = file.code.contains('D') || file.status.equals("deleted", ignoreCase = true)
     val isMarkdown = remember(file.filePath) { FileLinks.isMarkdownPath(file.filePath) }
     val isSvg = remember(file.filePath) { file.filePath.endsWith(".svg", ignoreCase = true) }
     val canPreview = !isDeleted && (isMarkdown || isSvg)
