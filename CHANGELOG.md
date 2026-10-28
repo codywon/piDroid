@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.18] - 2026-10-28
+
+### 🎯 根因找到了：打开会话必须点一下「上滑加载」才出正文（v1.7.7 引入） (Release v1.7.18)
+
+- **现象**：打开历史会话，中间只显示「还没有对话，发送指令开始」，顶部却显示「上滑加载更早的 N 轮」；点一下顶部，正文瞬间全部出来。
+- **根因（一行 remember 写错）**：
+  ```kotlin
+  // v1.7.7 起的写法
+  val conversation = remember(olderMessages, messages) { olderMessages + messages }
+  ```
+  `messages` 是 Compose 的 `SnapshotStateList`，它**没有实现结构化 equals**（不是 `AbstractList` 子类，用的是引用相等）。所以 `remember` 的 key 永远是同一个实例、永远相等：首屏在 `messages` 还是空的时候就把拼接结果缓存成了空列表，之后快照把 `messages` 填满也**不会重算**。而 `olderMessages` 是普通 `List`，翻页时会换新实例 —— 所以点一下「上滑加载」就让 key 失效，正文突然全部出现。
+- **修复**：直接拼接 `val conversation = olderMessages + messages`（不再缓存），并去掉 `leadingRowCount` 上同样无效的 `remember`。
+- 实测接口没任何问题：出事会话 `?tail=60` 返回 117 条消息（2 user / 58 assistant / 57 toolResult，`turnsBefore=4`，可产出 64 个可见条目）—— 确实是渲染层把它当成空列表。
+- 保留 v1.7.17 的兵底：首屏自动补齐 + 磁盘快照回放 + 静默骨架（正常情况下不再触发）。
+
+---
+
 ## [1.7.17] - 2026-10-28
 
 ### 📖 打开会话立刻出正文 · 首屏不再空白等「上滑加载」 (Release v1.7.17)

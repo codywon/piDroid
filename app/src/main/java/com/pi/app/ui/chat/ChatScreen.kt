@@ -330,7 +330,13 @@ fun ChatScreen(
     // 会话正文 = PC 上游标翻页拉来的更早记录 + 主窗口快照。
     // 两者互不重叠（更早记录只 prepend、主快照只按下标对账更新），这里直接拼接渲染；
     // 回合大纲也必须建立在拼接后的完整列表上，否则翻页拉回来的历史不进时间轴。
-    val conversation = remember(olderMessages, messages) { olderMessages + messages }
+    //
+    // 绝对不要把它包进 remember(...)：messages 是 SnapshotStateList，它没有实现结构化 equals
+    // （不是 AbstractList 子类，用的是引用相等），所以 remember(olderMessages, messages) 的 key
+    // 永远“没变”。首屏在 messages 还是空的时候就把它缓存成了空列表，之后快照填满 messages
+    // 也不会重算 —— 于是正文一直空着，直到 olderMessages（普通 List，翻页时换新实例）变化
+    // 才突然全部出现。这就是「打开历史会话必须点一下上滑加载才出正文」的根因。
+    val conversation = olderMessages + messages
 
     // 首屏还没有任何正文时，不投射「正在等待模型…」式的状态噪音，只给静默骨架。
     // （会话在 PC 侧确实在跑时，isAgentBusy 也为真，但正文还在路上，报「等待模型」纯属噪声）
@@ -417,10 +423,7 @@ fun ChatScreen(
 
     // 顶部哨兵行：有更早历史时是加载提示行，否则是「起点」分隔线（都只占一行）
     val showTopSentinel = hasEarlierOnServer || isLoadingOlder || conversation.size > 6
-    val leadingRowCount = remember(conversation, allTurns) {
-        // 首个提问之前的系统消息（欢迎语、压缩摘要等）逐条渲染，各占一行
-        allTurns.firstOrNull()?.userIndex ?: conversation.size
-    }
+    val leadingRowCount = allTurns.firstOrNull()?.userIndex ?: conversation.size
 
     // 一个回合不是一行：可能还有「过程折叠组」与「最终答复」
     fun turnRowCount(turn: TurnOutline): Int =
