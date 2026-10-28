@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.25] - 2026-10-28
+
+### ✨ 模型切换面板去重：去掉「默认」文字徽标，只留星标 (Release v1.7.25)
+
+- **现象**：模型与思考级别面板里，当前全局默认模型那一行右侧同时出现「默认」琥珀色小徽标 + 实心金星 ★，
+  信息重复，行尾显得拥挤（截图见 issue/反馈）。
+- **修复**：`ModelAndThinkingSheet` 删除该徽标及其后 4dp 间距，默认模型只由实心金星 ★ 表达；
+  非默认模型仍为浅灰空心星 ☆（点击设为默认）。右侧动作区宽度因此收窄，标题与 `provider` 徽标可用空间更多。
+- **无障碍**：星标 `contentDescription` 保持「当前默认模型」/「点击设为全局默认模型」，功能语义不丢。
+
+### 📚 文档与脚本：固定域名隧道落地记录 + 安全加固方案
+
+- `docs/PERMANENT_TUNNEL.md` 补充本机 Named Tunnel 部署记录（`pi.codywon.top`）与 Access 会挡 App 的说明；
+- 新增 `docs/SECURITY_UPGRADES.md`（Access + Service Token / Tailscale Serve / WAF 取舍与回滚）；
+- `server/launcher.js` 在网关已运行时优先展示固定公网地址，而不是局域网 IP。
+
+---
+
 ## [1.7.24] - 2026-10-28
 
 ### 🗄️ 左边栏页脚完全对标 pi-web：打开其他项目与全量归档同步视图 (Release v1.7.24)

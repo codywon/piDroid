@@ -31,6 +31,7 @@ import com.pi.app.ui.theme.*
  * 1:1 对标 pi-web 官方交互的模型与思考级别切换面板：
  * - 顶部增加“筛选模型...”即时搜索栏
  * - 右侧五角星星标系统：实心金星 ★ (全局默认模型) / 空心灰星 ☆ (点击一键设为默认模型，调用 PUT /api/models/default)
+ *   （实心星本身即默认标识，不再额外显示「默认」文字徽标，保持列表清爽）
  * - 左侧勾选 ✓：当前会话正在使用的模型
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -351,20 +352,6 @@ fun ModelAndThinkingSheet(
                                     .padding(start = 6.dp)
                             ) {
                                 if (isDefault) {
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = Color(0xFFF59E0B).copy(alpha = 0.15f),
-                                        border = BorderStroke(0.5.dp, Color(0xFFF59E0B))
-                                    ) {
-                                        Text(
-                                            text = "默认",
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFF59E0B),
-                                            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                    Spacer(modifier = Modifier.width(4.dp))
                                     Icon(
                                         imageVector = Icons.Default.Star,
                                         contentDescription = "当前默认模型",
