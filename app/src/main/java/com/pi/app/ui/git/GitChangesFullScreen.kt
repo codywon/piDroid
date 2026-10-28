@@ -24,9 +24,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.pi.app.data.model.FileLinks
 import com.pi.app.data.model.GitFileChange
 import com.pi.app.data.model.GitStatusResult
+import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.ui.theme.LocalAppTheme
@@ -518,31 +518,33 @@ private fun GitFileDetailView(
                         if (canPreview) add(GitDetailMode.PREVIEW to "预览")
                     }
 
-                    modes.forEach { (m, label) ->
-                        val selected = mode == m
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (selected) theme.primary.copy(alpha = 0.16f) else Color.Transparent,
-                            border = BorderStroke(
-                                0.6.dp,
-                                if (selected) theme.primary.copy(alpha = 0.45f) else Color.Transparent
-                            ),
-                            modifier = Modifier.clickable {
-                                mode = m
-                                if (m == GitDetailMode.SOURCE || m == GitDetailMode.PREVIEW) {
-                                    loadSource()
-                                }
+                modes.forEach { item ->
+                    val m = item.first
+                    val label = item.second
+                    val selected = mode == m
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (selected) theme.primary.copy(alpha = 0.16f) else Color.Transparent,
+                        border = BorderStroke(
+                            0.6.dp,
+                            if (selected) theme.primary.copy(alpha = 0.45f) else Color.Transparent
+                        ),
+                        modifier = Modifier.clickable {
+                            mode = m
+                            if (m == GitDetailMode.SOURCE || m == GitDetailMode.PREVIEW) {
+                                loadSource()
                             }
-                        ) {
-                            Text(
-                                text = label,
-                                fontSize = 11.sp,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selected) theme.primary else theme.textSecondary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                            )
                         }
+                    ) {
+                        Text(
+                            text = label,
+                            fontSize = 11.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (selected) theme.primary else theme.textSecondary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
                     }
+                }
                 }
             }
 
@@ -689,7 +691,8 @@ private fun GitFileDetailView(
                                                 isUser = false,
                                                 onOpenLink = { href ->
                                                     val docDir = FileLinks.parentDirectory(file.filePath)
-                                                    onOpenLinkTarget(href, docDir.ifBlank { repoRoot })
+                                                    val targetBase = if (docDir.isNotBlank()) docDir else repoRoot
+                                                    onOpenLinkTarget(href, targetBase)
                                                 }
                                             )
                                         }

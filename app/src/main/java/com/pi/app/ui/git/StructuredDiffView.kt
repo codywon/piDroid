@@ -120,7 +120,7 @@ private fun DiffLineItem(
             Color(0xFF388BFD),
             "@"
         )
-        PatchLineType.GAP, PatchLineType.CONTEXT -> Quadruple(
+        PatchLineType.CONTEXT -> Quadruple(
             Color.Transparent,
             Color.Transparent,
             theme.textMuted,
