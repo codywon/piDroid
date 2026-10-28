@@ -34,3 +34,6 @@ keystore/
 debug.keystore
 
 scratch/
+
+# gateway 诊断日志（不含密钥，仅指纹）
+server/logs/

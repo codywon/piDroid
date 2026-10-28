@@ -120,6 +120,49 @@ const app = express();
 // 以免 token 落进反向代理 / CDN / Cloudflare Tunnel 的访问日志。
 const QUERY_TOKEN_PATH_PATTERN = /\/events$/;
 
+// 401 诊断日志：只记录长度和 UA，不打印 token 本身；最多每 3 秒一条，避免扫器刷屏。
+let lastAuthFailureLogAt = 0;
+const LOG_DIR = path.join(__dirname, 'logs');
+const AUTH_FAIL_LOG = path.join(LOG_DIR, 'auth-fail.log');
+
+function tokenFingerprint(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex').slice(0, 8);
+}
+
+const AUTH_TOKEN_FP = tokenFingerprint(AUTH_TOKEN);
+function logAuthFailure(req, token) {
+  const now = Date.now();
+  if (now - lastAuthFailureLogAt < 3000) return;
+  lastAuthFailureLogAt = now;
+  const provided = typeof token === 'string' && token.length > 0
+    ? `present(len=${token.length})`
+    : 'missing';
+  const ua = (req.headers['user-agent'] || 'n/a').toString().slice(0, 48);
+  const pathOnly = (req.path || '/').split('?')[0];
+  console.warn(`[auth] 401 ${req.method} ${pathOnly} token=${provided} ua=${ua}`);
+
+  // 同时落盘，便于事后比对“客户端到底发了哪个 Token”（只存不可逆指纹，不存原值）
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const line = [
+      new Date().toISOString(),
+      req.method,
+      pathOnly,
+      provided,
+      `fp=${typeof token === 'string' && token.length ? tokenFingerprint(token) : 'none'}`,
+      `expected=${AUTH_TOKEN_FP}`,
+      `ip=${req.ip || (req.socket && req.socket.remoteAddress) || '?'}`,
+      `ua=${ua}`
+    ].join(' | ');
+    if (fs.existsSync(AUTH_FAIL_LOG) && fs.statSync(AUTH_FAIL_LOG).size > 512 * 1024) {
+      fs.renameSync(AUTH_FAIL_LOG, AUTH_FAIL_LOG + '.1');
+    }
+    fs.appendFileSync(AUTH_FAIL_LOG, line + '\n');
+  } catch (e) {
+    // 日志写失败不影响鉴权结果
+  }
+}
+
 function authMiddleware(req, res, next) {
   let token = null;
 
@@ -136,6 +179,9 @@ function authMiddleware(req, res, next) {
   }
 
   if (!safeTokenEquals(token, AUTH_TOKEN)) {
+    // 排查用：只记录「有没有带 token、长度多少」，绝不打印 token 内容。
+    // 长度 35 且不匹配通常意味着客户端手里还是上一轮轮换掉的旧 token。
+    logAuthFailure(req, token);
     return res.status(401).json({
       error: 'Unauthorized',
       message: 'Invalid or missing authentication token.'
