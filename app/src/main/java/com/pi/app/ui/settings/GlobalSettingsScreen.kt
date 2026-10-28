@@ -1983,52 +1983,70 @@ fun GlobalSkillsTab(
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Column(modifier = Modifier.weight(1f)) {
+                                    // 紧凑两行式：标题一行 + 元信息一行，右侧固定动作区。
+                                    // 旧版把「repo · 安装量 · skills.sh ↗」塞进不限宽的 Row，长仓库名会把
+                                    // skills.sh 挤成逐字竖排（sk / ill / s. / sh），卡片也被撑得很高。
+                                    Column(
+                                        modifier = Modifier.weight(1f),
+                                        verticalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
                                         Text(
                                             text = result.skillName,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            fontWeight = FontWeight.Bold,
-                                            color = theme.textPrimary
+                                            fontSize = 13.5.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = theme.textPrimary,
+                                            maxLines = 1,
+                                            softWrap = false,
+                                            overflow = TextOverflow.Ellipsis
                                         )
-                                        Spacer(modifier = Modifier.height(2.dp))
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                        ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
                                             Text(
                                                 text = result.repoName,
                                                 fontFamily = FontFamily.Monospace,
-                                                fontSize = 11.sp,
-                                                color = theme.textMuted
+                                                fontSize = 10.5.sp,
+                                                color = theme.textMuted,
+                                                maxLines = 1,
+                                                softWrap = false,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
                                             )
                                             if (result.installs.isNotBlank()) {
                                                 Text(
-                                                    text = result.installs,
-                                                    fontSize = 11.sp,
+                                                    text = " · ${result.installs}",
+                                                    fontSize = 10.5.sp,
                                                     fontWeight = FontWeight.Medium,
-                                                    color = Color(0xFF3FB950)
-                                                )
-                                            }
-                                            if (result.url.isNotBlank()) {
-                                                Text(
-                                                    text = "skills.sh ↗",
-                                                    fontSize = 11.sp,
-                                                    color = Color(0xFF58A6FF),
-                                                    modifier = Modifier.clickable {
-                                                        runCatching {
-                                                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.url)))
-                                                        }
-                                                    }
+                                                    color = Color(0xFF3FB950),
+                                                    maxLines = 1,
+                                                    softWrap = false
                                                 )
                                             }
                                         }
                                     }
 
-                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+
+                                    // 外链改为图标按钮：不会再出现“skills.sh ↗”被挤到竖排
+                                    if (result.url.isNotBlank()) {
+                                        IconButton(
+                                            onClick = {
+                                                runCatching {
+                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(result.url)))
+                                                }
+                                            },
+                                            modifier = Modifier.size(30.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.OpenInNew,
+                                                contentDescription = "在 skills.sh 打开",
+                                                modifier = Modifier.size(15.dp),
+                                                tint = Color(0xFF58A6FF)
+                                            )
+                                        }
+                                    }
 
                                     if (isAlreadyInstalled) {
                                         Surface(
@@ -2038,20 +2056,32 @@ fun GlobalSkillsTab(
                                         ) {
                                             Text(
                                                 text = "✓ 已安装",
-                                                fontSize = 11.5.sp,
+                                                fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 color = Color(0xFF2EA043),
+                                                maxLines = 1,
+                                                softWrap = false,
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
                                             )
                                         }
                                     } else if (isInstallingThis) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(5.dp),
                                             modifier = Modifier.padding(horizontal = 4.dp)
                                         ) {
-                                            CircularProgressIndicator(modifier = Modifier.size(13.dp), strokeWidth = 2.dp, color = theme.primary)
-                                            Text("安装中...", fontSize = 11.5.sp, color = theme.primary)
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(12.dp),
+                                                strokeWidth = 2.dp,
+                                                color = theme.primary
+                                            )
+                                            Text(
+                                                text = "安装中",
+                                                fontSize = 11.sp,
+                                                color = theme.primary,
+                                                maxLines = 1,
+                                                softWrap = false
+                                            )
                                         }
                                     } else {
                                         Button(
@@ -2065,10 +2095,11 @@ fun GlobalSkillsTab(
                                             },
                                             enabled = installingPackage == null,
                                             colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                                            shape = RoundedCornerShape(6.dp),
-                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                                            shape = RoundedCornerShape(8.dp),
+                                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 5.dp),
+                                            modifier = Modifier.height(32.dp)
                                         ) {
-                                            Text("安装", fontSize = 11.5.sp)
+                                            Text("安装", fontSize = 12.sp, maxLines = 1, softWrap = false)
                                         }
                                     }
                                 }
