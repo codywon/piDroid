@@ -31,6 +31,9 @@ import com.pi.app.data.model.ChatItem
 import com.pi.app.data.model.MessageRole
 import com.pi.app.ui.theme.LocalAppTheme
 
+/** 导轨最多画多少个节点（再多就等比例抽样；每个节点仍占满自己那一段热区） */
+private const val MAX_RAIL_NODES = 40
+
 /**
  * 对应 pi-web lib/turn-duration.ts 中的 formatTurnDuration
  * 格式：14s -> 2m 13s -> 1h 2m 5s
@@ -128,30 +131,35 @@ fun PiWebChatMinimap(
                         .background(theme.outline.copy(alpha = 0.35f))
                 )
 
-                // 节点点位列表 (在竖直方向自适应均分)
+                // 节点点位列表：竖直方向「等分整条导轨」，每个节点的触控热区就是它自己那一段，
+                // 首尾相接不留死区。
+                // 旧实现是 Column + SpaceBetween + 固定 18dp：点与点之间是空洞，点在缝里完全没反应；
+                // 节点多时（>24）还会撑出 Surface 边界被裁掉，后面的轮次干脆点不到 ——
+                // 于是感觉「要点隔壁一个点才能到下一个」。pi-web 的做法也是每个回合占一条连续带。
                 val displayNodes = remember(turns) {
-                    if (turns.size <= 24) turns
+                    if (turns.size <= MAX_RAIL_NODES) turns
                     else {
-                        val step = turns.size.toFloat() / 23f
-                        (0 until 23).map { i -> turns[(i * step).toInt().coerceIn(0, turns.lastIndex)] }
-                            .distinctBy { it.turnNumber } + listOf(turns.last())
+                        val step = turns.size.toFloat() / (MAX_RAIL_NODES - 1).toFloat()
+                        (0 until MAX_RAIL_NODES - 1).map { i ->
+                            turns[(i * step).toInt().coerceIn(0, turns.lastIndex)]
+                        }.distinctBy { it.turnNumber } + listOf(turns.last())
                     }.distinctBy { it.turnNumber }
                 }
+                val dotSize = if (displayNodes.size <= 20) 7.dp else 5.dp
+                val activeDotSize = if (displayNodes.size <= 20) 10.dp else 8.dp
 
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(top = 8.dp, bottom = 34.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     displayNodes.forEach { turn ->
                         val isLocated = turn.turnNumber == activeTurnNumber
-                        // 单独为每一个方块提供独立触控热区，点击直接跳转，绝不呼出抽屉
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(18.dp)
+                                .weight(1f)
                                 .clickable(
                                     interactionSource = remember { MutableInteractionSource() },
                                     indication = null
@@ -162,7 +170,7 @@ fun PiWebChatMinimap(
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(if (isLocated) 10.dp else 7.dp)
+                                    .size(if (isLocated) activeDotSize else dotSize)
                                     .clip(RoundedCornerShape(2.dp))
                                     .background(
                                         if (isLocated) theme.primary

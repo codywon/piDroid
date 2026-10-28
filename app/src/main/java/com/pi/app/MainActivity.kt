@@ -581,15 +581,19 @@ class MainActivity : ComponentActivity() {
         fun completeAgentSessionRun(sessionId: String, syncSnapshot: Boolean = true) {
             completionSettleJob?.cancel()
             completionSettleJob = null
-            val shouldNotify = isAgentBusy && !hasNotifiedCompletionForCurrentRun
-            isAgentBusy = false
-            isAutoRetrying = false
-            isToolExecuting = false
-            agentPhaseLabel = null
-            consecutiveIdlePolls = 0
+            // 会话切换竞态保护：A 会话的收尾不能去改正在显示的 B 会话的运行态
+            val isCurrent = currentSession?.id == sessionId
+            val shouldNotify = isCurrent && isAgentBusy && !hasNotifiedCompletionForCurrentRun
+            if (isCurrent) {
+                isAgentBusy = false
+                isAutoRetrying = false
+                isToolExecuting = false
+                agentPhaseLabel = null
+                consecutiveIdlePolls = 0
+                keepAliveManager.releaseWakeLock()
+                syncPersistentForegroundService(isBusy = false, project = currentProject)
+            }
             markSessionNotRunning(sessionId)
-            keepAliveManager.releaseWakeLock()
-            syncPersistentForegroundService(isBusy = false, project = currentProject)
 
             if (shouldNotify) {
                 hasNotifiedCompletionForCurrentRun = true
@@ -618,13 +622,15 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
-            for (i in messages.indices) {
-                val item = messages[i]
-                if (item.isStreaming || item.toolCall?.isRunning == true) {
-                    messages[i] = item.copy(
-                        isStreaming = false,
-                        toolCall = item.toolCall?.copy(isRunning = false)
-                    )
+            if (isCurrent) {
+                for (i in messages.indices) {
+                    val item = messages[i]
+                    if (item.isStreaming || item.toolCall?.isRunning == true) {
+                        messages[i] = item.copy(
+                            isStreaming = false,
+                            toolCall = item.toolCall?.copy(isRunning = false)
+                        )
+                    }
                 }
             }
 
@@ -662,6 +668,9 @@ class MainActivity : ComponentActivity() {
                 val histAsync = async { apiClient.getSessionDetail(sessionId) }
                 stateAsync.await() to histAsync.await()
             }
+            // ── 会话切换竞态保护（对标 pi-web：拉取回来先比对当前会话 id，不一致就丢弃）──
+            // 以前：打开 A 后马上切到 B，A 的慢响应会直接并进 B 的 messages 与统计 —— 这就是「串会话」。
+            if (currentSession?.id != sessionId) return
             val runtime = runtimeResult.getOrNull()
             val runningResult = if (runtime != null) {
                 Result.success(runtime.running)
@@ -1839,11 +1848,10 @@ class MainActivity : ComponentActivity() {
                         loadSessions()
                     },
                     onRefreshSession = {
-                        currentSession?.let { sess ->
-                            lifecycleScope.launch {
-                                syncSessionSnapshot(sess.id, restoreModelMeta = true, allowCompletionTransition = false)
-                                Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
-                            }
+                        val sid = activeSessionId
+                        lifecycleScope.launch {
+                            syncSessionSnapshot(sid, restoreModelMeta = true, allowCompletionTransition = false)
+                            Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                         }
                     },
                     onOpenModelSheet = { showModelSheet = true },
@@ -1859,14 +1867,17 @@ class MainActivity : ComponentActivity() {
                                 Toast.LENGTH_LONG
                             ).show()
                         } else {
+                            val sid = activeSessionId
                             lifecycleScope.launch {
                                 isCompacting = true
                                 Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
-                                apiClient.compactContext(currentSession!!.id)
+                                apiClient.compactContext(sid)
                                     .onSuccess {
                                         Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
-                                        apiClient.getSessionStats(currentSession!!.id).onSuccess { tokenStats = it }
-                                        syncSessionSnapshot(currentSession!!.id, restoreModelMeta = false, allowCompletionTransition = false)
+                                        apiClient.getSessionStats(sid).onSuccess {
+                                            if (currentSession?.id == sid) tokenStats = it
+                                        }
+                                        syncSessionSnapshot(sid, restoreModelMeta = false, allowCompletionTransition = false)
                                     }
                                     .onFailure { err ->
                                         Toast.makeText(
@@ -1880,24 +1891,27 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onStopAgent = {
+                        val sid = activeSessionId
                         lifecycleScope.launch {
-                            apiClient.stopAgent(currentSession!!.id).onSuccess {
+                            apiClient.stopAgent(sid).onSuccess {
                                 completionSettleJob?.cancel()
                                 completionSettleJob = null
                                 hasNotifiedCompletionForCurrentRun = true
-                                isAgentBusy = false
-                                isAutoRetrying = false
-                                isToolExecuting = false
-                                agentPhaseLabel = null
-                                markSessionNotRunning(currentSession!!.id)
-                                keepAliveManager.releaseWakeLock()
-                                syncPersistentForegroundService(isBusy = false, project = currentProject)
+                                if (currentSession?.id == sid) {
+                                    isAgentBusy = false
+                                    isAutoRetrying = false
+                                    isToolExecuting = false
+                                    agentPhaseLabel = null
+                                    keepAliveManager.releaseWakeLock()
+                                    syncPersistentForegroundService(isBusy = false, project = currentProject)
+                                }
+                                markSessionNotRunning(sid)
                                 Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     onLoadBashOutput = { outputPath ->
-                        apiClient.getBashFullOutput(currentSession?.id ?: "", outputPath)
+                        apiClient.getBashFullOutput(activeSessionId, outputPath)
                     },
                     onLoadFileMeta = { path -> apiClient.getFileMeta(path) },
                     onLoadFileText = { path -> apiClient.getFileText(path) },
@@ -1909,7 +1923,7 @@ class MainActivity : ComponentActivity() {
                         apiClient.getGitDiff(currentSession?.cwd ?: "", path)
                     },
                     onLoadCommands = {
-                        val sid = currentSession?.id ?: ""
+                        val sid = activeSessionId
                         if (sid.isBlank()) Result.success(emptyList()) else apiClient.getCommands(sid)
                     },
                     onUploadFiles = { files ->
@@ -1917,8 +1931,12 @@ class MainActivity : ComponentActivity() {
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
                     },
                     onSendMessage = { prompt, images ->
-                        val sid = currentSession!!.id
-                        if (messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
+                        // 绑定到「这条输入框所属的会话」：带附件发送要先上传/编码，
+                        // 若期间用户切了会话，旧代码会在 await 后重新读 currentSession，
+                        // 把正文发到另一个会话里 —— 这里改成编译期捕获的 activeSessionId。
+                        val sid = activeSessionId
+                        val stillHere = currentSession?.id == sid
+                        if (stillHere && messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
                             val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
                             val autoTitle = clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
                             if (autoTitle.isNotBlank()) {
@@ -1926,36 +1944,43 @@ class MainActivity : ComponentActivity() {
                                 customTitles = customTitles + (sid to autoTitle)
                             }
                         }
-                        messages.add(ChatItem(role = MessageRole.USER, content = prompt))
-                        isAutoRetrying = false
-                        hasNotifiedCompletionForCurrentRun = false
-                        markAgentRunActive(phase = "正在等待模型...")
-                        // 确保 SSE 已连接
-                        if (sseConnectionState != SseConnectionState.CONNECTED) {
-                            startListeningEvents(sid, initialBusy = true)
+                        if (stillHere) {
+                            messages.add(ChatItem(role = MessageRole.USER, content = prompt))
+                            isAutoRetrying = false
+                            hasNotifiedCompletionForCurrentRun = false
+                            markAgentRunActive(phase = "正在等待模型...")
+                            // 确保 SSE 已连接
+                            if (sseConnectionState != SseConnectionState.CONNECTED) {
+                                startListeningEvents(sid, initialBusy = true)
+                            }
                         }
                         lifecycleScope.launch {
                             apiClient.sendCommand(sid, prompt, images).onFailure { err ->
-                                isAgentBusy = false
-                                agentPhaseLabel = null
-                                keepAliveManager.releaseWakeLock()
-                                syncPersistentForegroundService(isBusy = false, project = currentProject)
                                 val errText = err.message ?: "网络或服务端异常"
-                                messages.add(
-                                    ChatItem(
-                                        role = MessageRole.AGENT,
-                                        content = "⚠️ 指令发送失败: $errText",
-                                        isStreaming = false
+                                if (currentSession?.id == sid) {
+                                    isAgentBusy = false
+                                    agentPhaseLabel = null
+                                    keepAliveManager.releaseWakeLock()
+                                    syncPersistentForegroundService(isBusy = false, project = currentProject)
+                                    messages.add(
+                                        ChatItem(
+                                            role = MessageRole.AGENT,
+                                            content = "⚠️ 指令发送失败: $errText",
+                                            isStreaming = false
+                                        )
                                     )
-                                )
+                                }
                                 Toast.makeText(this@MainActivity, "指令发送失败: $errText", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
                     onSendSteer = { steerText, steerImages ->
-                        messages.add(ChatItem(role = MessageRole.USER, content = "➔ [引导] $steerText"))
+                        val sid = activeSessionId
+                        if (currentSession?.id == sid) {
+                            messages.add(ChatItem(role = MessageRole.USER, content = "➔ [引导] $steerText"))
+                        }
                         lifecycleScope.launch {
-                            apiClient.sendSteer(currentSession!!.id, steerText, steerImages).onSuccess {
+                            apiClient.sendSteer(sid, steerText, steerImages).onSuccess {
                                 Toast.makeText(this@MainActivity, "已下发引导指令", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
                                 Toast.makeText(this@MainActivity, "引导下发失败: ${err.message}", Toast.LENGTH_LONG).show()
@@ -1963,29 +1988,34 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onSendFollowUp = { followText, followImages ->
-                        queuedMessages.add(QueuedMessage("followUp", followText))
-                        lastQueueMutationAt = System.currentTimeMillis()
+                        val sid = activeSessionId
+                        if (currentSession?.id == sid) {
+                            queuedMessages.add(QueuedMessage("followUp", followText))
+                            lastQueueMutationAt = System.currentTimeMillis()
+                        }
                         lifecycleScope.launch {
-                            apiClient.sendFollowUp(currentSession!!.id, followText, followImages).onSuccess {
+                            apiClient.sendFollowUp(sid, followText, followImages).onSuccess {
                                 Toast.makeText(this@MainActivity, "已排入后续任务队列", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
-                                queuedMessages.removeAll { it.text == followText }
+                                if (currentSession?.id == sid) queuedMessages.removeAll { it.text == followText }
                                 Toast.makeText(this@MainActivity, "排入队列失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
                     onClearQueue = {
+                        val sid = activeSessionId
                         lifecycleScope.launch {
-                            apiClient.clearQueue(currentSession!!.id).onSuccess {
-                                queuedMessages.clear()
+                            apiClient.clearQueue(sid).onSuccess {
+                                if (currentSession?.id == sid) queuedMessages.clear()
                                 lastQueueMutationAt = System.currentTimeMillis()
                                 Toast.makeText(this@MainActivity, "已撤回排队消息", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
                     onApproveTool = { approved ->
+                        val sid = activeSessionId
                         lifecycleScope.launch {
-                            apiClient.sendApproval(currentSession!!.id, approved)
+                            apiClient.sendApproval(sid, approved)
                         }
                     },
                     onForkFromMessage = { userItem ->

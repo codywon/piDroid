@@ -498,6 +498,15 @@ fun ChatScreen(
         }
     }
 
+    // 用户自己滑回底部时恢复「跟随新消息」（pi-web 同款）：
+    // 否则只要点过一次时间轴/往上阅览，后续流式输出就再也不会自动跟到底部。
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.canScrollForward }
+            .collect { canForward ->
+                if (!canForward && userJumpedToHistory) userJumpedToHistory = false
+            }
+    }
+
     // 滑到最顶端就自动向 PC 续批更早的记录（IntersectionObserver 的 Compose 等价写法：
     // 观察首个可见行索引）。必须等首屏「瞬间定位到底部」完成（hasInitialScrolled），
     // 否则刚进会话时索引本来就是 0，会立刻狂拉页并把视口钉在顶部而不是最新对话上。
@@ -1518,7 +1527,9 @@ fun ChatScreen(
                         coroutineScope.launch {
                             val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
                             if (turnIdx >= 0) {
-                                listState.animateScrollToItem(turnStartRowIndex(turnIdx))
+                                // 用瞬时定位而不是动画：动画在流式输出/长列表下容易被下一次自动跟随打断，
+                                // 表现出来就是「点了一下没反应」。
+                                listState.scrollToItem(turnStartRowIndex(turnIdx))
                             }
                         }
                     },
@@ -1527,10 +1538,15 @@ fun ChatScreen(
                         coroutineScope.launch {
                             val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
                             if (turnIdx >= 0) {
-                                // 越过「用户提问」与可能的「过程折叠组」，落到最终答复
-                                var row = turnStartRowIndex(turnIdx) + 1
-                                if (allTurns[turnIdx].processItems.isNotEmpty()) row += 1
-                                listState.animateScrollToItem(row)
+                                val t = allTurns[turnIdx]
+                                // 落到真实存在的那一行：没最终答复就停在回合起点，
+                                // 否则会多跑一格、直接跳到下一个回合。
+                                var row = turnStartRowIndex(turnIdx)
+                                if (t.processItems.isNotEmpty()) row += 1
+                                if (t.finalAnswerItem != null) row += 1
+                                val maxRow = listState.layoutInfo.totalItemsCount - 1
+                                if (maxRow >= 0) row = row.coerceIn(0, maxRow)
+                                listState.scrollToItem(row)
                             }
                         }
                     },
