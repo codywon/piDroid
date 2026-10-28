@@ -255,8 +255,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         val baseUrl = prefs.serverUrl
         val json = JsonParser.parseString(body).asJsonObject
 
-        var currentProvider = "codywon"
-        var currentModelId = "gpt-6.1-sol"
+        // 快照没有模型时保持未知，不能捏造 GPT 后再覆盖真实会话模型。
+        var currentProvider = ""
+        var currentModelId = ""
         var currentThinkingLevel = ThinkingLevel.HIGH
         var modelContextWindow = 0L
 
@@ -2293,7 +2294,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                         contextTokens = usage?.get("tokens")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
                         hasContextUsage = usage != null,
                         provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
-                        modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString,
+                        modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString
+                            ?: modelObj?.get("modelId")?.takeIf { !it.isJsonNull }?.asString,
                         thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
                         isStreaming = isStreaming,
                         isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,

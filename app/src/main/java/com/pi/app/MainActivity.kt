@@ -265,8 +265,11 @@ class MainActivity : ComponentActivity() {
         var currentDefaultModelId by remember { mutableStateOf(prefs.defaultModelId) }
         var currentDefaultProvider by remember { mutableStateOf(prefs.defaultProvider) }
         var selectedModel by remember {
-            mutableStateOf(ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000, 8192, true, true))
+            mutableStateOf(ModelInfo(id = prefs.defaultModelId, name = prefs.defaultModelId, provider = prefs.defaultProvider))
         }
+        // 本地切换期间以及请求返回前启动的快照，不得撤销用户刚选的配置。
+        var modelMetaRevision by remember { mutableStateOf(0L) }
+        var pendingModelMetaChanges by remember { mutableStateOf(0) }
         var currentThinkingLevel by remember {
             mutableStateOf(ThinkingLevel.fromValue(prefs.defaultThinkingLevel))
         }
@@ -377,12 +380,13 @@ class MainActivity : ComponentActivity() {
                         currentDefaultModelId = def.modelId
                         currentDefaultProvider = def.provider
                     }
-                    val targetId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
-                    val targetProv = catalog.defaultModel?.provider ?: prefs.defaultProvider
-                    val matched = catalog.models.firstOrNull { it.id == targetId && (targetProv.isBlank() || it.provider == targetProv) }
-                        ?: catalog.models.firstOrNull { it.id == targetId }
-                        ?: catalog.models.firstOrNull()
-                    matched?.let { selectedModel = it }
+                    selectedModel = SessionModelSelection.afterCatalogRefresh(
+                        models = catalog.models,
+                        current = selectedModel,
+                        hasOpenSession = currentSession != null,
+                        defaultProvider = catalog.defaultModel?.provider ?: prefs.defaultProvider,
+                        defaultModelId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
+                    )
                 }
 
                 val cwd = currentProject
@@ -695,9 +699,9 @@ class MainActivity : ComponentActivity() {
         // 3) 仅在整个会话彻底结束（排除单条工具命令执行间隙与自动重试等待期）时触发完成震动与提示音
         suspend fun syncSessionSnapshot(
             sessionId: String,
-            restoreModelMeta: Boolean = false,
             allowCompletionTransition: Boolean = true
         ) {
+            val requestedModelMetaRevision = modelMetaRevision
             // 运行态改由 /api/sessions/{id}/state 判定（39KB，实测 9ms），
             // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
             // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
@@ -711,6 +715,25 @@ class MainActivity : ComponentActivity() {
             // 以前：打开 A 后马上切到 B，A 的慢响应会直接并进 B 的 messages 与统计 —— 这就是「串会话」。
             if (currentSession?.id != sessionId) return
             val runtime = runtimeResult.getOrNull()
+            val history = histResult.getOrNull()
+            // 与 pi-web 一致：本地切换 > 存活 runtime > 会话历史；每次同步均对齐 PC 的选择。
+            // 元数据独立于历史正文处理，历史请求失败时仍可使用 runtime。
+            if (pendingModelMetaChanges == 0 && modelMetaRevision == requestedModelMetaRevision) {
+                SessionModelSelection.fromSnapshot(
+                    models = dynamicCatalog.models,
+                    runtime = runtime,
+                    historyProvider = history?.provider,
+                    historyModelId = history?.modelId
+                )?.let { selectedModel = it }
+                val thinking = runtime?.takeIf { it.runtimeAlive }?.thinkingLevel
+                    ?.takeIf { it.isNotBlank() }
+                if (thinking != null) {
+                    currentThinkingLevel = ThinkingLevel.fromValue(thinking)
+                } else if (history != null) {
+                    currentThinkingLevel = history.thinkingLevel
+                }
+                modelMetaRevision++
+            }
             val runningResult = if (runtime != null) {
                 Result.success(runtime.running)
             } else {
@@ -856,29 +879,11 @@ class MainActivity : ComponentActivity() {
                     }
                     autoCompactionEnabled = st.autoCompactionEnabled
                     autoRetryEnabled = st.autoRetryEnabled
-                    // 顺手对齐模型/思考档位（用户可能在 PC 端切过）
-                    if (restoreModelMeta) {
-                        st.modelId?.takeIf { it.isNotBlank() }?.let { mid ->
-                            dynamicCatalog.models.firstOrNull {
-                                it.id.equals(mid, ignoreCase = true) &&
-                                    (st.provider.isNullOrBlank() || it.provider.equals(st.provider, ignoreCase = true))
-                            }?.let { selectedModel = it }
-                        }
-                        st.thinkingLevel?.takeIf { it.isNotBlank() }?.let {
-                            currentThinkingLevel = ThinkingLevel.fromValue(it)
-                        }
-                    }
                 }
                 // 不再由 App 在阈值处自动 POST {"type":"compact"}：pi 的 manual compact
                 // 内部第一步就是 await this.abort()，会把正在执行的回合直接打断成
                 // 「模型服务异常: This operation was aborted」。阈值压缩交给 pi 自身的
                 // auto_compaction（在 turn 边界触发，不打断进行中的请求）。
-                if (restoreModelMeta) {
-                    dynamicCatalog.models.firstOrNull { it.id == hist.modelId }?.let {
-                        selectedModel = it
-                    }
-                    currentThinkingLevel = hist.thinkingLevel
-                }
                 // 首屏是否真的渲染得出内容？
                 if (messages.isNotEmpty() || olderMessages.isNotEmpty()) {
                     isLoadingSessionHistory = false
@@ -924,7 +929,7 @@ class MainActivity : ComponentActivity() {
 
         syncSnapshotCallback = { sid ->
             lifecycleScope.launch {
-                syncSessionSnapshot(sid, restoreModelMeta = false, allowCompletionTransition = false)
+                syncSessionSnapshot(sid, allowCompletionTransition = false)
             }
         }
 
@@ -963,7 +968,7 @@ class MainActivity : ComponentActivity() {
                             // 运行态的收尾统一由 /api/sessions/{id}/state + agent_end 防抖判定。
                         }
                         "reconnected_sync" -> {
-                            syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = true)
+                            syncSessionSnapshot(sessionId, allowCompletionTransition = true)
                         }
                         "agent_start", "turn_start" -> {
                             isAutoRetrying = false
@@ -1013,7 +1018,7 @@ class MainActivity : ComponentActivity() {
                         }
                         "auto_compaction_end" -> {
                             agentPhaseLabel = null
-                            syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = false)
+                            syncSessionSnapshot(sessionId, allowCompletionTransition = false)
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
                             val chunk = event.effectiveText
@@ -1258,7 +1263,7 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                             lifecycleScope.launch {
-                                syncSessionSnapshot(sessionId, restoreModelMeta = false, allowCompletionTransition = false)
+                                syncSessionSnapshot(sessionId, allowCompletionTransition = false)
                             }
                         }
                         "message_stop" -> {
@@ -1315,7 +1320,8 @@ class MainActivity : ComponentActivity() {
 
         /** 把快照里的模型/统计/翻页游标落到 UI 状态（内存缓存、磁盘缓存、网络快照共用） */
         fun applyHistoryMeta(hist: SessionHistoryData) {
-            selectedModel = ModelInfo(id = hist.modelId, name = hist.modelId, provider = hist.provider)
+            SessionModelSelection.resolve(dynamicCatalog.models, hist.provider, hist.modelId)
+                ?.let { selectedModel = it }
             currentThinkingLevel = hist.thinkingLevel
             tokenStats = hist.stats
             hasEarlierOnServer = hist.hasMoreOnServer
@@ -1333,6 +1339,7 @@ class MainActivity : ComponentActivity() {
                 prefs.markSessionRead(session.id)
                 unreadSessionIds = prefs.getUnreadSessionIds()
             }
+            modelMetaRevision++
             currentSession = session
             currentProject = session.workspaceName
             lastOpenedWorkspacePath = session.workspacePath
@@ -1364,12 +1371,15 @@ class MainActivity : ComponentActivity() {
                 // 没有内存缓存：先试着回放上次落盘的快照（进程被回收后也能秒出正文），
                 // 同时由 syncSessionSnapshot 拉网络最新内容覆盖。
                 isLoadingSessionHistory = true
+                val cachedMetaRevision = modelMetaRevision
                 lifecycleScope.launch {
                     val disk = apiClient.getDiskCachedSessionDetail(session.id) ?: return@launch
                     if (disk.messages.isEmpty()) return@launch
                     if (currentSession?.id != session.id || messages.isNotEmpty()) return@launch
                     messages.addAll(disk.messages)
-                    applyHistoryMeta(disk)
+                    if (pendingModelMetaChanges == 0 && modelMetaRevision == cachedMetaRevision) {
+                        applyHistoryMeta(disk)
+                    }
                     isLoadingSessionHistory = false
                 }
             }
@@ -1377,7 +1387,7 @@ class MainActivity : ComponentActivity() {
             startListeningEvents(session.id, session.isRunning)
 
             lifecycleScope.launch {
-                syncSessionSnapshot(session.id, restoreModelMeta = true, allowCompletionTransition = false)
+                syncSessionSnapshot(session.id, allowCompletionTransition = false)
             }
         }
 
@@ -1454,7 +1464,7 @@ class MainActivity : ComponentActivity() {
                         System.currentTimeMillis() - lastDetailSyncAt > 15_000L
                     if (shouldSyncDetail) {
                         lastDetailSyncAt = System.currentTimeMillis()
-                        syncSessionSnapshot(activeSession.id, restoreModelMeta = false, allowCompletionTransition = true)
+                        syncSessionSnapshot(activeSession.id, allowCompletionTransition = true)
                     }
                 }
             }
@@ -1509,12 +1519,15 @@ class MainActivity : ComponentActivity() {
                     currentDefaultThinkingLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),
                     onSetDefaultModel = { model ->
                         prefs.defaultModelId = model.id
-                        selectedModel = model
+                        prefs.defaultProvider = model.provider
+                        currentDefaultModelId = model.id
+                        currentDefaultProvider = model.provider
+                        if (currentSession == null) selectedModel = model
                         Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
                     },
                     onSetDefaultThinkingLevel = { level ->
                         prefs.defaultThinkingLevel = level.value
-                        currentThinkingLevel = level
+                        if (currentSession == null) currentThinkingLevel = level
                         Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
                     },
                     onRefreshModels = {
@@ -1556,7 +1569,7 @@ class MainActivity : ComponentActivity() {
                             dynamicCatalog.models + updatedModel
                         }
                         dynamicCatalog = dynamicCatalog.copy(models = updatedList)
-                        if (selectedModel.id == modelId) {
+                        if (selectedModel.provider == providerName && selectedModel.id == modelId) {
                             selectedModel = updatedModel
                             tokenStats = tokenStats.copy(maxContextWindow = contextWindow)
                         }
@@ -1920,7 +1933,7 @@ class MainActivity : ComponentActivity() {
                     onRefreshSession = {
                         val sid = activeSessionId
                         lifecycleScope.launch {
-                            syncSessionSnapshot(sid, restoreModelMeta = true, allowCompletionTransition = false)
+                            syncSessionSnapshot(sid, allowCompletionTransition = false)
                             Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                         }
                     },
@@ -1950,7 +1963,6 @@ class MainActivity : ComponentActivity() {
                                         // 重新拉一次快照：服务端现在只返回编辑点之前的活跃分支
                                         syncSessionSnapshot(
                                             sid,
-                                            restoreModelMeta = false,
                                             allowCompletionTransition = false
                                         )
                                     }
@@ -1985,7 +1997,7 @@ class MainActivity : ComponentActivity() {
                                         apiClient.getSessionStats(sid).onSuccess {
                                             if (currentSession?.id == sid) tokenStats = it
                                         }
-                                        syncSessionSnapshot(sid, restoreModelMeta = false, allowCompletionTransition = false)
+                                        syncSessionSnapshot(sid, allowCompletionTransition = false)
                                     }
                                     .onFailure { err ->
                                         Toast.makeText(
@@ -2034,10 +2046,16 @@ class MainActivity : ComponentActivity() {
                     },
                     onLoadFileBytes = { path -> apiClient.getFileBytes(path) },
                     onLoadGitStatus = {
-                        apiClient.getGitStatus(currentSession?.cwd ?: "")
+                        val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
+                            ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }
+                            ?: currentProject
+                        apiClient.getGitStatus(cwd)
                     },
                     onLoadGitDiff = { path ->
-                        apiClient.getGitDiff(currentSession?.cwd ?: "", path)
+                        val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
+                            ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }
+                            ?: currentProject
+                        apiClient.getGitDiff(cwd, path)
                     },
                     onLoadCommands = {
                         val sid = activeSessionId
@@ -2185,29 +2203,53 @@ class MainActivity : ComponentActivity() {
                         defaultProvider = currentDefaultProvider,
                         onModelSelected = { model ->
                             val previous = selectedModel
+                            modelMetaRevision++
+                            val selectionRevision = modelMetaRevision
                             selectedModel = model
                             currentSession?.let { sess ->
+                                pendingModelMetaChanges++
                                 lifecycleScope.launch {
-                                    // pi 侧可能拒绝（典型：provider 已在 models.json 里改名，
-                                    // 服务端返回 "Model not found"）。失败必须回滚，否则手机
-                                    // 显示的模型与 PC/会话保存的模型永久错位。
-                                    apiClient.updateModel(sess.id, model.provider, model.id)
-                                        .onSuccess {
-                                            Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
-                                        }
-                                        .onFailure { err ->
-                                            selectedModel = previous
-                                            Toast.makeText(this@MainActivity, "模型切换失败: ${err.message}", Toast.LENGTH_LONG).show()
-                                        }
+                                    try {
+                                        apiClient.updateModel(sess.id, model.provider, model.id)
+                                            .onSuccess {
+                                                Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .onFailure { err ->
+                                                if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {
+                                                    selectedModel = previous
+                                                }
+                                                Toast.makeText(this@MainActivity, "模型切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                            }
+                                    } finally {
+                                        pendingModelMetaChanges--
+                                        modelMetaRevision++
+                                    }
                                 }
                             }
                         },
                         onThinkingLevelChanged = { level ->
+                            val previous = currentThinkingLevel
+                            modelMetaRevision++
+                            val selectionRevision = modelMetaRevision
                             currentThinkingLevel = level
                             currentSession?.let { sess ->
+                                pendingModelMetaChanges++
                                 lifecycleScope.launch {
-                                    apiClient.updateThinkingLevel(sess.id, level)
-                                    Toast.makeText(this@MainActivity, "已切换思考级别: ${level.value}", Toast.LENGTH_SHORT).show()
+                                    try {
+                                        apiClient.updateThinkingLevel(sess.id, level)
+                                            .onSuccess {
+                                                Toast.makeText(this@MainActivity, "已切换思考级别: ${level.value}", Toast.LENGTH_SHORT).show()
+                                            }
+                                            .onFailure { err ->
+                                                if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {
+                                                    currentThinkingLevel = previous
+                                                }
+                                                Toast.makeText(this@MainActivity, "思考级别切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                            }
+                                    } finally {
+                                        pendingModelMetaChanges--
+                                        modelMetaRevision++
+                                    }
                                 }
                             }
                         },

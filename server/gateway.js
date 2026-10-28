@@ -439,7 +439,7 @@ function printBannerAndQr(connectHost, isPiWebRunning) {
   const connectUri = `pidroid://connect?url=${encodeURIComponent(connectHost)}&token=${AUTH_TOKEN}&name=${encodeURIComponent(hostName)}`;
 
   console.log('\n======================================================');
-  console.log('       🛡️  piDroid 安全伴侣网关 (Termius 纯暗色体系)   ');
+  console.log('       🛡️  piDroid 安全网关   ');
   console.log('======================================================');
   console.log(`[本地监听]  http://127.0.0.1:${PORT}`);
   console.log(`[局域网直连] http://${localIp}:${PORT}`);

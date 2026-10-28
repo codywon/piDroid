@@ -63,6 +63,11 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_USE_UPDATE_MIRRORS, false)
         set(value) = prefs.edit().putBoolean(KEY_USE_UPDATE_MIRRORS, value).apply()
 
+    // Git 差异与源码查看自动换行开关：默认开启 (对标 GitHub Mobile，移动端竖屏优先自动换行)
+    var gitDiffSoftWrap: Boolean
+        get() = prefs.getBoolean(KEY_GIT_DIFF_SOFT_WRAP, true)
+        set(value) = prefs.edit().putBoolean(KEY_GIT_DIFF_SOFT_WRAP, value).apply()
+
     // 输入框草稿：按会话隔离保存，防止旋转/切主题/进程回收后丢失未发送内容
     fun getSessionDraft(sessionId: String): String {
         if (sessionId.isBlank()) return ""
@@ -375,6 +380,7 @@ class AppPreferences(context: Context) {
         private const val KEY_COMPLETION_SOUND_ENABLED = "key_completion_sound_enabled"
         private const val KEY_TASK_COMPLETED_NOTIFY = "key_task_completed_notify"
         private const val KEY_USE_UPDATE_MIRRORS = "key_use_update_mirrors"
+        private const val KEY_GIT_DIFF_SOFT_WRAP = "key_git_diff_soft_wrap"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
         private const val KEY_DEFAULT_PROVIDER = "key_default_provider"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"

@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.32] - 2026-10-28
+
+### 🔍 移动端 Git Diff 体验专项重构（深度对标 GitHub Mobile 规范）
+
+- **彻底根治 Compose 0 宽度测量导致的白屏 Bug**（`StructuredDiffView.kt`）：
+  - 根因排查：在单行横向滚动模式（`!softWrap`）下，父容器通过 `horizontalScroll` 提供了无边界宽度（`maxWidth = Infinity`），而子项 `Text` 设置了 `weight(1f)`。在 Compose 的 `Row` 测量策略中，权重无法瓜分无限宽度，退化为测量为 `0` 宽度，导致整行代码文字直接消失变空白，只有手动切到「已自动换行」才强行绕过；
+  - 核心修复：在单行滚动模式下解绑 `weight(1f)`，使用自然宽度测绘，消除文字凭空消失的 Bug；
+  - 视口全宽底色加固：引入 `BoxWithConstraints` 保证短行在横向滚动时的绿/红高亮底色能够撑满整个视口，不会在中间突兀截断。
+- **移动端优先：默认开启自动换行与偏好持久化**（`GitChangesFullScreen.kt` + `AppPreferences.kt`）：
+  - 对标 GitHub 官方安卓客户端设计哲学，手机竖屏场景（宽度仅 360~412dp）默认启用「自动换行」，点开即读，单手即可流畅自上而下审阅，免去左右反复频繁横滑；
+  - 新增 `prefs.gitDiffSoftWrap` 持久化，用户切换换行/单行滚动偏好后全局自动记忆，跨文件与重启均无需重复点击。
+- **Gutter 瘦身与屏幕有效面积大幅提升**：
+  - 行号槽位（旧行号 + 新行号 + 符号）总宽由原先的 89dp（侵占近 25% 屏幕面积）极限紧凑压缩至 ~66dp，为代码正文腾出 **15%+（约 5~8 个字符）** 的有效横向宽度；
+  - 左侧 3dp 红绿指示条改用 `drawBehind` 绘制，杜绝 `fillMaxHeight` 在无界容器中高度丢失问题。
+- **Hunk Header 通栏 Banner 独立分块**：
+  - 淘汰旧版将 `@@ -a,b +c,d @@` 伪装成代码行挤在行号列（显示畸形 `... @ @@...`）的陈旧做法；
+  - 升级为 GitHub Mobile 规范的**全宽独立通栏横条**，搭配柔和浅蓝底色、等宽药丸标签以及右侧淡化的上下文函数/变量名说明。
+- **行内词级高亮（Intra-line Word Diff）**（`UnifiedDiffParser.kt`）：
+  - 对紧邻的 1:1 删改行进行最长公共前后缀（Common Prefix/Suffix）剔除，精确定位被修改的具体词汇/参数；
+  - 在整行浅绿/浅红柔和底色上，对被变动的具体词汇叠加深一度的高亮底色（`SpanStyle`），审阅配置与参数变动一目了然。
+- **差异规模动态徽标**：
+  - 详情页模式顶栏实时统计当前文件的变动行数并展示绿色 `+N` / 红色 `-N` 胶囊徽标。
+
 ## [1.7.31] - 2026-10-28
 
 ### 🌿 Git 工作目录代码变更独立全屏页与结构化 Diff（Release v1.7.31）

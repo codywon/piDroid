@@ -2095,7 +2095,10 @@ fun ChatScreen(
             onLoadGitStatus = onLoadGitStatus,
             onLoadGitDiff = onLoadGitDiff,
             onLoadFileText = onLoadFileText,
-            onOpenLinkTarget = { href, baseDir -> openLinkTarget(href, baseDir) }
+            onOpenLinkTarget = { href, baseDir ->
+                showGitChangesScreen = false
+                openLinkTarget(href, baseDir)
+            }
         )
     }
 

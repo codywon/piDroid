@@ -7,7 +7,8 @@ data class UnifiedPatchLine(
     val type: PatchLineType,
     val text: String,
     val oldLineNo: Int? = null,
-    val newLineNo: Int? = null
+    val newLineNo: Int? = null,
+    val highlightRange: IntRange? = null
 )
 
 enum class PatchLineType {
@@ -50,7 +51,7 @@ object UnifiedDiffParser {
                     ParsedDiffFile(
                         oldPath = pendingOldPath,
                         newPath = pendingNewPath,
-                        lines = currentLines.toList()
+                        lines = enrichWordDiffs(currentLines.toList())
                     )
                 )
                 currentLines = mutableListOf()
@@ -61,15 +62,23 @@ object UnifiedDiffParser {
 
         val rawLines = patchText.split("\r\n", "\n")
         for (line in rawLines) {
+            // 如果遇到明确的新文件标志，即使上一段 hunk 计数值未耗尽（如异常截断补丁），也强制结束上一文件
+            if (line.startsWith("diff --git ")) {
+                flushFile()
+                hunkOldRemaining = 0
+                hunkNewRemaining = 0
+                continue
+            }
+
             val insideHunk = hunkOldRemaining > 0 || hunkNewRemaining > 0
 
             // 处于 Hunk 之外时，处理文件头部信息
             if (!insideHunk) {
-                if (line.startsWith("diff --git ")) {
-                    flushFile()
-                    continue
-                }
                 if (line.startsWith("--- ")) {
+                    // 兼容没有 diff --git 头部的标准 unified diff：遇到新的 --- 时结算上一文件
+                    if (currentLines.isNotEmpty()) {
+                        flushFile()
+                    }
                     pendingOldPath = cleanPath(line.removePrefix("--- "))
                     continue
                 }
@@ -187,5 +196,80 @@ object UnifiedDiffParser {
             path.startsWith("a/") || path.startsWith("b/") -> path.substring(2)
             else -> path
         }
+    }
+
+    /**
+     * 对紧邻的删减与新增代码块（特别是 1:1 修改行）进行词级别 (Intra-line Word Diff) 对比，
+     * 标注出具体被修改的字符区间（对标 GitHub Mobile）。
+     */
+    private fun enrichWordDiffs(lines: List<UnifiedPatchLine>): List<UnifiedPatchLine> {
+        if (lines.isEmpty()) return lines
+        val result = lines.toMutableList()
+        var i = 0
+        while (i < result.size) {
+            if (result[i].type == PatchLineType.REMOVED) {
+                val removedStart = i
+                while (i < result.size && result[i].type == PatchLineType.REMOVED) {
+                    i++
+                }
+                val removedCount = i - removedStart
+
+                val addedStart = i
+                while (i < result.size && result[i].type == PatchLineType.ADDED) {
+                    i++
+                }
+                val addedCount = i - addedStart
+
+                // 连续删改行数相等且在合理范围（1~5行）内，按行对应进行局部词级对比
+                if (removedCount in 1..5 && removedCount == addedCount) {
+                    for (k in 0 until removedCount) {
+                        val oldLine = result[removedStart + k]
+                        val newLine = result[addedStart + k]
+                        val (oldRange, newRange) = computeWordDiffHighlight(oldLine.text, newLine.text)
+                        if (oldRange != null) {
+                            result[removedStart + k] = oldLine.copy(highlightRange = oldRange)
+                        }
+                        if (newRange != null) {
+                            result[addedStart + k] = newLine.copy(highlightRange = newRange)
+                        }
+                    }
+                }
+                continue
+            }
+            i++
+        }
+        return result
+    }
+
+    private fun computeWordDiffHighlight(oldText: String, newText: String): Pair<IntRange?, IntRange?> {
+        if (oldText == newText || oldText.isEmpty() || newText.isEmpty()) return null to null
+
+        var prefix = 0
+        val maxLen = minOf(oldText.length, newText.length)
+        while (prefix < maxLen && oldText[prefix] == newText[prefix]) {
+            prefix++
+        }
+
+        var suffix = 0
+        while (suffix < (maxLen - prefix) &&
+            oldText[oldText.length - 1 - suffix] == newText[newText.length - 1 - suffix]
+        ) {
+            suffix++
+        }
+
+        // 仅在存在有效共有前缀或后缀（说明为局部修改）时才高亮差异词，避免整行不同时出现大面积冗余双重高亮
+        if (prefix > 0 || suffix > 0) {
+            val oldRange = if (prefix < oldText.length - suffix) {
+                prefix until (oldText.length - suffix)
+            } else null
+
+            val newRange = if (prefix < newText.length - suffix) {
+                prefix until (newText.length - suffix)
+            } else null
+
+            return oldRange to newRange
+        }
+
+        return null to null
     }
 }

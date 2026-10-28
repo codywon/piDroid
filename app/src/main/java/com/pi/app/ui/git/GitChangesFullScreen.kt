@@ -19,6 +19,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -26,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.GitFileChange
 import com.pi.app.data.model.GitStatusResult
+import com.pi.app.data.storage.AppPreferences
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.SvgWebViewCanvas
@@ -39,6 +41,9 @@ import kotlinx.coroutines.launch
  * PREVIEW: 若为 Markdown 或 SVG，直接渲染可视化结果
  */
 enum class GitDetailMode { DIFF, SOURCE, PREVIEW }
+
+/** 顶栏增删统计徽标：超过 999 行折叠为 999+，防止窄屏顶栏被大数字挤爆。 */
+private fun formatDiffStat(count: Int): String = if (count > 999) "999+" else count.toString()
 
 /**
  * 工作目录 Git 代码变更独立全屏阅读界面（对标 pi-web 移动端全视口文件与变更面板）。
@@ -62,6 +67,7 @@ fun GitChangesFullScreen(
     onOpenLinkTarget: (String, String) -> Unit = { _, _ -> }
 ) {
     val theme = LocalAppTheme.current
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     // 状态与加载
@@ -84,7 +90,11 @@ fun GitChangesFullScreen(
                     statusError = null
                 }
                 .onFailure {
-                    statusError = it.message ?: "读取 Git 状态失败"
+                    val msg = it.message ?: "读取 Git 状态失败"
+                    statusError = msg
+                    if (statusResult != null) {
+                        android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_SHORT).show()
+                    }
                 }
             isLoadingStatus = false
         }
@@ -121,11 +131,18 @@ fun GitChangesFullScreen(
                             overflow = TextOverflow.Ellipsis
                         )
                         val repoRoot = statusResult?.repositoryRoot ?: cwd
+                        val normRoot = repoRoot.replace('\\', '/').trimEnd('/')
                         Text(
                             text = if (selectedFile != null) {
-                                selectedFile!!.filePath.removePrefix(repoRoot).trimStart('/', '\\')
+                                val normPath = selectedFile!!.filePath.replace('\\', '/')
+                                val rel = if (normPath.startsWith(normRoot, ignoreCase = true)) {
+                                    normPath.substring(normRoot.length).trimStart('/')
+                                } else {
+                                    normPath.trimStart('/')
+                                }
+                                rel
                             } else {
-                                repoRoot.replace('\\', '/')
+                                normRoot
                             },
                             style = MaterialTheme.typography.bodySmall,
                             fontSize = 10.sp,
@@ -340,7 +357,13 @@ private fun GitFileRowItem(
         else -> Color(0xFFD29922)
     }
 
-    val relPath = file.filePath.removePrefix(repoRoot).trimStart('/', '\\').replace('\\', '/')
+    val normPath = file.filePath.replace('\\', '/')
+    val normRoot = repoRoot.replace('\\', '/').trimEnd('/')
+    val relPath = if (normPath.startsWith(normRoot, ignoreCase = true)) {
+        normPath.substring(normRoot.length).trimStart('/')
+    } else {
+        normPath.trimStart('/')
+    }
     val lastSlash = relPath.lastIndexOf('/')
     val dirPart = if (lastSlash >= 0) relPath.substring(0, lastSlash + 1) else ""
     val namePart = if (lastSlash >= 0) relPath.substring(lastSlash + 1) else relPath
@@ -422,9 +445,11 @@ private fun GitFileDetailView(
 ) {
     val theme = LocalAppTheme.current
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val prefs = remember(context) { AppPreferences(context) }
 
     var mode by remember { mutableStateOf(GitDetailMode.DIFF) }
-    var softWrap by remember { mutableStateOf(false) }
+    var softWrap by remember { mutableStateOf(prefs.gitDiffSoftWrap) }
 
     // Diff 数据
     var patchText by remember { mutableStateOf<String?>(null) }
@@ -440,9 +465,10 @@ private fun GitFileDetailView(
     // 请求序号防乱序
     var currentRequestSeq by remember { mutableIntStateOf(0) }
 
+    val isDeleted = file.code.startsWith("D") || file.status == "deleted"
     val isMarkdown = remember(file.filePath) { FileLinks.isMarkdownPath(file.filePath) }
     val isSvg = remember(file.filePath) { file.filePath.endsWith(".svg", ignoreCase = true) }
-    val canPreview = isMarkdown || isSvg
+    val canPreview = !isDeleted && (isMarkdown || isSvg)
 
     // 加载 Diff
     fun loadDiff() {
@@ -514,8 +540,11 @@ private fun GitFileDetailView(
                 Row(modifier = Modifier.padding(2.dp)) {
                     val modes = buildList {
                         add(GitDetailMode.DIFF to "差异")
-                        add(GitDetailMode.SOURCE to "源码")
-                        if (canPreview) add(GitDetailMode.PREVIEW to "预览")
+                        // 已删除文件在工作区已无实体内容，对齐 pi-web 锁定仅展示删除 Diff
+                        if (!isDeleted) {
+                            add(GitDetailMode.SOURCE to "源码")
+                            if (canPreview) add(GitDetailMode.PREVIEW to "预览")
+                        }
                     }
 
                 modes.forEach { item ->
@@ -548,24 +577,83 @@ private fun GitFileDetailView(
                 }
             }
 
-            // 软换行开关（仅在差异与源码模式有效）
-            if (mode != GitDetailMode.PREVIEW) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.clickable { softWrap = !softWrap }
-                ) {
-                    Icon(
-                        imageVector = if (softWrap) Icons.Default.WrapText else Icons.Default.Notes,
-                        contentDescription = null,
-                        tint = if (softWrap) theme.primary else theme.textMuted,
-                        modifier = Modifier.size(15.dp)
-                    )
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        text = if (softWrap) "已自动换行" else "单行滚动",
-                        fontSize = 10.5.sp,
-                        color = if (softWrap) theme.primary else theme.textMuted
-                    )
+            // 右侧信息区：变更规模统计（+N -N）+ 软换行开关（对标 GitHub Mobile 规范）
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (mode == GitDetailMode.DIFF && !patchText.isNullOrBlank()) {
+                    val stats = remember(patchText) {
+                        var adds = 0
+                        var dels = 0
+                        patchText.orEmpty().lineSequence().forEach { raw ->
+                            // 精确排除 "+++ b/..." 与 "--- a/..." 文件头，避免统计多 1 行；
+                            // 用 lineSequence 避免为长补丁额外分配整份行列表
+                            when {
+                                raw.startsWith("+++ ") || raw.startsWith("--- ") -> Unit
+                                raw.startsWith("+") -> adds++
+                                raw.startsWith("-") -> dels++
+                            }
+                        }
+                        adds to dels
+                    }
+                    if (stats.first > 0 || stats.second > 0) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (stats.first > 0) {
+                                Text(
+                                    text = "+${formatDiffStat(stats.first)}",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF2EA043),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                            if (stats.first > 0 && stats.second > 0) {
+                                Spacer(modifier = Modifier.width(4.dp))
+                            }
+                            if (stats.second > 0) {
+                                Text(
+                                    text = "-${formatDiffStat(stats.second)}",
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFCF222E),
+                                    maxLines = 1,
+                                    softWrap = false
+                                )
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(3.dp)
+                                .background(theme.textMuted.copy(alpha = 0.4f), RoundedCornerShape(1.5.dp))
+                        )
+                    }
+                }
+
+                // 软换行开关（仅在差异与源码模式有效）
+                if (mode != GitDetailMode.PREVIEW) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.clickable {
+                            val next = !softWrap
+                            softWrap = next
+                            prefs.gitDiffSoftWrap = next
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (softWrap) Icons.Default.WrapText else Icons.Default.Notes,
+                            contentDescription = null,
+                            tint = if (softWrap) theme.primary else theme.textMuted,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (softWrap) "已自动换行" else "单行滚动",
+                            fontSize = 10.5.sp,
+                            color = if (softWrap) theme.primary else theme.textMuted
+                        )
+                    }
                 }
             }
         }
