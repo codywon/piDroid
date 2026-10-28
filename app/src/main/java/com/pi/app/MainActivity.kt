@@ -233,6 +233,8 @@ class MainActivity : ComponentActivity() {
             mutableStateOf<Session?>(null)
         }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
+        // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区
+        var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf("") }
         var isLoadingSessions by remember { mutableStateOf(false) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
@@ -900,6 +902,8 @@ class MainActivity : ComponentActivity() {
                 }
 
                 sseClient.listenAgentEvents(sessionId).collect { event ->
+                    // 会话切换兜底：切走之后，旧会话的事件一律丢弃（不往当前列表里写入）
+                    if (currentSession?.id != sessionId) return@collect
                     when (event.type) {
                         "connection_state" -> {
                             sseConnectionState = when (event.connectionState) {
@@ -1290,6 +1294,7 @@ class MainActivity : ComponentActivity() {
             }
             currentSession = session
             currentProject = session.workspaceName
+            lastOpenedWorkspacePath = session.workspacePath
             queuedMessages.clear()
             isAutoRetrying = false
             isToolExecuting = false
@@ -2139,6 +2144,8 @@ class MainActivity : ComponentActivity() {
                     isGatewayOnline = isGatewayOnline,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
+                    // 左滑返回时定位到「刚才那个会话所在的工作区」，而不是默认第一条
+                    initialWorkspacePath = lastOpenedWorkspacePath,
                     pinnedSessionIds = pinnedSessionIds,
                     archivedSessionIds = archivedSessionIds,
                     customTitles = customTitles,
@@ -2298,6 +2305,7 @@ class MainActivity : ComponentActivity() {
                                 )
                                 currentSession = newSession
                                 currentProject = newSession.workspaceName
+                                lastOpenedWorkspacePath = newSession.workspacePath
                                 messages.clear()
                                 isLoadingSessionHistory = false
                                 olderMessages = emptyList()

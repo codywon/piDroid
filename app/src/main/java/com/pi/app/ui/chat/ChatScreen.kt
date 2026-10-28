@@ -24,7 +24,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -169,7 +169,9 @@ fun ChatScreen(
         delay(400)
         draftPrefs.saveSessionDraft(sessionId, inputText)
     }
-    val listState = rememberLazyListState()
+    // 滚动位置也必须按会话隔离：否则切到新会话时会沿用上一个会话的滚动偏移，
+    // 看起来像“打开了一个不从头也不到底的会话”。
+    val listState = remember(sessionId) { LazyListState() }
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
@@ -192,8 +194,8 @@ fun ChatScreen(
     var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
     var isLoadingCommands by remember { mutableStateOf(false) }
 
-    // 图片与文件附件选择器
-    val attachments = remember { mutableStateListOf<ChatAttachment>() }
+    // 图片与文件附件选择器（按会话隔离：切会话后不会把上个会话的附件带过去）
+    val attachments = remember(sessionId) { mutableStateListOf<ChatAttachment>() }
     val attachmentPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
     ) { uris ->
@@ -417,10 +419,10 @@ fun ChatScreen(
 
     // 记录用户是否正在通过时间轴或手动上翻回看历史，避免后台轮询或流式输出强制拉回底部打断阅读
     //
-    // rememberSaveable：rememberLazyListState 自己会把滚动位置存进 SavedState，
+    // rememberSaveable：滚动位置已在 listState 里按 sessionId 隔离（见上），
     // 这里额外记住「是否已经完成首屏定位」与「用户是否在上翻读历史」。
-    var userJumpedToHistory by rememberSaveable(sessionTitle) { mutableStateOf(false) }
-    var hasInitialScrolled by rememberSaveable(sessionTitle) { mutableStateOf(false) }
+    var userJumpedToHistory by rememberSaveable(sessionId) { mutableStateOf(false) }
+    var hasInitialScrolled by rememberSaveable(sessionId) { mutableStateOf(false) }
 
     // 顶部哨兵行：有更早历史时是加载提示行，否则是「起点」分隔线（都只占一行）
     val showTopSentinel = hasEarlierOnServer || isLoadingOlder || conversation.size > 6
@@ -1292,6 +1294,19 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
+            // 首屏正文还在路上：屏幕正中一枚加载圈（对上“白屏里什么都没有”的观感）
+            if (isFirstScreenLoading) {
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(28.dp),
+                        strokeWidth = 2.dp,
+                        color = theme.primary.copy(alpha = 0.85f)
+                    )
+                }
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -1466,9 +1481,9 @@ fun ChatScreen(
                 // 历史尚未到达时只画一条静默骨架（对齐 pi-web：不显示「正在同步历史…」类文案）
                 if (conversation.isEmpty()) {
                     item(key = "chat_empty_hint") {
-                        if (isFirstScreenLoading) {
-                            ChatHistorySkeleton()
-                        } else {
+                        // 加载中不再放任何文案（居中加载圈在上一层 Box 里），
+                        // 只有「确实没有对话」时才提示开始。
+                        if (!isFirstScreenLoading) {
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -2723,55 +2738,6 @@ private fun HistoryTopLoader(
                 text = if (hiddenCount > 0) "上滑加载更早的 $hiddenCount 轮" else "上滑加载更早的记录",
                 fontSize = 11.sp,
                 color = theme.textMuted
-            )
-        }
-    }
-}
-
-/**
- * 首屏历史骨架：跟 pi-web 一样，加载时只给一个安静的形状占位，不堆状态文案。
- * 纯静态，不加动画帧，不干扰阅读。
- */
-@Composable
-private fun ChatHistorySkeleton() {
-    val theme = LocalAppTheme.current
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 20.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        // 用户提问（靠右的短条）
-        Box(
-            modifier = Modifier
-                .fillMaxWidth(0.62f)
-                .align(Alignment.End)
-                .height(30.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(theme.surfaceContainer)
-        )
-        // 助手回复（靠左的多行条）
-        Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .height(11.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(theme.surfaceContainer)
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.78f)
-                    .height(11.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(theme.surfaceContainer)
-            )
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth(0.55f)
-                    .height(11.dp)
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(theme.surfaceContainer)
             )
         }
     }

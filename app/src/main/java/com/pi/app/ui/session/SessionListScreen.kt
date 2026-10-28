@@ -103,6 +103,8 @@ fun SessionListScreen(
     isConfigured: Boolean,
     isGatewayOnline: Boolean = true,
     sessions: List<Session>,
+    /** 上次离开的工作区路径：左滑返回列表时定位到它（空/无效则回落到第一条） */
+    initialWorkspacePath: String = "",
     isLoading: Boolean,
     pinnedSessionIds: Set<String> = emptySet(),
     archivedSessionIds: Set<String> = emptySet(),
@@ -185,8 +187,27 @@ fun SessionListScreen(
         )
     }
 
-    var selectedWorkspacePath by remember(workspaces) {
-        mutableStateOf(workspaces.firstOrNull()?.path ?: "")
+    // 当前选中的工作区：**不能**用 remember(workspaces) —— sessions 一刷新，workspaces 列表内容
+    // 就会变（运行数/排序/新增会话），remember 的 key 跟着失效，选区被重置到「第一条」，
+    // 于是从会话左滑返回时总是回到别的工作区。现在只在首帧猜一次，后续由下面的
+    // LaunchedEffect 根据「上次离开的工作区」或用户自己的切换来决定。
+    var selectedWorkspacePath by remember { mutableStateOf(initialWorkspacePath) }
+    var appliedWorkspaceHint by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(initialWorkspacePath, workspaces) {
+        val available = workspaces.map { it.path }
+        val hint = initialWorkspacePath
+        val hintUsable = hint.isNotBlank() &&
+            (hint == PINNED_WORKSPACE_KEY || available.contains(hint))
+        if (hintUsable && hint != appliedWorkspaceHint) {
+            // 提示只应用一次（每次从别的会话返回才变），之后不去抢用户手动切的工作区
+            appliedWorkspaceHint = hint
+            selectedWorkspacePath = hint
+        } else if (selectedWorkspacePath.isBlank() ||
+            (selectedWorkspacePath != PINNED_WORKSPACE_KEY && !available.contains(selectedWorkspacePath))
+        ) {
+            selectedWorkspacePath = available.firstOrNull() ?: ""
+        }
     }
 
     val isPinnedWorkspaceSelected = selectedWorkspacePath == PINNED_WORKSPACE_KEY

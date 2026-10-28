@@ -2,6 +2,36 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.22] - 2026-10-28
+
+### 🧹 串会话审计补漏 + 左滑返回定位到原工作区 + 首屏加载圈 (Release v1.7.22)
+
+**A. 串会话：又找出三处没盖住的路径，已补齐**
+
+- **SSE 事件流的会话守卫**：以前只靠“切会话就 cancel 旧流”保证不串，现在 collector 里再加一道
+  `if (currentSession?.id != sessionId) return@collect` —— 旧会话的事件一条也不会写进当前列表。
+- **附件按会话隔离**：`attachments` 之前是 `remember { ... }`，在 A 会话选的文件切到 B 后仍在，
+  会跟着 B 的消息发出去。现在改成 `remember(sessionId)`。
+- **滚动位置按会话隔离**：`listState` 之前是全局 `rememberLazyListState()`，切到新会话会沿用
+  上一个会话的滚动偏移（看起来像打开了一个既不在头也不在尾的会话）。
+  现在 `remember(sessionId) { LazyListState() }`，`userJumpedToHistory` / `hasInitialScrolled` 也改按 sessionId 存。
+- 已完成守卫全表：快照合并、SSE 事件、自动补页、翻页、磁盘缓存回放、发送/引导/排队/审批/停止/压缩/
+  完整输出、任务收尾（`completeAgentSessionRun`）。
+
+**B. 左滑返回回到的不是刚才那个工作区**
+
+- 根因：`selectedWorkspacePath` 用的是 `remember(workspaces)`。`sessions` 一刷新，`workspaces` 内容就会变
+  （运行数/排序/新会话），key 失效 → 选区被重置到“第一条”（按运行数/会话数排序后的第一个）。
+- 修复：选区不再随列表刷新重置；新增 `initialWorkspacePath` 提示（主界面在打开/创建会话时记下它所属工作区），
+  返回列表时**只应用一次**到该工作区；之后用户手动切换不会被抢回。
+
+**C. 首屏加载圈**
+
+- 会话内容没到之前，屏幕正中展示一枚 28dp 加载圆圈（不再是一整片空白或骨架条），
+  加载完成后自然消失；真·空会话仍会提示“还没有对话，发送指令开始”。
+
+---
+
 ## [1.7.21] - 2026-10-28
 
 ### 🥞 深度复刻 pi-web 技能管理：项目/全局双维度隔离 + skills.sh 技能市场搜索与安装 + 模型可见性与手动调用开关 (Release v1.7.21)
