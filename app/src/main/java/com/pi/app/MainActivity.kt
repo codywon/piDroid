@@ -183,6 +183,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 把网关/网络层的原始错误翻译成能指导操作的一句话。
+     * 轮换 Token 后最常见的就是 401：本地存的还是旧密钥，唯一出路是重新扫码。
+     */
+    private fun connectErrorMessage(error: Throwable?): String {
+        val raw = error?.message.orEmpty()
+        val lower = raw.lowercase()
+        return when {
+            raw.contains("401") -> "密钥已失效，请重新扫码配对"
+            raw.contains("403") -> "访问被拒绝（可能是 Cloudflare Access 或防火墙策略）"
+            raw.contains("502") -> "网关连不上本机 pi-web，请确认 pi-web 已启动"
+            lower.contains("timeout") || lower.contains("connectexception") ||
+                lower.contains("failed to connect") || lower.contains("unable to resolve host") ->
+                "连不上服务器，请检查网关地址与网络"
+            raw.isBlank() -> "连接失败，请重试"
+            else -> "连接失败：$raw"
+        }
+    }
+
     private fun handleDeepLink(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "pidroid" && data.host == "connect") {
@@ -195,7 +214,7 @@ class MainActivity : ComponentActivity() {
                     syncPersistentForegroundService(isBusy = false, project = "默认工作区")
                     Toast.makeText(this@MainActivity, "已成功绑定设备: $name", Toast.LENGTH_SHORT).show()
                 }.onFailure {
-                    Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, connectErrorMessage(it), Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -1450,7 +1469,7 @@ class MainActivity : ComponentActivity() {
                     loadSessions()
                     loadCapabilitiesAndModels()
                 }.onFailure {
-                    Toast.makeText(this@MainActivity, "连接握手失败: ${it.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, connectErrorMessage(it), Toast.LENGTH_LONG).show()
                 }
             }
         }

@@ -2878,6 +2878,9 @@ fun GlobalSystemSettingsTab(
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
+    // 「访问令牌」默认打码，点「显示」才展开明文：密钥已在二维码/日志里泄露过，
+    // 屏幕是剩下的最容易被人拍走的一环。
+    var showFullToken by remember { mutableStateOf(false) }
     val currentVersion = remember { AppUpdateManager.getCurrentVersionName(context) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -3374,12 +3377,48 @@ fun GlobalSystemSettingsTab(
                                 fontFamily = FontFamily.Monospace,
                                 color = if (isConnected) theme.primary else theme.textMuted
                             )
-                            Text(
-                                text = "访问令牌: ${if (authToken.isNotBlank()) "${authToken.take(10)}••••••••" else "未设置"}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = theme.textMuted
-                            )
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = when {
+                                        authToken.isBlank() -> "访问令牌: 未设置"
+                                        showFullToken -> "访问令牌: $authToken"
+                                        // 默认露头尾各一段，足够肉眼比对是不是同一个密钥
+                                        else -> "访问令牌: ${authToken.take(10)}••••${authToken.takeLast(4)}"
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = theme.textMuted,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                if (authToken.isNotBlank()) {
+                                    TextButton(
+                                        onClick = { showFullToken = !showFullToken },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            if (showFullToken) "隐藏" else "显示",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.primary
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = {
+                                            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                                            clipboard?.setPrimaryClip(
+                                                android.content.ClipData.newPlainText("piDroid Token", authToken)
+                                            )
+                                            Toast.makeText(context, "访问令牌已复制", Toast.LENGTH_SHORT).show()
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            "复制",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = theme.primary
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
 
