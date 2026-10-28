@@ -66,7 +66,10 @@ class PiSseClient(private val prefs: AppPreferences) {
             }
             trySend(AgentSseEvent(type = "connection_state", connectionState = _connectionState.value.name))
 
-            val url = "$baseUrl/api/agent/$sessionId/events?token=$token"
+            // token 只走 Authorization 头，绝不放进 URL：
+            // Cloudflare Tunnel / 反向代理会把完整 URL 写进访问日志，
+            // query 里的 token 等于把网关密钥明文落盘。
+            val url = "$baseUrl/api/agent/$sessionId/events"
             val request = Request.Builder()
                 .url(url)
                 .header("Accept", "text/event-stream")

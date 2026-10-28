@@ -2,6 +2,43 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.26] - 2026-10-28
+
+### ✨ 流式输出实时速度徽标：`模型名 ↓ token [177.7 t/s]` (Release v1.7.26)
+
+严格对标 pi-web 的 `MessageView.tsx` assistant 头部，新增 `ui/chat/StreamingSpeed.kt`：
+
+- **估算 token 数**：与 pi-web 的 `sf()` 完全一致 —— 宽字符（CJK / 假名 / 谚文 / 扩展 B 区）记 1、
+  其余记 1/4，不调分词器；按 code point 遍历，emoji 不会被代理对拆成两个字符。
+- **增量累加**：对齐 pi-web 的 `cached(prev, next)`，新文本是旧文本延伸时只估算尾巴，
+  并保留「边界切在代理对中间时先退回 1/4」的保护，避免长正文逐 delta 全量重算（O(n²)）。
+- **速率采样**：300ms 一次；首帧记录 baseline 且**只记一次**（`base ??=`），
+  已经过 > 0.5s 才出数，因此显示的是「自流式开始的累计均速」，与 pi-web 行为一致。
+  baseline 存模块级 32 条 LRU（对应 pi-web 的 `ss` 缓存），列表滚出再滚回不会重新起跳。
+- **变色档位**：`>=50` 青 `#53B3CB` / `>=30` 绿 `#9BC53D` / `>=15` 黄 `#F9C22E` / 其余红 `#E01A4F`，
+  白字 11sp、内边距 1×6dp、圆角 4dp；下行箭头按 pi-web 的 10×10 svg 坐标原样绘制。
+- **显示时机**：仅 `role == AGENT && isStreaming` 时出现，流式结束 token 数与胶囊一起消失（同 pi-web）。
+  流式徽标的显示条件**不挂在 `showModelHeader` 上** —— 最后一轮在跑时流式气泡会被归入
+  `ProcessDetailsGroup`（该处 `showModelHeader=false`），挂上去就永远不显示。
+
+### 🎛️ 会话顶栏瘦身：标题回归标题，状态不再占一整行
+
+- 标题栏第二行原先是「状态点 + （重连文案 / Agent 阶段文案 / 会话标题）三选一」，等于把标题行当状态栏用；
+  现改为纯会话标题（空白时显示「未命名会话」），正文脉冲条与底部状态已能表达完整运行状态。
+- 唯一无法在正文看到的信号（事件流重连中）退化为项目名右侧一个 6dp 琥珀小点，附无障碍 `contentDescription`。
+- 顶栏图标统一 18dp 图形 + 34dp 紧凑热区，顺序改为「置顶 → 用模型重写标题 → 工作目录变更 → 重新加载会话」；
+  移除重复的「能力与设置中心」入口（会话列表顶栏的齿轮仍是唯一入口）。
+
+### 🔒 SSE token 不再进 URL + 隧道日志脱敏
+
+- `PiSseClient` 的 `/events` 请求去掉 `?token=`，只走 `Authorization: Bearer`：
+  Cloudflare Tunnel / 反向代理会把完整 URL 写进访问日志，query 里的 token 等于把网关密钥明文落盘。
+  网关侧 `authMiddleware` 本就接受 Bearer 头，无需改协议。
+- `server/gateway.js` 新增 `pipeTunnelLogs`：按行转发 cloudflared 日志、过滤正常的
+  `canceled by remote with error code 0`（手机切页面/息屏/重连都会产生），并把 `?token=` 打码。
+
+---
+
 ## [1.7.25] - 2026-10-28
 
 ### ✨ 模型切换面板去重：去掉「默认」文字徽标，只留星标 (Release v1.7.25)

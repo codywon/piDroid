@@ -1880,7 +1880,6 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onOpenModelSheet = { showModelSheet = true },
-                    onOpenCapabilities = { showGlobalSettings = true },
                     onCompactContext = {
                         // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
                         // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。

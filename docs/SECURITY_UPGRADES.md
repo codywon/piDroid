@@ -23,6 +23,7 @@
 | 传输位置 | 默认只认 `Authorization: Bearer`；仅 SSE `/events` 允许 `?token=`（EventSource 无法设头） |
 | WebSocket | `server.on('upgrade')` 单独校验 Token，堵住 Express 中间件管不到的 upgrade 通道 |
 | 暴露面 | 只暴露网关 4100；pi-web 绑 `127.0.0.1:30141`，公网不可达 |
+| 日志脱敏 | 隧道日志过滤 SSE 断开噪声，并把 `?token=` 打码（`server/gateway.js` 的 `pipeTunnelLogs`）；App 侧 `PiSseClient` 不再把 token 放进 URL（需重打 APK 生效） |
 
 **核心事实**：Token 等价于本机命令行权限（pi-web 能执行 shell、读写任意文件），
 所以它必须按 SSH 私钥对待。当前没有第二因子。

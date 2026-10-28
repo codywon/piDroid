@@ -453,9 +453,28 @@ async function start(options = {}) {
           { shell: true }
         );
 
-        // cloudflared 把运行日志写在 stderr，这里原样透传便于排查 404/1033 等问题
-        tunnelProcess.stdout.on('data', (data) => process.stdout.write(`    [tunnel] ${data}`));
-        tunnelProcess.stderr.on('data', (data) => process.stderr.write(`    [tunnel] ${data}`));
+        // cloudflared 把运行日志写在 stderr，这里按行转发便于排查 404/1033。
+        // 两处处理：
+        // 1) 客户主动断开 SSE 时 cloudflared 会以 ERR 级别打印 "canceled by remote
+        //    with error code 0"，这是正常现象（手机切页面/息屏/重连），不展示；
+        // 2) 日志里会带上 EventSource 的 ?token=...，必须脱敏，不能落到控制台/日志。
+        const pipeTunnelLogs = (readable, out) => {
+          let buffer = '';
+          readable.on('data', (chunk) => {
+            buffer += chunk.toString();
+            const lines = buffer.split(/\r?\n/);
+            buffer = lines.pop() || '';
+            for (const raw of lines) {
+              const line = raw.replace(/\s+$/, '');
+              if (!line.trim()) continue;
+              if (/canceled by remote with error code 0/.test(line)) continue;
+              const safe = line.replace(/([?&]token=)[^&\s]+/gi, '$1***');
+              out.write(`    [tunnel] ${safe}\n`);
+            }
+          });
+        };
+        pipeTunnelLogs(tunnelProcess.stdout, process.stdout);
+        pipeTunnelLogs(tunnelProcess.stderr, process.stderr);
 
         tunnelProcess.on('error', (err) => {
           console.error(`\n[tunnel] 启动 ${STABLE_TUNNEL_NAME} 失败: ${err.message}`);

@@ -46,6 +46,8 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -94,7 +96,7 @@ data class PromptTimelineEntry(
 @Composable
 fun ChatScreen(
     sessionId: String = "",
-    sessionTitle: String,
+    sessionTitle: String = "",
     currentProject: String,
     projects: List<ProjectInfo> = emptyList(),
     selectedModel: ModelInfo,
@@ -121,7 +123,6 @@ fun ChatScreen(
     onRefreshSession: () -> Unit = {},
     onProjectSwitch: (ProjectInfo) -> Unit = {},
     onOpenModelSheet: () -> Unit,
-    onOpenCapabilities: () -> Unit,
     onCompactContext: () -> Unit,
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
@@ -535,6 +536,7 @@ fun ChatScreen(
                 },
                 title = {
                     Column {
+                        // 第一行：项目目录（图标变窄后可用宽度变大）
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.primary)
                             Spacer(modifier = Modifier.width(4.dp))
@@ -544,88 +546,90 @@ fun ChatScreen(
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
-                                color = theme.textPrimary
+                                color = theme.textPrimary,
+                                modifier = Modifier.weight(1f, fill = false)
                             )
+                            // 唯一的例外状态：事件流重连中。正文里看不到这个信号，
+                            // 所以退化成一个琥珀小点（不再占一整行文字）。
+                            if (sseState == SseConnectionState.RECONNECTING) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .semantics { contentDescription = "事件流自动重连并同步中" },
+                                    shape = CircleShape,
+                                    color = Color(0xFFD29922)
+                                ) {}
+                            }
                         }
 
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            val statusColor = when {
-                                sseState == SseConnectionState.RECONNECTING -> Color(0xFFD29922)
-                                isAgentBusy -> Color(0xFF22C55E)
-                                else -> Color(0xFF2EA043)
-                            }
-                            Surface(
-                                modifier = Modifier.size(6.dp),
-                                shape = CircleShape,
-                                color = statusColor
-                            ) {}
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = when {
-                                    sseState == SseConnectionState.RECONNECTING -> "事件流自动重连并同步中..."
-                                    isAgentBusy && !isFirstScreenLoading -> (agentPhaseLabel ?: "Agent 正在实时执行任务...")
-                                    else -> sessionTitle.take(26)
-                                },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (sseState == SseConnectionState.RECONNECTING) Color(0xFFD29922) else theme.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        // 第二行：纯会话标题。
+                        // 原先这一行是「状态点 + （重连文案 / Agent 阶段文案 / 会话标题）」三选一，
+                        // 等于把标题行当状态栏用；正文与底部脉冲条已经能看到完整状态，这里不再重复报状态。
+                        Text(
+                            text = sessionTitle.ifBlank { "未命名会话" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = theme.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 },
                 actions = {
-                    IconButton(onClick = onTogglePin) {
+                    // 顶栏只留会话级动作，图标统一 18dp + 34dp 紧凑热区，尽可能把宽度让给项目名。
+                    // 顺序：置顶 → 用模型重写标题 → 工作目录变更 → 同步刷新（最右）。
+                    // 「能力与设置中心」已从这里移除：会话列表顶栏的齿轮仍是入口，避免同屏两个入口。
+                    IconButton(onClick = onTogglePin, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
                             contentDescription = if (isPinned) "取消置顶" else "置顶会话",
                             tint = if (isPinned) theme.primary else theme.textSecondary,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
-                    IconButton(onClick = onAutoGenerateTitle) {
+                    IconButton(onClick = onAutoGenerateTitle, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = Icons.Default.AutoFixHigh,
-                            contentDescription = "智能生成标题",
+                            contentDescription = "用模型重写会话标题",
                             tint = theme.textSecondary,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                    IconButton(onClick = onRefreshSession) {
-                        Icon(
-                            Icons.Default.Sync,
-                            contentDescription = "同步最新任务状态",
-                            tint = theme.textSecondary,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
                     // 工作目录 git 变更（GET /api/git/status + /api/git/diff）
-                    IconButton(onClick = {
-                        showGitSheet = true
-                        gitDiff = null
-                        gitDiffTitle = null
-                        isLoadingGit = true
-                        coroutineScope.launch {
-                            onLoadGitStatus().onSuccess { gitStatus = it }
-                                .onFailure { err ->
-                                    android.widget.Toast.makeText(
-                                        context,
-                                        "读取 git 状态失败: ${err.message}",
-                                        android.widget.Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                            isLoadingGit = false
-                        }
-                    }) {
+                    IconButton(
+                        onClick = {
+                            showGitSheet = true
+                            gitDiff = null
+                            gitDiffTitle = null
+                            isLoadingGit = true
+                            coroutineScope.launch {
+                                onLoadGitStatus().onSuccess { gitStatus = it }
+                                    .onFailure { err ->
+                                        android.widget.Toast.makeText(
+                                            context,
+                                            "读取 git 状态失败: ${err.message}",
+                                            android.widget.Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                isLoadingGit = false
+                            }
+                        },
+                        modifier = Modifier.size(34.dp)
+                    ) {
                         Icon(
                             Icons.Default.AccountTree,
                             contentDescription = "工作目录变更",
                             tint = theme.textSecondary,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     }
-                    IconButton(onClick = onOpenCapabilities) {
-                        Icon(Icons.Default.Tune, contentDescription = "能力与设置中心", tint = theme.primary)
+                    IconButton(onClick = onRefreshSession, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            Icons.Default.Sync,
+                            contentDescription = "重新加载会话（同步最新任务状态）",
+                            tint = theme.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
                 }
             )
@@ -1950,13 +1954,30 @@ fun ChatMessageItem(
         verticalArrangement = Arrangement.spacedBy(5.dp)
     ) {
         // 对标 pi-web MessageView.tsx：回合顶部显示模型名称 (如 Gemini 3.8 Flash High)
-        if (showModelHeader) {
-            Text(
-                text = item.modelName ?: defaultModelName,
-                fontSize = 11.sp,
-                color = theme.textMuted,
-                modifier = Modifier.padding(top = 4.dp, bottom = 1.dp)
-            )
+        // 流式期间在模型名右侧追加「↓ 估算 token + 彩色 t/s」(StreamingSpeedBadge)。
+        // 注意：过程折叠组里 showModelHeader=false，所以流式徽标的显示条件不能挂在它上面，
+        // 否则「最后一轮正在跑」时（那条流式气泡被算进 processItems）根本看不到速度。
+        val showSpeedBadge = item.role == MessageRole.AGENT && item.isStreaming
+        if (showModelHeader || showSpeedBadge) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 1.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // 流式期间名字必须一起显示（pi-web 的 header 是「模型名 ↓ token [t/s]」整体）
+                Text(
+                    text = item.modelName ?: defaultModelName,
+                    fontSize = 11.sp,
+                    color = theme.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (showSpeedBadge) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    StreamingSpeedBadge(item)
+                }
+            }
         }
 
         when (item.role) {
