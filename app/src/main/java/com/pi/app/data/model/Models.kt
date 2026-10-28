@@ -596,6 +596,8 @@ data class MediaAttachment(
  */
 data class ChatItem(
     val id: String = java.util.UUID.randomUUID().toString(),
+    /** pi 会话文件里该条目（entry）的真实 ID：用于「从此处编辑」的树导航（navigate_tree） */
+    val entryId: String? = null,
     val role: MessageRole,
     val content: String,
     val thinking: String? = null,

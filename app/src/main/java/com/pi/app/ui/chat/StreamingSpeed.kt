@@ -43,10 +43,17 @@ import java.util.Locale
  *
  * pi-web 原始实现（.next/static/chunks/app/page-*.js 反查）：
  * - token 估算：全角字符记 1、其余记 1/4（不调分词器）；按 block 增量估算，只算新增尾巴
- * - 速率采样：300ms 一次；首帧记录 baseline（`base ??= …`，只记一次、不滚动），
- *   已经过 > 0.5s 才出数，所以显示的是「自流式开始以来的累计均速」
+ * - 速率采样：300ms 一次；首帧记录 baseline 不变，所以显示的是「自流式开始的累计均速」
  * - 配色阈值：>=50 / >=30 / >=15 / 其他 四档
- * - 流式结束：速率清空（token 数一并消失），baseline 缓存保留以便 remount 后接着算
+ * - 流式结束：速率清空（token 数一并消失）
+ *
+ * 【与 pi-web 的差异（仅采样机制）】
+ * pi-web 跑在本机 localhost，浏览器拿到的是逐 token 的 delta，300ms 固定轮询每拍都有增量，
+ * 所以「diff=0 就把速率写成 0」在它那里不会暴露。手机侧走 5G + Cloudflare Tunnel，
+ * SSE 常被聚成一批一批到达，同样的轮询会有大半拍子读到 diff=0 → 屏幕上一直 0.0 t/s。
+ * 因此采样改为「变化驱动 + EMA 平滑」：token 没涨就保持上次的值（绝不写 0），
+ * 涨了才结算；窗口过短不结算（防假峰值），过长（停顿）则重新起算。
+ * 视觉、配色、阈值、显示时机、token 估算法与 pi-web 保持一致。
  */
 private object TokenEstimate {
     /** pi-web 的宽字符正则：[\u3000-\u30ff\u3400-\u9fff\uf900-\ufaff\u{20000}-\u{2fa1f}\uac00-\ud7af] */
@@ -103,12 +110,17 @@ private class IncrementalTokenCounter {
     }
 }
 
-/** 一次采样基线（pi-web 的 `{at, tokens}`） */
-private class SpeedSample(var at: Long, var tokens: Double)
+/** 一次采样轨迹（pi-web 的 `{at, tokens}` + 上一次算出的速率，用于 remount 后接着显示） */
+private class SpeedSample(
+    var at: Long,
+    var tokens: Double,
+    var tps: Double? = null
+)
 
 /**
  * pi-web 里 `ss` 那个模块级 Map：key = `${provider}/${model}@${timestamp}`，上限 32 条。
- * 作用：组件 remount（列表滚出再滚回）后仍能接着上一次的 baseline 算，不会速率重新起跳。
+ * 作用：组件 remount（列表滚出再滚回、或流中途插了工具卡）后仍能接着上一次的状态算，
+ * 不会出现「速率重新从 0 起跳」。
  */
 private object SpeedSampleCache {
     private val map = object : LinkedHashMap<String, SpeedSample>(16, 0.75f, true) {
@@ -124,6 +136,17 @@ private object SpeedSampleCache {
         map[key] = sample
     }
 }
+
+/** 采样常量：120ms 看门狗 + 变化驱动结算 */
+private const val SPEED_TICK_MS = 120L
+/** 少于半个 token 的增长视作「这一拍没新内容」 */
+private const val SPEED_MIN_GROWTH = 0.5
+/** 结算窗口下限：太密会把网络抖动放大成假峰值 */
+private const val SPEED_MIN_WINDOW_S = 0.2
+/** 结算窗口上限：停顿（思考/等工具）之后恢复时不拿整段空闲时间当分母 */
+private const val SPEED_MAX_WINDOW_S = 3.0
+/** 新值与旧值的权重：EMA 平滑，避免批量到达时数字乱跳 */
+private const val SPEED_EMA_OLD = 0.55
 
 /** pi-web 阈值：>=50 青、>=30 绿、>=15 黄、其余红 */
 private fun tpsColor(v: Double): Color = when {
@@ -160,29 +183,47 @@ fun StreamingSpeedBadge(item: ChatItem, modifier: Modifier = Modifier) {
     val tokens = counter.update(item.streamingMetricText())
     val latestTokens = rememberUpdatedState(tokens)
 
-    var tps by remember(item.id) { mutableStateOf<Double?>(null) }
     val cacheKey = remember(item.id, item.modelName) {
         "${item.modelName ?: ""}@${item.id}"
     }
+    var tps by remember(item.id) { mutableStateOf(SpeedSampleCache.get(cacheKey)?.tps) }
 
-    LaunchedEffect(item.id, item.isStreaming) {
-        if (!item.isStreaming) {
-            tps = null
-            return@LaunchedEffect
-        }
+    LaunchedEffect(item.id) {
+        // 变化驱动的采样（不再是「每 300ms 无条件算一次」）：
+        // pi-web 在浏览器里能拿到逐 token 的 delta，所以定时轮询每一拍都有增量；
+        // 手机侧走 5G / Cloudflare Tunnel，SSE 常被聚成一批一批到达，
+        // 固定轮询会让大部分拍子读到 diff=0，屏幕上就一直是 0.0 t/s。
+        // 现在的规则：只有 token 真的涨了才结算，没涨就保持上一拍的显示值；
+        // 窗口太短不结算（防抖出假峰值），窗口太长（停顿）则重新起算不拿空闲时间当分母。
+        val cached = SpeedSampleCache.get(cacheKey)
+        var at = cached?.at ?: 0L
+        var lastTokens = cached?.tokens ?: 0.0
+        var seeded = cached != null && cached.at > 0L
         while (true) {
-            delay(300)
+            delay(SPEED_TICK_MS)
             val now = System.currentTimeMillis()
             val current = latestTokens.value
             if (current <= 0.0) continue
-            // pi-web: D.current ??= (ss.get(id) ?? {at, tokens})——只赋一次，之后不再滚动
-            val sample = SpeedSampleCache.get(cacheKey) ?: SpeedSample(now, current).also {
-                SpeedSampleCache.put(cacheKey, it)
+            if (!seeded) {
+                seeded = true
+                at = now
+                lastTokens = current
+                continue
             }
-            val elapsed = (now - sample.at) / 1000.0
-            if (elapsed > 0.5) {
-                tps = (current - sample.tokens) / elapsed
+            if (current - lastTokens < SPEED_MIN_GROWTH) continue
+            val elapsed = (now - at) / 1000.0
+            if (elapsed < SPEED_MIN_WINDOW_S) continue
+            if (elapsed > SPEED_MAX_WINDOW_S) {
+                at = now
+                lastTokens = current
+                continue
             }
+            val inst = (current - lastTokens) / elapsed
+            val next = tps?.let { it * SPEED_EMA_OLD + inst * (1.0 - SPEED_EMA_OLD) } ?: inst
+            tps = next
+            at = now
+            lastTokens = current
+            SpeedSampleCache.put(cacheKey, SpeedSample(at, lastTokens, next))
         }
     }
 

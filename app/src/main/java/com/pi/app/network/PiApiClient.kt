@@ -855,6 +855,10 @@ class PiApiClient(private val prefs: AppPreferences) {
             } else rawObj
             val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
             val timestamp = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
+            // pi 会话条目的真实 ID（entry.id）：从历史快照过来的消息都要带上，
+            // 「从此处编辑」才能调 navigate_tree 把会话树切到这个节点。
+            val entryId = rawObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                ?: rawObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
 
             var turnUsageStr: String? = null
             if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {
@@ -892,6 +896,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                 .trim()
                             chatItems.add(ChatItem(
                                 id = "hist_${sessionId}_${chatItems.size}_compaction",
+                                entryId = entryId,
                                 role = MessageRole.SYSTEM,
                                 content = "📦 上下文已归档压缩" + if (cleanSummary.isNotBlank()) "\n$cleanSummary" else "",
                                 timestamp = timestamp
@@ -899,6 +904,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         } else {
                             chatItems.add(ChatItem(
                                 id = "hist_${sessionId}_${chatItems.size}_user",
+                                entryId = entryId,
                                 role = MessageRole.USER,
                                 content = userText,
                                 mediaList = userMedia,
@@ -987,6 +993,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         }
                         chatItems.add(ChatItem(
                             id = "hist_${sessionId}_${chatItems.size}_agent",
+                            entryId = entryId,
                             role = MessageRole.AGENT,
                             content = fullContent,
                             thinking = thinking,
@@ -1000,6 +1007,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         // 彻底解决上游报错且内容为空时静默吞掉的问题 (如 HTTP 422 developer 角色拒收报错)
                         chatItems.add(ChatItem(
                             id = "hist_${sessionId}_${chatItems.size}_error",
+                            entryId = entryId,
                             role = MessageRole.AGENT,
                             content = "⚠️ 模型服务异常:\n$errMsg",
                             modelName = msgModelName,
@@ -4405,6 +4413,47 @@ data class CatalogPreset(
             Result.failure(e)
         }
     }
+
+    /**
+     * 「从此处编辑」的底层动作：把会话树切到指定条目（1:1 对标 pi-web 的
+     * `POST /api/agent/{id}` `{type:"navigate_tree", targetId}`）。
+     *
+     * 与 fork 不同，它**不新建会话文件**：后续条目仍留在同一个 .jsonl 里，
+     * 但不再是活跃分支（变成被放弃的分支），所以刷新快照后就只看得到编辑点之前的内容。
+     * 服务端在 shell 命令执行中会直接报错，上层策略是「跑着就不给点」。
+     */
+    suspend fun navigateTree(sessionId: String, targetEntryId: String): Result<Boolean> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+            if (targetEntryId.isBlank()) return@withContext Result.failure(Exception("缺少条目 ID"))
+            try {
+                val payload = JsonObject().apply {
+                    addProperty("type", "navigate_tree")
+                    addProperty("targetId", targetEntryId)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/api/agent/$sessionId")
+                    .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string() ?: "{}"
+                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    if (!resp.isSuccessful || json?.get("error")?.takeIf { !it.isJsonNull } != null) {
+                        val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                            ?: "HTTP ${resp.code}"
+                        return@withContext Result.failure(IOException(err))
+                    }
+                    val data = json?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val cancelled = data?.get("cancelled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    if (cancelled) Result.failure(IOException("服务端取消了本次分支切换"))
+                    else Result.success(true)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
 
     suspend fun autoGenerateSessionTitle(sessionId: String): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl

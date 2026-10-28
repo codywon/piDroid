@@ -75,6 +75,11 @@ class PiSseClient(private val prefs: AppPreferences) {
                 .header("Accept", "text/event-stream")
                 .header("Cache-Control", "no-cache")
                 .header("Connection", "keep-alive")
+                // 关键：必须显式声明 identity。不写这一行 OkHttp 会自动加
+                // Accept-Encoding: gzip，而 gzip 流必须攒满缓冲区才能解压，
+                // SSE 就会被「打包」成一批一批到达 —— 表现为正文挤牙膏、
+                // 流式速率经常读到 0。
+                .header("Accept-Encoding", "identity")
                 .header("Authorization", "Bearer $token")
                 .build()
 
@@ -277,7 +282,13 @@ class PiSseClient(private val prefs: AppPreferences) {
                             }
                             "text_end" -> {
                                 val full = ame.get("content")?.takeIf { !it.isJsonNull }?.asString
-                                if (!full.isNullOrEmpty()) listOf(AgentSseEvent(type = "text_replace", content = full)) else emptyList()
+                                // isStreaming 必须继续为 true：text_end 只代表「这一段正文讲完了」，
+                                // 后面往往还有工具调用 / 下一段正文，整个回合的开始与结束由
+                                // agent_end + /state 巡检判定。之前这里是 null（被上层当成 false），
+                                // 会让流式指标在回合中途被摘掉，速度显示重新从 0 起跳。
+                                if (!full.isNullOrEmpty()) {
+                                    listOf(AgentSseEvent(type = "text_replace", content = full, isStreaming = true))
+                                } else emptyList()
                             }
                             "thinking_delta" -> {
                                 val d = ame.get("delta")?.takeIf { !it.isJsonNull }?.asString ?: ""

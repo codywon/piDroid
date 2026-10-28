@@ -149,6 +149,8 @@ fun ChatScreen(
     currentToolPreset: ToolPreset = ToolPreset.FULL,
     onToolPresetChange: (ToolPreset) -> Unit = {},
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
+    /** 「从此处编辑」：把会话树切到该条（navigate_tree），后续内容变成被放弃的分支 */
+    onEditFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
     CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
@@ -475,6 +477,19 @@ fun ChatScreen(
             guard++
             listState.scroll { scrollBy(6_000f) }
         }
+    }
+
+    /**
+     * 「从此处编辑」统一入口（1:1 对标 pi-web）：
+     * 1) 把该条正文填回输入框（本地行为，立即生效）；
+     * 2) 交给外层的 onEditFromMessage 做会话树导航（navigate_tree）——
+     *    导航后这个节点之后的内容变成被放弃的分支，不再是活跃分支，所以刷新后就看不见了。
+     *    之前只填输入框、后面的内容一直留着，继续发就是「旧尾巴 + 新分支」重复，与 pi-web 不一致。
+     */
+    val editFromMessage: (ChatItem) -> Unit = { msg ->
+        inputText = msg.content
+        coroutineScope.launch { scrollToVeryBottom() }
+        onEditFromMessage?.invoke(msg)
     }
 
     // 监听软键盘 (IME) 弹出高度：当软键盘弹起时，自动将底部输入框与最新对话内容整体往上推，防止遮挡
@@ -1389,12 +1404,7 @@ fun ChatScreen(
                             showModelHeader = false,
                             defaultModelName = selectedModel.displayName,
                             onApproveTool = onApproveTool,
-                            onEditFromHere = { text ->
-                                inputText = text
-                                coroutineScope.launch {
-                                    scrollToVeryBottom()
-                                }
-                            },
+                            onEditFromHere = editFromMessage,
                             onForkFromHere = onForkFromMessage,
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                             onOpenFilePreview = { p -> openFilePreview(p) }
@@ -1413,12 +1423,13 @@ fun ChatScreen(
                             showModelHeader = false,
                             defaultModelName = selectedModel.displayName,
                             onApproveTool = onApproveTool,
-                            onEditFromHere = { text ->
-                                inputText = text
-                                coroutineScope.launch {
-                                    scrollToVeryBottom()
-                                }
-                                android.widget.Toast.makeText(context, "已填入输入框，修改后可直接发送", android.widget.Toast.LENGTH_SHORT).show()
+                            onEditFromHere = { msg ->
+                                editFromMessage(msg)
+                                android.widget.Toast.makeText(
+                                    context,
+                                    "已填入输入框；发送时将从这里开新分支，后面的内容不再属于当前会话",
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                             },
                             onForkFromHere = { userItem ->
                                 onForkFromMessage?.invoke(userItem)
@@ -1443,12 +1454,7 @@ fun ChatScreen(
                                         showModelHeader = false,
                                         defaultModelName = selectedModel.displayName,
                                         onApproveTool = onApproveTool,
-                                        onEditFromHere = { text ->
-                                            inputText = text
-                                            coroutineScope.launch {
-                                                scrollToVeryBottom()
-                                            }
-                                        },
+                                        onEditFromHere = editFromMessage,
                                         onForkFromHere = onForkFromMessage,
                                         onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                         onOpenFilePreview = { p -> openFilePreview(p) }
@@ -1468,12 +1474,7 @@ fun ChatScreen(
                                 showModelHeader = showModelHeader,
                                 defaultModelName = selectedModel.displayName,
                                 onApproveTool = onApproveTool,
-                                onEditFromHere = { text ->
-                                    inputText = text
-                                    coroutineScope.launch {
-                                        scrollToVeryBottom()
-                                    }
-                                },
+                                onEditFromHere = editFromMessage,
                                 onForkFromHere = onForkFromMessage,
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                 onOpenFilePreview = { p -> openFilePreview(p) }
@@ -1937,7 +1938,7 @@ fun ChatMessageItem(
     showModelHeader: Boolean = false,
     defaultModelName: String = "",
     onApproveTool: (approved: Boolean) -> Unit,
-    onEditFromHere: ((String) -> Unit)? = null,
+    onEditFromHere: ((ChatItem) -> Unit)? = null,
     onForkFromHere: ((ChatItem) -> Unit)? = null,
     /** 打开 bash 完整输出：由 ChatScreen 注入，工具卡里才有入口 */
     onOpenBashOutput: ((path: String, title: String) -> Unit)? = null,
@@ -2041,7 +2042,7 @@ fun ChatMessageItem(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
                                 .clickable {
-                                    onEditFromHere?.invoke(item.content)
+                                    onEditFromHere?.invoke(item)
                                 }
                                 .padding(horizontal = 4.dp, vertical = 2.dp),
                             verticalAlignment = Alignment.CenterVertically,

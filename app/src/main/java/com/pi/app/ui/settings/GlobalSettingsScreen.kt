@@ -397,258 +397,27 @@ fun GlobalSettingsScreen(
         }
     )
 
-    // 技能说明与 SKILL.md 查看/在线编辑弹窗
+    // 技能详情（对标 pi-web 的 SkillDetail 面板）：近全屏 BottomSheet，
+    // 预览 / 源码编辑做成真正的两段分段控件，正文吃满剩余高度。
     selectedSkillForDetail?.let { skill ->
-        val isProject = skill.isProjectScope
-        val isVisible = skill.isVisibleToModel
-
-        AlertDialog(
-            onDismissRequest = { selectedSkillForDetail = null },
-            containerColor = theme.surfaceContainerLow,
-            title = {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                        Icon(
-                            Icons.Default.Extension,
-                            contentDescription = null,
-                            tint = if (isVisible) Color(0xFF2EA043) else theme.textMuted
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = skill.displayTitle,
-                            color = theme.textPrimary,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Surface(
-                            shape = RoundedCornerShape(4.dp),
-                            color = if (isProject) Color(0xFF8250DF).copy(alpha = 0.18f) else Color(0xFF1F6FEB).copy(alpha = 0.18f),
-                            border = BorderStroke(0.5.dp, if (isProject) Color(0xFF8250DF) else Color(0xFF1F6FEB))
-                        ) {
-                            Text(
-                                text = if (isProject) "项目" else "全局",
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isProject) Color(0xFFD2A8FF) else Color(0xFF58A6FF),
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                            )
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (!isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                            border = BorderStroke(1.dp, if (!isEditingSkillMd) theme.primary else theme.outline),
-                            modifier = Modifier.clickable { isEditingSkillMd = false }
-                        ) {
-                            Text(
-                                text = "效果预览",
-                                fontSize = 11.sp,
-                                fontWeight = if (!isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
-                                color = if (!isEditingSkillMd) theme.primary else theme.textSecondary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (isEditingSkillMd) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                            border = BorderStroke(1.dp, if (isEditingSkillMd) theme.primary else theme.outline),
-                            modifier = Modifier.clickable { isEditingSkillMd = true }
-                        ) {
-                            Text(
-                                text = "源码编辑 ✎",
-                                fontSize = 11.sp,
-                                fontWeight = if (isEditingSkillMd) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isEditingSkillMd) theme.primary else theme.textSecondary,
-                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
-                }
+        SkillDetailSheet(
+            skill = skill,
+            markdownContent = skillMarkdownContent,
+            isLoading = isLoadingSkillMd,
+            isEditing = isEditingSkillMd,
+            editBuffer = skillEditBuffer,
+            onEditBufferChange = { skillEditBuffer = it },
+            onEditingChange = { isEditingSkillMd = it },
+            onToggleVisible = { checked ->
+                onToggleSkill(skill, checked)
+                selectedSkillForDetail = skill.copy(enabled = checked, disableModelInvocation = !checked)
             },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 模型调用开关卡片（对应 pi-web 中在模型提示词中隐藏/可见开关）
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isVisible) Color(0xFF2EA043).copy(alpha = 0.08f) else theme.surfaceContainer,
-                        border = BorderStroke(1.dp, if (isVisible) Color(0xFF2EA043).copy(alpha = 0.35f) else theme.outline)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (isVisible) "在模型提示词中可见" else "对模型隐藏",
-                                    fontSize = 12.5.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (isVisible) Color(0xFF3FB950) else theme.textPrimary
-                                )
-                                Text(
-                                    text = if (isVisible) "模型可在系统提示词中发现并主动调用该技能" else "对模型隐藏，仍可在对话框手动输入 /${skill.name} 调用",
-                                    fontSize = 11.sp,
-                                    color = if (isVisible) theme.textSecondary else Color(0xFF8B949E)
-                                )
-                            }
-                            Switch(
-                                checked = isVisible,
-                                onCheckedChange = { checked ->
-                                    onToggleSkill(skill, checked)
-                                    selectedSkillForDetail = skill.copy(enabled = checked, disableModelInvocation = !checked)
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color(0xFF2EA043),
-                                    checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                    uncheckedThumbColor = theme.textMuted,
-                                    uncheckedTrackColor = theme.surfaceContainerHigh
-                                )
-                            )
-                        }
-                    }
-
-                    // 路径展示
-                    val displayPath = skill.filePath?.takeIf { it.isNotBlank() }
-                        ?: skill.baseDir?.takeIf { it.isNotBlank() }?.let { "${it.trimEnd('/', '\\')}/SKILL.md" }
-                        ?: if (isProject) "./.pi/skills/${skill.name}/SKILL.md" else "~/.pi/agent/skills/${skill.name}/SKILL.md"
-                    Surface(
-                        color = theme.surfaceContainer,
-                        shape = RoundedCornerShape(6.dp),
-                        border = BorderStroke(0.5.dp, theme.outline)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "路径: $displayPath",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 10.5.sp,
-                                color = theme.textMuted,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    // skills.sh 来源与版本
-                    if (!skill.skillsShUrl.isNullOrBlank() || skill.versionShort != null) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = theme.surfaceContainer,
-                            border = BorderStroke(0.5.dp, theme.outline)
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                                    Text("版本: ", fontSize = 11.sp, color = theme.textMuted)
-                                    Text(
-                                        skill.versionShort ?: "本地",
-                                        fontSize = 11.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = theme.textPrimary,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    skill.skillsShUrl?.let { url ->
-                                        Spacer(modifier = Modifier.width(10.dp))
-                                        Text(
-                                            text = "skills.sh ↗",
-                                            fontSize = 11.sp,
-                                            color = Color(0xFF58A6FF),
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.clickable {
-                                                runCatching {
-                                                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                                                }
-                                            }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (isLoadingSkillMd) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = theme.primary)
-                            Text("正在从网关加载 SKILL.md 源码...", style = MaterialTheme.typography.bodySmall, fontSize = 12.sp, color = theme.textSecondary)
-                        }
-                    } else if (isEditingSkillMd) {
-                        OutlinedTextField(
-                            value = skillEditBuffer,
-                            onValueChange = { skillEditBuffer = it },
-                            label = { Text("SKILL.md 正文与指令源码", fontSize = 11.sp, color = theme.textSecondary) },
-                            textStyle = MaterialTheme.typography.bodySmall.copy(
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.5.sp,
-                                color = theme.textPrimary
-                            ),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(320.dp),
-                            colors = OutlinedTextFieldDefaults.colors(
-                                focusedBorderColor = theme.primary,
-                                unfocusedBorderColor = theme.outline,
-                                focusedTextColor = theme.textPrimary,
-                                unfocusedTextColor = theme.textPrimary
-                            )
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 340.dp)
-                                .verticalScroll(rememberScrollState())
-                        ) {
-                            MarkdownRenderer(content = skillMarkdownContent?.ifBlank { skillEditBuffer } ?: skill.description ?: "暂无描述")
-                        }
-                    }
-                }
+            onSave = { content ->
+                skillMarkdownContent = content
+                onSaveSkillContent(skill, content)
+                isEditingSkillMd = false
             },
-            confirmButton = {
-                if (isEditingSkillMd) {
-                    TextButton(
-                        onClick = {
-                            skillMarkdownContent = skillEditBuffer
-                            onSaveSkillContent(skill, skillEditBuffer)
-                            isEditingSkillMd = false
-                        }
-                    ) {
-                        Text("保存修改", color = theme.primary, fontWeight = FontWeight.Bold)
-                    }
-                } else {
-                    TextButton(onClick = { selectedSkillForDetail = null }) {
-                        Text("关闭", color = theme.primary)
-                    }
-                }
-            },
-            dismissButton = {
-                if (isEditingSkillMd) {
-                    TextButton(onClick = { selectedSkillForDetail = null }) {
-                        Text("取消", color = theme.textMuted)
-                    }
-                }
-            }
+            onDismiss = { selectedSkillForDetail = null }
         )
     }
 

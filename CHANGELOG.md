@@ -2,6 +2,50 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.27] - 2026-10-28
+
+### 🐛 流式速度徽标一直显示 0.0 t/s → 采样机制重做 (Release v1.7.27)
+
+**现象**：pi-web 网页里很好看的 `模型 ↓ token [177.7 t/s]`，到手机上速率几乎一直是 0.0。
+
+**根因**（三个叠在一起）：
+1. pi-web 跑本机 localhost，浏览器拿到的是逐 token 的 delta，300ms 固定轮询每一拍都有增量；
+   手机侧走 5G + Cloudflare Tunnel，SSE 常被聚成一批一批到达，固定轮询会有大半拍子读到
+   `diff = 0`，而 pi-web 原公式会把这种情况写成 0 → 屏幕上一片 0.0。
+2. `PiSseClient` 的 `/events` 请求没有显式声明 `Accept-Encoding`，OkHttp 会自动加 `gzip`，
+   gzip 流必须攒满缓冲区才能解压 —— 这直接把 SSE 打成一团一团到达（正文“挤牙膏”也同源）。
+3. `text_end`（一段正文讲完）被解析成 `isStreaming = null`，上层按 false 处理，于是回合中途
+   就把流式指标摘了，下一段正文又从 0 起跳。
+
+**修复**：
+- 采样改为**变化驱动 + EMA 平滑**：token 没涨就保持上次的值（绝不写 0），涨了才结算；
+  窗口 < 0.2s 不结算（防网络抖动放大的假峰值），> 3s（思考/等工具停顿）则重新起算，
+  不拿空闲时间当分母；remount（列表滚出再滚回）从模块级缓存接着显示，不重新起跳。
+- SSE 请求显式 `Accept-Encoding: identity`，不再让 gzip 把流打包。
+- `text_end` 不再把 `isStreaming` 置 false，整个回合的收尾继续由 `agent_end` + `/state` 巡检判定。
+- token 估算法、配色阈值、箭头坐标、显示时机与 pi-web 保持一致。
+
+### 🗂️ 技能详情弹窗重做：近全屏 BottomSheet
+
+- 原来的 `AlertDialog` 宽度被默认 `maxWidth` 卡死（320~360dp），Markdown 一行一句；
+  正文区还固定 `heightIn(max = 340.dp)`，大半屏幕空着。现在换成接近全屏（94%）的
+  `ModalBottomSheet`，正文吃满剩余高度，底部操作区固定不随正文滚走。
+- **按钮排版重做**：标题行原来塞了「名字 + 全局徽标 + 效果预览 + 源码编辑」四件东西
+  SpaceBetween，分段按钮被挤到逐字换行，而且作用域徽标看起来像分段控件的一部分（语义完全不同）。
+  现在标题行只留「图标 + 名字 + 作用域徽标 + 关闭 ✕」，预览/源码改成单独一行的两段式分段控件。
+- 路径区：两行显示 + 一键复制（不再截断成 `…\nod…`），版本与 skills.sh 外链合并到同一张卡。
+
+### 🌿 「从此处编辑」对齐 pi-web：真实清理后续内容
+
+- 之前只把正文填回输入框，后面的记录一直留着，继续发送就变成「旧尾巴 + 新分支」重复。
+- 现在按 pi-web 的 `editFromHere` 实现：先 `POST /api/agent/{id}` `{type:"navigate_tree", targetId}`
+  把会话树切到该条目（同一会话文件内部分支，不新建会话），再刷新快照；
+  该节点之后的条目变成被放弃的分支，界面不再显示。
+- `ChatItem` 新增 `entryId`（历史快照里 pi 条目的真实 ID），供导航使用；
+  任务执行中禁止回退（与 pi-web `branchesLockedWhileRunning` 一致）。
+
+---
+
 ## [1.7.26] - 2026-10-28
 
 ### ✨ 流式输出实时速度徽标：`模型名 ↓ token [177.7 t/s]` (Release v1.7.26)

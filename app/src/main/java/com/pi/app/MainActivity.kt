@@ -1880,6 +1880,45 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onOpenModelSheet = { showModelSheet = true },
+                    // 「从此处编辑」：对标 pi-web 的 editFromHere —— 先 navigate_tree 把会话树切到
+                    // 该条 entry，再刷新快照，于是它后面那些条目不再是活跃分支（变成被放弃的分支），
+                    // 界面上就不会再挂着「已经作废的旧尾巴」。输入框填充由 ChatScreen 本地完成。
+                    onEditFromMessage = { msg ->
+                        val sid = activeSessionId
+                        val entryId = msg.entryId
+                        when {
+                            isAgentBusy || isToolExecuting -> Toast.makeText(
+                                this@MainActivity,
+                                "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",
+                                Toast.LENGTH_LONG
+                            ).show()
+
+                            entryId.isNullOrBlank() -> Toast.makeText(
+                                this@MainActivity,
+                                "这条消息没有条目 ID（可能是本地实时气泡），已只填入输入框",
+                                Toast.LENGTH_SHORT
+                            ).show()
+
+                            else -> lifecycleScope.launch {
+                                apiClient.navigateTree(sid, entryId)
+                                    .onSuccess {
+                                        // 重新拉一次快照：服务端现在只返回编辑点之前的活跃分支
+                                        syncSessionSnapshot(
+                                            sid,
+                                            restoreModelMeta = false,
+                                            allowCompletionTransition = false
+                                        )
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "回退分支失败: ${err.message ?: "未知错误"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                            }
+                        }
+                    },
                     onCompactContext = {
                         // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
                         // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。
