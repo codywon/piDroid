@@ -2,6 +2,14 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.38] - 2026-10-29
+
+### 🔧 修复 Release 构建：分支回退重置处的 `List.clear()` 编译错误
+
+- **`MainActivity.kt` 的 `replaceHistory`（分支回退导航）用 `olderMessages.clear()` 重置翻页缓存**，但 `olderMessages` 是不可变 `List` 的 state（`var olderMessages by remember { mutableStateOf<List<ChatItem>>(emptyList()) }`），`clear()` 在编译期即失败：
+  - 自 v1.7.35 引入以来，GitHub Actions 的 `Build & Release piDroid APK` 一直以 `e: MainActivity.kt:835:43 Unresolved reference 'clear'` 失败（v1.7.35 / 1.7.36 / 1.7.37 三连失败均为此一处）；
+  - 改为整体赋值 `olderMessages = emptyList()`，语义不变（重置已翻页的更早记录，让游标逻辑重新从服务端取），并与 `messages.clear()`（`SnapshotStateList`，合法）区分开。
+
 ## [1.7.37] - 2026-10-29
 
 ### 🩹 修复过程输出成段重复：SSE 在途消息身份 + 心跳活性判定

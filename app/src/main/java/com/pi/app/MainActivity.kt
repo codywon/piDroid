@@ -832,7 +832,8 @@ class MainActivity : ComponentActivity() {
                             messages.addAll(synced)
                             // 已翻页进来的更早记录属于旧游标，分支切回后可能与新快照重叠，一并重置，
                             // 由下面的游标逻辑重新从服务端取（pi-web 的 loadSession 同样会重置 historyCursor）。
-                            olderMessages.clear()
+                            // 注意：olderMessages 是 immutable List 的 state，只能整体赋值（`clear()` 无法编译）。
+                            olderMessages = emptyList()
                         }
                         messages.isEmpty() -> {
                             messages.addAll(synced)
