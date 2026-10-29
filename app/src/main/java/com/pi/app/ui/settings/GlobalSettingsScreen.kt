@@ -5,26 +5,35 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -1113,6 +1122,15 @@ enum class SkillSection {
     ADD_SKILL   // 添加技能（搜索 skills.sh 技能市场并安装）
 }
 
+/** 已安装技能的本地筛选维度（不触发网络请求） */
+private enum class SkillFilter {
+    ALL,        // 全部
+    VISIBLE,    // 模型可见
+    HIDDEN,     // 对模型隐藏
+    UPDATABLE   // 有可升级版本
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlobalSkillsTab(
     skills: List<SkillInfo>,
@@ -1207,218 +1225,208 @@ fun GlobalSkillsTab(
     val projectSkills = remember(skills) { skills.filter { it.isProjectScope } }
     val globalSkills = remember(skills) { skills.filter { it.isGlobalScope } }
 
-    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-        // 顶部模式切换 Pills: [ 📦 技能列表 (11) ] [ ➕ 添加技能 (skills.sh) ]
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = if (currentSection == SkillSection.INSTALLED) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                border = BorderStroke(1.dp, if (currentSection == SkillSection.INSTALLED) theme.primary else theme.outline),
-                modifier = Modifier.weight(1f).clickable { currentSection = SkillSection.INSTALLED }
-            ) {
-                Row(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Extension,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = if (currentSection == SkillSection.INSTALLED) theme.primary else theme.textSecondary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "已安装技能 (${skills.size})",
-                        fontSize = 12.5.sp,
-                        fontWeight = if (currentSection == SkillSection.INSTALLED) FontWeight.Bold else FontWeight.Normal,
-                        color = if (currentSection == SkillSection.INSTALLED) theme.primary else theme.textSecondary
-                    )
-                }
-            }
+    // 已安装列表的本地筛选（与 skills.sh 远程搜索 searchQuery 完全独立）
+    var localQuery by remember { mutableStateOf("") }
+    var localFilter by remember { mutableStateOf(SkillFilter.ALL) }
+    var showSkillHelp by remember { mutableStateOf(false) }
 
-            Surface(
-                shape = RoundedCornerShape(8.dp),
-                color = if (currentSection == SkillSection.ADD_SKILL) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                border = BorderStroke(1.dp, if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.outline),
-                modifier = Modifier.weight(1f).clickable { currentSection = SkillSection.ADD_SKILL }
-            ) {
-                Row(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Default.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.textSecondary
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "添加技能 (skills.sh)",
-                        fontSize = 12.5.sp,
-                        fontWeight = if (currentSection == SkillSection.ADD_SKILL) FontWeight.Bold else FontWeight.Normal,
-                        color = if (currentSection == SkillSection.ADD_SKILL) theme.primary else theme.textSecondary
-                    )
-                }
+    val updatableCount = updatesMap.values.count { it.state == "update-available" }
+    val hiddenCount = skills.count { !it.isVisibleToModel }
+    val visibleCount = skills.size - hiddenCount
+
+    fun filterInstalled(list: List<SkillInfo>): List<SkillInfo> {
+        val q = localQuery.trim()
+        return list.filter { skill ->
+            val matchesQuery = q.isBlank() ||
+                skill.name.contains(q, ignoreCase = true) ||
+                skill.alias?.contains(q, ignoreCase = true) == true ||
+                skill.description?.contains(q, ignoreCase = true) == true
+            val matchesFilter = when (localFilter) {
+                SkillFilter.ALL -> true
+                SkillFilter.VISIBLE -> skill.isVisibleToModel
+                SkillFilter.HIDDEN -> !skill.isVisibleToModel
+                SkillFilter.UPDATABLE -> updatesMap[skill.install?.`package`]?.state == "update-available"
             }
+            matchesQuery && matchesFilter
         }
+    }
 
+    val filteredProject = filterInstalled(projectSkills)
+    val filteredGlobal = filterInstalled(globalSkills)
+    // 有内容的组优先显示，空组折叠置底（避免 12 项全局技能被迫从第二屏才开始）
+    val projectGroupFirst = filteredProject.isNotEmpty() || filteredGlobal.isEmpty()
+
+    Column(modifier = Modifier.fillMaxSize().padding(12.dp)) {
         when (currentSection) {
             SkillSection.INSTALLED -> {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    // 顶栏操作区
-                    item {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(modifier = Modifier.weight(1f)) {
-                                InfoTitle(
-                                    title = "技能管理中心 (${skills.size} 项)",
-                                    infoDescription = "可分别控制项目与全局技能。开启后模型可在系统提示词中发现；关闭后对模型隐藏（不消耗提示词 Token），仍可在对话框通过 /<技能名> 手动调用。",
-                                    style = MaterialTheme.typography.titleMedium
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(
-                                    onClick = { doCheckUpdates() },
-                                    enabled = !isCheckingUpdates,
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                                    border = BorderStroke(1.dp, theme.outline)
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.textSecondary)
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("检查更新", fontSize = 11.5.sp, color = theme.textSecondary)
-                                }
-                                Button(
-                                    onClick = { currentSection = SkillSection.ADD_SKILL },
-                                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                                    shape = RoundedCornerShape(8.dp),
-                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(13.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("添加技能", fontSize = 11.5.sp)
-                                }
-                            }
-                        }
-                    }
-
-                    // 更新提示条
-                    val updatesAvailable = updatesMap.values.filter { it.state == "update-available" }
-                    if (updatesAvailable.isNotEmpty()) {
-                        item {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFFD29922).copy(alpha = 0.12f),
-                                border = BorderStroke(1.dp, Color(0xFFD29922).copy(alpha = 0.4f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = "发现 ${updatesAvailable.size} 项技能可升级更新",
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFD29922)
-                                    )
-                                    Text(
-                                        text = "点击卡片可单独更新",
-                                        fontSize = 11.sp,
-                                        color = theme.textMuted
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // ==========================================
-                    // 1. 项目技能分组 (Project)
-                    // ==========================================
-                    item {
-                        val allProjectEnabled = projectSkills.isNotEmpty() && projectSkills.all { it.isVisibleToModel }
-                        val projectEnabledCount = projectSkills.count { it.isVisibleToModel }
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // 顶部固定工具区：搜索 + 添加技能 + 检查更新
+                    // 三个入口合一：不再重复出现在顶部 pill、标题行与列表底部
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 已安装技能本地搜索（固定 44dp，与右侧两个动作按钮同高）
                         Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = theme.surfaceContainer,
-                            border = BorderStroke(0.5.dp, theme.outline),
-                            modifier = Modifier.fillMaxWidth()
+                            shape = RoundedCornerShape(9.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(
+                                1.dp,
+                                if (localQuery.isBlank()) theme.outline else theme.primary.copy(alpha = 0.6f)
+                            ),
+                            modifier = Modifier.weight(1f).height(44.dp)
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                modifier = Modifier.fillMaxSize().padding(horizontal = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF8250DF))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("项目技能", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = theme.textPrimary)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = Color(0xFF8250DF).copy(alpha = 0.15f)
-                                    ) {
-                                        Text(
-                                            text = "$projectEnabledCount/${projectSkills.size}",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFD2A8FF),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
-                                        )
-                                    }
-                                }
-
-                                Switch(
-                                    checked = allProjectEnabled,
-                                    enabled = projectSkills.isNotEmpty(),
-                                    onCheckedChange = { checked ->
-                                        onToggleSkillsBatch(projectSkills, checked)
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF2EA043),
-                                        checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                        uncheckedThumbColor = theme.textMuted,
-                                        uncheckedTrackColor = theme.surfaceContainerHigh
-                                    )
+                                Icon(
+                                    Icons.Default.Search,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp),
+                                    tint = theme.textMuted
                                 )
+                                Spacer(modifier = Modifier.width(7.dp))
+                                BasicTextField(
+                                    value = localQuery,
+                                    onValueChange = { localQuery = it },
+                                    singleLine = true,
+                                    textStyle = TextStyle(fontSize = 12.5.sp, color = theme.textPrimary),
+                                    cursorBrush = SolidColor(theme.primary),
+                                    modifier = Modifier.weight(1f),
+                                    decorationBox = { innerTextField ->
+                                        Box(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            contentAlignment = Alignment.CenterStart
+                                        ) {
+                                            if (localQuery.isBlank()) {
+                                                Text(
+                                                    text = "搜索已安装技能",
+                                                    fontSize = 12.sp,
+                                                    color = theme.textMuted
+                                                )
+                                            }
+                                            innerTextField()
+                                        }
+                                    }
+                                )
+                                if (localQuery.isNotBlank()) {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Icon(
+                                        Icons.Default.Clear,
+                                        contentDescription = "清除",
+                                        modifier = Modifier
+                                            .size(14.dp)
+                                            .clickable { localQuery = "" },
+                                        tint = theme.textMuted
+                                    )
+                                }
+                            }
+                        }
+
+                        // 添加技能（唯一入口）
+                        Surface(
+                            shape = RoundedCornerShape(9.dp),
+                            color = theme.primary,
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize().clickable {
+                                    currentSection = SkillSection.ADD_SKILL
+                                },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Default.Add,
+                                    contentDescription = "添加技能",
+                                    modifier = Modifier.size(19.dp),
+                                    tint = Color.White
+                                )
+                            }
+                        }
+
+                        // 检查更新（有可更新项时图标转为琥珀色）
+                        Surface(
+                            shape = RoundedCornerShape(9.dp),
+                            color = theme.surfaceContainerLow,
+                            border = BorderStroke(1.dp, theme.outline),
+                            modifier = Modifier.size(44.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier.fillMaxSize().clickable { doCheckUpdates() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isCheckingUpdates) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(15.dp),
+                                        strokeWidth = 2.dp,
+                                        color = theme.primary
+                                    )
+                                } else {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = "检查更新",
+                                        modifier = Modifier.size(17.dp),
+                                        tint = if (updatableCount > 0) Color(0xFFD29922) else theme.textSecondary
+                                    )
+                                }
                             }
                         }
                     }
 
-                    if (projectSkills.isEmpty()) {
-                        item {
+                    // 筛选 chips（等宽铺满）+ 可见性说明入口
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        listOf(
+                            SkillFilter.ALL,
+                            SkillFilter.VISIBLE,
+                            SkillFilter.HIDDEN,
+                            SkillFilter.UPDATABLE
+                        ).forEach { filter ->
+                            val label = when (filter) {
+                                SkillFilter.ALL -> "全部 ${skills.size}"
+                                SkillFilter.VISIBLE -> "可见 $visibleCount"
+                                SkillFilter.HIDDEN -> "隐藏 $hiddenCount"
+                                SkillFilter.UPDATABLE -> "可更新 $updatableCount"
+                            }
+                            val selected = localFilter == filter
                             Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = theme.surfaceContainerLow,
-                                border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.5f)),
-                                modifier = Modifier.fillMaxWidth()
+                                shape = RoundedCornerShape(7.dp),
+                                color = if (selected) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainerLow,
+                                border = BorderStroke(1.dp, if (selected) theme.primary else theme.outline),
+                                modifier = Modifier.weight(1f)
                             ) {
                                 Text(
-                                    text = "当前工作区暂无项目独立技能。在【添加技能】中选择【项目】范围即可安装至当前工作区 (.pi/skills)",
-                                    fontSize = 11.5.sp,
-                                    color = theme.textMuted,
-                                    modifier = Modifier.padding(12.dp)
+                                    text = label,
+                                    fontSize = 11.sp,
+                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (selected) theme.primary else theme.textSecondary,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { localFilter = filter }
+                                        .padding(vertical = 4.dp)
                                 )
                             }
                         }
-                    } else {
-                        items(projectSkills, key = { it.filePath ?: it.name }) { skill ->
+                        Icon(
+                            Icons.Outlined.Info,
+                            contentDescription = "技能可见性说明",
+                            tint = theme.textMuted,
+                            modifier = Modifier.size(15.dp).clickable { showSkillHelp = true }
+                        )
+                    }
+
+                    fun LazyListScope.skillRows(list: List<SkillInfo>, keyPrefix: String) {
+                        items(list, key = { "$keyPrefix-${it.filePath ?: it.name}" }) { skill ->
                             SkillCardItem(
                                 skill = skill,
-                                isProject = true,
+                                isProject = keyPrefix == "project",
                                 isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
                                 isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
                                 onToggle = { onToggleSkill(skill, it) },
@@ -1429,96 +1437,138 @@ fun GlobalSkillsTab(
                         }
                     }
 
-                    item { Spacer(modifier = Modifier.height(6.dp)) }
+                    fun LazyListScope.projectGroup() {
+                        item(key = "project-header") {
+                            SkillGroupHeader(
+                                title = "项目技能",
+                                icon = Icons.Default.Folder,
+                                accent = Color(0xFF8250DF),
+                                badgeText = "${projectSkills.count { it.isVisibleToModel }}/${projectSkills.size}",
+                                checked = projectSkills.isNotEmpty() && projectSkills.all { it.isVisibleToModel },
+                                switchEnabled = projectSkills.isNotEmpty(),
+                                onToggleAll = { checked -> onToggleSkillsBatch(projectSkills, checked) }
+                            )
+                        }
+                        if (projectSkills.isEmpty()) {
+                            item(key = "project-empty") {
+                                SkillHintRow(
+                                    text = "暂无项目技能 · 去添加",
+                                    onClick = { currentSection = SkillSection.ADD_SKILL }
+                                )
+                            }
+                        } else {
+                            skillRows(filteredProject, "project")
+                            if (filteredProject.isEmpty()) {
+                                item(key = "project-nomatch") { SkillHintRow(text = "无匹配的项目技能") }
+                            }
+                        }
+                    }
 
-                    // ==========================================
-                    // 2. 全局技能分组 (Global)
-                    // ==========================================
-                    item {
-                        val allGlobalEnabled = globalSkills.isNotEmpty() && globalSkills.all { it.isVisibleToModel }
-                        val globalEnabledCount = globalSkills.count { it.isVisibleToModel }
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = theme.surfaceContainer,
-                            border = BorderStroke(0.5.dp, theme.outline),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(Icons.Default.Public, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF58A6FF))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("全局技能", fontWeight = FontWeight.Bold, fontSize = 13.5.sp, color = theme.textPrimary)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Surface(
-                                        shape = RoundedCornerShape(4.dp),
-                                        color = Color(0xFF1F6FEB).copy(alpha = 0.15f)
+                    fun LazyListScope.globalGroup() {
+                        item(key = "global-header") {
+                            SkillGroupHeader(
+                                title = "全局技能",
+                                icon = Icons.Default.Public,
+                                accent = Color(0xFF58A6FF),
+                                badgeText = "${globalSkills.count { it.isVisibleToModel }}/${globalSkills.size}",
+                                checked = globalSkills.isNotEmpty() && globalSkills.all { it.isVisibleToModel },
+                                switchEnabled = globalSkills.isNotEmpty(),
+                                onToggleAll = { checked -> onToggleSkillsBatch(globalSkills, checked) }
+                            )
+                        }
+                        if (globalSkills.isEmpty()) {
+                            item(key = "global-empty") {
+                                SkillHintRow(
+                                    text = "暂无全局技能 · 去添加",
+                                    onClick = { currentSection = SkillSection.ADD_SKILL }
+                                )
+                            }
+                        } else {
+                            skillRows(filteredGlobal, "global")
+                            if (filteredGlobal.isEmpty()) {
+                                item(key = "global-nomatch") { SkillHintRow(text = "无匹配的全局技能") }
+                            }
+                        }
+                    }
+
+                    LazyColumn(
+                        modifier = Modifier.weight(1f).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (updatableCount > 0) {
+                            item(key = "update-banner") {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color(0xFFD29922).copy(alpha = 0.12f),
+                                    border = BorderStroke(1.dp, Color(0xFFD29922).copy(alpha = 0.35f)),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth()
+                                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
                                     ) {
                                         Text(
-                                            text = "$globalEnabledCount/${globalSkills.size}",
-                                            fontSize = 11.sp,
+                                            text = "发现 $updatableCount 项技能可升级",
+                                            fontSize = 11.5.sp,
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF58A6FF),
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                            color = Color(0xFFD29922)
+                                        )
+                                        Text(
+                                            text = "点击卡片可单独更新",
+                                            fontSize = 10.5.sp,
+                                            color = theme.textMuted
                                         )
                                     }
                                 }
-
-                                Switch(
-                                    checked = allGlobalEnabled,
-                                    enabled = globalSkills.isNotEmpty(),
-                                    onCheckedChange = { checked ->
-                                        onToggleSkillsBatch(globalSkills, checked)
-                                    },
-                                    colors = SwitchDefaults.colors(
-                                        checkedThumbColor = Color(0xFF2EA043),
-                                        checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                        uncheckedThumbColor = theme.textMuted,
-                                        uncheckedTrackColor = theme.surfaceContainerHigh
-                                    )
-                                )
                             }
                         }
-                    }
 
-                    items(globalSkills, key = { it.filePath ?: it.name }) { skill ->
-                        SkillCardItem(
-                            skill = skill,
-                            isProject = false,
-                            isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
-                            isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
-                            onToggle = { onToggleSkill(skill, it) },
-                            onEditAlias = { onEditAlias(skill) },
-                            onViewDetail = { onViewDetail(skill) },
-                            onUpdate = { doUpdateSkill(skill) }
-                        )
-                    }
+                        if (projectGroupFirst) {
+                            projectGroup()
+                            item(key = "group-gap") { Spacer(modifier = Modifier.height(2.dp)) }
+                            globalGroup()
+                        } else {
+                            globalGroup()
+                            item(key = "group-gap") { Spacer(modifier = Modifier.height(2.dp)) }
+                            projectGroup()
+                        }
 
-                    // 底部 "+ 添加技能" 大按钮（完全复刻 pi-web 底部入口）
-                    item {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = theme.surfaceContainerLow,
-                            border = BorderStroke(1.dp, theme.outline),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { currentSection = SkillSection.ADD_SKILL }
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(14.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Icon(Icons.Default.Add, contentDescription = null, tint = theme.primary, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("添加技能 (搜索 skills.sh 技能市场)", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = theme.primary)
+                        item(key = "bottom-gap") { Spacer(modifier = Modifier.height(16.dp)) }
+                    }
+                }
+
+                if (showSkillHelp) {
+                    AlertDialog(
+                        onDismissRequest = { showSkillHelp = false },
+                        containerColor = theme.surfaceContainerLow,
+                        titleContentColor = theme.textPrimary,
+                        textContentColor = theme.textSecondary,
+                        title = {
+                            Text(
+                                text = "技能可见性与范围",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
+                        },
+                        text = {
+                            Text(
+                                text = "开启后模型可在系统提示词中发现该技能并主动调用；关闭后对模型隐藏" +
+                                    "（不消耗提示词 Token），仍可在对话框通过 /技能名 手动调用。\n\n" +
+                                    "项目技能安装在 .pi/skills，仅当前工作区生效；" +
+                                    "全局技能安装在 ~/.pi/agent/skills，对所有工作区生效。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = theme.textSecondary
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showSkillHelp = false }) {
+                                Text("我知道了", color = theme.primary)
                             }
                         }
-                        Spacer(modifier = Modifier.height(16.dp))
-                    }
+                    )
                 }
             }
 
@@ -1882,8 +1932,12 @@ fun GlobalSkillsTab(
 }
 
 /**
- * 技能卡片组件（带模型调用开关、对模型隐藏但仍可手动调用提示、别名、更新指示器）
+ * 技能卡片（紧凑单行式）：状态点 + 名称/别名/更新标记 + 单行描述 + 可见性开关。
+ *
+ * 可见性由「左侧状态点 + 右侧开关 + 整卡明暗」三重表达，不再占用第三行文字。
+ * 单击进入详情，长按编辑别名。
  */
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun SkillCardItem(
     skill: SkillInfo,
@@ -1900,111 +1954,98 @@ private fun SkillCardItem(
 
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = theme.surfaceContainerLow,
-        border = BorderStroke(1.dp, if (isVisible) theme.outline else theme.outline.copy(alpha = 0.5f)),
-        modifier = Modifier.fillMaxWidth()
+        color = if (isVisible) theme.surfaceContainerLow else theme.surfaceContainerLow.copy(alpha = 0.55f),
+        border = BorderStroke(1.dp, if (isVisible) theme.outline else theme.outline.copy(alpha = 0.55f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onViewDetail, onLongClick = onEditAlias)
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(
-                modifier = Modifier.weight(1f).clickable { onViewDetail() }
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // 状态指示圆点：绿色 = 模型可见；灰色 = 对模型隐藏
-                    Box(
-                        modifier = Modifier
-                            .size(7.5.dp)
-                            .background(
-                                color = if (isVisible) Color(0xFF2EA043) else Color(0xFF6E7681),
-                                shape = CircleShape
-                            )
+            // 状态圆点：绿色 = 模型可见；灰色 = 对模型隐藏
+            Box(
+                modifier = Modifier
+                    .size(6.dp)
+                    .background(
+                        color = if (isVisible) Color(0xFF2EA043) else Color(0xFF6E7681),
+                        shape = CircleShape
                     )
-                    Spacer(modifier = Modifier.width(7.dp))
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = skill.name,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = if (isVisible) theme.textPrimary else theme.textMuted,
                         maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
 
-                    Spacer(modifier = Modifier.width(6.dp))
-                    // 自定义别名
-                    Surface(
-                        color = if (skill.alias.isNullOrBlank()) theme.surfaceContainer else theme.primary.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(4.dp),
-                        modifier = Modifier.clickable { onEditAlias() }
-                    ) {
-                        Text(
-                            text = skill.alias?.takeIf { it.isNotBlank() } ?: "别名 ✎",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (skill.alias.isNullOrBlank()) theme.textMuted else theme.primary,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
-                        )
+                    // 别名：仅在有别名时出现（去掉常驻的"别名 ✎"噪音），点击可直接修改
+                    val alias = skill.alias
+                    if (!alias.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Surface(
+                            shape = RoundedCornerShape(4.dp),
+                            color = theme.primary.copy(alpha = 0.15f)
+                        ) {
+                            Text(
+                                text = alias,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = theme.primary,
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier
+                                    .clickable { onEditAlias() }
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
                     }
 
                     if (isUpdateAvailable) {
-                        Spacer(modifier = Modifier.width(6.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
                         Surface(
                             shape = RoundedCornerShape(4.dp),
                             color = Color(0xFFD29922).copy(alpha = 0.15f),
-                            border = BorderStroke(0.5.dp, Color(0xFFD29922).copy(alpha = 0.5f)),
-                            modifier = Modifier.clickable { onUpdate() }
+                            border = BorderStroke(0.5.dp, Color(0xFFD29922).copy(alpha = 0.5f))
                         ) {
                             Text(
-                                text = if (isUpdating) "更新中..." else "↑ 可更新",
+                                text = if (isUpdating) "更新中" else "↑ 可更新",
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFD29922),
-                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                maxLines = 1,
+                                softWrap = false,
+                                modifier = Modifier
+                                    .clickable { onUpdate() }
+                                    .padding(horizontal = 5.dp, vertical = 1.dp)
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(1.dp))
+
                 Text(
                     text = skill.description?.takeIf { it.isNotBlank() } ?: "点开查看 / 编辑 SKILL.md",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = theme.textSecondary,
-                    maxLines = 2,
+                    fontSize = 11.sp,
+                    color = if (isVisible) theme.textSecondary else theme.textMuted,
+                    maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
-
-                Spacer(modifier = Modifier.height(4.dp))
-                // 模型调用状态行（核心：对模型隐藏但仍可手动调用的说明）
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isVisible) {
-                        Text(
-                            text = "🟢 模型可见 (可由模型主动调用)",
-                            fontSize = 10.5.sp,
-                            color = Color(0xFF3FB950)
-                        )
-                    } else {
-                        Text(
-                            text = "⚪ 对模型隐藏 (仍可手动输入命令调用)",
-                            fontSize = 10.5.sp,
-                            color = Color(0xFF8B949E)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "详情 ✎",
-                        fontSize = 10.5.sp,
-                        color = theme.primary,
-                        modifier = Modifier.clickable { onViewDetail() }
-                    )
-                }
             }
 
             Spacer(modifier = Modifier.width(6.dp))
 
-            // 单个技能模型调用开关
             Switch(
                 checked = isVisible,
                 onCheckedChange = { onToggle(it) },
@@ -2014,6 +2055,88 @@ private fun SkillCardItem(
                     uncheckedThumbColor = theme.textMuted,
                     uncheckedTrackColor = theme.surfaceContainer
                 )
+            )
+        }
+    }
+}
+
+/**
+ * 技能分组头（轻量化标签行）：图标 + 标题 + 计数徽章 + 批量开关。
+ * 不再使用卡片容器，空分组因此只占一行。
+ */
+@Composable
+private fun SkillGroupHeader(
+    title: String,
+    icon: ImageVector,
+    accent: Color,
+    badgeText: String,
+    checked: Boolean,
+    switchEnabled: Boolean,
+    onToggleAll: (Boolean) -> Unit
+) {
+    val theme = LocalAppTheme.current
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 2.dp, end = 2.dp, top = 8.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp), tint = accent)
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = theme.textPrimary
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Surface(shape = RoundedCornerShape(4.dp), color = accent.copy(alpha = 0.15f)) {
+                Text(
+                    text = badgeText,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = accent,
+                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                )
+            }
+        }
+
+        Switch(
+            checked = checked,
+            enabled = switchEnabled,
+            onCheckedChange = onToggleAll,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color(0xFF2EA043),
+                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                uncheckedThumbColor = theme.textMuted,
+                uncheckedTrackColor = theme.surfaceContainerHigh
+            )
+        )
+    }
+}
+
+/**
+ * 分组空态 / 无匹配提示：单行文本，可点击跳转到添加技能。
+ */
+@Composable
+private fun SkillHintRow(text: String, onClick: (() -> Unit)? = null) {
+    val theme = LocalAppTheme.current
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(start = 2.dp, end = 2.dp, top = 2.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = text, fontSize = 11.5.sp, color = theme.textMuted)
+        if (onClick != null) {
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                modifier = Modifier.size(13.dp),
+                tint = theme.textMuted
             )
         }
     }
