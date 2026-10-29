@@ -3029,717 +3029,346 @@ fun GlobalSystemSettingsTab(
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
-            InfoTitle(
-                title = "应用主题外观",
-                infoDescription = "五种高对比配色",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "当前主题: ${ThemeManager.currentTheme.titleZh} (${if (ThemeManager.currentTheme.isDark) "深色" else "浅色"})",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.SemiBold,
-                        color = theme.textPrimary
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        AppTheme.entries.forEach { appTheme ->
-                            val isSelected = ThemeManager.currentTheme == appTheme
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSelected) appTheme.primary.copy(alpha = 0.15f) else theme.surfaceContainer,
-                                border = BorderStroke(
-                                    if (isSelected) 2.dp else 1.dp,
-                                    if (isSelected) appTheme.primary else theme.outline
-                                ),
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clickable { ThemeManager.setTheme(appTheme) }
+        // ── 外观与反馈 ───────────────────────────────────────────────
+        item(key = "appearance") {
+            Column {
+                SettingsGroupLabel(text = "外观与反馈")
+                SettingsGroup {
+                    SettingsRow(
+                        title = "主题外观",
+                        subtitle = "${ThemeManager.currentTheme.titleZh} · ${if (ThemeManager.currentTheme.isDark) "深色" else "浅色"}",
+                        trailing = {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(5.dp)
                             ) {
-                                Column(
-                                    modifier = Modifier.padding(vertical = 8.dp, horizontal = 2.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Box(
+                                AppTheme.entries.forEach { appTheme ->
+                                    val isSelected = ThemeManager.currentTheme == appTheme
+                                    Spacer(
                                         modifier = Modifier
-                                            .size(22.dp)
+                                            .size(20.dp)
+                                            .background(
+                                                color = if (isSelected) theme.textPrimary else Color.Transparent,
+                                                shape = CircleShape
+                                            )
+                                            .padding(if (isSelected) 2.dp else 0.dp)
                                             .background(
                                                 brush = androidx.compose.ui.graphics.Brush.linearGradient(appTheme.previewGradient),
                                                 shape = CircleShape
-                                            ),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (isSelected) {
-                                            Icon(
-                                                Icons.Default.Check,
-                                                contentDescription = null,
-                                                tint = Color.White,
-                                                modifier = Modifier.size(13.dp)
                                             )
-                                        }
-                                    }
-                                    Text(
-                                        text = appTheme.titleZh,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontSize = 10.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) appTheme.primary else theme.textPrimary,
-                                        maxLines = 1
+                                            .clickable { ThemeManager.setTheme(appTheme) }
                                     )
                                 }
                             }
                         }
-                    }
-
-                    HorizontalDivider(color = theme.outline)
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 16.dp)
-                        ) {
-                            Text(
-                                text = "马达触觉反馈",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = theme.textPrimary
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = "完成双振，审批重振",
-                                style = MaterialTheme.typography.labelSmall,
-                                lineHeight = 16.sp,
-                                color = theme.textMuted
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onTestHaptics,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(6.dp),
-                                border = BorderStroke(1.dp, theme.outline),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Text("测试震动", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                    )
+                    SettingsRow(
+                        title = "马达触觉反馈",
+                        subtitle = "完成双振、审批重振",
+                        topDivider = true,
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                SettingsInlineAction(text = "试振", onClick = onTestHaptics)
+                                SettingsSwitch(checked = hapticsEnabled, onCheckedChange = onToggleHaptics)
                             }
-                            Switch(
-                                checked = hapticsEnabled,
-                                onCheckedChange = onToggleHaptics,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = theme.primary,
-                                    checkedTrackColor = theme.primary.copy(alpha = 0.3f)
-                                )
-                            )
                         }
-                    }
-
-                    HorizontalDivider(color = theme.outline)
-
-                    // 对标 pi-web 任务完成提示音
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 16.dp)
-                        ) {
-                            Text(
-                                text = "任务完成提示音",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Medium,
-                                color = theme.textPrimary
-                            )
-                            Spacer(modifier = Modifier.height(3.dp))
-                            Text(
-                                text = "任务完成时播放提示音",
-                                style = MaterialTheme.typography.labelSmall,
-                                lineHeight = 16.sp,
-                                color = theme.textMuted
-                            )
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = onTestCompletionSound,
-                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-                                shape = RoundedCornerShape(6.dp),
-                                border = BorderStroke(1.dp, theme.outline),
-                                modifier = Modifier.height(30.dp)
-                            ) {
-                                Text("测试音效", style = MaterialTheme.typography.labelSmall, color = theme.primary)
+                    )
+                    SettingsRow(
+                        title = "任务完成提示音",
+                        subtitle = "任务完成时播放一次提示音",
+                        topDivider = true,
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                SettingsInlineAction(text = "试听", onClick = onTestCompletionSound)
+                                SettingsSwitch(checked = completionSoundEnabled, onCheckedChange = onToggleCompletionSound)
                             }
-                            Switch(
-                                checked = completionSoundEnabled,
-                                onCheckedChange = onToggleCompletionSound,
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = theme.primary,
-                                    checkedTrackColor = theme.primary.copy(alpha = 0.3f)
-                                )
-                            )
                         }
-                    }
+                    )
                 }
             }
         }
 
-        item {
-            InfoTitle(
-                title = "后台保活",
-                infoDescription = "锁屏与切后台不断连",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // 1. 常驻通知栏保活开关
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("常驻通知栏保活", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                                UnifiedStatusBadge(
-                                    text = if (persistentNotifyEnabled) "常驻中" else "已关闭",
-                                    isActive = persistentNotifyEnabled
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "常驻通知栏，防后台回收",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted
-                            )
+        // ── 后台与保活 ───────────────────────────────────────────────
+        item(key = "keepalive") {
+            Column {
+                SettingsGroupLabel(text = "后台与保活")
+                SettingsGroup {
+                    SettingsRow(
+                        title = "常驻通知栏保活",
+                        subtitle = if (persistentNotifyEnabled) "前台服务运行中，防系统回收" else "关闭后锁屏可能被回收连接",
+                        trailing = {
+                            SettingsSwitch(checked = persistentNotifyEnabled, onCheckedChange = onTogglePersistentNotify)
                         }
-                        Switch(
-                            checked = persistentNotifyEnabled,
-                            onCheckedChange = onTogglePersistentNotify,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    // 1.1 任务完成独立弹窗通知
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("任务完成独立弹窗通知", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                                UnifiedStatusBadge(
-                                    text = if (taskCompletedNotifyEnabled) "已开启" else "默认关闭",
-                                    isActive = taskCompletedNotifyEnabled
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                text = "完成时额外弹一张通知卡片",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted
-                            )
+                    )
+                    SettingsRow(
+                        title = "任务完成独立弹窗通知",
+                        subtitle = "完成时额外弹一张通知卡片",
+                        topDivider = true,
+                        trailing = {
+                            SettingsSwitch(checked = taskCompletedNotifyEnabled, onCheckedChange = onToggleTaskCompletedNotify)
                         }
-                        Switch(
-                            checked = taskCompletedNotifyEnabled,
-                            onCheckedChange = onToggleTaskCompletedNotify,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    // 2. 电池优化白名单 (实时同步状态)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("电池优化白名单", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                if (liveIgnoringBattery) "后台网络不受系统休眠限制" else "建议开启：防息屏冻结长连接",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (liveIgnoringBattery) theme.textMuted else Color(0xFFD97706)
-                            )
-                        }
-                        if (liveIgnoringBattery) {
-                            UnifiedStatusBadge(
-                                text = "已加入",
-                                isActive = true
-                            )
-                        } else {
-                            UnifiedStatusBadge(
-                                text = "去开启 ➔",
-                                isActive = false,
-                                isAction = true,
-                                onClick = {
-                                    onRequestIgnoreBattery()
-                                    scope.launch {
-                                        listOf(500L, 1200L, 2500L).forEach { d ->
-                                            delay(d)
-                                            liveIgnoringBattery = KeepAliveManager(context).isIgnoringBatteryOptimizations()
-                                        }
+                    )
+                    SettingsRow(
+                        title = "电池优化白名单",
+                        subtitle = if (liveIgnoringBattery) "后台网络不受系统休眠限制" else "建议加入，防息屏冻结长连接",
+                        value = if (liveIgnoringBattery) "已加入" else "去开启",
+                        valueColor = if (liveIgnoringBattery) Color(0xFF2EA043) else theme.primary,
+                        showChevron = !liveIgnoringBattery,
+                        topDivider = true,
+                        onClick = {
+                            if (!liveIgnoringBattery) {
+                                onRequestIgnoreBattery()
+                                scope.launch {
+                                    listOf(500L, 1200L, 2500L).forEach { d ->
+                                        delay(d)
+                                        liveIgnoringBattery = KeepAliveManager(context).isIgnoringBatteryOptimizations()
                                     }
                                 }
-                            )
+                            }
                         }
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    // 3. CPU 唤醒锁与断线自动重连
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Text("CPU 唤醒锁与断线自愈", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text("任务期持有唤醒锁 + 断线自动重连", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
-                        }
-                        UnifiedStatusBadge(
-                            text = "已就绪",
-                            isActive = true
-                        )
-                    }
+                    )
+                    SettingsRow(
+                        title = "CPU 唤醒锁与断线自愈",
+                        subtitle = "任务期持有唤醒锁，断线自动重连",
+                        value = "已就绪",
+                        valueColor = Color(0xFF2EA043),
+                        topDivider = true
+                    )
                 }
             }
         }
 
-        item {
-            InfoTitle(
-                title = "智能体行为",
-                infoDescription = "任务运行时的自动压缩与自动重试，读写 PC 上的 pi（get_state / set_auto_*）。",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // 自动压缩上下文
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("自动压缩上下文", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                                UnifiedStatusBadge(
-                                    text = if (autoCompactionEnabled) "已开启" else "已关闭",
-                                    isActive = autoCompactionEnabled
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                "接近窗口上限时由 pi 在回合边界自动压缩，不打断当前请求",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted
-                            )
+        // ── 会话行为 ─────────────────────────────────────────────────
+        item(key = "session") {
+            Column {
+                SettingsGroupLabel(text = "会话行为")
+                SettingsGroup {
+                    SettingsRow(
+                        title = "自动压缩上下文",
+                        subtitle = "接近窗口上限时在回合边界压缩，不打断当前请求",
+                        trailing = {
+                            SettingsSwitch(checked = autoCompactionEnabled, onCheckedChange = onToggleAutoCompaction)
                         }
-                        Switch(
-                            checked = autoCompactionEnabled,
-                            onCheckedChange = onToggleAutoCompaction,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    // 自动重试
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f).padding(end = 12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("自动重试", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = theme.textPrimary)
-                                UnifiedStatusBadge(
-                                    text = if (autoRetryEnabled) "已开启" else "已关闭",
-                                    isActive = autoRetryEnabled
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(2.dp))
-                            Text(
-                                "模型报错/断流时由 pi 自动重试本轮",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted
-                            )
+                    )
+                    SettingsRow(
+                        title = "自动重试",
+                        subtitle = "模型报错或断流时自动重试本轮",
+                        topDivider = true,
+                        trailing = {
+                            SettingsSwitch(checked = autoRetryEnabled, onCheckedChange = onToggleAutoRetry)
                         }
-                        Switch(
-                            checked = autoRetryEnabled,
-                            onCheckedChange = onToggleAutoRetry,
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                            )
-                        )
-                    }
+                    )
                 }
             }
         }
 
-        item {
-            InfoTitle(
-                title = "主机网关连接",
-                infoDescription = "网关地址与访问令牌",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    val isConnected = serverUrl.isNotBlank() && authToken.isNotBlank()
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                Icons.Default.Dns,
-                                contentDescription = null,
-                                tint = if (isConnected) theme.primary else theme.textMuted,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = deviceName.ifBlank { if (isConnected) "My PC" else "未配置网关" },
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.textPrimary
-                            )
-                        }
-                        UnifiedStatusBadge(
-                            text = if (isConnected) "已配置" else "未配对",
-                            isActive = isConnected
-                        )
-                    }
-
-                    Surface(
-                        color = theme.surfaceContainer,
-                        shape = RoundedCornerShape(8.dp),
-                        border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.5f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text(
-                                text = "网关地址: ${serverUrl.ifBlank { "未设置" }}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = if (isConnected) theme.primary else theme.textMuted
-                            )
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = when {
-                                        authToken.isBlank() -> "访问令牌: 未设置"
-                                        showFullToken -> "访问令牌: $authToken"
-                                        // 默认露头尾各一段，足够肉眼比对是不是同一个密钥
-                                        else -> "访问令牌: ${authToken.take(10)}••••${authToken.takeLast(4)}"
-                                    },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = theme.textMuted,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                if (authToken.isNotBlank()) {
-                                    TextButton(
-                                        onClick = { showFullToken = !showFullToken },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                    ) {
-                                        Text(
-                                            if (showFullToken) "隐藏" else "显示",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = theme.primary
-                                        )
-                                    }
-                                    TextButton(
+        // ── 网关连接 ─────────────────────────────────────────────────
+        item(key = "connection") {
+            val isConnected = serverUrl.isNotBlank() && authToken.isNotBlank()
+            Column {
+                SettingsGroupLabel(text = "网关连接")
+                SettingsGroup {
+                    SettingsRow(
+                        title = deviceName.ifBlank { if (isConnected) "My PC" else "未配对" },
+                        subtitle = if (isConnected) "已配对 · 令牌就绪" else "扫码或手动填写网关地址与访问令牌",
+                        value = if (isConnected) "在线" else "未配对",
+                        valueColor = if (isConnected) Color(0xFF2EA043) else theme.textMuted
+                    )
+                    SettingsRow(
+                        title = "网关地址",
+                        value = serverUrl.ifBlank { "未设置" },
+                        monoValue = true,
+                        topDivider = true,
+                        showChevron = true,
+                        onClick = onEditConnection
+                    )
+                    SettingsRow(
+                        title = "访问令牌",
+                        value = when {
+                            authToken.isBlank() -> "未设置"
+                            showFullToken -> authToken
+                            else -> "${authToken.take(6)}••••${authToken.takeLast(4)}"
+                        },
+                        monoValue = true,
+                        topDivider = true,
+                        trailing = {
+                            if (authToken.isNotBlank()) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    SettingsInlineAction(
+                                        text = if (showFullToken) "隐藏" else "显示",
+                                        onClick = { showFullToken = !showFullToken }
+                                    )
+                                    SettingsInlineAction(
+                                        text = "复制",
                                         onClick = {
                                             val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
                                             clipboard?.setPrimaryClip(
                                                 android.content.ClipData.newPlainText("piDroid Token", authToken)
                                             )
                                             Toast.makeText(context, "访问令牌已复制", Toast.LENGTH_SHORT).show()
-                                        },
-                                        contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                                    ) {
-                                        Text(
-                                            "复制",
-                                            style = MaterialTheme.typography.labelSmall,
-                                            color = theme.primary
-                                        )
-                                    }
+                                        }
+                                    )
                                 }
                             }
                         }
-                    }
-
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = onEditConnection,
-                            colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
+                    )
+                    HorizontalDivider(color = theme.outline, thickness = 1.dp)
+                    SettingsGroupActionRow {
+                        Surface(
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
+                            color = theme.primary,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onEditConnection() }
                         ) {
-                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color.White)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(if (isConnected) "手动编辑配置" else "手动添加连接", style = MaterialTheme.typography.labelSmall, color = Color.White)
+                            Text(
+                                text = if (isConnected) "编辑连接配置" else "手动添加连接",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color.White,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp)
+                            )
                         }
-                        OutlinedButton(
-                            onClick = onScanQr,
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.surfaceContainer,
                             border = BorderStroke(1.dp, theme.outline),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onScanQr() }
                         ) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = null, modifier = Modifier.size(15.dp), tint = theme.primary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("扫码 / 相册配对", style = MaterialTheme.typography.labelSmall, color = theme.textPrimary)
+                            Text(
+                                text = "扫码 / 相册配对",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = theme.textPrimary,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 8.dp)
+                            )
                         }
                     }
-
                     if (isConnected) {
-                        OutlinedButton(
-                            onClick = onDisconnect,
-                            border = BorderStroke(1.dp, Color(0xFFCF222E).copy(alpha = 0.5f)),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFCF222E)),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("断开当前网关连接", style = MaterialTheme.typography.labelSmall)
-                        }
+                        SettingsRow(
+                            title = "断开当前连接",
+                            subtitle = "清空本地令牌，需要重新配对",
+                            titleColor = Color(0xFFCF222E),
+                            topDivider = true,
+                            showChevron = true,
+                            onClick = onDisconnect
+                        )
                     }
                 }
             }
         }
 
-        // ==========================================
-        // 关于与升级 (扁平化品牌 Logo + 作者 Powered by codywon & CC BY-NC 许可)
-        // ==========================================
-        item {
-            InfoTitle(
-                title = "关于与升级",
-                infoDescription = "版本、作者与许可",
-                style = MaterialTheme.typography.titleMedium
-            )
-        }
-
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        // ── 关于与升级 ───────────────────────────────────────────────
+        item(key = "about") {
+            var useMirrors by remember { mutableStateOf(AppPreferences(context).useUpdateMirrors) }
+            Column {
+                SettingsGroupLabel(text = "关于与升级")
+                SettingsGroup {
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            PiDroidLogo(size = 36.dp)
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Text(
-                                text = "piDroid",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.textPrimary
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Surface(
-                                color = theme.primary.copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(4.dp)
-                            ) {
-                                Text(
-                                    text = "v$currentVersion",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = theme.primary,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                )
-                            }
-                        }
-
-                        Button(
-                            onClick = onCheckUpdate,
-                            enabled = !isCheckingUpdate,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = theme.primary,
-                                contentColor = Color.White
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                        ) {
-                            if (isCheckingUpdate) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    color = Color.White,
-                                    strokeWidth = 2.dp
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("检测中...", fontSize = 12.sp)
-                            } else {
-                                Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("检查更新", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    // 第三方镜像开关：默认关闭。开启后安装包可能经由第三方代理中转，
-                    // 虽然仍会做 SHA-256 与签名校验，但链路本身不再只经过 GitHub。
-                    var useMirrors by remember { mutableStateOf(AppPreferences(context).useUpdateMirrors) }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
+                        PiDroidLogo(size = 28.dp)
+                        Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "使用第三方加速镜像",
-                                style = MaterialTheme.typography.bodySmall,
+                                text = "piDroid",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
                                 color = theme.textPrimary
                             )
+                            Text(
+                                text = "v$currentVersion",
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textMuted
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = theme.primary.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.35f)),
+                            modifier = Modifier.clickable(enabled = !isCheckingUpdate) { onCheckUpdate() }
+                        ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.clickable { showMirrorInfo = true }
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
                             ) {
+                                if (isCheckingUpdate) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(12.dp),
+                                        color = theme.primary,
+                                        strokeWidth = 2.dp
+                                    )
+                                } else {
+                                    Icon(
+                                        imageVector = Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = theme.primary,
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(5.dp))
                                 Text(
-                                    "ghfast.top / ghproxy.net / gh-proxy.com 中转",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = theme.textSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Icon(
-                                    imageVector = Icons.Default.Info,
-                                    contentDescription = "镜像说明",
-                                    tint = theme.textMuted,
-                                    modifier = Modifier.size(12.dp)
+                                    text = if (isCheckingUpdate) "检测中" else "检查更新",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = theme.primary
                                 )
                             }
                         }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Switch(
-                            checked = useMirrors,
-                            onCheckedChange = { checked ->
-                                useMirrors = checked
-                                AppPreferences(context).useUpdateMirrors = checked
+                    }
+                    SettingsRow(
+                        title = "使用第三方加速镜像",
+                        subtitle = "ghfast.top / ghproxy.net / gh-proxy.com 中转下载",
+                        topDivider = true,
+                        trailing = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { showMirrorInfo = true }, modifier = Modifier.size(28.dp)) {
+                                    Icon(
+                                        imageVector = Icons.Default.Info,
+                                        contentDescription = "镜像说明",
+                                        tint = theme.textMuted,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                SettingsSwitch(
+                                    checked = useMirrors,
+                                    onCheckedChange = { checked ->
+                                        useMirrors = checked
+                                        AppPreferences(context).useUpdateMirrors = checked
+                                    }
+                                )
                             }
-                        )
-                    }
-
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("开发者", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
-                        Text(
-                            text = "Powered by codywon",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.SemiBold,
-                            color = theme.primary
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("许可协议", style = MaterialTheme.typography.bodySmall, color = theme.textPrimary)
-                        Text(
-                            text = "CC BY-NC · 禁止商用",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = theme.textSecondary
-                        )
-                    }
+                        }
+                    )
+                    SettingsRow(
+                        title = "开发者",
+                        value = "Powered by codywon",
+                        monoValue = true,
+                        valueColor = theme.primary,
+                        topDivider = true
+                    )
+                    SettingsRow(
+                        title = "许可协议",
+                        value = "CC BY-NC · 禁止商用",
+                        topDivider = true
+                    )
                 }
             }
         }
@@ -3763,59 +3392,5 @@ fun GlobalSystemSettingsTab(
                 }
             }
         )
-    }
-}
-
-/**
- * 统一规范的状态/动作徽章组件：用于设置页的电池白名单、前台常驻服务与连接状态
- */
-@Composable
-private fun UnifiedStatusBadge(
-    text: String,
-    isActive: Boolean,
-    isAction: Boolean = false,
-    onClick: (() -> Unit)? = null
-) {
-    val theme = LocalAppTheme.current
-    val fgColor = when {
-        isActive -> Color(0xFF16A34A)
-        isAction -> theme.primary
-        else -> Color(0xFFD97706)
-    }
-    val bgColor = when {
-        isActive -> Color(0xFF22C55E).copy(alpha = 0.12f)
-        isAction -> theme.primary.copy(alpha = 0.12f)
-        else -> Color(0xFFF59E0B).copy(alpha = 0.12f)
-    }
-    val borderColor = when {
-        isActive -> Color(0xFF22C55E).copy(alpha = 0.35f)
-        isAction -> theme.primary.copy(alpha = 0.4f)
-        else -> Color(0xFFF59E0B).copy(alpha = 0.35f)
-    }
-
-    Surface(
-        color = bgColor,
-        shape = RoundedCornerShape(6.dp),
-        border = BorderStroke(1.dp, borderColor),
-        modifier = if (onClick != null) Modifier.clickable { onClick() } else Modifier
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(fgColor, CircleShape)
-            )
-            Spacer(modifier = Modifier.width(5.dp))
-            Text(
-                text = text,
-                style = MaterialTheme.typography.labelSmall,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = fgColor
-            )
-        }
     }
 }

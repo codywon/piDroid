@@ -80,6 +80,7 @@ fun GlobalModelsConfigTab(
     var discoverSearchQuery by remember { mutableStateOf("") }
     var selectedDiscoverIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isModelsExpanded by remember { mutableStateOf(false) }
+    var modelQuery by remember { mutableStateOf("") }
     var rawJsonBuffer by remember { mutableStateOf("") }
 
     // 测试与自动填入状态
@@ -300,12 +301,7 @@ fun GlobalModelsConfigTab(
 
                 // 2. 模块一：全局默认推理思考档位 (紧凑单行卡片，分段胶囊控制)
                 item(key = "thinking_level_card") {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = theme.surfaceContainerLow,
-                        border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.45f)),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
+                    SettingsGroup {
                         Column(
                             modifier = Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -399,6 +395,7 @@ fun GlobalModelsConfigTab(
                                     modifier = Modifier.clickable {
                                         selectedProviderName = prov.name
                                         selectedModelId = prov.models.firstOrNull()?.id
+                                        modelQuery = ""
                                         testResultText = null
                                         isTestSuccess = null
                                     }
@@ -456,12 +453,7 @@ fun GlobalModelsConfigTab(
 
                         // 3.2 当前提供商核心信息卡片
                         if (currentProvider != null) {
-                            Surface(
-                                shape = RoundedCornerShape(12.dp),
-                                color = theme.surfaceContainerLow,
-                                border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.45f)),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
+                            SettingsGroup {
                                 Column(
                                     modifier = Modifier.padding(12.dp),
                                     verticalArrangement = Arrangement.spacedBy(9.dp)
@@ -721,118 +713,128 @@ fun GlobalModelsConfigTab(
                     }
                 }
 
-                // 4. 模块三：已配置模型列表 (单列全宽清单，彻底消除截断，大方美观)
+                // 4. 模块三：已配置模型清单（单行行式 + 本地搜索，右侧等宽展示上下文/输出）
                 if (currentProvider != null && currentProvider.models.isNotEmpty()) {
+                    val modelQueryMatched = currentProvider.models.filter { m ->
+                        val q = modelQuery.trim()
+                        q.isBlank() || m.id.contains(q, ignoreCase = true) || m.name.contains(q, ignoreCase = true)
+                    }
+                    val collapsedLimit = 5
+                    val visibleModels = if (isModelsExpanded || modelQuery.isNotBlank()) {
+                        modelQueryMatched
+                    } else {
+                        modelQueryMatched.take(collapsedLimit)
+                    }
+
                     item(key = "models_list_section") {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = theme.surfaceContainerLow,
-                            border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.45f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "已配置模型 (${currentProvider.models.size})",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = theme.textMuted
+                                )
+                                if (modelQuery.isBlank() && currentProvider.models.size > collapsedLimit) {
                                     Text(
-                                        text = "已配置模型 (${currentProvider.models.size})",
-                                        fontSize = 12.5.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = theme.textPrimary
+                                        text = if (isModelsExpanded) "收起" else "展开全部 ${currentProvider.models.size} 个",
+                                        fontSize = 11.sp,
+                                        color = theme.primary,
+                                        modifier = Modifier.clickable { isModelsExpanded = !isModelsExpanded }
                                     )
+                                }
+                            }
 
-                                    if (currentProvider.models.size > 5) {
-                                        Text(
-                                            text = if (isModelsExpanded) "收起 ▴" else "展开全部 ${currentProvider.models.size} 个 ▾",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = theme.primary,
-                                            modifier = Modifier.clickable { isModelsExpanded = !isModelsExpanded }
-                                        )
+                            SettingsGroup {
+                                Column(modifier = Modifier.padding(8.dp)) {
+                                    SettingsSearchField(
+                                        value = modelQuery,
+                                        onValueChange = { modelQuery = it },
+                                        placeholder = "搜索模型 ID 或名称"
+                                    )
+                                }
+                                HorizontalDivider(color = theme.outline, thickness = 1.dp)
+                                if (visibleModels.isEmpty()) {
+                                    Text(
+                                        text = "没有匹配的模型",
+                                        fontSize = 12.sp,
+                                        color = theme.textMuted,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp)
+                                    )
+                                }
+                                visibleModels.forEachIndexed { index, m ->
+                                    if (index > 0) {
+                                        HorizontalDivider(color = theme.outline, thickness = 1.dp)
                                     }
-                                }
-
-                                Spacer(modifier = Modifier.height(2.dp))
-
-                                val displayList = if (isModelsExpanded || currentProvider.models.size <= 5) {
-                                    currentProvider.models
-                                } else {
-                                    currentProvider.models.take(5)
-                                }
-
-                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                    displayList.forEach { m ->
-                                        val isSel = m.id == selectedModelId
-                                        Surface(
-                                            shape = RoundedCornerShape(8.dp),
-                                            color = if (isSel) theme.primary.copy(alpha = 0.09f) else theme.surfaceContainer,
-                                            border = BorderStroke(
-                                                if (isSel) 1.dp else 0.5.dp,
-                                                if (isSel) theme.primary else theme.outline.copy(alpha = 0.35f)
-                                            ),
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .clickable {
-                                                    selectedModelId = m.id
-                                                    testResultText = null
-                                                    isTestSuccess = null
-                                                }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 10.dp, vertical = 7.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                    Text(
-                                                        text = m.id,
-                                                        fontSize = 12.5.sp,
-                                                        fontFamily = FontFamily.Monospace,
-                                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Medium,
-                                                        color = if (isSel) theme.primary else theme.textPrimary,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                    val desc = buildString {
-                                                        if (m.name.isNotBlank() && m.name != m.id) {
-                                                            append(m.name)
-                                                            append(" · ")
-                                                        }
-                                                        append("${m.contextWindow / 1000}k 上下文")
-                                                        if (m.maxTokens > 0) {
-                                                            append(" · ${m.maxTokens / 1000}k 输出")
-                                                        }
-                                                    }
-                                                    Text(
-                                                        text = desc,
-                                                        fontSize = 10.5.sp,
-                                                        color = theme.textMuted,
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-
-                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                                                    if (m.reasoning) {
-                                                        CapabilityTag(text = "思考", emphasized = true)
-                                                    }
-                                                    if (m.hasVision) {
-                                                        CapabilityTag(text = "视觉", emphasized = false)
-                                                    }
-                                                    if (isSel) {
-                                                        Icon(
-                                                            imageVector = Icons.Default.Check,
-                                                            contentDescription = "当前选中编辑",
-                                                            tint = theme.primary,
-                                                            modifier = Modifier.size(15.dp)
-                                                        )
-                                                    }
-                                                }
+                                    val isSel = m.id == selectedModelId
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable {
+                                                selectedModelId = m.id
+                                                testResultText = null
+                                                isTestSuccess = null
                                             }
+                                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Spacer(
+                                            modifier = Modifier
+                                                .size(7.dp)
+                                                .background(
+                                                    color = if (isSel) theme.primary else theme.outline,
+                                                    shape = CircleShape
+                                                )
+                                        )
+                                        Spacer(modifier = Modifier.width(9.dp))
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                text = m.id,
+                                                fontSize = 12.5.sp,
+                                                fontFamily = FontFamily.Monospace,
+                                                fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isSel) theme.primary else theme.textPrimary,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = buildString {
+                                                    if (m.name.isNotBlank() && m.name != m.id) {
+                                                        append(m.name)
+                                                        append(" · ")
+                                                    }
+                                                    if (m.reasoning) append("思考 ")
+                                                    if (m.hasVision) append("视觉")
+                                                }.trim().ifBlank { "文本模型" },
+                                                fontSize = 11.sp,
+                                                color = theme.textMuted,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "${m.contextWindow / 1000}k / ${if (m.maxTokens > 0) "${m.maxTokens / 1000}k" else "—"}",
+                                            fontSize = 11.sp,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = theme.textSecondary,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                        if (isSel) {
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "当前选中编辑",
+                                                tint = theme.primary,
+                                                modifier = Modifier.size(14.dp)
+                                            )
                                         }
                                     }
                                 }
@@ -844,12 +846,7 @@ fun GlobalModelsConfigTab(
                 // 5. 模块四：模型参数调校卡片 (针对当前选中的模型)
                 if (currentModel != null && currentProvider != null) {
                     item(key = "model_detail_editor") {
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = theme.surfaceContainerLow,
-                            border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.45f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
+                        SettingsGroup {
                             Column(modifier = Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                                 // 顶行：标题 + 图标操作（测试/移除），模型 ID 单独一行展示
                                 Row(

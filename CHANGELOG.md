@@ -2,6 +2,34 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.44] - 2026-10-29
+
+### 🎛️ 全局设置改版：系统设置 / 模型管理套用「分组胶囊」设计语言
+
+- **背景**：技能中心、插件扩展两页在上一轮已经收敛成「单行卡 + 弱色副标题 + 单一控件」的密度，
+  但系统设置仍是一张 10dp 圆角 Surface 里塞主题选择器 + 触觉 + 音效，模型管理则是横幅/按钮排/chips
+  层层堆叠——同一屏里出现三套描边粗细、两套分隔线 alpha，层级读不出来。
+- **统一组件**：新增 `ui/settings/SettingsComponents.kt`（`SettingsGroup` / `SettingsRow` /
+  `SettingsSwitch` / `SettingsChip` / `SettingsInlineAction` / `SettingsSearchField` /
+  `SettingsGroupActionRow`）。一屏只用一种描边：分组卡 1dp `outline`，组内分隔线同色同粗细，
+  彻底停用 `0.5f / 1f` 混用的分隔线。
+- **系统设置**：拆成 外观与反馈 / 后台与保活 / 会话行为 / 网关连接 / 关于与升级 五组，
+  组标题降为 11sp 弱色，每行最多一个主控件（Switch 或 chevron），状态一律右对齐成值文本：
+  - 主题选择从「当前主题: xx (深色)」自述文字改为右侧 5 个可点击色点，选中项加描边环；
+  - 「试振 / 试听」从独立按钮降级为行内次级文字动作，不再和 Switch 抢右侧空间；
+  - 电池优化白名单：未加入时值显示「去开启 ›」，加入后转绿显示「已加入」；
+  - 访问令牌默认打码，行内保留「显示 / 复制」；
+  - 「关于与升级」独立成组（版本号、检查更新、第三方镜像 + 说明、开发者、许可），
+    不再与会话开关共处一卡。
+- **模型管理**：模型清单改为单行行式 + 本地搜索：
+  - 新增搜索框（按模型 ID / 名称即时过滤），30+ 个模型时不必再靠滚动找；
+  - 每行 = 选中圆点 + 等宽模型 ID + 「名称 · 思考 · 视觉」副标题 + 右对齐 `ctx / max` 等宽数值，
+    去掉每行卡片描边；切换提供商时自动清空搜索词。
+- 无数据层改动：所有回调签名（`onSetDefaultModel` / `onToggleHaptics` / `onModelsConfigChanged` …）
+  保持不变，`MainActivity` 调用点无需改动。
+
+---
+
 ## [1.7.43] - 2026-10-29
 
 ### 🪟 文件查看器改全屏：不再「一上滑就缩回半屏」
