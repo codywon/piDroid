@@ -222,6 +222,8 @@ fun ChatScreen(
     var showToolPresetSheet by remember { mutableStateOf(false) }
     // 通用查看器（bash 完整输出 / 文件内容 / 图片）：一个面板复用，避免各处各弹一种 UI
     var artifactTitle by remember { mutableStateOf<String?>(null) }
+    /** 生成式 UI 微组件（`show_widget`）：非空时弹出全屏查看页 */
+    var widgetOverlay by remember { mutableStateOf<WidgetPayload?>(null) }
     var artifactText by remember { mutableStateOf<String?>(null) }
     var artifactImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
     var artifactMeta by remember { mutableStateOf<String?>(null) }
@@ -1729,6 +1731,7 @@ fun ChatScreen(
                             onForkFromHere = onForkFromMessage,
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                             onOpenFilePreview = { p -> openFilePreview(p) },
+                            onOpenWidget = { w -> widgetOverlay = w },
                             onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                             isEditing = !editingEntryId.isNullOrBlank() && item.entryId == editingEntryId,
                             onCancelEdit = { editingEntryId = null },
@@ -1757,6 +1760,7 @@ fun ChatScreen(
                             },
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                             onOpenFilePreview = { p -> openFilePreview(p) },
+                            onOpenWidget = { w -> widgetOverlay = w },
                             onOpenLink = { href -> openLinkTarget(href, sessionCwd) }
                         )
                     }
@@ -1780,6 +1784,7 @@ fun ChatScreen(
                                         onForkFromHere = onForkFromMessage,
                                         onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                         onOpenFilePreview = { p -> openFilePreview(p) },
+                                        onOpenWidget = { w -> widgetOverlay = w },
                                         onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                                         isLiveStreamingTail = procItem.id == liveStreamingItemId
                                     )
@@ -1802,6 +1807,7 @@ fun ChatScreen(
                                 onForkFromHere = onForkFromMessage,
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                 onOpenFilePreview = { p -> openFilePreview(p) },
+                                onOpenWidget = { w -> widgetOverlay = w },
                                 onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
                                 isLiveStreamingTail = ans.id == liveStreamingItemId
                             )
@@ -2015,6 +2021,15 @@ fun ChatScreen(
         )
     }
 
+    // 生成式 UI 微组件全屏查看页（容器形态与文件查看器一致：手机全屏页，不用半屏 sheet）
+    val openWidget = widgetOverlay
+    if (openWidget != null) {
+        WidgetViewerScreen(
+            payload = openWidget,
+            onClose = { widgetOverlay = null }
+        )
+    }
+
     // 工作目录 Git 变更全屏界面（替换原有的 ModalBottomSheet 狭窄弹窗）
     if (showGitChangesScreen) {
         GitChangesFullScreen(
@@ -2089,6 +2104,8 @@ fun ChatMessageItem(
     onOpenBashOutput: ((path: String, title: String) -> Unit)? = null,
     /** 打开文件预览：由 ChatScreen 注入 */
     onOpenFilePreview: ((path: String) -> Unit)? = null,
+    /** 打开生成式 UI 微组件（`show_widget`）：由 ChatScreen 注入 */
+    onOpenWidget: ((WidgetPayload) -> Unit)? = null,
     /** Markdown 链接点击（对标 pi-web MarkdownBody 的 onOpenFile）：由 ChatScreen 注入 */
     onOpenLink: ((href: String) -> Unit)? = null,
     /** 「当前唯一在流式的那条」（对标 pi-web 的单数 streamingMessage）：只有它为真才挂实时指标 */
@@ -2330,26 +2347,41 @@ fun ChatMessageItem(
 
             MessageRole.TOOL -> {
                 item.toolCall?.let { tool ->
-                    val mergedMedia = remember(tool.mediaList, item.mediaList) {
-                        if (item.mediaList.isEmpty()) tool.mediaList
-                        else (tool.mediaList + item.mediaList).distinctBy { it.filePath ?: it.dataBase64?.take(48) ?: it.id }
-                    }
-                    // 先落到局部变量：filePath 是自定义 getter，无法 smart cast
-                    val toolFilePath = tool.filePath
-                    val toolFullOutputPath = tool.fullOutputPath
-                    PiWebToolCallCard(
-                        tool = if (mergedMedia.size != tool.mediaList.size) tool.copy(mediaList = mergedMedia) else tool,
-                        expanded = isToolExpanded || tool.requiresApproval,
-                        onToggle = { isToolExpanded = !isToolExpanded },
-                        onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
-                        onApproveTool = onApproveTool,
-                        onOpenFullOutput = if (onOpenBashOutput == null || toolFullOutputPath == null) null else {
-                            { onOpenBashOutput(toolFullOutputPath, "${tool.toolName} 完整输出") }
-                        },
-                        onOpenFile = if (onOpenFilePreview == null || toolFilePath == null) null else {
-                            { onOpenFilePreview(toolFilePath) }
+                    // 生成式 UI：`visualize_read_me` 是插件内部步骤（插件明确要求对用户不可见），
+                    // `show_widget` 换成一行入口卡，其余工具仍走通用工具卡。
+                    val widget = remember(tool) { showWidgetPayload(tool) }
+                    when {
+                        isGenerativeUiInternalTool(tool) -> Unit
+
+                        widget != null -> WidgetToolCallCard(
+                            payload = widget,
+                            isRunning = tool.isRunning,
+                            onOpen = { onOpenWidget?.invoke(widget) }
+                        )
+
+                        else -> {
+                            val mergedMedia = remember(tool.mediaList, item.mediaList) {
+                                if (item.mediaList.isEmpty()) tool.mediaList
+                                else (tool.mediaList + item.mediaList).distinctBy { it.filePath ?: it.dataBase64?.take(48) ?: it.id }
+                            }
+                            // 先落到局部变量：filePath 是自定义 getter，无法 smart cast
+                            val toolFilePath = tool.filePath
+                            val toolFullOutputPath = tool.fullOutputPath
+                            PiWebToolCallCard(
+                                tool = if (mergedMedia.size != tool.mediaList.size) tool.copy(mediaList = mergedMedia) else tool,
+                                expanded = isToolExpanded || tool.requiresApproval,
+                                onToggle = { isToolExpanded = !isToolExpanded },
+                                onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
+                                onApproveTool = onApproveTool,
+                                onOpenFullOutput = if (onOpenBashOutput == null || toolFullOutputPath == null) null else {
+                                    { onOpenBashOutput(toolFullOutputPath, "${tool.toolName} 完整输出") }
+                                },
+                                onOpenFile = if (onOpenFilePreview == null || toolFilePath == null) null else {
+                                    { onOpenFilePreview(toolFilePath) }
+                                }
+                            )
                         }
-                    )
+                    }
                 }
             }
 

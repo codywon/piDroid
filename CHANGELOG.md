@@ -2,6 +2,34 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.49] - 2026-10-29
+
+### ✨ 生成式 UI（`show_widget`）落地：微组件不再当工具卡裸奔
+
+接入 `pi-generative-ui` 微组件链路，与桌面端 pi 的容器语义对齐、与 pi-web 无先例可据的部分按
+`docs/DESIGN-artifact-viewer.md` 的既定口径裁量。
+
+- **之前的样子**：模型调 `show_widget` 后，手机端把它当普通工具：`widget_code`（常 5~50KB 的
+  HTML 片段）被 `formatToolInput` 序列化成一整块 JSON，塞进工具卡的 `command` 代码块。
+  一屏只剩一段看不懂的标签，真东西根本渲染不出来。
+- **现在**：
+  - 聊天流里只留一张**单行入口卡**（标题 + 尺寸或「生成中…」+ 全屏图标），不铺预览、不加副标题；
+  - 点开走**独立全屏查看页**（`Scaffold` + `TopAppBar` + 返回键），WebView 全屏渲染；
+  - 表头右侧常驻 `宽×高`，方便判断微组件原本的桌面尺寸。
+- **为什么不是聊天气泡内嵌 WebView**：WebView 不参与 Compose 的 nested scroll，
+  嵌进 `LazyColumn` 会抢走整列滚动手势（与 1.7.43 把文件预览从半屏 sheet 改成全屏页同因）。
+- **插件内部步骤隐藏**：`visualize_read_me`（加载设计指南）不再在聊天流里占一行 ——
+  插件本身就要求这一步对用户不可见。
+- **入参双路径**：历史回放从 assistant message 的 `input` 摊平成 `fields`；
+  实时 SSE 只带 `{toolCallId, toolName}`、不带入参，所以再补一条「`command` 能解析成 JSON 就用」的兼顾，
+  避免刚生成的微组件必须重进会话才出现。
+- **安全口径**：开启 JS（微组件依赖 Canvas / Chart.js），但**不注入任何 JS 桥**、
+  关闭文件与 content 访问、页面内跳转一律交给系统浏览器。
+- 新增纯 JVM 单测 `GenerativeUiTest`：工具名识别、缺 `widget_code` 返回 null、
+  title 的 snake_case 转空格、尺寸缺省与越界夹紧、SVG 判定、HTML 外壳、JSON 兼顾路径。
+
+---
+
 ## [1.7.48] - 2026-10-29
 
 ### 🐛 修复「项目排序同步失败：400 projectKey and anchorKey must differ」
