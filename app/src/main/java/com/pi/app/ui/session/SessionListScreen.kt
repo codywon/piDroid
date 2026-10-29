@@ -297,7 +297,9 @@ fun SessionListScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = isConfigured && workspaces.isNotEmpty(),
+        // 搜索态禁用抽屉手势：命中区一旦不可滚动，垂直/斜向拖拽就会落到抽屉的横向拖拽识别上，
+        // 表现为「滑列表却打开了工作区左边栏」。搜索时一律用左上角菜单按钮打开抽屉。
+        gesturesEnabled = isConfigured && workspaces.isNotEmpty() && searchQuery.isBlank(),
         drawerContent = {
             ModalDrawerSheet(
                 drawerContainerColor = theme.surfaceContainerLow,
@@ -1163,79 +1165,24 @@ fun SessionListScreen(
                         }
                     }
 
-                    // 服务端全文搜索命中（GET /api/sessions/search）：搜的是**会话正文内容**，
-                    // 而不是标题，命中里带着前后各 80 字的片段，点一下直接进会话。
-                    if (searchQuery.isNotBlank() && (searchHits.isNotEmpty() || isSearching)) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = theme.surfaceContainerLow,
-                            border = BorderStroke(0.8.dp, theme.primary.copy(alpha = 0.3f)),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    if (isSearching) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(12.dp),
-                                            strokeWidth = 1.6.dp,
-                                            color = theme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                    }
-                                    Text(
-                                        text = if (isSearching) "正在检索全部会话正文…" else "正文命中 · ${searchHits.size} 条",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = theme.primary
-                                    )
-                                }
-                                searchHits.take(8).forEach { hit ->
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { onSessionClick(hit.session) }
-                                            .padding(vertical = 4.dp),
-                                        verticalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = hit.session.displayTitle,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = theme.textPrimary,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Text(
-                                            text = hit.snippet,
-                                            fontSize = 10.5.sp,
-                                            color = theme.textMuted,
-                                            maxLines = 2,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                    }
-                                }
-                                if (searchHits.size > 8) {
-                                    Text(
-                                        text = "仅显示前 8 条（共 ${searchHits.size} 条命中）",
-                                        fontSize = 10.sp,
-                                        color = theme.textMuted
-                                    )
-                                }
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                    }
-
                     // 任务列表
+                    // 正文命中（服务端全文检索）现在跟着会话列表一起滚动，不再压在头部把列表顶出屏幕。
+                    val hasBodyHits = searchQuery.isNotBlank() && (searchHits.isNotEmpty() || isSearching)
                     if (isLoading && sessions.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            contentAlignment = Alignment.Center
+                        ) {
                             CircularProgressIndicator(color = theme.primary)
                         }
-                    } else if (filteredSessions.isEmpty()) {
+                    } else if (filteredSessions.isEmpty() && !hasBodyHits) {
                         val isPinnedZone = selectedWorkspacePath == PINNED_WORKSPACE_KEY
                         Box(
                             modifier = Modifier
-                                .fillMaxSize()
+                                .fillMaxWidth()
+                                .weight(1f)
                                 .padding(horizontal = 32.dp),
                             contentAlignment = Alignment.Center
                         ) {
@@ -1308,11 +1255,31 @@ fun SessionListScreen(
 
                         LazyColumn(
                             modifier = Modifier
-                                .fillMaxSize()
+                                .fillMaxWidth()
+                                .weight(1f)
                                 .padding(horizontal = 14.dp),
                             contentPadding = PaddingValues(bottom = 84.dp, top = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            if (hasBodyHits) {
+                                item(key = "search_body_hits") {
+                                    SessionSearchHitsCard(
+                                        searchHits = searchHits,
+                                        isSearching = isSearching,
+                                        onSessionClick = onSessionClick
+                                    )
+                                }
+                            }
+                            if (filteredSessions.isEmpty()) {
+                                item(key = "search_no_title_match") {
+                                    Text(
+                                        text = "没有标题匹配的会话，正文命中见上方",
+                                        fontSize = 11.5.sp,
+                                        color = theme.textMuted,
+                                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
+                                    )
+                                }
+                            }
                             // 已置顶的会话不在这里出现（与 pi-web 一致：置顶只活在置顶区），
                             // 给一行可点的轻提示，避免用户以为任务丢了。
                             if (pinnedCountInWorkspace > 0 && searchQuery.isBlank() && !isPinnedWorkspaceSelected) {
@@ -2293,6 +2260,81 @@ private fun RemoteWorkspaceDialog(
             }
         }
     )
+}
+
+/**
+ * 会话正文命中卡片（服务端全文检索 GET /api/sessions/search）。
+ *
+ * 之前它被直接渲染在主列表上方的静态 Column 里：命中一多就把会话列表顶出屏幕，而且这块区域
+ * 不消费垂直拖拽，手指在命中区上下滑时手势会落到 ModalNavigationDrawer 的横向拖拽识别上，
+ * 表现成「滑动列表却打开了工作区左边栏」。现在作为主列表的首个 item，跟着列表一起滚。
+ */
+@Composable
+private fun SessionSearchHitsCard(
+    searchHits: List<SessionSearchHit>,
+    isSearching: Boolean,
+    onSessionClick: (Session) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    val shown = searchHits.take(20)
+    Surface(
+        shape = RoundedCornerShape(10.dp),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.3f)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (isSearching) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(12.dp),
+                        strokeWidth = 1.6.dp,
+                        color = theme.primary
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+                Text(
+                    text = if (isSearching) "正在检索全部会话正文…" else "正文命中 · ${searchHits.size} 条",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = theme.primary
+                )
+            }
+            shown.forEach { hit ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onSessionClick(hit.session) }
+                        .padding(vertical = 5.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    Text(
+                        text = hit.session.displayTitle,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = theme.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = hit.snippet,
+                        fontSize = 10.5.sp,
+                        color = theme.textMuted,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            if (searchHits.size > shown.size) {
+                Text(
+                    text = "仅显示前 ${shown.size} 条（共 ${searchHits.size} 条命中）",
+                    fontSize = 11.sp,
+                    color = theme.textMuted
+                )
+            }
+        }
+    }
 }
 
 @Composable
