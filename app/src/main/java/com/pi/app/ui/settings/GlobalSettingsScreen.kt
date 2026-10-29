@@ -2116,6 +2116,7 @@ fun GlobalMcpTab(
     onUpdateMcpCodeMode: (mode: String, scriptMode: Boolean, tokenBudget: Int) -> Unit = { _, _, _ -> }
 ) {
     val theme = LocalAppTheme.current
+    val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var codeMode by remember(mcpConfig.mode) { mutableStateOf(mcpConfig.mode) }
     var scriptMode by remember(mcpConfig.scriptMode) { mutableStateOf(mcpConfig.scriptMode) }
