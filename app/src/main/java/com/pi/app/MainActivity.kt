@@ -2122,18 +2122,22 @@ class MainActivity : ComponentActivity() {
                     onLoadBashOutput = { outputPath ->
                         apiClient.getBashFullOutput(activeSessionId, outputPath)
                     },
-                    onLoadFileMeta = { path -> apiClient.getFileMeta(path) },
-                    onLoadFileText = { path -> apiClient.getFileText(path) },
-                    onLoadFileTextChunk = { path, offset -> apiClient.getFileTextChunk(path, offset) },
-                    onLoadFilePreviewHtml = { path -> apiClient.getFilePreviewHtml(path) },
-                    onDownloadFileToCache = { path -> apiClient.downloadFileToCache(path) },
+                    onLoadFileMeta = { path -> apiClient.getFileMeta(path, activeSessionId) },
+                    onLoadFileText = { path -> apiClient.getFileText(path, activeSessionId) },
+                    onLoadFileTextChunk = { path, offset ->
+                        apiClient.getFileTextChunk(path, offset, activeSessionId)
+                    },
+                    onLoadFilePreviewHtml = { path -> apiClient.getFilePreviewHtml(path, activeSessionId) },
+                    onDownloadFileToCache = { path ->
+                        apiClient.downloadFileToCache(path, sessionId = activeSessionId)
+                    },
                     onResolveFileSource = { path ->
                         // 媒体播放器自己发请求（行为同 pi-web 的 <audio>/<video> src），
                         // 但网关只认 Authorization 头，所以 URL 和 token 要一起给
-                        val url = apiClient.fileApiUrl(path)
+                        val url = apiClient.fileApiUrl(path, sessionId = activeSessionId)
                         if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
                     },
-                    onLoadFileBytes = { path -> apiClient.getFileBytes(path) },
+                    onLoadFileBytes = { path -> apiClient.getFileBytes(path, sessionId = activeSessionId) },
                     onLoadGitStatus = {
                         val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
                             ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }

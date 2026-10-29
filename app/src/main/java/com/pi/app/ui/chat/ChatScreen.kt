@@ -415,8 +415,13 @@ fun ChatScreen(
     /**
      * 打开「文件预览」查看器：按类型分派（对标 pi-web FileViewer 的
      * ImageViewer / AudioViewer / VideoViewer / DocumentViewer / TextFileViewer）。
+     *
+     * 入参可能是工具卡片里原样给出的路径，pi 在 Windows 上经常写成 Git Bash 形态
+     * （`/d/myscript/proj/docs/a.md`），先换回盘符路径再请求，否则 `/api/files`
+     * 会把它当成不存在于任何会话工作目录内，返回 403 Access denied。
      */
-    fun openFilePreview(absPath: String) {
+    fun openFilePreview(rawAbsPath: String) {
+        val absPath = FileLinks.normalizeMsysDrivePath(rawAbsPath, sessionCwd)
         val name = absPath.replace('\\', '/').substringAfterLast('/')
         artifactTitle = name
         artifactText = null

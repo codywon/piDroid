@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.42] - 2026-10-29
+
+### 🐞 修复「点开文件 403 Access denied」：Git Bash 形态路径 `/d/...` 还原成 `D:/...`
+
+- **现象**：会话里点开报告链接报 `读取文件失败：Access denied`，md 不渲染（只有错误行）；
+  点「用其他应用打开」报 `下载失败：下载失败 (403)`。
+- **真因（curl 实测同一台机器）**：pi 在 Windows 上常把路径写成 Git Bash / MSYS 形态
+  `/d/myscript/eldercare-agent-platform/docs/...`。App 把 href 当「POSIX 绝对路径」原样塞进
+  `GET /api/files/<path>?type=read|download`，pi-web 的允许根检查（会话 cwd / projectRoot）
+  自然判定它不在任何工作目录内 → `403 {"error":"Access denied"}`。
+  同一路径换成 `D:/myscript/...` 立即 200，与业务、权限、隧道无关。
+- **修复一**：`FileLinks.normalizeMsysDrivePath()` —— 当基准目录（会话 cwd / 当前文档目录）
+  本身是 Windows 路径时，把首段为单盘符字母的 `/d/x` 还原成 `D:/x`（盘符取自链接本身，
+  所以 `/c/Users/...` 仍指向 C 盘）。Linux 网关上的真 POSIX 路径不受影响。
+  该规则同时作用于 markdown 链接、工具卡片里的文件路径、以及预览文档内的相对链接。
+- **修复二**：所有 `/api/files` 请求补上 `?sessionId=<当前会话>`，与 pi-web FileViewer 的
+  `sourceSessionId` 对齐 —— 允许根之外的「本会话引用过的文件」（临时产物、`~/.pi` 下的文件）
+  现在也能打开，而不是一律 403。
+- 回归测试：`app/src/test/.../FileLinksMsysPathTest.kt`（5 组：盘符还原、盘符取自链接、
+  Linux 基线不动、非盘符形态不动、Windows 基准目录识别）。
+
+---
+
 ## [1.7.41] - 2026-10-29
 
 ### 🎨 技能中心排版重构：入口三合一 + 卡片压扁（首屏 1.5 项 → 6 项）

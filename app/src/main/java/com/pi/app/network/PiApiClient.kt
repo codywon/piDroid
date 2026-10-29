@@ -1844,13 +1844,13 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
 
     /** 文件元信息：GET /api/files/<绝对路径>?type=meta → {size, language, mime, previewKind} */
-    suspend fun getFileMeta(absPath: String): Result<FileMeta> = withContext(Dispatchers.IO) {
+    suspend fun getFileMeta(absPath: String, sessionId: String? = null): Result<FileMeta> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         if (absPath.isBlank()) return@withContext Result.failure(Exception("缺少文件路径"))
         try {
             val req = Request.Builder()
-                .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=meta")
+                .url(fileApiUrl(absPath, "meta", sessionId))
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -1874,8 +1874,8 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /** 文件文本内容：GET /api/files/<绝对路径>?type=read → {content} */
-    suspend fun getFileText(absPath: String): Result<String> =
-        getFileTextChunk(absPath, 0L).map { it.content }
+    suspend fun getFileText(absPath: String, sessionId: String? = null): Result<String> =
+        getFileTextChunk(absPath, 0L, sessionId).map { it.content }
 
     /**
      * 文本预览分块（对应 pi-web `readTextPreviewChunk`）：
@@ -1885,14 +1885,18 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 服务端一次最多返回 256KB 并保留 UTF-8 字符边界，所以超长报告要点「加载更多」
      * 用上一块的 nextOffset 续读；只读 content 会把截断当成读完了。
      */
-    suspend fun getFileTextChunk(absPath: String, offset: Long = 0L): Result<FileTextChunk> =
+    suspend fun getFileTextChunk(
+        absPath: String,
+        offset: Long = 0L,
+        sessionId: String? = null
+    ): Result<FileTextChunk> =
         withContext(Dispatchers.IO) {
             val baseUrl = prefs.serverUrl
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
             try {
                 val offsetQuery = if (offset > 0L) "&offset=$offset" else ""
                 val req = Request.Builder()
-                    .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=read$offsetQuery")
+                    .url(fileApiUrl(absPath, "read", sessionId) + offsetQuery)
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->
@@ -1922,10 +1926,22 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 文件 API 的绝对 URL。媒体播放器（MediaPlayer / VideoView）自己发请求，
      * 走不了 OkHttp 客户端，所以需要单独拿 URL + 鉴权头的入口。
      */
-    fun fileApiUrl(absPath: String, type: String = "read"): String {
+    fun fileApiUrl(absPath: String, type: String = "read", sessionId: String? = null): String {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return ""
-        return "$baseUrl/api/files/${encodeFilePath(absPath)}?type=$type"
+        return "$baseUrl/api/files/${encodeFilePath(absPath)}?type=$type" + sessionQuery(sessionId)
+    }
+
+    /**
+     * `?sessionId=<id>`：pi-web `GET /api/files/*` 对「不在任何会话工作目录内」的文件只放行
+     * 被该会话引用过的那一个（`isFilePathReferencedBySession`）。pi-web 的 FileViewer 一直带
+     * 着 `sourceSessionId`（见 `getFileApiUrl`），App 之前不带，于是这类文件一律 403
+     * Access denied —— 文件明明在本次会话里刚被工具读写过。
+     */
+    private fun sessionQuery(sessionId: String?): String {
+        val sid = sessionId?.trim().orEmpty()
+        if (sid.isEmpty()) return ""
+        return "&sessionId=" + URLEncoder.encode(sid, "UTF-8")
     }
 
     /** 网关只认 `Authorization: Bearer`（除 /events 外不接受 ?token=），播放器要显式带上 */
@@ -1941,28 +1957,29 @@ class PiApiClient(private val prefs: AppPreferences) {
      * `DOCX_PREVIEW_MAX_BYTES = 10MB` 上限），前端只是把它塞进 <iframe>。
      * 手机端复用同一个接口，拿到的就是现成的 HTML 字符串。
      */
-    suspend fun getFilePreviewHtml(absPath: String): Result<String> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
-        try {
-            val req = Request.Builder()
-                .url(fileApiUrl(absPath, "preview"))
-                .get()
-                .build()
-            client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string() ?: ""
-                if (!resp.isSuccessful) {
-                    val err = runCatching {
-                        JsonParser.parseString(body).asJsonObject.get("error")?.asString
-                    }.getOrNull()
-                    return@withContext Result.failure(IOException(err ?: "HTTP ${resp.code}"))
+    suspend fun getFilePreviewHtml(absPath: String, sessionId: String? = null): Result<String> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            try {
+                val req = Request.Builder()
+                    .url(fileApiUrl(absPath, "preview", sessionId))
+                    .get()
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val body = resp.body?.string() ?: ""
+                    if (!resp.isSuccessful) {
+                        val err = runCatching {
+                            JsonParser.parseString(body).asJsonObject.get("error")?.asString
+                        }.getOrNull()
+                        return@withContext Result.failure(IOException(err ?: "HTTP ${resp.code}"))
+                    }
+                    Result.success(body)
                 }
-                Result.success(body)
+            } catch (e: Exception) {
+                Result.failure(e)
             }
-        } catch (e: Exception) {
-            Result.failure(e)
         }
-    }
 
     /**
      * 把远端文件流式落到应用缓存目录，用于「用其他应用打开」（WPS / 系统 PDF 阅读器）。
@@ -1970,7 +1987,8 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     suspend fun downloadFileToCache(
         absPath: String,
-        maxBytes: Long = 128L * 1024 * 1024
+        maxBytes: Long = 128L * 1024 * 1024,
+        sessionId: String? = null
     ): Result<File> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
@@ -1982,7 +2000,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
         val target = File(dir, name)
         try {
-            val req = Request.Builder().url(fileApiUrl(absPath, "download")).get().build()
+            val req = Request.Builder().url(fileApiUrl(absPath, "download", sessionId)).get().build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(IOException("下载失败 (${resp.code})"))
@@ -2013,13 +2031,17 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /** 文件原始字节（图片预览用）：GET /api/files/<绝对路径>?type=download */
-    suspend fun getFileBytes(absPath: String, maxBytes: Long = 12L * 1024 * 1024): Result<ByteArray> =
+    suspend fun getFileBytes(
+        absPath: String,
+        maxBytes: Long = 12L * 1024 * 1024,
+        sessionId: String? = null
+    ): Result<ByteArray> =
         withContext(Dispatchers.IO) {
             val baseUrl = prefs.serverUrl
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
             try {
                 val req = Request.Builder()
-                    .url("$baseUrl/api/files/${encodeFilePath(absPath)}?type=download")
+                    .url(fileApiUrl(absPath, "download", sessionId))
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->

@@ -32,6 +32,43 @@ object FileLinks {
     private val WINDOWS_ROOT_REGEX = Regex("^([a-zA-Z]:)(?:/|$)")
     private val UNC_ROOT_REGEX = Regex("^(//[^/]+/[^/]+)(?:/|$)")
 
+    /**
+     * 判断一个路径是不是 Git Bash / MSYS 形态的绝对路径（`/d/myscript/proj/a.md`）：
+     * 首段只有单个盘符字母。
+     */
+    private fun msysDriveLetter(path: String): Char? {
+        if (path.length < 2 || path[0] != '/') return null
+        val letter = path[1]
+        if (!(letter in 'a'..'z' || letter in 'A'..'Z')) return null
+        if (path.length > 2 && path[2] != '/') return null
+        return letter
+    }
+
+    /** 基准目录本身是不是 Windows 形态（盘符路径或 UNC）。 */
+    fun isWindowsBaseDir(baseDir: String?): Boolean {
+        if (baseDir.isNullOrBlank()) return false
+        val normalized = normalizeSlashes(baseDir)
+        return WINDOWS_DRIVE_SLASH.containsMatchIn(normalized) || normalized.startsWith("//")
+    }
+
+    /**
+     * 把 MSYS 形态的路径换回 Windows 盘符路径：`/d/myscript/proj/a.md` → `D:/myscript/proj/a.md`。
+     *
+     * 为什么必须做：pi 在 Windows 上（Git Bash、`ls`/`find` 的输出、工具回显）经常把路径
+     * 写成 `/d/...`。它既不是盘符绝对路径，也不是合法的 Windows 路径，原样送给
+     * `/api/files/<path>` 会被 pi-web 的“允许根”检查判成不在任何会话工作目录内，
+     * 直接 `403 Access denied` —— 文件其实就在工作区里（就是用户看到的现象：
+     * 报告 md 点开报 Access denied、「用其他应用打开」下载 403）。
+     *
+     * 只在基准目录（会话 cwd / 当前文档目录）本身就是 Windows 路径时才转：同样的
+     * `/d/x` 在 Linux 网关上就是真正的 POSIX 路径，不能动。
+     */
+    fun normalizeMsysDrivePath(path: String, baseDir: String?): String {
+        val letter = msysDriveLetter(path) ?: return path
+        if (!isWindowsBaseDir(baseDir)) return path
+        return "${letter.uppercaseChar()}:" + path.substring(2)
+    }
+
     /** Unicode 千分位不需要；这里只做大小写归一，便于前缀比较。 */
     private fun lower(value: String): String = value.lowercase(Locale.ROOT)
 
@@ -161,7 +198,8 @@ object FileLinks {
         when {
             lowerHref.startsWith("file:") -> candidate = fileUrlToPath(cleanHref)
             WINDOWS_DRIVE_SLASH.containsMatchIn(normalizedHref) -> candidate = normalizedHref
-            normalizedHref.startsWith("/") -> candidate = normalizedHref
+            normalizedHref.startsWith("/") ->
+                candidate = normalizeMsysDrivePath(normalizedHref, baseDir)
             // 相对路径：只有长得像文件才拼接，避免把 `docs`（目录）误当文件。
             !baseDir.isNullOrBlank() && looksLikeRelativeFileHref(normalizedHref) -> {
                 val base = normalizeSlashes(baseDir).trimEnd('/')
@@ -195,6 +233,10 @@ object FileLinks {
         val candidate = when {
             WINDOWS_DRIVE_SLASH.containsMatchIn(normalizedPath) || normalizedPath.startsWith("//") ->
                 normalizedPath
+            // `/d/proj/a.md`（Git Bash 形态）直接换成 `D:/proj/a.md`，
+            // 否则会被下面的“补盘符”规则拼成 `D:/d/proj/a.md`，同样 403。
+            msysDriveLetter(normalizedPath) != null && isWindowsBaseDir(baseDir) ->
+                normalizeMsysDrivePath(normalizedPath, baseDir)
             normalizedPath.startsWith("/") -> {
                 val windowsRoot = normalizedBase?.let { base ->
                     WINDOWS_ROOT_REGEX.find(base)?.groupValues?.get(1)

@@ -139,17 +139,20 @@ suspend fun resolveMediaBytes(
 
     // 3. 远程 URL 或工作区文件路径通过网关拉取
     if (pathOrUrl.isNotBlank()) {
+        // pi 在 Windows 上经常把路径写成 Git Bash 形态（`/d/...`），
+        // 网关/pi-web 都不认，先还原成 `D:/...` 再请求。
+        val resolvedPath = FileLinks.normalizeMsysDrivePath(pathOrUrl, gateway.cwd)
         val candidateUrls = mutableListOf<String>()
-        if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://")) {
-            candidateUrls.add(pathOrUrl)
+        if (resolvedPath.startsWith("http://") || resolvedPath.startsWith("https://")) {
+            candidateUrls.add(resolvedPath)
         } else if (gateway.serverUrl.isNotBlank()) {
             val base = gateway.serverUrl.trim().trimEnd('/')
-            val encPath = URLEncoder.encode(pathOrUrl, "UTF-8")
+            val encPath = URLEncoder.encode(resolvedPath, "UTF-8")
             val encCwd = URLEncoder.encode(gateway.cwd, "UTF-8")
             candidateUrls.add("$base/api/files/raw?path=$encPath&cwd=$encCwd")
             candidateUrls.add("$base/api/files?path=$encPath&cwd=$encCwd")
-            if (!pathOrUrl.startsWith("/")) {
-                candidateUrls.add("$base/$pathOrUrl")
+            if (!resolvedPath.startsWith("/")) {
+                candidateUrls.add("$base/$resolvedPath")
             }
         }
 
