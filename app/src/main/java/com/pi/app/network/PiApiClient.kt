@@ -1933,7 +1933,7 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * `?sessionId=<id>`：pi-web `GET /api/files/*` 对「不在任何会话工作目录内」的文件只放行
+     * `?sessionId=<id>`：pi-web `GET /api/files/<path>` 对「不在任何会话工作目录内」的文件只放行
      * 被该会话引用过的那一个（`isFilePathReferencedBySession`）。pi-web 的 FileViewer 一直带
      * 着 `sourceSessionId`（见 `getFileApiUrl`），App 之前不带，于是这类文件一律 403
      * Access denied —— 文件明明在本次会话里刚被工具读写过。
