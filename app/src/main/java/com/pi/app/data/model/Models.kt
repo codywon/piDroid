@@ -637,7 +637,13 @@ data class ChatItem(
     val modelName: String? = null,
     val usageSummary: String? = null,
     val timestamp: Long = System.currentTimeMillis(),
-    val isStreaming: Boolean = false
+    val isStreaming: Boolean = false,
+    /**
+     * 这条 AGENT 气泡属于哪一条 pi assistant message（身份 = message.timestamp / id）。
+     * 对齐 pi-web 的 streamingMessage：`message_start` 补发的整条快照要覆盖**同一条消息**，
+     * 而不是在工具卡后面再追加一份正文。详见 [StreamingMessageMerge]。
+     */
+    val streamMessageId: String? = null
 )
 
 enum class MessageRole {
@@ -730,12 +736,15 @@ data class AgentSseEvent(
     val isError: Boolean = false,
     val error: String? = null,
     val done: Boolean = false,
+    val aborted: Boolean = false,
     val isStreaming: Boolean? = null,
     val phaseLabel: String? = null,
     val modelName: String? = null,
     val usageSummary: String? = null,
     val tokenStats: TokenStats? = null,
-    val connectionState: String? = null
+    val connectionState: String? = null,
+    /** pi assistant message 的身份（message.timestamp / id），用于把正文写回同一条气泡。 */
+    val messageId: String? = null
 ) {
     val effectiveText: String
         get() = delta ?: text ?: content ?: ""

@@ -323,6 +323,45 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+
+        /**
+         * 把一条 assistant message 的**整条正文快照**写回它的气泡（对齐 pi-web 的 snapshot 覆盖语义）。
+         * 落点由 [StreamingMessageMerge] 计算：同一 messageId 永远命中同一条气泡，
+         * 重连补发不会在工具卡后面另开一份重复正文。
+         */
+        fun applyAgentTextSnapshot(
+            messageId: String?,
+            fullText: String,
+            mediaList: List<MediaAttachment> = emptyList(),
+            isStreaming: Boolean = true,
+            modelName: String? = null
+        ) {
+            val update = StreamingMessageMerge.resolveTextUpdate(messages, messageId, fullText)
+            if (update.noop) return
+            val target = update.index
+            if (target != null && target in messages.indices) {
+                val existing = messages[target]
+                messages[target] = existing.copy(
+                    content = update.content,
+                    mediaList = if (mediaList.isNotEmpty()) mediaList else existing.mediaList,
+                    modelName = modelName ?: existing.modelName,
+                    isStreaming = isStreaming,
+                    // 认领身份：本地漏标记时的气泡在这一刻补上，后续快照/增量就能原位命中
+                    streamMessageId = existing.streamMessageId ?: messageId
+                )
+            } else {
+                messages.add(
+                    ChatItem(
+                        role = MessageRole.AGENT,
+                        content = update.content,
+                        modelName = modelName ?: selectedModel.displayName,
+                        mediaList = mediaList,
+                        isStreaming = isStreaming,
+                        streamMessageId = messageId
+                    )
+                )
+            }
+        }
         // 「更早的记录」独立存放（由游标翻页追加），与主快照 messages 互不重叠：
         // 主快照继续按下标对账更新，这里只做只增不减的 prepend，互不干扰。
         var olderMessages by remember { mutableStateOf<List<ChatItem>>(emptyList()) }
@@ -351,6 +390,9 @@ class MainActivity : ComponentActivity() {
         var isAutoRetrying by remember { mutableStateOf(false) }
         var isToolExecuting by remember { mutableStateOf(false) }
         var lastSseActivityAt by remember { mutableStateOf(0L) }
+        // 在途 assistant message 的身份（= pi 的 message.timestamp / id），对齐 pi-web 的 streamingMessage：
+        // message_start 补发的整条快照要覆盖同一条消息，而不是在工具卡后面再追加一份正文。
+        var streamingMessageId by remember { mutableStateOf<String?>(null) }
         // 上一次主动重挂 SSE 的时间（避免巡检反复重挂、自己踩掉正在收事件的流）
         var lastSseReattachAt by remember { mutableStateOf(0L) }
         var taskStartedAt by remember { mutableStateOf(0L) }
@@ -975,6 +1017,8 @@ class MainActivity : ComponentActivity() {
                         }
                         "connected" -> {
                             isGatewayOnline = true
+                            // 连上即视为活跃：否则刚开流就被「静默太久」判定为断流，立刻又重挂一次
+                            lastSseActivityAt = System.currentTimeMillis()
                             if (event.isStreaming == true) {
                                 markAgentRunActive(phase = "正在接收实时流...")
                             }
@@ -1040,14 +1084,17 @@ class MainActivity : ComponentActivity() {
                             if (chunk.isNotEmpty() || event.mediaList.isNotEmpty()) {
                                 isAutoRetrying = false
                                 markAgentRunActive(phase = null, clearPhaseIfNull = true)
-                                val last = messages.lastOrNull()
-                                if (last != null && last.role == MessageRole.AGENT) {
-                                    val updated = last.copy(
+                                // 落点按「在途消息身份」算，而不是「最后一条」：
+                                // 工具卡插到正文后面之后，属于同一条消息的增量仍应写回它的正文气泡。
+                                val target = StreamingMessageMerge.resolveDeltaIndex(messages, streamingMessageId)
+                                if (target >= 0) {
+                                    val last = messages[target]
+                                    messages[target] = last.copy(
                                         content = last.content + chunk,
                                         mediaList = if (event.mediaList.isNotEmpty()) (last.mediaList + event.mediaList).distinctBy { "${it.kind}:${it.url ?: it.filePath ?: it.id}" } else last.mediaList,
-                                        isStreaming = true
+                                        isStreaming = true,
+                                        streamMessageId = last.streamMessageId ?: streamingMessageId
                                     )
-                                    messages[messages.size - 1] = updated
                                 } else {
                                     settleStaleStreamingAgents()
                                     messages.add(
@@ -1056,35 +1103,43 @@ class MainActivity : ComponentActivity() {
                                             content = chunk,
                                             modelName = selectedModel.displayName,
                                             mediaList = event.mediaList,
-                                            isStreaming = true
+                                            isStreaming = true,
+                                            streamMessageId = streamingMessageId
                                         )
                                     )
                                 }
                             }
                         }
+                        "message_snapshot" -> {
+                            // pi 的 message_start：当前在途 assistant message 的**整条快照**（重连时会补发）。
+                            // 对齐 pi-web 的 `dispatch({type:"snapshot", message})`：只覆盖同一条消息，绝不追加。
+                            lastSseActivityAt = System.currentTimeMillis()
+                            isAutoRetrying = false
+                            markAgentRunActive(phase = null, clearPhaseIfNull = true)
+                            streamingMessageId = event.messageId
+                            val fullText = event.effectiveText
+                            if (fullText.isNotEmpty() || event.mediaList.isNotEmpty()) {
+                                applyAgentTextSnapshot(
+                                    messageId = event.messageId,
+                                    fullText = fullText,
+                                    mediaList = event.mediaList,
+                                    isStreaming = true,
+                                    modelName = event.modelName
+                                )
+                            }
+                        }
                         "text_replace" -> {
+                            // text_end：单个正文块的权威内容。身份取在途消息（服务端该事件不带 message）。
                             val fullText = event.effectiveText
                             if (fullText.isNotEmpty() || event.mediaList.isNotEmpty()) {
                                 lastSseActivityAt = System.currentTimeMillis()
-                                val last = messages.lastOrNull()
-                                if (last != null && last.role == MessageRole.AGENT) {
-                                    messages[messages.size - 1] = last.copy(
-                                        content = fullText.ifEmpty { last.content },
-                                        mediaList = if (event.mediaList.isNotEmpty()) event.mediaList else last.mediaList,
-                                        isStreaming = event.isStreaming ?: false
-                                    )
-                                } else {
-                                    // 重连/断流恢复时当前还没建立 agent 气泡：直接用快照正文开一条
-                                    messages.add(
-                                        ChatItem(
-                                            role = MessageRole.AGENT,
-                                            content = fullText,
-                                            modelName = event.modelName ?: selectedModel.displayName,
-                                            mediaList = event.mediaList,
-                                            isStreaming = event.isStreaming ?: true
-                                        )
-                                    )
-                                }
+                                applyAgentTextSnapshot(
+                                    messageId = event.messageId ?: streamingMessageId,
+                                    fullText = fullText,
+                                    mediaList = event.mediaList,
+                                    isStreaming = event.isStreaming ?: false,
+                                    modelName = event.modelName
+                                )
                             }
                         }
                         "thinking", "thinking_delta" -> {
@@ -1269,6 +1324,19 @@ class MainActivity : ComponentActivity() {
                                 isToolExecuting = true
                                 markAgentRunActive(phase = event.phaseLabel)
                             }
+                            // 对齐 pi-web：message_end 之后这条消息不再是在途消息（streamingMessage = undefined）。
+                            if (event.messageId == null || event.messageId == streamingMessageId) {
+                                streamingMessageId = null
+                            }
+                            // 把属于这条消息的正文气泡收尾（它们可能已经不在列表尾部了）
+                            if (event.messageId != null) {
+                                for (i in messages.indices) {
+                                    val m = messages[i]
+                                    if (m.role == MessageRole.AGENT && m.streamMessageId == event.messageId && m.isStreaming) {
+                                        messages[i] = m.copy(isStreaming = false)
+                                    }
+                                }
+                            }
                             val last = messages.lastOrNull()
                             if (last != null) {
                                 messages[messages.size - 1] = last.copy(
@@ -1280,6 +1348,11 @@ class MainActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 syncSessionSnapshot(sessionId, allowCompletionTransition = false)
                             }
+                        }
+                        // pi 每 30s 一条心跳：它证明流是活的，必须刷新活跃时间，
+                        // 否则「静默 45s 就重挂」会把心跳误判为断流，反复重挂 → 反复补发快照。
+                        "heartbeat" -> {
+                            lastSseActivityAt = System.currentTimeMillis()
                         }
                         "message_stop" -> {
                             lastSseActivityAt = System.currentTimeMillis()
@@ -1320,7 +1393,16 @@ class MainActivity : ComponentActivity() {
                         "agent_end" -> {
                             // 仅当整个 Agent 会话执行链结束（且未处于自动重试等待期）时，经防抖确认后触发震动与提示音
                             isToolExecuting = false
-                            if (!isAutoRetrying) {
+                            // 本轮彻底结束：在途消息身份作废（对齐 pi-web 的 finishRun 清 streamingMessage）
+                            streamingMessageId = null
+                            settleStaleStreamingAgents()
+                            if (event.aborted) {
+                                // 任务被中断（如 PC 端或用户 Stop），严格对齐 pi-web：抑制完成提示音与震动
+                                hasNotifiedCompletionForCurrentRun = true
+                                completionSettleJob?.cancel()
+                                completionSettleJob = null
+                                completeAgentSessionRun(sessionId, syncSnapshot = true)
+                            } else if (!isAutoRetrying) {
                                 scheduleAgentCompletionSettle(sessionId, delayMs = 800L)
                             }
                         }
@@ -1360,6 +1442,8 @@ class MainActivity : ComponentActivity() {
             lastOpenedWorkspacePath = session.workspacePath
             session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
             queuedMessages.clear()
+            // 切换会话必须丢掉上一场在途消息的身份，否则新会话的正文会被认领到旧气泡上
+            streamingMessageId = null
             isAutoRetrying = false
             isToolExecuting = false
             consecutiveIdlePolls = 0
@@ -1463,12 +1547,13 @@ class MainActivity : ComponentActivity() {
                     val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
                     // 事件流健康检查：服务端确实在跑，而流已断或者长时间没有任何事件 →
                     // 重挂一次（pi-web 重连会补发当前正在生成的 message 快照，丢的正文能补回来）。
-                    // 15s 节流，避免反复重挂把自己踩死。
+                    // 静默阈值必须大于 pi 的心跳周期（30s，events 路由里的 NN），否则心跳之间的空白
+                    // 会被当成断流，造成「每 15s 重挂一次、每重挂一次补发一份快照」的雪崩。
                     val nowMs = System.currentTimeMillis()
                     if (serverSaysRunning) {
                         val streamDown = sseConnectionState != SseConnectionState.CONNECTED
                         val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
-                            lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 15_000L
+                            lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 45_000L
                         if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
                             lastSseReattachAt = nowMs
                             lastSseActivityAt = nowMs
@@ -2094,6 +2179,8 @@ class MainActivity : ComponentActivity() {
                             }
                             if (stillHere) {
                                 messages.add(ChatItem(role = MessageRole.USER, content = prompt))
+                                // 新一轮开始：上一条在途消息的身份作废
+                                streamingMessageId = null
                                 isAutoRetrying = false
                                 hasNotifiedCompletionForCurrentRun = false
                                 markAgentRunActive(phase = "正在等待模型...")

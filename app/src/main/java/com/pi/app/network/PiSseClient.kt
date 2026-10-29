@@ -163,7 +163,13 @@ class PiSseClient(private val prefs: AppPreferences) {
                 ?: "message"
 
             when (resolvedType) {
-                "heartbeat" -> emptyList()
+                "heartbeat" -> {
+                    // 心跳必须上报：pi 的 heartbeat 是 30s 一次（events 路由里 `NN=30000`）。
+                    // 以前这里直接返回空列表，上层 lastSseActivityAt 就不会被刷新，
+                    // 「流静默 15s 就重挂」的健康检查会把心跳误判成断流 —— 每重挂一次，
+                    // 服务端就补发一份 streamingMessage 快照，正是过程输出成段重复的放大器。
+                    listOf(AgentSseEvent(type = "heartbeat", isStreaming = true))
+                }
 
                 "connected" -> {
                     val streaming = obj.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
@@ -261,7 +267,9 @@ class PiSseClient(private val prefs: AppPreferences) {
                 }
 
                 "message_start" -> {
-                    // pi-web 在流开始或重连时下发当前正在生成的 message 快照
+                    // pi-web 在流开始或重连时下发当前正在生成的 message 快照（`message`）。
+                    // 与 pi-web 客户端一致：这是「整条消息的权威快照」，语义是**覆盖替换**，
+                    // 所以即使正文为空也要带 messageId 上抛，让上层记住这条在途消息的身份。
                     val msgObj = obj.get("message")?.takeIf { it.isJsonObject }?.asJsonObject
                     if (msgObj != null && msgObj.get("role")?.asString == "assistant") {
                         parseAssistantMessageSnapshot(msgObj, isFinal = false)
@@ -423,7 +431,9 @@ class PiSseClient(private val prefs: AppPreferences) {
                 }
 
                 "agent_end", "agent_settled", "prompt_done", "agent_idle" -> {
-                    listOf(AgentSseEvent(type = "agent_end", done = true, isStreaming = false))
+                    val isAborted = (obj.get("aborted")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
+                        (obj.get("status")?.takeIf { !it.isJsonNull }?.asString.equals("aborted", ignoreCase = true))
+                    listOf(AgentSseEvent(type = "agent_end", done = true, isStreaming = false, aborted = isAborted))
                 }
 
                 "turn_completed", "done", "message_stop" -> {
@@ -487,7 +497,8 @@ class PiSseClient(private val prefs: AppPreferences) {
 
         if (!isFinal) {
             // 重连时 pi-web 会下发「当前正在生成的 message 快照」（message_start）。
-            // 把其中正文一次性作为 text_replace 交给上层，断流期间丢的增量能立即补齐。
+            // 对齐 pi-web 客户端：快照 = 整条消息覆盖（`dispatch({type:"snapshot"})`），
+            // 因此即使正文为空也要上抛，让上层先把在途消息身份记下来。
             val sb = StringBuilder()
             msgObj.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { item ->
                 if (item.isJsonObject) {
@@ -502,18 +513,15 @@ class PiSseClient(private val prefs: AppPreferences) {
                     }
                 }
             }
-            return if (sb.isEmpty()) {
-                emptyList()
-            } else {
-                listOf(
-                    AgentSseEvent(
-                        type = "text_replace",
-                        content = sb.toString(),
-                        isStreaming = true,
-                        modelName = modelName
-                    )
+            return listOf(
+                AgentSseEvent(
+                    type = "message_snapshot",
+                    content = sb.toString(),
+                    isStreaming = true,
+                    modelName = modelName,
+                    messageId = assistantMessageId(msgObj)
                 )
-            }
+            )
         }
 
         events.add(
@@ -522,10 +530,29 @@ class PiSseClient(private val prefs: AppPreferences) {
                 modelName = modelName,
                 usageSummary = usageSummary,
                 isStreaming = hasToolCalls,
-                phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型..."
+                phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型...",
+                messageId = assistantMessageId(msgObj)
             )
         )
         return events
+    }
+
+    /**
+     * pi assistant message 的身份：对齐 pi-web 的 streamingMessage 身份判定。
+     * pi 的 message 对象没有稳定的 id（协议里只保证 role/content/timestamp），
+     * 所以优先 id/responseId，最后用 timestamp 作为身份 —— 同一条消息的重连补发时间戳不变，
+     * 而新的一条消息时间戳必然不同。
+     */
+    private fun assistantMessageId(msgObj: JsonObject): String? {
+        for (key in listOf("id", "responseId", "messageId")) {
+            val v = msgObj.get(key)?.takeIf { !it.isJsonNull }
+            if (v != null && v.isJsonPrimitive) {
+                val s = v.asString.trim()
+                if (s.isNotEmpty()) return s
+            }
+        }
+        val ts = msgObj.get("timestamp")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+        return ts?.asString?.trim()?.takeIf { it.isNotEmpty() }
     }
 
     private fun extractPreview(element: JsonElement?): String? {

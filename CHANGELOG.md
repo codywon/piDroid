@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.37] - 2026-10-29
+
+### 🩹 修复过程输出成段重复：SSE 在途消息身份 + 心跳活性判定
+
+- **整条 message 快照改为「覆盖同一条消息」而不是追加新气泡**（`StreamingMessageMerge.kt` 新增 + `MainActivity.kt`）：
+  - 现场形状固定为 `正文 → 工具卡 → 同一段正文`：pi 每次 SSE 连上都会补发 `message_start{message: streamingMessage}`（整条快照），而旧实现只在「列表最后一条是 AGENT」时才覆盖，尾部是工具卡时走进「新开气泡」分支，于是同一段正文被重复渲染，并被 `inFlightTail` 保活而越攒越多；
+  - 新增纯 JVM 的 `StreamingMessageMerge`：用「在途消息身份 `ChatItem.streamMessageId` + 本轮作用域（最后一条 USER 之后）」定位落点，同一条消息的正文永远写回同一条气泡，重复补发判定为 `noop`（天然幂等）；
+  - `ChatItem` 增加 `streamMessageId`；`SessionSnapshotMerge.mergeItem` 在被服务端快照覆盖时把本地在途身份带过去，避免一次对账就抹掉身份、下次重连又新开重复气泡。
+- **pi 的 30s 心跳此前被当成断流**（`PiSseClient.kt` + `MainActivity.kt`）：
+  - `heartbeat` 事件以前直接返回空列表，`lastSseActivityAt` 不会刷新；而「流静默 15s 就重挂」的健康检查把每两次心跳之间的空白判成断流 —— 每重挂一次，服务端就补发一份快照，正是重复的放大器；
+  - 现在心跳上抛为事件并刷新活跃时间，静默阈值由 15s 放宽到 45s（> 心跳周期 30s），`connected` 也即时刷新活跃时间。
+- **消息级事件带上身份**（`PiSseClient.kt`）：
+  - `message_start` 改为上抛 `message_snapshot`（含 `messageId`，优先 `id/responseId/messageId`，回落到 `timestamp`），即使正文为空也上抛，让上层先记住在途身份；
+  - `message_end` 时清空在途身份并把属于该消息的气泡统一收尾（可能已不在列表尾部）；`agent_end` 解析 `aborted` 字段并作废在途身份；切换会话、发起新一轮时同样作废，防止跨会话认领。
+- **完成提示音 1:1 对齐 pi-web 包络**（`PiSoundSynthesizer.kt`）：指数衰减由固定 `-5.5` 改为按 `exponentialRampToValueAtTime(0.001, s + 0.45)` 反解的 `-12.07664`，尾音按 pi-web 的 0.001 收敛而不是提前消失。
+- **测试**：新增 `StreamingMessageMergeTest`（11 例，覆盖重连快照幂等、工具卡夹在中间的续写、跨消息/跨轮不串写、无身份时的尾部语义），并修正其中一处笔误的下标断言（两元素列表尾部为 AGENT 时应为 `size-1 = 1`）；与 `SessionTreeNavigationTest` 合计 20 例本地 JVM 全绿。
+
 ## [1.7.36] - 2026-10-29
 
 ### ✏️ 补齐 pi-web 编辑态两项：源消息气泡高亮 + 附件随草稿一起恢复

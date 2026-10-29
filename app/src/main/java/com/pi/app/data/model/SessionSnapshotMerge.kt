@@ -33,7 +33,14 @@ object SessionSnapshotMerge {
         return if (!isSameChatContent(localItem, diskItem)) {
             val keepId = if (localItem.role == diskItem.role) localItem.id else diskItem.id
             val keepTs = if (localItem.role == diskItem.role) localItem.timestamp else diskItem.timestamp
-            diskItem.copy(id = keepId, timestamp = keepTs)
+            // streamMessageId 是**本地在途身份**（服务端快照里没有），内容被服务端覆盖时必须带过去，
+            // 否则流式过程中一次对账就会把身份抹掉，下一次重连补发又会新开一条重复气泡。
+            val keepStreamId = if (localItem.role == diskItem.role && diskItem.streamMessageId == null) {
+                localItem.streamMessageId
+            } else {
+                diskItem.streamMessageId
+            }
+            diskItem.copy(id = keepId, timestamp = keepTs, streamMessageId = keepStreamId)
         } else if (localItem.entryId.isNullOrBlank() && !diskItem.entryId.isNullOrBlank()) {
             localItem.copy(entryId = diskItem.entryId)
         } else {

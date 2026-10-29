@@ -13,8 +13,8 @@ import android.os.Build
  *
  * 算法完全对标 pi-web:
  * - 两个正弦波音符: C5 (523.25 Hz) 和 E5 (659.25 Hz)
- * - 第 1 音在 t = 0.0s 起始，持续 0.45s，0.02s 线性渐入，指数衰减
- * - 第 2 音在 t = 0.18s 起始，持续 0.45s，0.02s 线性渐入，指数衰减
+ * - 第 1 音在 t = 0.0s 起始，持续 0.45s，0.02s 线性渐入，指数衰减至千分之一
+ * - 第 2 音在 t = 0.18s 起始，持续 0.45s，0.02s 线性渐入，指数衰减至千分之一
  * - 采用 44100Hz 16-bit PCM 预合成，通过 AudioTrack 媒体通道流畅输出，不受静音振动模式误拦截
  */
 object PiSoundSynthesizer {
@@ -39,7 +39,9 @@ object PiSoundSynthesizer {
                     val env = if (dt < 0.02) {
                         (dt / 0.02) * 0.45
                     } else {
-                        0.45 * Math.exp(-5.5 * (dt - 0.02))
+                        // 1:1 对标 pi-web: linearRampToValueAtTime(0.18, s + 0.02) -> exponentialRampToValueAtTime(0.001, s + 0.45)
+                        // 指数衰减系数: ln(0.001 / 0.18) / (0.45 - 0.02) ≈ -12.07664
+                        0.45 * Math.exp(-12.07664 * (dt - 0.02))
                     }
                     sample += Math.sin(2.0 * Math.PI * freq * dt) * env
                 }
