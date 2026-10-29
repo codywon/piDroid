@@ -258,6 +258,8 @@ class MainActivity : ComponentActivity() {
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
         var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
+        // 「窗口里没有提问行」的自动补页只对同一会话试一次，避免每轮同步都狂拉页
+        var autoFillUserTurnTriedFor by remember { mutableStateOf<String?>(null) }
         // /api/agent/running 的 sessionListVersion：只有它变了才值得重拉完整会话列表
         var lastSessionListVersion by remember { mutableStateOf(0L) }
 
@@ -557,15 +559,28 @@ class MainActivity : ComponentActivity() {
          * 首屏自动补齐：服务端快照解析不出任何消息时（历史上确实出现过），
          * 自动向前翻几页直到有内容可渲染 —— 用户不需要再手点顶部「上滑加载」。
          */
-        fun autoFillFirstScreen(sessionId: String) {
+        fun autoFillFirstScreen(sessionId: String, requireUserTurn: Boolean = false) {
             if (isAutoFillingFirstScreen) return
+            if (requireUserTurn) {
+                if (autoFillUserTurnTriedFor == sessionId) return
+                autoFillUserTurnTriedFor = sessionId
+            }
             isAutoFillingFirstScreen = true
-            isLoadingSessionHistory = true
+            // 首屏本来是空的才需要骨架；已经有正文只是缺提问行的话不要再盖一层加载态
+            if (!requireUserTurn) isLoadingSessionHistory = true
             lifecycleScope.launch {
                 try {
-                    repeat(3) {
+                    val satisfied: () -> Boolean = {
+                        if (requireUserTurn) {
+                            messages.any { it.role == MessageRole.USER } ||
+                                olderMessages.any { it.role == MessageRole.USER }
+                        } else {
+                            messages.isNotEmpty() || olderMessages.isNotEmpty()
+                        }
+                    }
+                    repeat(4) {
                         if (currentSession?.id != sessionId) return@launch
-                        if (messages.isNotEmpty() || olderMessages.isNotEmpty()) return@launch
+                        if (satisfied()) return@launch
                         if (!hasEarlierOnServer) return@launch
                         val before = olderMessages.size
                         loadOlderHistory(silent = true)
@@ -574,7 +589,6 @@ class MainActivity : ComponentActivity() {
                             kotlinx.coroutines.delay(100)
                             waited += 100
                         }
-                        if (messages.isNotEmpty() || olderMessages.isNotEmpty()) return@launch
                     }
                 } finally {
                     isAutoFillingFirstScreen = false
@@ -942,6 +956,12 @@ class MainActivity : ComponentActivity() {
                 // 内部第一步就是 await this.abort()，会把正在执行的回合直接打断成
                 // 「模型服务异常: This operation was aborted」。阈值压缩交给 pi 自身的
                 // auto_compaction（在 turn 边界触发，不打断进行中的请求）。
+                // 窗口里一条提问都没有（工具/助手消息把 tail=60 撑满）→ 右侧时间轴会是空的。
+                // 实测这种会话真实存在（164 条 / 119 条、user=0），此时自动往前补几页，
+                // 把最近的提问拉进窗口，时间轴就跟内容一起回来。
+                if (messages.none { it.role == MessageRole.USER } && hist.hasMoreOnServer) {
+                    autoFillFirstScreen(sessionId, requireUserTurn = true)
+                }
                 // 首屏是否真的渲染得出内容？
                 if (messages.isNotEmpty() || olderMessages.isNotEmpty()) {
                     isLoadingSessionHistory = false
@@ -1459,6 +1479,8 @@ class MainActivity : ComponentActivity() {
             olderCursor = null
             olderLeafId = null
             isLoadingOlder = false
+            // 新会话重新给一次「窗口里没提问行就补页」的机会
+            autoFillUserTurnTriedFor = null
 
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)

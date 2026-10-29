@@ -2,6 +2,26 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.40] - 2026-10-29
+
+### 🧭 修复「更新后右侧时间轴消失」：窗口里没有提问行就自动补页 (Release v1.7.40)
+
+- **现象**：更新后打开某些历史会话，右边整条时间轴导轨不见了（正文照常显示）。
+- **真因（实测本机数据）**：首屏取的是 `GET /api/sessions/{id}?tail=60` 的**最近 60 条 entry**。
+  工具调用密集的会话里，这 60 条可以全是 `assistant` / `toolResult`，**一条 `user` 都没有**：
+  ```
+  01a18427  msgs=164  user=0  hasMore=true
+  01a168f7  msgs=119  user=0  hasMore=true
+  ```
+  而时间轴的节点是「每次提问」，`allTurns` 由 `MessageRole.USER` 构建 —— 没有提问行就成了空列表，
+  `if (allTurns.isNotEmpty())` 整块不渲染，于是看起来像"时间轴被删了"。
+- **修复**：快照回来后若 `messages` 里没有任何提问行、而服务端 `hasMore=true`，
+  自动向前补页（最多 4 页、静默、不弹 Toast、不盖加载态），把最近的提问拉进窗口；
+  每个会话只尝试一次，避免每轮同步都狂拉。重新进入该会话会再给一次机会。
+- 补页成功后时间轴与「上滑加载更早的 N 轮」一起恢复正常。
+
+---
+
 ## [1.7.39] - 2026-10-29
 
 ### 🧭 时间轴高亮对齐 pi-web：点哪个亮哪个 (Release v1.7.39)
