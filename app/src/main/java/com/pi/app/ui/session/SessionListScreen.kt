@@ -11,9 +11,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -22,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -1431,17 +1434,35 @@ fun SessionListScreen(
         }
         val customName = prefs.getWorkspaceCustomName(targetWs.path)
         val wsDisplayName = customName ?: targetWs.displayName
+        val menuSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
         ModalBottomSheet(
             onDismissRequest = { selectedMenuWorkspace = null },
+            sheetState = menuSheetState,
             containerColor = theme.surfaceContainerLow,
-            dragHandle = { BottomSheetDefaults.DragHandle() }
+            dragHandle = {
+                // 默认 DragHandle 自带 22dp 上下内边距，标题上方会多出一大块空白
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp, bottom = 2.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(width = 32.dp, height = 4.dp)
+                            .background(theme.textMuted.copy(alpha = 0.6f), RoundedCornerShape(2.dp))
+                    )
+                }
+            }
         ) {
+            // 内容可滚动 + 默认全展开：条目多时（10 项操作）不会再把底部危险操作裁掉
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .navigationBarsPadding(),
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 // 头部：项目名称与全路径
@@ -1538,62 +1559,95 @@ fun SessionListScreen(
                 HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
                 Spacer(modifier = Modifier.height(2.dp))
 
-                // 板块 2：排序微调 (上移 / 下移)
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // 板块 2：排序微调（紧凑 chip，首个/末个自动禁用，避免点了没反应）
+                val wsIndex = workspaces.map { it.path }.indexOf(targetWs.path)
+                val canMoveUp = wsIndex > 0
+                val canMoveDown = wsIndex >= 0 && wsIndex < workspaces.lastIndex
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "列表排序",
+                        fontSize = 11.5.sp,
+                        color = theme.textMuted,
+                        modifier = Modifier.weight(1f)
+                    )
+
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(7.dp),
                         color = theme.surfaceContainer,
-                        border = BorderStroke(0.6.dp, theme.outline),
-                        modifier = Modifier.weight(1f).clickable {
-                            val currentList = workspaces.map { it.path }.toMutableList()
-                            val idx = currentList.indexOf(targetWs.path)
-                            if (idx > 0) {
-                                java.util.Collections.swap(currentList, idx, idx - 1)
-                                prefs.saveWorkspaceOrder(currentList)
-                                wsOrder = currentList
-                                // 同步到 pi-web 的 projectOrder（anchor = 换到它前面的那个项目）
-                                onMoveWorkspace(targetWs.path, currentList[idx - 1])
-                                Toast.makeText(context, "已上移项目", Toast.LENGTH_SHORT).show()
-                            }
-                            selectedMenuWorkspace = null
-                        }
+                        border = BorderStroke(0.6.dp, theme.outline)
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .clickable(enabled = canMoveUp) {
+                                    val currentList = workspaces.map { it.path }.toMutableList()
+                                    val idx = currentList.indexOf(targetWs.path)
+                                    if (idx > 0) {
+                                        java.util.Collections.swap(currentList, idx, idx - 1)
+                                        prefs.saveWorkspaceOrder(currentList)
+                                        wsOrder = currentList
+                                        // 同步到 pi-web 的 projectOrder（anchor = 换到它前面的那个项目）
+                                        onMoveWorkspace(targetWs.path, currentList[idx - 1])
+                                        Toast.makeText(context, "已上移项目", Toast.LENGTH_SHORT).show()
+                                    }
+                                    selectedMenuWorkspace = null
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("上移项目", fontSize = 11.5.sp, color = theme.textPrimary)
+                            Icon(
+                                Icons.Default.KeyboardArrowUp,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (canMoveUp) theme.textPrimary else theme.textMuted
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                "上移",
+                                fontSize = 11.5.sp,
+                                color = if (canMoveUp) theme.textPrimary else theme.textMuted
+                            )
                         }
                     }
 
+                    Spacer(modifier = Modifier.width(6.dp))
+
                     Surface(
-                        shape = RoundedCornerShape(8.dp),
+                        shape = RoundedCornerShape(7.dp),
                         color = theme.surfaceContainer,
-                        border = BorderStroke(0.6.dp, theme.outline),
-                        modifier = Modifier.weight(1f).clickable {
-                            val currentList = workspaces.map { it.path }.toMutableList()
-                            val idx = currentList.indexOf(targetWs.path)
-                            if (idx >= 0 && idx < currentList.lastIndex) {
-                                java.util.Collections.swap(currentList, idx, idx + 1)
-                                prefs.saveWorkspaceOrder(currentList)
-                                wsOrder = currentList
-                                onMoveWorkspace(targetWs.path, currentList[idx + 1])
-                                Toast.makeText(context, "已下移项目", Toast.LENGTH_SHORT).show()
-                            }
-                            selectedMenuWorkspace = null
-                        }
+                        border = BorderStroke(0.6.dp, theme.outline)
                     ) {
                         Row(
-                            modifier = Modifier.padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.Center,
+                            modifier = Modifier
+                                .clickable(enabled = canMoveDown) {
+                                    val currentList = workspaces.map { it.path }.toMutableList()
+                                    val idx = currentList.indexOf(targetWs.path)
+                                    if (idx >= 0 && idx < currentList.lastIndex) {
+                                        java.util.Collections.swap(currentList, idx, idx + 1)
+                                        prefs.saveWorkspaceOrder(currentList)
+                                        wsOrder = currentList
+                                        onMoveWorkspace(targetWs.path, currentList[idx + 1])
+                                        Toast.makeText(context, "已下移项目", Toast.LENGTH_SHORT).show()
+                                    }
+                                    selectedMenuWorkspace = null
+                                }
+                                .padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("下移项目", fontSize = 11.5.sp, color = theme.textPrimary)
+                            Icon(
+                                Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = if (canMoveDown) theme.textPrimary else theme.textMuted
+                            )
+                            Spacer(modifier = Modifier.width(3.dp))
+                            Text(
+                                "下移",
+                                fontSize = 11.5.sp,
+                                color = if (canMoveDown) theme.textPrimary else theme.textMuted
+                            )
                         }
                     }
                 }
@@ -1644,19 +1698,23 @@ fun SessionListScreen(
                     }
                 )
 
-                // 6. 删除全部会话... (危险红色警告操作)
+                // 6. 删除该项目全部会话（危险区：独立分隔线 + 淡红底容器，避免误触）
+                HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(4.dp))
                 WorkspaceMenuActionItem(
                     icon = Icons.Default.DeleteForever,
                     iconTint = Color(0xFFEF4444),
-                    title = "删除全部会话... · ${projectSessions.size}",
+                    title = "删除该项目全部会话 · ${projectSessions.size}",
                     subtitle = "删除所有历史会话（正在运行的会话会自动保留）",
                     titleColor = Color(0xFFEF4444),
+                    danger = true,
                     enabled = projectSessions.isNotEmpty(),
                     onClick = {
                         showDeleteAllSessionsDialog = targetWs
                         selectedMenuWorkspace = null
                     }
                 )
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
     }
@@ -2740,14 +2798,26 @@ private fun WorkspaceMenuActionItem(
     iconTint: Color = MaterialTheme.colorScheme.primary,
     titleColor: Color = LocalAppTheme.current.textPrimary,
     enabled: Boolean = true,
+    danger: Boolean = false,
     onClick: () -> Unit
 ) {
     val theme = LocalAppTheme.current
     Surface(
         shape = RoundedCornerShape(8.dp),
-        color = if (enabled) Color.Transparent else theme.surfaceContainerLow.copy(alpha = 0.5f),
+        // 禁用态用 surfaceContainer（sheet 底色是 surfaceContainerLow，旧写法几乎看不见）
+        color = when {
+            !enabled -> theme.surfaceContainer.copy(alpha = 0.6f)
+            danger -> Color(0xFFEF4444).copy(alpha = 0.08f)
+            else -> Color.Transparent
+        },
+        border = if (danger && enabled) {
+            BorderStroke(0.6.dp, Color(0xFFEF4444).copy(alpha = 0.35f))
+        } else {
+            null
+        },
         modifier = Modifier
             .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.55f)
             .clickable(enabled = enabled, onClick = onClick)
     ) {
         Row(
@@ -2766,15 +2836,19 @@ private fun WorkspaceMenuActionItem(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
-                    color = if (enabled) titleColor else theme.textMuted
+                    color = if (enabled) titleColor else theme.textMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 if (subtitle != null) {
                     Text(
                         text = subtitle,
                         style = MaterialTheme.typography.labelSmall,
                         fontSize = 10.5.sp,
+                        lineHeight = 14.sp,
                         color = theme.textMuted,
-                        maxLines = 1,
+                        // 中文说明在窄屏下 1 行装不下，放宽到 2 行，避免被截成半句
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
