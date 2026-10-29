@@ -37,6 +37,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.pi.app.data.model.ProjectMoveDirection
+import com.pi.app.data.model.ProjectMovePlan
+import com.pi.app.data.model.ProjectMovePlanner
 import com.pi.app.data.model.RemoteBrowseData
 import com.pi.app.data.model.RemoteDirEntry
 import android.widget.Toast
@@ -132,8 +135,13 @@ fun SessionListScreen(
     serverWorkspaceOrder: List<String> = emptyList(),
     /** 项目置顶切换：(工作区路径, 展示用根路径) */
     onTogglePinWorkspace: (path: String, root: String) -> Unit = { _, _ -> },
-    /** 项目排序：(被移动的项目路径, 锚点项目路径) */
-    onMoveWorkspace: (path: String, anchorPath: String) -> Unit = { _, _ -> },
+    /**
+     * 项目排序：(被移动的项目路径, 锚点项目路径, "before"|"after", 需一并写进 projectOrder 的同组 key)
+     *
+     * 对齐 pi-web `move-project` 的完整 payload；锚点必须是**移动前**的同分组邻居。
+     */
+    onMoveWorkspace: (path: String, anchorPath: String, position: String, addKeys: List<String>) -> Unit =
+        { _, _, _, _ -> },
     onRenameSession: (sessionId: String, newTitle: String) -> Unit = { _, _ -> },
     onForkSession: (Session) -> Unit = {},
     onDeleteSession: (String) -> Unit = {},
@@ -1560,9 +1568,61 @@ fun SessionListScreen(
                 Spacer(modifier = Modifier.height(2.dp))
 
                 // 板块 2：排序微调（紧凑 chip，首个/末个自动禁用，避免点了没反应）
-                val wsIndex = workspaces.map { it.path }.indexOf(targetWs.path)
-                val canMoveUp = wsIndex > 0
-                val canMoveDown = wsIndex >= 0 && wsIndex < workspaces.lastIndex
+                // 逐行对齐 pi-web 的 move-up / move-down：锚点必须取自「换位之前」的同分组邻居。
+                // 旧实现先 swap 再取 currentList[idx ± 1]，取到的正是它自己，
+                // 服务端因此回 400 `projectKey and anchorKey must differ`（详见 ProjectMovePlanner）。
+                fun menuWsKey(path: String): String = path.replace('\\', '/').trimEnd('/').lowercase()
+                fun menuIsPinned(path: String): Boolean =
+                    if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
+                        serverPinnedWorkspaceKeys.contains(menuWsKey(path))
+                    } else {
+                        pinnedWorkspaces.contains(path)
+                    }
+                val menuOrderKeys =
+                    if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { menuWsKey(it) }
+                val menuOrderedWs = workspaces.sortedWith(
+                    compareByDescending<WorkspaceInfo> { menuIsPinned(it.path) }
+                        .thenBy { ws ->
+                            val idx = menuOrderKeys.indexOf(menuWsKey(ws.path))
+                            if (idx != -1) idx else Int.MAX_VALUE
+                        }
+                )
+                // 只在同一（置顶 / 非置顶）分组内相邻移动，跨分组服务端不接受
+                val bandKeys = menuOrderedWs.filter { menuIsPinned(it.path) == isPinned }.map { menuWsKey(it.path) }
+                val upPlan = ProjectMovePlanner.plan(bandKeys, menuWsKey(targetWs.path), ProjectMoveDirection.UP)
+                val downPlan = ProjectMovePlanner.plan(bandKeys, menuWsKey(targetWs.path), ProjectMoveDirection.DOWN)
+                val canMoveUp = upPlan != null
+                val canMoveDown = downPlan != null
+
+                // 本地偏好只做镜像（真源在 pi-web 的 projectOrder），随后把完整 move-project 请求发给 PC
+                fun applyMovePlan(plan: ProjectMovePlan) {
+                    val anchorWs = menuOrderedWs.firstOrNull { menuWsKey(it.path) == plan.anchorKey }
+                    val currentList = menuOrderedWs.map { it.path }.toMutableList()
+                    val from = currentList.indexOf(targetWs.path)
+                    val to = if (anchorWs != null) currentList.indexOf(anchorWs.path) else -1
+                    if (from >= 0 && to >= 0 && from != to) {
+                        java.util.Collections.swap(currentList, from, to)
+                        prefs.saveWorkspaceOrder(currentList)
+                        wsOrder = currentList
+                    }
+                    onMoveWorkspace(
+                        targetWs.path,
+                        anchorWs?.path ?: plan.anchorKey,
+                        plan.position,
+                        ProjectMovePlanner.collectAddKeys(
+                            bandKeys,
+                            menuOrderKeys,
+                            plan.projectKey,
+                            plan.anchorKey
+                        )
+                    )
+                    Toast.makeText(
+                        context,
+                        if (plan.position == ProjectMovePlan.BEFORE) "已上移项目" else "已下移项目",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    selectedMenuWorkspace = null
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -1582,17 +1642,7 @@ fun SessionListScreen(
                         Row(
                             modifier = Modifier
                                 .clickable(enabled = canMoveUp) {
-                                    val currentList = workspaces.map { it.path }.toMutableList()
-                                    val idx = currentList.indexOf(targetWs.path)
-                                    if (idx > 0) {
-                                        java.util.Collections.swap(currentList, idx, idx - 1)
-                                        prefs.saveWorkspaceOrder(currentList)
-                                        wsOrder = currentList
-                                        // 同步到 pi-web 的 projectOrder（anchor = 换到它前面的那个项目）
-                                        onMoveWorkspace(targetWs.path, currentList[idx - 1])
-                                        Toast.makeText(context, "已上移项目", Toast.LENGTH_SHORT).show()
-                                    }
-                                    selectedMenuWorkspace = null
+                                    upPlan?.let { applyMovePlan(it) }
                                 }
                                 .padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1622,16 +1672,7 @@ fun SessionListScreen(
                         Row(
                             modifier = Modifier
                                 .clickable(enabled = canMoveDown) {
-                                    val currentList = workspaces.map { it.path }.toMutableList()
-                                    val idx = currentList.indexOf(targetWs.path)
-                                    if (idx >= 0 && idx < currentList.lastIndex) {
-                                        java.util.Collections.swap(currentList, idx, idx + 1)
-                                        prefs.saveWorkspaceOrder(currentList)
-                                        wsOrder = currentList
-                                        onMoveWorkspace(targetWs.path, currentList[idx + 1])
-                                        Toast.makeText(context, "已下移项目", Toast.LENGTH_SHORT).show()
-                                    }
-                                    selectedMenuWorkspace = null
+                                    downPlan?.let { applyMovePlan(it) }
                                 }
                                 .padding(horizontal = 10.dp, vertical = 5.dp),
                             verticalAlignment = Alignment.CenterVertically

@@ -2459,13 +2459,33 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         )
 
-    /** 项目排序：把 projectKey 移到 anchorKey 之前/之后（pi 侧 move-project） */
-    suspend fun moveProject(projectKey: String, anchorKey: String): Result<Boolean> =
+    /**
+     * 项目排序：把 projectKey 移到 anchorKey 之前/之后（pi 侧 move-project）
+     *
+     * 对齐 pi-web `SessionSidebar` 的 payload：
+     * `{"action":"move-project","projectKey":..,"anchorKey":..,"position":"before"|"after","add":[..]}`
+     * —— 漏掉 `position` 会被服务端 400 `position must be "before" or "after"`；
+     * `anchorKey` 若等于 `projectKey`（例如锚点取成了换位后的自己）则 400
+     * `projectKey and anchorKey must differ`。
+     *
+     * @param position "before" 或 "after"（见 [com.pi.app.data.model.ProjectMovePlan]）
+     * @param addKeys 同分组内尚未写进 projectOrder 的项目 key，用于保持 PC 端展示顺序不跳变
+     */
+    suspend fun moveProject(
+        projectKey: String,
+        anchorKey: String,
+        position: String,
+        addKeys: List<String> = emptyList()
+    ): Result<Boolean> =
         postUiState(
             JsonObject().apply {
                 addProperty("action", "move-project")
                 addProperty("projectKey", projectKey)
                 addProperty("anchorKey", anchorKey)
+                addProperty("position", position)
+                if (addKeys.isNotEmpty()) {
+                    add("add", gson.toJsonTree(addKeys))
+                }
             }
         )
 

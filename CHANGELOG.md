@@ -2,6 +2,38 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.48] - 2026-10-29
+
+### 🐛 修复「项目排序同步失败：400 projectKey and anchorKey must differ」
+
+工作区项目菜单里的 `↑ 上移` / `↓ 下移` 一直报：
+
+```
+项目排序同步失败: 同步到 PC 失败 (400): {"error":"projectKey and anchorKey must differ"}
+```
+
+根因有三层，都在 `move-project` 这条链路上（pi-web 的 `ui-state` 接口是唯一真源）：
+
+- **锚点取成了自己**（`SessionListScreen`）：旧实现先在本地列表里 `swap` 换位，
+  再用 `currentList[idx - 1]` / `currentList[idx + 1]` 当锚点 —— 换位之后这两个位置
+  正是被移动项目本身，于是 `anchorKey == projectKey`，服务端按校验直接 400。
+  → 改为先按当前展示顺序算出锚点再换位，逻辑逐行对齐 pi-web `SessionSidebar` 的
+  `moveAnchor()`：同分组（置顶 / 非置顶）内的「移动前」相邻项才是合法锚点。
+- **缺少 `position` 字段**（`PiApiClient.moveProject`）：服务端只接受
+  `"before"` / `"after"`，旧请求只有 `projectKey` + `anchorKey`，即使锚点正确也会
+  400 `position must be "before" or "after"`。
+  → 上移发 `before`、下移发 `after`。
+- **缺少 `add` 字段**：pi-web 每次移动都会把「同分组内尚未进入 `projectOrder`」的
+  项目 key 一并提交，用来固定 PC 端当前展示顺序；只写两个 key 会让未排序项目在 PC 上
+  跳到列表末尾。→ 按 `unorderedKeysByBand` 的语义补齐（上限 500）。
+
+附带修正：移动成功后回读一次 `ui-state`，让手机抽屉里的顺序立刻与 PC 一致
+（排序真源在 PC，本地 `SharedPreferences` 只做镜像）；首/末项目仍自动禁用
+对应按钮，跨分组不再发送非法请求。
+
+新增 `ProjectMovePlannerTest`（10 例）锁定根因：锚点永不等于自身、
+`position` 只能是 `before`/`after`、分组首末不可移动、`add` 只携带未排序 key。
+
 ## [1.7.47] - 2026-10-29
 
 ### 📐 修复工作区项目操作面板：底部被裁、排序按钮抢眼、危险操作无隔离

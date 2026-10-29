@@ -2487,11 +2487,17 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    onMoveWorkspace = { path, anchorPath ->
+                    onMoveWorkspace = { path, anchorPath, position, addKeys ->
                         val key = path.replace('\\', '/').lowercase()
                         val anchorKey = anchorPath.replace('\\', '/').lowercase()
                         lifecycleScope.launch {
-                            apiClient.moveProject(key, anchorKey).onFailure { err ->
+                            apiClient.moveProject(key, anchorKey, position, addKeys).onSuccess {
+                                // 排序真源在 pi-web 的 ui-state；写完回读一次，抽屉与 PC 保持一致
+                                apiClient.getSessionUiState().onSuccess { ui ->
+                                    serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
+                                    serverWorkspaceOrder = ui.projectOrder
+                                }
+                            }.onFailure { err ->
                                 Toast.makeText(this@MainActivity, "项目排序同步失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
