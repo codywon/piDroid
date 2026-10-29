@@ -2,6 +2,27 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.39] - 2026-10-29
+
+### 🧭 时间轴高亮对齐 pi-web：点哪个亮哪个 (Release v1.7.39)
+
+- **现象**：点右边时间轴第 N 个小方块，深蓝色（选中态）却亮在 **N-1**。
+- **对照 pi-web 源码**（`ChatMinimap`，逐条照抄它的口径）：
+  1. **点击锁**：`W(index)` 先把目标设为高亮，并写 `lock = {index, until: now+1600}`；
+     之后 1.6s 内的滚动事件**直接返回锁定的 index**，不重算；
+  2. **滚动取点**：`anchor = scrollTop + 0.3 * clientHeight`，在所有回合起点里取**离锚点最近**的那个，
+     距离相同取靠前的（`reduce` 里的严格小于）；长回合内部则保持原高亮；
+  3. **跳转位置**：`scrollTo(turnTop - 0.3 * clientHeight)` —— 让目标回合顶部落在视口 **30%** 处，而不是贴顶。
+- **App 侧根因**：我们既没有点击锁，取点用的还是「第一个可见行」，而且跳转是贴顶滚动。
+  跳转那一帧布局未稳时，上一行的尾巴还在视口里，于是被算成「当前回合」→ 高亮退回一格。
+- **修复**：
+  - `activeTurnNumber` 改为「可见的回合起始行（`turn_N_user_*`）里离视口 30% 锚点最近者」，
+    过程行/答复行不再参与取点（避免长回合内高亮乱跳）；
+  - 点击后 **1.6s 锁**，期间的滚动不覆盖高亮；
+  - 跳转改为 `scrollToItem(target, -0.3 * viewportHeight)`，目标回合顶部落在 30% 处，与锚点重合。
+
+---
+
 ## [1.7.38] - 2026-10-29
 
 ### 🔧 修复 Release 构建：分支回退重置处的 `List.clear()` 编译错误

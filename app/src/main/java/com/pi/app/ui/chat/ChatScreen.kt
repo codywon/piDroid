@@ -1846,13 +1846,35 @@ fun ChatScreen(
                 // 旧实现用 firstVisibleItemIndex 减去顶部横幅再当回合下标猜，一旦回合被折叠成
                 // 「过程组 / 最终答复」多行（或上滑续批插入新行），索引与回合号就对不上，高亮乱跳。
                 var activeTurnNumber by remember { mutableStateOf(allTurns.firstOrNull()?.turnNumber ?: 1) }
+                // 点击后 1.6s 内锁定高亮（对标 pi-web 的 M.current 锁）。
+                // 没这个锁时，跳转那一帧布局还没稳，按“可见行”重算一次就会把高亮回退到上一行，
+                // 表现就是「点 N ，深蓝色却亮在 N-1」。
+                var activeTurnLockUntil by remember { mutableStateOf(0L) }
+
                 LaunchedEffect(allTurns) {
                     snapshotFlow {
-                        listState.layoutInfo.visibleItemsInfo
-                            .firstNotNullOfOrNull { info -> turnNumberFromRowKey(info.key) }
+                        val info = listState.layoutInfo
+                        val viewport = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
+                        // pi-web 的取点口径：锚点 = 视口顶端往下 30%，
+                        // 在所有「回合起始行」（turn_N_user_*）里选离锚点最近的那个，
+                        // 距离相同取靠前的（对应它 reduce 里的严格小于）。
+                        val anchor = info.viewportStartOffset + viewport * 0.3f
+                        info.visibleItemsInfo
+                            .asSequence()
+                            .mapNotNull { row ->
+                                turnStartFromRowKey(row.key)?.let { num -> num to row.offset }
+                            }
+                            .minWithOrNull(
+                                compareBy(
+                                    { kotlin.math.abs(it.second - anchor) },
+                                    { it.second }
+                                )
+                            )
+                            ?.first
                     }.collect { num ->
-                        if (num != null) activeTurnNumber = num
-                        else if (allTurns.isNotEmpty()) activeTurnNumber = allTurns.last().turnNumber
+                        if (num == null) return@collect
+                        if (System.currentTimeMillis() < activeTurnLockUntil) return@collect
+                        activeTurnNumber = num
                     }
                 }
 
@@ -1865,29 +1887,37 @@ fun ChatScreen(
                     onLoadEarlier = onLoadOlder,
                     onJumpToUserMessage = { turn ->
                         userJumpedToHistory = true
-                        coroutineScope.launch {
-                            val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
-                            if (turnIdx >= 0) {
-                                // 用瞬时定位而不是动画：动画在流式输出/长列表下容易被下一次自动跟随打断，
-                                // 表现出来就是「点了一下没反应」。
-                                listState.scrollToItem(turnStartRowIndex(turnIdx))
+                        val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
+                        if (turnIdx >= 0) {
+                            // pi-web 的 H()：先把目标节点直接设为高亮并锁 1.6s，
+                            // 再滚到「该回合顶部落在视口 30%」的位置，这样高亮与内容对得上。
+                            activeTurnNumber = turn.turnNumber
+                            activeTurnLockUntil = System.currentTimeMillis() + 1_600L
+                            coroutineScope.launch {
+                                val vp = listState.layoutInfo.let { it.viewportEndOffset - it.viewportStartOffset }
+                                val anchorPx = (vp * 0.3f).toInt()
+                                listState.scrollToItem(turnStartRowIndex(turnIdx), -anchorPx)
                             }
                         }
                     },
                     onJumpToAssistant = { turn ->
                         userJumpedToHistory = true
-                        coroutineScope.launch {
-                            val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
-                            if (turnIdx >= 0) {
-                                val t = allTurns[turnIdx]
-                                // 落到真实存在的那一行：没最终答复就停在回合起点，
-                                // 否则会多跑一格、直接跳到下一个回合。
-                                var row = turnStartRowIndex(turnIdx)
-                                if (t.processItems.isNotEmpty()) row += 1
-                                if (t.finalAnswerItem != null) row += 1
-                                val maxRow = listState.layoutInfo.totalItemsCount - 1
-                                if (maxRow >= 0) row = row.coerceIn(0, maxRow)
-                                listState.scrollToItem(row)
+                        val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
+                        if (turnIdx >= 0) {
+                            val t = allTurns[turnIdx]
+                            // 落到真实存在的那一行：没最终答复就停在回合起点，
+                            // 否则会多跑一格、直接跳到下一个回合。
+                            var row = turnStartRowIndex(turnIdx)
+                            if (t.processItems.isNotEmpty()) row += 1
+                            if (t.finalAnswerItem != null) row += 1
+                            val maxRow = listState.layoutInfo.totalItemsCount - 1
+                            if (maxRow >= 0) row = row.coerceIn(0, maxRow)
+                            activeTurnNumber = turn.turnNumber
+                            activeTurnLockUntil = System.currentTimeMillis() + 1_600L
+                            coroutineScope.launch {
+                                val vp = listState.layoutInfo.let { it.viewportEndOffset - it.viewportStartOffset }
+                                val anchorPx = (vp * 0.3f).toInt()
+                                listState.scrollToItem(row, -anchorPx)
                             }
                         }
                     },
@@ -3105,6 +3135,16 @@ fun PiWebToolCallCard(
 private fun turnNumberFromRowKey(key: Any?): Int? {
     val raw = key as? String ?: return null
     if (!raw.startsWith("turn_")) return null
+    return raw.removePrefix("turn_").substringBefore('_').toIntOrNull()
+}
+
+/**
+ * 只匹配「回合起始行」（用户提问行 `turn_N_user_...`），用于时间轴高亮取点。
+ * 过程行/答复行也带 turn_N 前缀，但它们不是回合起点，参与取点会让高亮在长回合里跳来跳去。
+ */
+private fun turnStartFromRowKey(key: Any?): Int? {
+    val raw = key as? String ?: return null
+    if (!raw.startsWith("turn_") || !raw.contains("_user_")) return null
     return raw.removePrefix("turn_").substringBefore('_').toIntOrNull()
 }
 
