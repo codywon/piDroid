@@ -116,6 +116,18 @@ class PiApiClient(private val prefs: AppPreferences) {
         .writeTimeout(120, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加 30s 硬超时。
+     *
+     * 没有 callTimeout 时，readTimeout=120s 只在「一个字节都读不到」才触发。隧道半死、CDN 卡住
+     * 或者服务端边算边吐的情况下，一次 300KB 的会话列表 / 快照可以被拖成两分钟的「没有进展的转圈」。
+     * 这里只给这些**幂等只读**请求加时限；写操作（发消息 / 压缩 / 生成标题等可能长时间等模型）
+     * 仍走 [client]，不受影响。
+     */
+    private val readClient = client.newBuilder()
+        .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     suspend fun ping(targetUrl: String? = null, token: String? = null): Result<String> = withContext(Dispatchers.IO) {
@@ -152,7 +164,8 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions").get().build()
-            client.newCall(req).execute().use { response ->
+            // 只读轮询：走带 30s 硬超时的 readClient（隧道半死时快速失败，不会挂两分钟）
+            readClient.newCall(req).execute().use { response ->
                 if (response.isSuccessful) {
                     val body = response.body?.string() ?: "{}"
                     val jsonElement = JsonParser.parseString(body)
@@ -210,7 +223,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/agent/running").get().build()
-            client.newCall(req).execute().use { response ->
+            readClient.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("读取运行态失败 (${response.code})"))
                 }
@@ -448,7 +461,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary")
                 .get()
                 .build()
-            client.newCall(req).execute().use { response ->
+            readClient.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
                 }
@@ -2311,7 +2324,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/state").get().build()
-            client.newCall(req).execute().use { response ->
+            readClient.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("读取 agent 状态失败 (${response.code})"))
                 }
@@ -2386,7 +2399,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions/ui-state").get().build()
-            client.newCall(req).execute().use { response ->
+            readClient.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
                     return@withContext Result.failure(IOException("读取置顶/归档状态失败 (${response.code})"))
                 }

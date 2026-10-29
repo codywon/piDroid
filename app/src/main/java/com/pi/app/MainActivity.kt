@@ -255,6 +255,11 @@ class MainActivity : ComponentActivity() {
         // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区
         var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf("") }
         var isLoadingSessions by remember { mutableStateOf(false) }
+        // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
+        // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
+        var sessionFetchInFlight by remember { mutableStateOf(false) }
+        // 会话同步失败提示的节流时间戳（避免每轮巡检都弹一次）
+        var lastHistorySyncErrorAt by remember { mutableStateOf(0L) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
         var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
@@ -450,35 +455,58 @@ class MainActivity : ComponentActivity() {
 
         fun loadSessions(silent: Boolean = false) {
             if (!prefs.isConfigured) return
+            if (sessionFetchInFlight) {
+                // 已经有全量拉取在飞：手动刷新只借用那一条的收尾来停转圈，
+                // 绝不再叠第二条几百 KB 的请求（叠加会互相拖死，看起来就像永远同步不完）。
+                if (!silent) isLoadingSessions = true
+                return
+            }
+            sessionFetchInFlight = true
             if (!silent) isLoadingSessions = true
             lifecycleScope.launch {
-                apiClient.getSessions().onSuccess {
-                    sessions = it
-                    cachedSessions = it
-                    pinnedSessionIds = prefs.getPinnedSessionIds()
-                    // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
-                    // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
-                    apiClient.getSessionUiState().onSuccess { ui ->
-                        val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
-                        val archived = ui.sessionFlags.filterValues { it.archived }.keys
-                        pinnedSessionIds = pinned
-                        archivedSessionIds = archived
-                        prefs.setPinnedSessionIds(pinned)
-                        prefs.setArchivedSessionIds(archived)
-                        // 项目（工作区）置顶与排序同样以 PC 为准
-                        serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
-                        serverWorkspaceOrder = ui.projectOrder
+                try {
+                    apiClient.getSessions().onSuccess {
+                        sessions = it
+                        cachedSessions = it
+                        pinnedSessionIds = prefs.getPinnedSessionIds()
+                        // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
+                        // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
+                        apiClient.getSessionUiState().onSuccess { ui ->
+                            val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
+                            val archived = ui.sessionFlags.filterValues { it.archived }.keys
+                            pinnedSessionIds = pinned
+                            archivedSessionIds = archived
+                            prefs.setPinnedSessionIds(pinned)
+                            prefs.setArchivedSessionIds(archived)
+                            // 项目（工作区）置顶与排序同样以 PC 为准
+                            serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
+                            serverWorkspaceOrder = ui.projectOrder
+                        }
+                        customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
+                        isGatewayOnline = true
+                        syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
+                    }.onFailure {
+                        isGatewayOnline = false
+                        if (!silent) {
+                            Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                        }
                     }
-                    customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
-                    isGatewayOnline = true
-                    syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
-                }.onFailure {
+                } catch (e: java.util.concurrent.CancellationException) {
+                    // 协程被取消（页面销毁 / 重新挂载）：交回上层，不做错误提示
+                    throw e
+                } catch (e: Exception) {
+                    // 未预料的异常（本地缓存 / 通知栏保活 / 解析）以前会直接终结这个协程，
+                    // isLoadingSessions 就永远停在 true —— 加载圈再也没有出口。
                     isGatewayOnline = false
+                    android.util.Log.e("PiSync", "loadSessions failed", e)
                     if (!silent) {
-                        Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "同步会话列表失败: ${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
                     }
+                } finally {
+                    // 闸门放开就收尾：只要没有在飞的全量拉取，右上角就不该还在转圈。
+                    sessionFetchInFlight = false
+                    isLoadingSessions = false
                 }
-                if (!silent) isLoadingSessions = false
             }
         }
 
@@ -533,25 +561,30 @@ class MainActivity : ComponentActivity() {
             if (cursor.isNullOrBlank()) return
             isLoadingOlder = true
             lifecycleScope.launch {
-                apiClient.getOlderContextPage(sid, cursor, tail = 60, leafId = olderLeafId)
-                    .onSuccess { page ->
-                        if (currentSession?.id != sid) return@onSuccess
-                        fun fingerprint(item: ChatItem) = "${item.role}|${item.timestamp}|${item.content.hashCode()}"
-                        val seen = (olderMessages + messages).map { fingerprint(it) }.toHashSet()
-                        val fresh = page.messages.filter { seen.add(fingerprint(it)) }
-                        if (fresh.isNotEmpty()) {
-                            olderMessages = fresh + olderMessages
+                try {
+                    apiClient.getOlderContextPage(sid, cursor, tail = 60, leafId = olderLeafId)
+                        .onSuccess { page ->
+                            if (currentSession?.id != sid) return@onSuccess
+                            fun fingerprint(item: ChatItem) = "${item.role}|${item.timestamp}|${item.content.hashCode()}"
+                            val seen = (olderMessages + messages).map { fingerprint(it) }.toHashSet()
+                            val fresh = page.messages.filter { seen.add(fingerprint(it)) }
+                            if (fresh.isNotEmpty()) {
+                                olderMessages = fresh + olderMessages
+                            }
+                            olderCursor = page.oldestEntryId ?: cursor
+                            hasEarlierOnServer = page.hasMore
+                            earlierTurnCount = page.turnsBefore
                         }
-                        olderCursor = page.oldestEntryId ?: cursor
-                        hasEarlierOnServer = page.hasMore
-                        earlierTurnCount = page.turnsBefore
-                    }
-                    .onFailure { err ->
-                        if (!silent) {
-                            Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                        .onFailure { err ->
+                            if (!silent) {
+                                Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                            }
                         }
-                    }
-                isLoadingOlder = false
+                } finally {
+                    // 上滑补页的加载态必须有出口：否则顶部一直转圈，且 autoFillFirstScreen
+                    // 会一直等到 5s 超时白等一轮
+                    isLoadingOlder = false
+                }
             }
         }
 
@@ -975,6 +1008,24 @@ class MainActivity : ComponentActivity() {
                     autoFillFirstScreen(sessionId)
                 } else {
                     isLoadingSessionHistory = false
+                }
+            }
+
+            histResult.onFailure { err ->
+                // 会话正文拉取失败（隧道抖动 / 502 / 401 / 超时）必须给加载态一个出口。
+                // 以前这里完全没有 onFailure：isLoadingSessionHistory 永远停在 true，
+                // 用户只能看到一个永不结束的加载圈，连「失败了」都看不到。
+                if (currentSession?.id == sessionId && messages.isEmpty() && olderMessages.isEmpty()) {
+                    isLoadingSessionHistory = false
+                    val now = System.currentTimeMillis()
+                    if (!isAutoFillingFirstScreen && now - lastHistorySyncErrorAt > 10_000L) {
+                        lastHistorySyncErrorAt = now
+                        Toast.makeText(
+                            this@MainActivity,
+                            "会话同步失败: ${err.message ?: "网络异常"}",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
                 }
             }
 
@@ -1555,6 +1606,7 @@ class MainActivity : ComponentActivity() {
                 }
             } else {
                 var lastDetailSyncAt = System.currentTimeMillis()
+                var lastServerRunning = activeSession.isRunning
                 while (true) {
                     val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 3_000L
                     kotlinx.coroutines.delay(delayMs)
@@ -1583,8 +1635,26 @@ class MainActivity : ComponentActivity() {
                             reattachSseCallback?.invoke(activeSession.id, true)
                         }
                     }
-                    val shouldSyncDetail = isAgentBusy || serverSaysRunning || versionChanged ||
-                        System.currentTimeMillis() - lastDetailSyncAt > 15_000L
+                    // 快照对账节奏（实测单次 230–435KB，旧实现“在跑就 1.5s 一次”会在手机上
+                    // 持续占满带宽，正文/列表全排队，看上去就是“进会话同步不下来”）：
+                    //   · 事件流健康 → 正文交给 SSE，快照只做 10s 安全网；
+                    //   · 流断了/长时间无事件 → 收紧到 3s，用快照兜底补正文；
+                    //   · 运行态翻转、列表版本变化 → 立刻对账（否则会弄丢“任务结束”）。
+                    val streamHealthy = SessionSyncCadence.isStreamHealthy(
+                        connected = sseConnectionState == SseConnectionState.CONNECTED,
+                        lastActivityAt = lastSseActivityAt,
+                        now = nowMs
+                    )
+                    val runTransition = snap != null && serverSaysRunning != lastServerRunning
+                    lastServerRunning = serverSaysRunning
+                    val shouldSyncDetail = SessionSyncCadence.shouldSyncDetail(
+                        now = nowMs,
+                        lastSyncAt = lastDetailSyncAt,
+                        listVersionChanged = versionChanged,
+                        runStateTransition = runTransition,
+                        serverSaysRunning = serverSaysRunning,
+                        streamHealthy = streamHealthy
+                    )
                     if (shouldSyncDetail) {
                         lastDetailSyncAt = System.currentTimeMillis()
                         syncSessionSnapshot(activeSession.id, allowCompletionTransition = true)
@@ -2078,22 +2148,26 @@ class MainActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 isCompacting = true
                                 Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
-                                apiClient.compactContext(sid)
-                                    .onSuccess {
-                                        Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
-                                        apiClient.getSessionStats(sid).onSuccess {
-                                            if (currentSession?.id == sid) tokenStats = it
+                                try {
+                                    apiClient.compactContext(sid)
+                                        .onSuccess {
+                                            Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
+                                            apiClient.getSessionStats(sid).onSuccess {
+                                                if (currentSession?.id == sid) tokenStats = it
+                                            }
+                                            syncSessionSnapshot(sid, allowCompletionTransition = false)
                                         }
-                                        syncSessionSnapshot(sid, allowCompletionTransition = false)
-                                    }
-                                    .onFailure { err ->
-                                        Toast.makeText(
-                                            this@MainActivity,
-                                            "压缩失败: ${err.message ?: "未知错误"}",
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    }
-                                isCompacting = false
+                                        .onFailure { err ->
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                "压缩失败: ${err.message ?: "未知错误"}",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
+                                } finally {
+                                    // 压缩按钮的转圈必须有出口：异常时不能让它永远转下去
+                                    isCompacting = false
+                                }
                             }
                         }
                     },
