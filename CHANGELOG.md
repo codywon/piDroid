@@ -2,6 +2,30 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.43] - 2026-10-29
+
+### 🪟 文件查看器改全屏：不再「一上滑就缩回半屏」
+
+- **现象**：点开 md 文件后底部弹出半屏 ModalBottomSheet，想看正文就得往上滑，
+  弹窗变大到几乎整屏，手指一停又**缩回半屏**；读到末尾继续下拉还会**误关闭**。
+- **真因**：`LazyColumn` 与 `ModalBottomSheet` 各自装着一个 nested-scroll connection，
+  fling 速度会串到 sheet 自己的拖拽手势上（AOSP issue 353304855 同一现象）；
+  docx / SVG 预览是 WebView，根本不参与 Compose 的 nested scroll，手势必被外层抢走。
+- **修复**：新增 `ArtifactViewerFullScreen`（`Scaffold` + `TopAppBar`）全屏承载
+  文本 / md / SVG / 图片 / Word / PDF / 音视频，彻底去掉可拖拽容器：
+  - 关闭：系统返回键、系统手势返回、顶栏返回按钮（48dp）；查看器内部自带 `BackHandler`，
+    不会漏到外层「退回会话列表」；
+  - 沉浸：点击正文切换顶栏显隐，返回按钮不会常驻隐藏；
+  - 动作收口到顶栏 `⋮`：复制全部 / 复制文件路径 / 用其他应用打开 / 重新加载；
+    「预览 ÷ 源码」保留为正文上方的模式开关；「加载更多」保持行内（与 pi-web 1:1）；
+  - **错误态不再只有一行红字**：主操作「重新加载」+ 次操作「用其他应用打开」+
+    可长按选中的路径（上一次 403 事故若有它，一分钟就能定位）。
+- `AndroidManifest.xml` 补上 `android:enableOnBackInvokedCallback="true"`，
+  Android 13/14 上也能拿到 predictive back 预览动画（app 内无 `onBackPressed()` 覆盖，无回归风险）。
+- 「手机全屏 / 平板分栏」的偏离说明与后续计划见 `docs/DESIGN-artifact-viewer.md`。
+
+---
+
 ## [1.7.42] - 2026-10-29
 
 ### 🐞 修复「点开文件 403 Access denied」：Git Bash 形态路径 `/d/...` 还原成 `D:/...`

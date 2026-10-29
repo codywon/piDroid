@@ -1978,280 +1978,41 @@ fun ChatScreen(
         )
     }
 
-    // ── 通用查看器：bash 完整输出 / 文件文本 / 图片 ──
-    if (artifactTitle != null) {
-        ModalBottomSheet(
-            onDismissRequest = { artifactTitle = null },
-            containerColor = theme.surfaceContainerLow
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 20.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                Text(
-                    text = artifactTitle ?: "",
-                    fontSize = 13.5.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = theme.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                artifactMeta?.let {
-                    Text(text = it, fontSize = 10.5.sp, color = theme.textMuted)
-                }
-
-                if (isLoadingArtifact) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(14.dp),
-                            strokeWidth = 1.8.dp,
-                            color = theme.primary
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("正在读取…", fontSize = 11.5.sp, color = theme.textMuted)
-                    }
-                } else {
-                    // 按类型分派：音频 / 视频 / Word / PDF 各有专属渲染器
-                    // （pi-web 靠浏览器的 <audio>/<video>/<iframe>，手机端要自己接）
-                    when (artifactKind) {
-                        ArtifactKind.AUDIO -> AudioArtifactCard(
-                            source = artifactPath?.let { onResolveFileSource(it) },
-                            errorText = artifactMessage
-                        )
-                        ArtifactKind.VIDEO -> VideoArtifactCard(
-                            source = artifactPath?.let { onResolveFileSource(it) },
-                            errorText = artifactMessage
-                        )
-                        ArtifactKind.DOCX -> DocxArtifactCard(
-                            html = artifactDocxHtml,
-                            message = artifactMessage
-                        )
-                        ArtifactKind.PDF -> ArtifactHintCard(
-                            text = artifactMessage ?: "PDF 由手机上的阅读器打开：下方「用其他应用打开」会把文件下载到本机，交给 WPS / 系统 PDF 阅读器展示（可缩放、可搜文本）"
-                        )
-                        else -> Unit
-                    }
-                    artifactImage?.let { bmp ->
-                        Image(
-                            bitmap = bmp,
-                            contentDescription = artifactTitle,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 420.dp),
-                            contentScale = ContentScale.Fit
-                        )
-                    }
-                    if (artifactKind == ArtifactKind.IMAGE && artifactMessage != null) {
-                        ArtifactHintCard(text = artifactMessage.orEmpty())
-                    }
-                    artifactText?.let { body ->
-                        // 读取失败时的文案不是文档，不要当成 Markdown 渲染，也不给预览/源码开关
-                        val isErrorBody = body.startsWith("读取文件失败") || body.startsWith("读取图片失败")
-                        // 可「渲染预览」的类型：Markdown 文档与 SVG 矢量图。
-                        // 对标 pi-web：必须整篇加载完（!truncated）才渲染，
-                        // 否则未闭合的代码围栏/表格/未封口的 <svg> 会渲染成错乱的样子。
-                        val richPreviewKind = artifactKind == ArtifactKind.MARKDOWN ||
-                            artifactKind == ArtifactKind.SVG
-                        val richPreviewReady = richPreviewKind && !artifactTruncated
-                        val showRenderedPreview = richPreviewReady && !artifactRawMode && !isErrorBody
-                        if (richPreviewReady && !isErrorBody) {
-                            // 对标 pi-web FileViewer：.md / .svg 默认按「预览」打开，可切回源码。
-                            // 手机上如果只给等宽文本，报告里的链接/表格与 pi 画的 SVG 流程图全是裸标记。
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                listOf("预览" to false, "源码" to true).forEach { (label, raw) ->
-                                    val selected = artifactRawMode == raw
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (selected) theme.primary.copy(alpha = 0.16f) else theme.surfaceContainer,
-                                        border = BorderStroke(
-                                            0.7.dp,
-                                            if (selected) theme.primary.copy(alpha = 0.5f) else theme.outline.copy(alpha = 0.4f)
-                                        ),
-                                        modifier = Modifier.clickable { artifactRawMode = raw }
-                                    ) {
-                                        Text(
-                                            text = label,
-                                            fontSize = 10.5.sp,
-                                            fontWeight = if (selected) FontWeight.Medium else FontWeight.Normal,
-                                            color = if (selected) theme.primary else theme.textSecondary,
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        if (showRenderedPreview) {
-                            if (artifactKind == ArtifactKind.SVG) {
-                                // SVG 交矢量渲染（WebView 里的原生 SVG 引擎）：
-                                // 与聊天里 ```svg / <svg> 代码块用的是同一个渲染器，
-                                // 不引入新依赖，支持 path/text/gradient/filter。
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = theme.surfaceContainer,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    SvgWebViewCanvas(
-                                        svgContent = body,
-                                        enableZoom = true,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(360.dp)
-                                    )
-                                }
-                            } else {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = theme.surfaceContainer,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    LazyColumn(modifier = Modifier.heightIn(max = 520.dp)) {
-                                        item {
-                                            MarkdownRenderer(
-                                                content = body,
-                                                modifier = Modifier.fillMaxWidth().padding(10.dp),
-                                                isUser = false,
-                                                onOpenLink = { href ->
-                                                    // 文档内部链接以该文档所在目录为基准
-                                                    // （pi-web FileViewer 的 markdownDirectory），
-                                                    // 目录外才回退到会话工作目录。
-                                                    val docDir = artifactPath?.let { FileLinks.parentDirectory(it) }.orEmpty()
-                                                    openLinkTarget(href, docDir.ifBlank { sessionCwd })
-                                                }
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = theme.surfaceContainer,
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                LazyColumn(modifier = Modifier.heightIn(max = 440.dp)) {
-                                    item {
-                                        Text(
-                                            text = body,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 10.5.sp,
-                                            lineHeight = 14.sp,
-                                            color = theme.textPrimary,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(8.dp)
-                                                .horizontalScroll(rememberScrollState())
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        if (richPreviewKind && artifactTruncated && !isErrorBody) {
-                            Text(
-                                text = "内容尚未完整加载：先按源码显示，点下方「加载更多」后可切换预览",
-                                fontSize = 10.5.sp,
-                                color = theme.textMuted
-                            )
-                        }
-                        // 对标 pi-web FileViewer 的 Load more：nextOffset / size + 按钮
-                        if (artifactTruncated) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = "${formatBytes(artifactNextOffset)} / ${formatBytes(artifactSizeBytes)}",
-                                    fontSize = 10.5.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = theme.textMuted
-                                )
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = theme.primary.copy(alpha = 0.14f),
-                                    border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.45f)),
-                                    modifier = Modifier.clickable(enabled = !isLoadingMoreArtifact) { loadMoreArtifact() }
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                    ) {
-                                        if (isLoadingMoreArtifact) {
-                                            CircularProgressIndicator(
-                                                modifier = Modifier.size(10.dp),
-                                                strokeWidth = 1.4.dp,
-                                                color = theme.primary
-                                            )
-                                        }
-                                        Text(
-                                            text = if (isLoadingMoreArtifact) "加载中…" else "加载更多",
-                                            fontSize = 10.5.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            color = theme.primary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End
-                        ) {
-                            Text(
-                                text = "复制全部",
-                                fontSize = 11.5.sp,
-                                color = theme.primary,
-                                modifier = Modifier.clickable {
-                                    clipboardManager.setText(AnnotatedString(body))
-                                    android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
-                                }
-                            )
-                        }
-                    }
-                    // 通用出口：把文件落到缓存再用 FileProvider 交给系统/WPS
-                    // （PDF 没有内嵌渲染器、Word 太大、或就是想用惯用应用看时都走这里）
-                    if (artifactPath != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = theme.primary.copy(alpha = 0.12f),
-                                border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.4f)),
-                                modifier = Modifier.clickable(enabled = !isOpeningExternally) { openArtifactExternally() }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                ) {
-                                    if (isOpeningExternally) {
-                                        CircularProgressIndicator(
-                                            modifier = Modifier.size(10.dp),
-                                            strokeWidth = 1.4.dp,
-                                            color = theme.primary
-                                        )
-                                    }
-                                    Text(
-                                        text = if (isOpeningExternally) "正在准备…" else "用其他应用打开（WPS / 系统）",
-                                        fontSize = 10.5.sp,
-                                        fontWeight = FontWeight.Medium,
-                                        color = theme.primary
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+    // ── 全屏文件查看器：bash 完整输出 / 文件文本 / 图片 / Word / PDF / 音视频 ──
+    // 手机走全屏页面：半屏 ModalBottomSheet 的 nested-scroll 会把「正文滚动」变成
+    // 「sheet 拖拽」，一上滑就缩回半屏，且读到末尾下拉会误关闭。
+    // 平板（≥600dp）的左聊天 + 右文档分栏见 docs/DESIGN-artifact-viewer.md。
+    val viewerTitle = artifactTitle
+    if (viewerTitle != null) {
+        ArtifactViewerFullScreen(
+            title = viewerTitle,
+            path = artifactPath,
+            meta = artifactMeta,
+            kind = artifactKind,
+            text = artifactText,
+            image = artifactImage,
+            docxHtml = artifactDocxHtml,
+            message = artifactMessage,
+            rawMode = artifactRawMode,
+            isLoading = isLoadingArtifact,
+            isLoadingMore = isLoadingMoreArtifact,
+            truncated = artifactTruncated,
+            nextOffset = artifactNextOffset,
+            sizeBytes = artifactSizeBytes,
+            isOpeningExternally = isOpeningExternally,
+            sessionCwd = sessionCwd,
+            onResolveMediaSource = { p -> onResolveFileSource(p) },
+            onBack = { artifactTitle = null },
+            onToggleRawMode = { raw -> artifactRawMode = raw },
+            onLoadMore = { loadMoreArtifact() },
+            onOpenExternal = { openArtifactExternally() },
+            onReload = { artifactPath?.let { openFilePreview(it) } },
+            onOpenLink = { href, baseDir -> openLinkTarget(href, baseDir) },
+            onCopyText = { value ->
+                clipboardManager.setText(AnnotatedString(value))
+                android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
             }
-        }
+        )
     }
 
     // 工作目录 Git 变更全屏界面（替换原有的 ModalBottomSheet 狭窄弹窗）
@@ -3329,7 +3090,7 @@ private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
  * 那五种「查看器」在桌面浏览器里分别由 <img> / <audio> / <video> / <iframe> 兜底，
  * 手机上没有任何一个能白拿，所以要各自落地成原生实现。
  */
-private enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO }
+internal enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO }
 
 private val IMAGE_FILE_EXTS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
 private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "amr")
@@ -3356,7 +3117,7 @@ private fun artifactKindOf(absPath: String, mime: String): ArtifactKind {
 }
 
 @Composable
-private fun ArtifactHintCard(text: String) {
+internal fun ArtifactHintCard(text: String) {
     val theme = LocalAppTheme.current
     Surface(
         shape = RoundedCornerShape(8.dp),
@@ -3380,7 +3141,7 @@ private fun ArtifactHintCard(text: String) {
  * 所以必须用带 headers 的 setDataSource，不能只给一个裸 URL。
  */
 @Composable
-private fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) {
+internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     if (source == null) {
@@ -3509,7 +3270,7 @@ private fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) {
  * 并能把鉴权头透传给底层的 MediaPlayer（`setVideoURI(uri, headers)`）。
  */
 @Composable
-private fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) {
+internal fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) {
     if (source == null) {
         ArtifactHintCard(errorText ?: "无法获取视频地址（请检查网关配置）")
         return
@@ -3539,7 +3300,11 @@ private fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) {
  * 该 HTML 的图片已内联为 data URI，并带 CSP（禁脚本），因此这里也关掉 JS。
  */
 @Composable
-private fun DocxArtifactCard(html: String?, message: String?) {
+internal fun DocxArtifactCard(
+    html: String?,
+    message: String?,
+    modifier: Modifier = Modifier.fillMaxWidth().height(380.dp)
+) {
     if (html.isNullOrBlank()) {
         ArtifactHintCard(message ?: "Word 预览暂不可用")
         return
@@ -3555,9 +3320,7 @@ private fun DocxArtifactCard(html: String?, message: String?) {
             }
         },
         onRelease = { view -> runCatching { view.destroy() } },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(380.dp)
+        modifier = modifier
     )
 }
 
