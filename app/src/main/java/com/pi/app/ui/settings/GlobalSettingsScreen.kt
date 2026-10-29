@@ -2124,6 +2124,8 @@ fun GlobalMcpTab(
     var showAddMcpDialog by remember { mutableStateOf(false) }
     var editingMcpServer by remember { mutableStateOf<McpServerInfo?>(null) }
     var showBudgetDialog by remember { mutableStateOf(false) }
+    /** 服务器详情页的字段说明：散在三个分组里的副标题收敥成一个 ⓘ */
+    var showServerHelp by remember { mutableStateOf(false) }
     var testingServerName by remember { mutableStateOf<String?>(null) }
     var testResultDialog by remember { mutableStateOf<Pair<String, McpTestToolResult>?>(null) }
     var testErrorDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -2171,6 +2173,46 @@ fun GlobalMcpTab(
                             overflow = TextOverflow.Ellipsis
                         )
                     }
+                    // 三个字段的副作用说明统一收在这里（一屏一说明，形态唯一）
+                    Icon(
+                        imageVector = Icons.Outlined.Info,
+                        contentDescription = "字段说明",
+                        tint = theme.textMuted,
+                        modifier = Modifier
+                            .size(16.dp)
+                            .clickable { showServerHelp = true }
+                    )
+                }
+
+                if (showServerHelp) {
+                    AlertDialog(
+                        onDismissRequest = { showServerHelp = false },
+                        containerColor = theme.surfaceContainerLow,
+                        titleContentColor = theme.textPrimary,
+                        textContentColor = theme.textSecondary,
+                        title = {
+                            Text(
+                                text = "服务器字段说明",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = theme.textPrimary
+                            )
+                        },
+                        text = {
+                            Text(
+                                text = "工具曝光数：受「工具清单 Token 预算」裁切后，实际暴露给模型的工具数量。\n\n" +
+                                    "启用此服务器：关闭后它的工具会从模型清单中移除，模型不再看到也无法调用。\n\n" +
+                                    "移除服务器：只从手机端注册表移除，PC 端（pi-web ui-state）的配置不受影响。",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = theme.textSecondary
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showServerHelp = false }) {
+                                Text("我知道了", color = theme.primary)
+                            }
+                        }
+                    )
                 }
             }
 
@@ -2231,7 +2273,6 @@ fun GlobalMcpTab(
                     SettingsGroup {
                         SettingsRow(
                             title = "工具曝光数",
-                            subtitle = "受 Token 预算裁切后可见",
                             value = "${focusedServer.toolExposureCount}",
                             monoValue = true
                         )
@@ -2277,7 +2318,6 @@ fun GlobalMcpTab(
                     SettingsGroup {
                         SettingsRow(
                             title = "启用此服务器",
-                            subtitle = "关闭后工具从模型清单中移除",
                             trailing = {
                                 SettingsSwitch(
                                     checked = focusedServer.enabled,
@@ -2298,7 +2338,6 @@ fun GlobalMcpTab(
                         )
                         SettingsRow(
                             title = "移除服务器",
-                            subtitle = "仅从手机端注册表移除，PC 端配置不变",
                             titleColor = Color(0xFFCF222E),
                             topDivider = true,
                             showChevron = true,
@@ -2392,7 +2431,6 @@ fun GlobalMcpTab(
                         }
                         SettingsRow(
                             title = "脚本模式",
-                            subtitle = "一次性脚本批处理，省 Token 与上下文",
                             topDivider = true,
                             trailing = {
                                 SettingsSwitch(
@@ -2406,7 +2444,6 @@ fun GlobalMcpTab(
                         )
                         SettingsRow(
                             title = "工具清单 Token 预算",
-                            subtitle = "超出后工具清单会被裁切",
                             value = "$tokenBudget",
                             monoValue = true,
                             topDivider = true,

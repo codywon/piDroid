@@ -8,6 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -28,6 +29,10 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.TextStyle
@@ -52,6 +57,7 @@ import com.pi.app.data.model.WorkspaceInfo
 import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlin.math.abs
 
 const val PINNED_WORKSPACE_KEY = "__global_pinned__"
 
@@ -169,6 +175,11 @@ fun SessionListScreen(
     var showArchivedSessionsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var pinnedWorkspaces by remember { mutableStateOf(prefs.getPinnedWorkspaces()) }
     var wsOrder by remember { mutableStateOf(prefs.getWorkspaceOrder()) }
+    // 长按拖动排序：dragWsPath 非空时该行跟随手指平移，越过邻居一半高度就调一次相邻移动
+    var dragWsPath by remember { mutableStateOf<String?>(null) }
+    var dragWsOffset by remember { mutableStateOf(0f) }
+    var dragWsMoved by remember { mutableStateOf(false) }
+    val wsRowHeights = remember { mutableStateMapOf<String, Float>() }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
     var renamingSession by remember { mutableStateOf<Session?>(null) }
@@ -616,6 +627,41 @@ fun SessionListScreen(
                         )
                     }
 
+                    // 拖动排序与菜单里的上移/下移共用同一条单步相邻移动：
+                    // 走 ProjectMovePlanner，保证 projectKey / anchorKey / position 合法
+                    // （锚点必须取「移动之前」的邻居，否则服务端 400）。
+                    val stepWorkspace: (WorkspaceInfo, ProjectMoveDirection) -> Unit = { ws, direction ->
+                        val pinned = pinnedKeys.contains(wsKey(ws.path))
+                        val bandKeys = sortedWorkspaces
+                            .filter { pinnedKeys.contains(wsKey(it.path)) == pinned }
+                            .map { wsKey(it.path) }
+                        val plan = ProjectMovePlanner.plan(bandKeys, wsKey(ws.path), direction)
+                        if (plan != null) {
+                            val anchorWs = sortedWorkspaces.firstOrNull { wsKey(it.path) == plan.anchorKey }
+                            val currentPaths = sortedWorkspaces.map { it.path }.toMutableList()
+                            val from = currentPaths.indexOf(ws.path)
+                            val to = anchorWs?.let { currentPaths.indexOf(it.path) } ?: -1
+                            if (from >= 0 && to >= 0 && from != to) {
+                                java.util.Collections.swap(currentPaths, from, to)
+                                prefs.saveWorkspaceOrder(currentPaths)
+                                wsOrder = currentPaths
+                            }
+                            onMoveWorkspace(
+                                ws.path,
+                                anchorWs?.path ?: plan.anchorKey,
+                                plan.position,
+                                ProjectMovePlanner.collectAddKeys(
+                                    bandKeys,
+                                    orderList,
+                                    plan.projectKey,
+                                    plan.anchorKey
+                                )
+                            )
+                        }
+                    }
+                    // pointerInput 不随列表重排重启（否则拖到一半会被打断），因此用 updated 引用取最新一份
+                    val latestStepWorkspace by rememberUpdatedState(stepWorkspace)
+
                     Text(
                         text = "项目工作区 (${workspaces.size})",
                         style = MaterialTheme.typography.labelSmall,
@@ -699,24 +745,69 @@ fun SessionListScreen(
                         items(sortedWorkspaces, key = { it.path }) { ws ->
                             val isSelected = ws.path == selectedWorkspacePath
                             val isPinned = pinnedKeys.contains(wsKey(ws.path))
+                            val isDragging = dragWsPath == ws.path
                             val customName = prefs.getWorkspaceCustomName(ws.path)
                             val displayName = customName ?: ws.displayName
 
                             Surface(
                                 shape = RoundedCornerShape(10.dp),
-                                color = if (isSelected) theme.primary.copy(alpha = 0.14f) else Color.Transparent,
+                                color = when {
+                                    isSelected -> theme.primary.copy(alpha = 0.14f)
+                                    isDragging -> theme.surfaceContainerHigh
+                                    else -> Color.Transparent
+                                },
                                 border = if (isSelected) BorderStroke(1.dp, theme.primary) else null,
                                 modifier = Modifier
                                     .fillMaxWidth()
+                                    .zIndex(if (isDragging) 1f else 0f)
+                                    .graphicsLayer {
+                                        if (isDragging) translationY = dragWsOffset
+                                    }
+                                    .onGloballyPositioned {
+                                        wsRowHeights[ws.path] = it.size.height.toFloat()
+                                    }
                                     .combinedClickable(
                                         onClick = {
                                             selectedWorkspacePath = ws.path
                                             coroutineScope.launch { drawerState.close() }
-                                        },
-                                        onLongClick = {
-                                            selectedMenuWorkspace = ws
                                         }
                                     )
+                                    // 长按拖动排序；松手时若没真正拖动过，则仍按旧行为弹出项目菜单
+                                    .pointerInput(ws.path) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = {
+                                                dragWsPath = ws.path
+                                                dragWsOffset = 0f
+                                                dragWsMoved = false
+                                            },
+                                            onDrag = { change, amount ->
+                                                change.consume()
+                                                dragWsOffset += amount.y
+                                                if (!dragWsMoved && abs(dragWsOffset) > 8f) dragWsMoved = true
+                                                val rowHeight = wsRowHeights[ws.path] ?: 56f
+                                                // 每跨过半个行高就调一次相邻移动；位移读数归零，
+                                                // 避免「行已经挪过去了、行仍然带着旧位移继续飘」的叠加偏移
+                                                if (dragWsOffset < -rowHeight / 2f) {
+                                                    latestStepWorkspace(ws, ProjectMoveDirection.UP)
+                                                    dragWsOffset = 0f
+                                                } else if (dragWsOffset > rowHeight / 2f) {
+                                                    latestStepWorkspace(ws, ProjectMoveDirection.DOWN)
+                                                    dragWsOffset = 0f
+                                                }
+                                            },
+                                            onDragEnd = {
+                                                if (!dragWsMoved) selectedMenuWorkspace = ws
+                                                dragWsPath = null
+                                                dragWsOffset = 0f
+                                                dragWsMoved = false
+                                            },
+                                            onDragCancel = {
+                                                dragWsPath = null
+                                                dragWsOffset = 0f
+                                                dragWsMoved = false
+                                            }
+                                        )
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
