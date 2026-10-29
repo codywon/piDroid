@@ -4626,6 +4626,48 @@ data class CatalogPreset(
             }
         }
 
+    /**
+     * 消息级「新会话」分叉：1:1 对标 pi-web 的 `handleFork` → `POST /api/agent/{id}`
+     * `{type:"fork", entryId}`。它在磁盘上**新建一个 .jsonl**，只拷贝该提问之前的历史，
+     * 源会话完全不受影响（可以边跑边分叉），与新会话各自独立演进。
+     *
+     * 注意：这与 `/api/sessions/{id}/fork`（侧边栏的 Clone，整条当前分支拷贝）不同。
+     */
+    suspend fun forkAtEntry(sessionId: String, targetEntryId: String): Result<String> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+            if (targetEntryId.isBlank()) return@withContext Result.failure(Exception("缺少条目 ID"))
+            try {
+                val payload = JsonObject().apply {
+                    addProperty("type", "fork")
+                    addProperty("entryId", targetEntryId)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/api/agent/$sessionId")
+                    .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    val bodyStr = resp.body?.string() ?: "{}"
+                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    if (!resp.isSuccessful || json?.get("error")?.takeIf { !it.isJsonNull } != null) {
+                        val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                            ?: "HTTP ${resp.code}"
+                        return@withContext Result.failure(IOException(err))
+                    }
+                    val data = json?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                    val cancelled = data?.get("cancelled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    val newSid = data?.get("newSessionId")?.takeIf { !it.isJsonNull }?.asString
+                    if (cancelled) Result.failure(IOException("服务端取消了本次分叉"))
+                    else if (newSid.isNullOrBlank()) Result.failure(IOException("未返回有效的分叉会话ID"))
+                    else Result.success(newSid)
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
     suspend fun autoGenerateSessionTitle(sessionId: String): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))

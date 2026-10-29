@@ -168,7 +168,14 @@ fun ChatScreen(
     onLoadCommands: suspend () -> Result<List<SlashCommand>> = { Result.success(emptyList()) },
     /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
     onUploadFiles: suspend (List<UploadFileInput>) -> Result<UploadFilesResult> = { Result.success(UploadFilesResult()) },
-    onSendMessage: (String, List<ChatImageInput>, String?) -> Unit,
+    /**
+     * 发送消息。
+     * @param editEntryId 非空时表示「从此处编辑」待回退的条目 ID（对标 pi-web 的 editEntryId）：
+     *        发送前会先 navigate_tree 切换会话树分支，再发 prompt。
+     * @param onEditRejected 分支切换失败时回调，供输入框恢复正文并重新进入编辑态
+     *        （对标 pi-web 的 restoreSubmission + setEdit(entryId)）。
+     */
+    onSendMessage: (String, List<ChatImageInput>, String?, (() -> Unit)?) -> Unit,
     onSendSteer: (String, List<ChatImageInput>) -> Unit,
     onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
     onClearQueue: () -> Unit,
@@ -176,8 +183,6 @@ fun ChatScreen(
     currentToolPreset: ToolPreset = ToolPreset.FULL,
     onToolPresetChange: (ToolPreset) -> Unit = {},
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
-    /** 「从此处编辑」：把会话树切到该条（navigate_tree），后续内容变成被放弃的分支 */
-    onEditFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
     CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
@@ -260,9 +265,15 @@ fun ChatScreen(
 
     // 统一发送入口：图片真的读成 base64 走 pi 的 images 字段；非图片文件目前只能按名字引用
     // （pi 的图片通道只收 image/*，文件要走 /api/files?type=upload 的 multipart 上传，后续补）
-    fun dispatchSend(text: String, images: List<ChatImageInput>, kind: SendKind, editEntryId: String? = null) {
+    fun dispatchSend(
+        text: String,
+        images: List<ChatImageInput>,
+        kind: SendKind,
+        editEntryId: String? = null,
+        onEditRejected: (() -> Unit)? = null
+    ) {
         when (kind) {
-            SendKind.SEND -> onSendMessage(text, images, editEntryId)
+            SendKind.SEND -> onSendMessage(text, images, editEntryId, onEditRejected)
             SendKind.STEER -> onSendSteer(text, images)
             SendKind.FOLLOW_UP -> onSendFollowUp(text, images)
         }
@@ -271,10 +282,21 @@ fun ChatScreen(
     fun submitMessage(rawText: String, kind: SendKind) {
         val currentEditId = editingEntryId
         editingEntryId = null
+        // 对标 pi-web 的 restoreSubmission：分支切换失败（如服务端还在跑、条目已不存在）时
+        // 把正文与编辑态原样恢复回去，绝不让用户丢掉刚改好的内容。
+        val rejectedEdit: (() -> Unit)?
+        if (currentEditId.isNullOrBlank()) {
+            rejectedEdit = null
+        } else {
+            rejectedEdit = {
+                editingEntryId = currentEditId
+                inputText = rawText
+            }
+        }
         val picked = attachments.toList()
         attachments.clear()
         if (picked.isEmpty()) {
-            dispatchSend(rawText, emptyList(), kind, currentEditId)
+            dispatchSend(rawText, emptyList(), kind, currentEditId, rejectedEdit)
             return
         }
         coroutineScope.launch {
@@ -321,7 +343,7 @@ fun ChatScreen(
             val text = listOf(rawText, uploadedNote).filter { it.isNotBlank() }.joinToString("\n\n")
             // 纯图片消息也必须给 pi 一句可见文本，避免空 message 被拒
             val finalText = if (text.isBlank() && images.isNotEmpty()) "（图片）" else text
-            dispatchSend(finalText, images, kind, currentEditId)
+            dispatchSend(finalText, images, kind, currentEditId, rejectedEdit)
         }
     }
 
@@ -703,15 +725,22 @@ fun ChatScreen(
                 android.widget.Toast.LENGTH_LONG
             ).show()
         } else {
-            inputText = msg.content
             // 优先使用当前消息的 entryId；若当前对象缺失，尝试从已同步列表中按内容匹配
             val resolvedEntryId = msg.entryId?.takeIf { it.isNotBlank() }
                 ?: conversation.lastOrNull { it.role == MessageRole.USER && it.content == msg.content && !it.entryId.isNullOrBlank() }?.entryId
+            inputText = msg.content
             editingEntryId = resolvedEntryId
             coroutineScope.launch { scrollToVeryBottom() }
+            // 无 entryId（本地实时气泡未落盘）时不能许诺「开新分支」，否则发送会退化成普通追加，
+            // 与 pi-web 的 canEdit = !!entryId 一致：这里明确告知用户而非静默降级。
+            val tip = if (resolvedEntryId.isNullOrBlank()) {
+                "已填入输入框；该条尚未写入会话文件，发送将作为新消息追加"
+            } else {
+                "已填入输入框，修改后发送将从此处开启新分支"
+            }
             android.widget.Toast.makeText(
                 context,
-                "已填入输入框，修改后发送将从此处开启新分支",
+                tip,
                 android.widget.Toast.LENGTH_SHORT
             ).show()
         }
@@ -1685,14 +1714,7 @@ fun ChatScreen(
                             showModelHeader = false,
                             defaultModelName = selectedModel.displayName,
                             onApproveTool = onApproveTool,
-                            onEditFromHere = { msg ->
-                                editFromMessage(msg)
-                                android.widget.Toast.makeText(
-                                    context,
-                                    "已填入输入框；发送时将从这里开新分支，后面的内容不再属于当前会话",
-                                    android.widget.Toast.LENGTH_SHORT
-                                ).show()
-                            },
+                            onEditFromHere = editFromMessage,
                             onForkFromHere = { userItem ->
                                 onForkFromMessage?.invoke(userItem)
                             },

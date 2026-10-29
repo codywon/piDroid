@@ -699,7 +699,13 @@ class MainActivity : ComponentActivity() {
         // 3) 仅在整个会话彻底结束（排除单条工具命令执行间隙与自动重试等待期）时触发完成震动与提示音
         suspend fun syncSessionSnapshot(
             sessionId: String,
-            allowCompletionTransition: Boolean = true
+            allowCompletionTransition: Boolean = true,
+            /**
+             * 对标 pi-web 的 loadSession：分支回退导航后，服务端的活跃分支是唯一权威，
+             * 必须整段替换本地消息，不能保留任何「流式尾部 / 乐观消息」合并逻辑，
+             * 否则被放弃分支上的旧过程输出会被 inFlightTail 之类逻辑重新拼回来。
+             */
+            replaceHistory: Boolean = false
         ) {
             val requestedModelMetaRevision = modelMetaRevision
             // 运行态改由 /api/sessions/{id}/state 判定（39KB，实测 9ms），
@@ -756,7 +762,7 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
-                if (hist.messages.isNotEmpty() || !effectiveRunning) {
+                if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
                         if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
                             item.copy(isStreaming = true)
@@ -765,28 +771,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // 比较两条消息的实质内容是否一致（忽略 id 与 timestamp），并保持既有 item.id 不变，彻底消除轮询闪屏
-                    fun isSameChatContent(a: ChatItem, b: ChatItem): Boolean {
-                        return a.role == b.role &&
-                            a.content == b.content &&
-                            a.thinking == b.thinking &&
-                            a.isStreaming == b.isStreaming &&
-                            a.toolCall == b.toolCall &&
-                            a.usageSummary == b.usageSummary
-                    }
-
-                    // 合并单条消息：角色相同时尽量保留本地稳定 ID 与时间戳，内容一致但本地缺失 entryId 时自动补齐
-                    fun mergeItem(localItem: ChatItem, diskItem: ChatItem): ChatItem {
-                        return if (!isSameChatContent(localItem, diskItem)) {
-                            val keepId = if (localItem.role == diskItem.role) localItem.id else diskItem.id
-                            val keepTs = if (localItem.role == diskItem.role) localItem.timestamp else diskItem.timestamp
-                            diskItem.copy(id = keepId, timestamp = keepTs)
-                        } else if (localItem.entryId.isNullOrBlank() && !diskItem.entryId.isNullOrBlank()) {
-                            localItem.copy(entryId = diskItem.entryId)
-                        } else {
-                            localItem
-                        }
-                    }
+                    // 对账规则抽到 SessionSnapshotMerge（纯 JVM，可单测），此处只做编排
+                    fun isSameChatContent(a: ChatItem, b: ChatItem) = SessionSnapshotMerge.isSameChatContent(a, b)
+                    fun mergeItem(localItem: ChatItem, diskItem: ChatItem) = SessionSnapshotMerge.mergeItem(localItem, diskItem)
 
                     // 保存当前内存中尚未落盘的流式尾部消息（例如 SSE 正在推送 delta，但服务端 .jsonl 只在 message_end 才写入）
                     val inFlightTail = if (effectiveRunning && messages.isNotEmpty()) {
@@ -796,6 +783,15 @@ class MainActivity : ComponentActivity() {
                     } else null
 
                     when {
+                        // 分支回退导航：不做任何增量合并，直接以服务端活跃分支覆盖本地，
+                        // 让被放弃分支上的旧工具输出 / 中断的思考过程在界面上瞬间消失。
+                        replaceHistory -> {
+                            messages.clear()
+                            messages.addAll(synced)
+                            // 已翻页进来的更早记录属于旧游标，分支切回后可能与新快照重叠，一并重置，
+                            // 由下面的游标逻辑重新从服务端取（pi-web 的 loadSession 同样会重置 historyCursor）。
+                            olderMessages.clear()
+                        }
                         messages.isEmpty() -> {
                             messages.addAll(synced)
                         }
@@ -1957,10 +1953,8 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onOpenModelSheet = { showModelSheet = true },
-                    // 「从此处编辑」：1:1 对标 pi-web 的 handleEditContent —— 点击只预填输入框并记录 entryId，
-                    // 真正的会话树导航（navigate_tree）推迟到用户点击「发送」（onSendMessage）时原子执行，
-                    // 发送时将分支截断到该节点之前，旧过程输出随即消失，且取消编辑绝不会导致历史丢失。
-                    onEditFromMessage = { _ -> },
+                    // 「从此处编辑」已完全下沉到 ChatScreen（对标 pi-web 的 handleEditContent）：
+                    // 点击只预填正文并记录 entryId，真正的 navigate_tree 在「发送」时原子执行。
                     onCompactContext = {
                         // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
                         // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。
@@ -2052,23 +2046,41 @@ class MainActivity : ComponentActivity() {
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
                     },
-                    onSendMessage = { prompt, images, editEntryId ->
-                        // 绑定到「这条输入框所属的会话」：带附件发送要先上传/编码，
+                    onSendMessage = { prompt, images, editEntryId, onEditRejected ->
+                        // 绑定到「这条输入框所属的会话」：带附件要先上传/编码，
                         // 若期间用户切了会话，旧代码会在 await 后重新读 currentSession，
                         // 把正文发到另一个会话里 —— 这里改成编译期捕获的 activeSessionId。
                         val sid = activeSessionId
+                        // 对标 pi-web 的 handleSend：忙时直接退还提交（restoreSubmission）。
+                        if (isAgentBusy || isToolExecuting) {
+                            onEditRejected?.invoke()
+                            Toast.makeText(
+                                this@MainActivity,
+                                "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",
+                                Toast.LENGTH_LONG
+                            ).show()
+                            return@ChatScreen
+                        }
                         lifecycleScope.launch {
-                            // 1:1 对标 pi-web 的 handleSend 链路：若存在 editEntryId，发送前先执行会话树导航回退分支！
+                            // 1:1 对标 pi-web 的 handleSend：若存在 editEntryId，发送前先 navigate_tree
+                            // 会把会话树 leaf 移到该提问的父节点（pi 对 user 消息就是 targetEntry.parentId）。
                             if (!editEntryId.isNullOrBlank()) {
                                 val navResult = apiClient.navigateTree(sid, editEntryId)
                                 if (navResult.isFailure) {
+                                    // pi-web：导航失败就回滚到编辑态并把正文退还输入框，绝不丢草稿
+                                    onEditRejected?.invoke()
                                     val err = navResult.exceptionOrNull()?.message ?: "未知错误"
                                     Toast.makeText(this@MainActivity, "回退分支失败: $err", Toast.LENGTH_LONG).show()
                                     return@launch
                                 }
-                                // 分支回退成功：立即同步服务端快照，将本地活跃消息截断到该提问的父节点之前，
-                                // 原先被中断或废弃的旧执行过程输出在界面上瞬间彻底消失！
-                                syncSessionSnapshot(sid, allowCompletionTransition = false)
+                                // 分支已切：立刻用服务端活跃分支**整体替换**本地历史（pi-web 的 loadSession），
+                                // 被放弃分支上的工具输出 / 中断的思考过程在界面上瞬间消失，
+                                // 且不受 isAgentBusy 残留、inFlightTail 合并等逻辑干扰。
+                                syncSessionSnapshot(
+                                    sid,
+                                    allowCompletionTransition = false,
+                                    replaceHistory = true
+                                )
                             }
 
                             val stillHere = currentSession?.id == sid
@@ -2154,23 +2166,36 @@ class MainActivity : ComponentActivity() {
                             apiClient.sendApproval(sid, approved)
                         }
                     },
+                    // 消息底部「新会话」：1:1 对标 pi-web 的 handleFork —— 以该条提问为切点
+                    // 在磁盘上新建一个独立的 .jsonl（只拷贝它之前的历史），源会话保持不变。
+                    // 以前这里忽略了 userItem、直接调侧边栏的 /fork（整条当前分支 Clone），
+                    // 等于把「分叉到该消息之前」错做成了「克隆最新状态」。
                     onForkFromMessage = { userItem ->
                         val currentSid = currentSession?.id ?: return@ChatScreen
-                        lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在从此处创建新会话分支...", Toast.LENGTH_SHORT).show()
-                            apiClient.forkSession(currentSid).onSuccess { forkRes ->
-                                loadSessions(silent = true)
-                                val forkedSession = Session(
-                                    id = forkRes.sessionId,
-                                    name = forkRes.name ?: "分支任务",
-                                    cwd = currentSession?.cwd,
-                                    project = currentSession?.project,
-                                    projectRoot = currentSession?.projectRoot
-                                )
-                                openSessionWithHistory(forkedSession)
-                                Toast.makeText(this@MainActivity, "已切换至新会话分支！", Toast.LENGTH_SHORT).show()
-                            }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "创建新会话失败: ${err.message}", Toast.LENGTH_LONG).show()
+                        val entryId = userItem.entryId
+                        if (entryId.isNullOrBlank()) {
+                            Toast.makeText(
+                                this@MainActivity,
+                                "这条消息还没有写入会话文件，暂时无法分叉",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        } else {
+                            lifecycleScope.launch {
+                                Toast.makeText(this@MainActivity, "正在从此处创建新会话分支...", Toast.LENGTH_SHORT).show()
+                                apiClient.forkAtEntry(currentSid, entryId).onSuccess { newSid ->
+                                    loadSessions(silent = true)
+                                    val forkedSession = Session(
+                                        id = newSid,
+                                        name = "分支任务",
+                                        cwd = currentSession?.cwd,
+                                        project = currentSession?.project,
+                                        projectRoot = currentSession?.projectRoot
+                                    )
+                                    openSessionWithHistory(forkedSession)
+                                    Toast.makeText(this@MainActivity, "已切换至新会话分支！", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "创建新会话失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
                             }
                         }
                     },

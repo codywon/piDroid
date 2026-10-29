@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.35] - 2026-10-29
+
+### 🔬 分支回退链路代码审查复核：补齐 4 处与 pi-web 不一致的遗漏
+
+- **权威历史替换（`replaceHistory`）——修复「旧过程输出有时不消失」的根因**（`MainActivity.kt`）：
+  - 复查发现 v1.7.33 的截断仍走增量合并路径，会被 `isAgentBusy` 残留、`inFlightTail`（流式尾部保留）等分支绕过，导致「停止后立刻编辑」时旧的工具输出仍可能被拼回列表；
+  - 现完全复刻 pi-web `loadSession` 的语义：分支切换成功后**整段替换**本地 `messages` 为服务端活跃分支，同时重置已翻页的 `olderMessages` 与翻页游标，杜绝重叠与残留。
+- **分支失败时恢复草稿与编辑态**（`ChatScreen.kt` + `MainActivity.kt`）：
+  - 复刻 pi-web 的 `restoreSubmission + setEdit(entryId)`：`navigate_tree` 失败（服务端仍在执行、条目已不存在）或本地判定任务执行中时，自动把正文退还输入框并重新进入编辑态，不再出现「发送后正文丢失」；
+  - 发送入口新增 `onEditRejected` 回调签名，输入框不再无条件清空后无法挽回。
+- **消息级「新会话」真正的分叉语义**（`PiApiClient.kt` + `MainActivity.kt`）：
+  - 复查发现该按钮此前忽略了被点击的消息，直接调用 `/api/sessions/{id}/fork`（整条当前分支 Clone），与 pi-web 的 `handleFork` 语义不符；
+  - 新增 `forkAtEntry()` 走 `POST /api/agent/{id}` `{type:"fork", entryId}`，以该条提问为切点新建独立 `.jsonl`，源会话不受影响（可边跑边分叉）；`entryId` 缺失时明确提示而非静默克隆。
+- **代码整洁与可测性**（`SessionSnapshotMerge.kt` + 测试）：
+  - 把快照对账规则（`isSameChatContent` / `mergeItem`）从 Activity 内联函数抽成纯 JVM 对象 `SessionSnapshotMerge`，`MainActivity` 仅做编排；
+  - 重写 `SessionTreeNavigationTest`，改为测试**生产代码本体**（9 个用例，覆盖 entryIds 平行数组绑定/长度不匹配容错、乐观消息 entryId 补齐、根节点回退清空、第二轮回退保留第一轮、权威替换丢弃流式尾部、运行中增量同步保留尾部），本地 JVM 全部通过；
+  - 移除 `ChatScreen` 中已失效的 `onEditFromMessage` 回调参数与重复 Toast。
+
 ## [1.7.34] - 2026-10-29
 
 ### 🛠️ 修复分支编辑状态判定并发布正式 Release（Release v1.7.34）
