@@ -114,9 +114,11 @@ fun SettingsRow(
     value: String? = null,
     valueColor: Color? = null,
     monoValue: Boolean = false,
+    monoSubtitle: Boolean = false,
     titleColor: Color? = null,
     topDivider: Boolean = false,
     showChevron: Boolean = false,
+    leading: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null,
     trailing: @Composable () -> Unit = {}
 ) {
@@ -132,6 +134,11 @@ fun SettingsRow(
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
+            val lead = leading
+            if (lead != null) {
+                lead()
+                Spacer(modifier = Modifier.width(9.dp))
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,
@@ -148,6 +155,7 @@ fun SettingsRow(
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
                         color = theme.textMuted,
+                        fontFamily = if (monoSubtitle) FontFamily.Monospace else null,
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )

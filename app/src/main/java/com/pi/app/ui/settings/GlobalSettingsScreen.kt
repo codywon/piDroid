@@ -1423,17 +1423,24 @@ fun GlobalSkillsTab(
                     }
 
                     fun LazyListScope.skillRows(list: List<SkillInfo>, keyPrefix: String) {
-                        items(list, key = { "$keyPrefix-${it.filePath ?: it.name}" }) { skill ->
-                            SkillCardItem(
-                                skill = skill,
-                                isProject = keyPrefix == "project",
-                                isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
-                                isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
-                                onToggle = { onToggleSkill(skill, it) },
-                                onEditAlias = { onEditAlias(skill) },
-                                onViewDetail = { onViewDetail(skill) },
-                                onUpdate = { doUpdateSkill(skill) }
-                            )
+                        // 空列表由调用方的 SkillHintRow 负责提示，这里不再输出空卡片
+                        if (list.isEmpty()) return
+                        item(key = "$keyPrefix-group") {
+                            SettingsGroup {
+                                list.forEachIndexed { index, skill ->
+                                    SkillCardItem(
+                                        skill = skill,
+                                        isProject = keyPrefix == "project",
+                                        isUpdateAvailable = updatesMap[skill.install?.`package`]?.state == "update-available",
+                                        isUpdating = updatingPackage == (skill.install?.`package` ?: skill.name),
+                                        topDivider = index > 0,
+                                        onToggle = { onToggleSkill(skill, it) },
+                                        onEditAlias = { onEditAlias(skill) },
+                                        onViewDetail = { onViewDetail(skill) },
+                                        onUpdate = { doUpdateSkill(skill) }
+                                    )
+                                }
+                            }
                         }
                     }
 
@@ -1495,35 +1502,6 @@ fun GlobalSkillsTab(
                         modifier = Modifier.weight(1f).fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (updatableCount > 0) {
-                            item(key = "update-banner") {
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = Color(0xFFD29922).copy(alpha = 0.12f),
-                                    border = BorderStroke(1.dp, Color(0xFFD29922).copy(alpha = 0.35f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth()
-                                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
-                                    ) {
-                                        Text(
-                                            text = "发现 $updatableCount 项技能可升级",
-                                            fontSize = 11.5.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color(0xFFD29922)
-                                        )
-                                        Text(
-                                            text = "点击卡片可单独更新",
-                                            fontSize = 10.5.sp,
-                                            color = theme.textMuted
-                                        )
-                                    }
-                                }
-                            }
-                        }
 
                         if (projectGroupFirst) {
                             projectGroup()
@@ -1932,10 +1910,10 @@ fun GlobalSkillsTab(
 }
 
 /**
- * 技能卡片（紧凑单行式）：状态点 + 名称/别名/更新标记 + 单行描述 + 可见性开关。
+ * 技能行（分组卡内的单行式）：状态点 + 名称/别名/更新标记 + 单行描述 + 可见性开关。
  *
- * 可见性由「左侧状态点 + 右侧开关 + 整卡明暗」三重表达，不再占用第三行文字。
- * 单击进入详情，长按编辑别名。
+ * 卡容器由外层 SettingsGroup 承担，行内不再各自描边；可见性由「左侧状态点 + 右侧开关 +
+ * 文字明暗」三重表达。单击进入详情，长按编辑别名。
  */
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -1944,6 +1922,7 @@ private fun SkillCardItem(
     isProject: Boolean,
     isUpdateAvailable: Boolean,
     isUpdating: Boolean,
+    topDivider: Boolean = false,
     onToggle: (Boolean) -> Unit,
     onEditAlias: () -> Unit,
     onViewDetail: () -> Unit,
@@ -1952,35 +1931,26 @@ private fun SkillCardItem(
     val theme = LocalAppTheme.current
     val isVisible = skill.isVisibleToModel
 
-    Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = if (isVisible) theme.surfaceContainerLow else theme.surfaceContainerLow.copy(alpha = 0.55f),
-        border = BorderStroke(1.dp, if (isVisible) theme.outline else theme.outline.copy(alpha = 0.55f)),
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onViewDetail, onLongClick = onEditAlias)
-    ) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        if (topDivider) {
+            HorizontalDivider(color = theme.outline, thickness = 1.dp)
+        }
         Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 7.dp, bottom = 7.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onViewDetail, onLongClick = onEditAlias)
+                .padding(start = 11.dp, end = 8.dp, top = 9.dp, bottom = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 状态圆点：绿色 = 模型可见；灰色 = 对模型隐藏
-            Box(
-                modifier = Modifier
-                    .size(6.dp)
-                    .background(
-                        color = if (isVisible) Color(0xFF2EA043) else Color(0xFF6E7681),
-                        shape = CircleShape
-                    )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
+            SettingsStatusDot(active = isVisible)
+            Spacer(modifier = Modifier.width(9.dp))
 
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = skill.name,
                         fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
+                        fontWeight = FontWeight.Medium,
                         color = if (isVisible) theme.textPrimary else theme.textMuted,
                         maxLines = 1,
                         softWrap = false,
@@ -1988,7 +1958,7 @@ private fun SkillCardItem(
                         modifier = Modifier.weight(1f, fill = false)
                     )
 
-                    // 别名：仅在有别名时出现（去掉常驻的"别名 ✎"噪音），点击可直接修改
+                    // 别名：仅在有别名时出现，点击可直接修改
                     val alias = skill.alias
                     if (!alias.isNullOrBlank()) {
                         Spacer(modifier = Modifier.width(5.dp))
@@ -1998,7 +1968,7 @@ private fun SkillCardItem(
                         ) {
                             Text(
                                 text = alias,
-                                fontSize = 10.sp,
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = theme.primary,
                                 maxLines = 1,
@@ -2018,8 +1988,8 @@ private fun SkillCardItem(
                             border = BorderStroke(0.5.dp, Color(0xFFD29922).copy(alpha = 0.5f))
                         ) {
                             Text(
-                                text = if (isUpdating) "更新中" else "↑ 可更新",
-                                fontSize = 10.sp,
+                                text = if (isUpdating) "更新中" else "更新",
+                                fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = Color(0xFFD29922),
                                 maxLines = 1,
@@ -2032,30 +2002,21 @@ private fun SkillCardItem(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(1.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
                     text = skill.description?.takeIf { it.isNotBlank() } ?: "点开查看 / 编辑 SKILL.md",
                     fontSize = 11.sp,
-                    color = if (isVisible) theme.textSecondary else theme.textMuted,
+                    color = if (isVisible) theme.textMuted else theme.textMuted.copy(alpha = 0.7f),
                     maxLines = 1,
                     softWrap = false,
                     overflow = TextOverflow.Ellipsis
                 )
             }
 
-            Spacer(modifier = Modifier.width(6.dp))
+            Spacer(modifier = Modifier.width(8.dp))
 
-            Switch(
-                checked = isVisible,
-                onCheckedChange = { onToggle(it) },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color(0xFF2EA043),
-                    checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                    uncheckedThumbColor = theme.textMuted,
-                    uncheckedTrackColor = theme.surfaceContainer
-                )
-            )
+            SettingsSwitch(checked = isVisible, onCheckedChange = { onToggle(it) })
         }
     }
 }
@@ -2166,306 +2127,347 @@ fun GlobalMcpTab(
     var testResultDialog by remember { mutableStateOf<Pair<String, McpTestToolResult>?>(null) }
     var testErrorDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    InfoTitle(
-                        title = "MCP 协议与沙箱代码模式",
-                        infoDescription = "MCP 服务器与 Code Mode 预算",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = {
-                        editingMcpServer = null
-                        showAddMcpDialog = true
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+    // 二级视图：服务器详情（列表行只负责进入，写操作全部在详情页）
+    var selectedServerName by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = selectedServerName != null) { selectedServerName = null }
+    val focusedServer = mcpServers.firstOrNull { it.name == selectedServerName }
+
+    if (focusedServer != null) {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item(key = "mcp_detail_header") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("添加 MCP", fontSize = 11.5.sp)
+                    Icon(
+                        imageVector = Icons.Default.ChevronLeft,
+                        contentDescription = "返回服务器列表",
+                        tint = theme.textSecondary,
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clickable { selectedServerName = null }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = focusedServer.name,
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = theme.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = focusedServer.description?.takeIf { it.isNotBlank() } ?: "MCP 节点",
+                            fontSize = 11.sp,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            item(key = "mcp_detail_connection") {
+                val isConnected = focusedServer.isConnected && focusedServer.enabled
+                Column {
+                    SettingsGroupLabel(text = "连接")
+                    SettingsGroup {
+                        SettingsRow(
+                            title = "状态",
+                            subtitle = "启用后随网关启动自动连接",
+                            value = when {
+                                !focusedServer.enabled -> "已停用"
+                                isConnected -> "已连接"
+                                else -> "未连接"
+                            },
+                            valueColor = if (isConnected) Color(0xFF2EA043) else theme.textMuted
+                        )
+                        SettingsRow(
+                            title = "传输方式",
+                            value = (focusedServer.transport ?: "http").uppercase(),
+                            monoValue = true,
+                            topDivider = true
+                        )
+                        SettingsRow(
+                            title = "端点",
+                            subtitle = focusedServer.url?.takeIf { it.isNotBlank() } ?: "未设置",
+                            monoSubtitle = true,
+                            topDivider = true,
+                            trailing = {
+                                val endpoint = focusedServer.url
+                                if (!endpoint.isNullOrBlank()) {
+                                    SettingsInlineAction(
+                                        text = "复制",
+                                        onClick = {
+                                            val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
+                                            clipboard?.setPrimaryClip(
+                                                android.content.ClipData.newPlainText("MCP Endpoint", endpoint)
+                                            )
+                                            Toast.makeText(context, "已复制端点地址", Toast.LENGTH_SHORT).show()
+                                        }
+                                    )
+                                }
+                            }
+                        )
+                        SettingsRow(
+                            title = "作用域",
+                            value = focusedServer.scope ?: "global",
+                            monoValue = true,
+                            topDivider = true
+                        )
+                    }
+                }
+            }
+
+            item(key = "mcp_detail_capability") {
+                Column {
+                    SettingsGroupLabel(text = "能力")
+                    SettingsGroup {
+                        SettingsRow(
+                            title = "工具曝光数",
+                            subtitle = "受「工具清单预算」裁切后仍可见的数量",
+                            value = "${focusedServer.toolExposureCount}",
+                            monoValue = true
+                        )
+                        SettingsRow(
+                            title = "测试连接",
+                            subtitle = if (testingServerName == focusedServer.name) {
+                                "正在向网关发起探测…"
+                            } else {
+                                "手机上触发一次 MCP 握手并列出工具"
+                            },
+                            topDivider = true,
+                            trailing = {
+                                SettingsInlineAction(
+                                    text = if (testingServerName == focusedServer.name) "测试中" else "测试",
+                                    onClick = {
+                                        val client = apiClient
+                                        if (client != null && testingServerName == null) {
+                                            testingServerName = focusedServer.name
+                                            coroutineScope.launch {
+                                                val res = client.testMcpServer(
+                                                    name = focusedServer.name,
+                                                    scope = focusedServer.scope ?: "global"
+                                                )
+                                                testingServerName = null
+                                                res.onSuccess { info ->
+                                                    testResultDialog = focusedServer.name to info
+                                                }.onFailure { err ->
+                                                    testErrorDialog = focusedServer.name to (err.message ?: "未知错误")
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
+            item(key = "mcp_detail_control") {
+                Column {
+                    SettingsGroupLabel(text = "控制")
+                    SettingsGroup {
+                        SettingsRow(
+                            title = "启用此服务器",
+                            subtitle = "关闭后工具从模型清单中移除",
+                            trailing = {
+                                SettingsSwitch(
+                                    checked = focusedServer.enabled,
+                                    onCheckedChange = { enabled ->
+                                        onManageMcpServer(if (enabled) "enable" else "disable", focusedServer.name)
+                                    }
+                                )
+                            }
+                        )
+                        SettingsRow(
+                            title = "编辑配置",
+                            subtitle = "改端点、传输方式与备注",
+                            topDivider = true,
+                            showChevron = true,
+                            onClick = {
+                                editingMcpServer = focusedServer
+                                showAddMcpDialog = true
+                            }
+                        )
+                        SettingsRow(
+                            title = "移除服务器",
+                            subtitle = "仅从手机端注册表移除，PC 端配置不变",
+                            titleColor = Color(0xFFCF222E),
+                            topDivider = true,
+                            showChevron = true,
+                            onClick = { onManageMcpServer("remove", focusedServer.name) }
+                        )
+                    }
                 }
             }
         }
-
-        // 代码模式单选 (修改后自动同步保存)
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Text("代码模式 (Code Mode)", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = theme.textPrimary)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    } else {
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            item(key = "mcp_header") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "MCP 协议",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = theme.textPrimary
+                        )
+                        Text(
+                            text = "沙箱代码模式 · 服务器注册表",
+                            fontSize = 11.sp,
+                            color = theme.textMuted
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = theme.primary.copy(alpha = 0.12f),
+                        border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.35f)),
+                        modifier = Modifier.clickable {
+                            editingMcpServer = null
+                            showAddMcpDialog = true
+                        }
                     ) {
-                        listOf("automatic" to "自动 (推荐)", "always" to "始终开启", "off" to "关闭").forEach { (mode, label) ->
-                            val isSel = codeMode == mode
-                            Surface(
-                                shape = RoundedCornerShape(8.dp),
-                                color = if (isSel) theme.primary.copy(alpha = 0.14f) else theme.background,
-                                border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
-                                modifier = Modifier.weight(1f).clickable {
-                                    codeMode = mode
-                                    onUpdateMcpCodeMode(codeMode, scriptMode, tokenBudget)
-                                }
-                            ) {
-                                Box(modifier = Modifier.padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
-                                    Text(
+                        Text(
+                            text = "+ 添加服务器",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = theme.primary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                        )
+                    }
+                }
+            }
+
+            item(key = "mcp_codemode") {
+                Column {
+                    SettingsGroupLabel(text = "代码模式")
+                    SettingsGroup {
+                        Column(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "执行模式",
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = theme.textPrimary
+                            )
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text(
+                                text = "让模型写代码调用工具，而非逐个调用",
+                                fontSize = 11.sp,
+                                color = theme.textMuted
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(
+                                    "automatic" to "自动",
+                                    "always" to "始终",
+                                    "off" to "关闭"
+                                ).forEach { (mode, label) ->
+                                    SettingsChip(
                                         text = label,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isSel) theme.primary else theme.textSecondary,
-                                        fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal
+                                        selected = codeMode == mode,
+                                        onClick = {
+                                            codeMode = mode
+                                            onUpdateMcpCodeMode(codeMode, scriptMode, tokenBudget)
+                                        }
                                     )
                                 }
                             }
                         }
-                    }
-                }
-            }
-        }
-
-        // 脚本模式与预算设置 (点击预算支持编辑)
-        item {
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column {
-                            Text("脚本模式 (Script Mode)", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
-                            Text("使用一次性脚本批处理执行以节约 Token", style = MaterialTheme.typography.labelSmall, color = theme.textMuted)
-                        }
-                        Switch(
-                            checked = scriptMode,
-                            onCheckedChange = {
-                                scriptMode = it
-                                onUpdateMcpCodeMode(codeMode, scriptMode, tokenBudget)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                uncheckedThumbColor = theme.textMuted,
-                                uncheckedTrackColor = theme.surfaceContainer
-                            )
-                        )
-                    }
-
-                    HorizontalDivider(color = theme.outline)
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { showBudgetDialog = true },
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("工具清单 Token 预算", style = MaterialTheme.typography.bodyMedium, color = theme.textPrimary)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("$tokenBudget tokens", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace, color = theme.primary)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Icon(Icons.Default.Edit, contentDescription = "编辑预算", modifier = Modifier.size(13.dp), tint = theme.primary)
-                        }
-                    }
-                }
-            }
-        }
-
-        item {
-            Text("已配置的 MCP 服务器 (${mcpServers.size})", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = theme.textPrimary)
-        }
-
-        items(mcpServers, key = { it.name }) { server ->
-            val connected = server.isConnected && server.enabled
-            val statusColor = if (connected) Color(0xFF2EA043) else theme.textMuted
-            val toolCount = server.toolExposureCount
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        editingMcpServer = server
-                        showAddMcpDialog = true
-                    }
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    // 第一行：仅保留「状态点 + 名称 + 开关」，名称占据剩余宽度并可省略，
-                    // 彻底避免工具数、按钮、开关挤在同一行导致的徽标折行（“6 工/具”）。
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Surface(
-                            modifier = Modifier.size(7.dp),
-                            shape = CircleShape,
-                            color = statusColor
-                        ) {}
-                        Spacer(modifier = Modifier.width(7.dp))
-                        Text(
-                            text = server.name,
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold,
-                            color = theme.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Switch(
-                            checked = server.enabled,
-                            onCheckedChange = { enabled ->
-                                onManageMcpServer(if (enabled) "enable" else "disable", server.name)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
-                                uncheckedThumbColor = theme.textMuted,
-                                uncheckedTrackColor = theme.surfaceContainer
-                            )
-                        )
-                    }
-
-                    // 第二行：元信息标签，纯文字 + 分隔点，无灰底填充，单行不折行
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (toolCount > 0) {
-                            Text(
-                                text = "$toolCount 个工具",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = theme.textSecondary,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                            Text(
-                                text = "  ·  ",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = theme.textMuted,
-                                maxLines = 1,
-                                softWrap = false
-                            )
-                        }
-                        Text(
-                            text = "${server.transport?.uppercase() ?: "HTTP"} · ${if (connected) "已连接" else if (server.enabled) "未连接" else "已停用"}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    if (!server.description.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = server.description ?: "",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = theme.textSecondary,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    if (!server.url.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = server.url ?: "",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider(color = theme.outline.copy(alpha = 0.8f))
-
-                    // 操作区：独占一行并均分，任何屏幕宽度下都不会挤压或折行
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            TextButton(
-                                onClick = {
-                                    if (apiClient != null) {
-                                        testingServerName = server.name
-                                        coroutineScope.launch {
-                                            val res = apiClient.testMcpServer(
-                                                name = server.name,
-                                                scope = server.scope ?: "global"
-                                            )
-                                            testingServerName = null
-                                            res.onSuccess { info ->
-                                                testResultDialog = server.name to info
-                                            }.onFailure { err ->
-                                                testErrorDialog = server.name to (err.message ?: "未知错误")
-                                            }
-                                        }
+                        SettingsRow(
+                            title = "脚本模式",
+                            subtitle = "一次性脚本批处理执行，节约 Token 与上下文",
+                            topDivider = true,
+                            trailing = {
+                                SettingsSwitch(
+                                    checked = scriptMode,
+                                    onCheckedChange = { checked ->
+                                        scriptMode = checked
+                                        onUpdateMcpCodeMode(codeMode, scriptMode, tokenBudget)
                                     }
-                                },
-                                enabled = testingServerName == null && apiClient != null,
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                            ) {
-                                if (testingServerName == server.name) {
-                                    CircularProgressIndicator(modifier = Modifier.size(10.dp), strokeWidth = 1.5.dp, color = theme.primary)
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("测试中", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
-                                } else {
-                                    Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.primary)
-                                    Spacer(modifier = Modifier.width(3.dp))
-                                    Text("测试", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
-                                }
+                                )
                             }
-                            TextButton(
+                        )
+                        SettingsRow(
+                            title = "工具清单 Token 预算",
+                            subtitle = "超出后工具清单会被裁切",
+                            value = "$tokenBudget",
+                            monoValue = true,
+                            topDivider = true,
+                            showChevron = true,
+                            onClick = { showBudgetDialog = true }
+                        )
+                    }
+                }
+            }
+
+            item(key = "mcp_servers") {
+                Column {
+                    SettingsGroupLabel(text = "已配置服务器 · ${mcpServers.size}")
+                    SettingsGroup {
+                        if (mcpServers.isEmpty()) {
+                            SettingsRow(
+                                title = "还没有 MCP 服务器",
+                                subtitle = "点右上角添加，或先在 PC 端模型配置里声明",
+                                value = "添加",
+                                valueColor = theme.primary,
                                 onClick = {
-                                    editingMcpServer = server
+                                    editingMcpServer = null
                                     showAddMcpDialog = true
-                                },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                            ) {
-                                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.textSecondary)
-                                Spacer(modifier = Modifier.width(3.dp))
-                                Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary, maxLines = 1, softWrap = false)
-                            }
+                                }
+                            )
                         }
-                        TextButton(
-                            onClick = { onManageMcpServer("remove", server.name) },
-                            contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp)
-                        ) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color(0xFFCF222E))
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text("移除", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCF222E), maxLines = 1, softWrap = false)
+                        mcpServers.forEachIndexed { index, server ->
+                            val isConnected = server.isConnected && server.enabled
+                            SettingsRow(
+                                title = server.name,
+                                subtitle = buildString {
+                                    append((server.transport ?: "http").lowercase())
+                                    if (server.toolExposureCount > 0) {
+                                        append(" · ${server.toolExposureCount} 个工具")
+                                    }
+                                    append(" · ")
+                                    append(
+                                        when {
+                                            isConnected -> "已连接"
+                                            server.enabled -> "未连接"
+                                            else -> "已停用"
+                                        }
+                                    )
+                                },
+                                monoSubtitle = true,
+                                topDivider = index > 0,
+                                leading = { SettingsStatusDot(active = isConnected) },
+                                showChevron = true,
+                                onClick = { selectedServerName = server.name }
+                            )
                         }
                     }
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = "服务器在 PC 端 pi 配置中定义；手机端负责启用、测试与查看工具曝光。",
+                        fontSize = 11.sp,
+                        lineHeight = 15.sp,
+                        color = theme.textMuted,
+                        modifier = Modifier.padding(horizontal = 4.dp)
+                    )
                 }
             }
         }
@@ -2702,130 +2704,136 @@ fun GlobalPluginsTab(
     var showInstallPluginDialog by remember { mutableStateOf(false) }
     var editingPluginTarget by remember { mutableStateOf<PluginPackage?>(null) }
 
+    var pluginQuery by remember { mutableStateOf("") }
+
     LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        item {
+        item(key = "plugins_header") {
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(modifier = Modifier.weight(1f)) {
-                    InfoTitle(
-                        title = "插件扩展 (${plugins.size} 个扩展包)",
-                        infoDescription = "NPM / Git 插件，可随时启停与更新",
-                        style = MaterialTheme.typography.titleMedium
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "插件扩展",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = theme.textPrimary
+                    )
+                    Text(
+                        text = "NPM / Git 扩展包 · 可随时启停与更新",
+                        fontSize = 11.sp,
+                        color = theme.textMuted
                     )
                 }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = { showInstallPluginDialog = true },
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                Surface(
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
+                    color = theme.primary.copy(alpha = 0.12f),
+                    border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.35f)),
+                    modifier = Modifier.clickable { showInstallPluginDialog = true }
                 ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("安装插件", fontSize = 11.5.sp, maxLines = 1, softWrap = false)
+                    Text(
+                        text = "+ 安装插件",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = theme.primary,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                    )
                 }
             }
-            Spacer(modifier = Modifier.height(4.dp))
         }
 
-        items(plugins, key = { it.packageName }) { pkg ->
-            val pkgSource = pkg.source?.takeIf { it.isNotBlank() } ?: pkg.packageName
-            val pkgScope = pkg.scope ?: "global"
-            val isEnabled = !pkg.disabled
-            Surface(
-                shape = RoundedCornerShape(10.dp),
-                color = theme.surfaceContainerLow,
-                border = BorderStroke(1.dp, theme.outline),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { editingPluginTarget = pkg }
-            ) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
-                            Icon(Icons.Default.Layers, contentDescription = null, modifier = Modifier.size(16.dp), tint = theme.primary)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = pkg.packageName,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = theme.textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
+        item(key = "plugins_list") {
+            val filteredPlugins = plugins.filter { pkg ->
+                val q = pluginQuery.trim()
+                q.isBlank() ||
+                    pkg.packageName.contains(q, ignoreCase = true) ||
+                    (pkg.source ?: "").contains(q, ignoreCase = true)
+            }
+            Column {
+                Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                    SettingsSearchField(
+                        value = pluginQuery,
+                        onValueChange = { pluginQuery = it },
+                        placeholder = "搜索插件包或源地址"
+                    )
+                }
+
+                if (plugins.isEmpty()) {
+                    SettingsGroup {
+                        SettingsRow(
+                            title = "还没有安装插件",
+                            subtitle = "支持 npm: / git: / 本地路径安装",
+                            value = "安装",
+                            valueColor = theme.primary,
+                            showChevron = true,
+                            onClick = { showInstallPluginDialog = true }
+                        )
+                    }
+                } else {
+                    SettingsGroupLabel(
+                        text = "已安装 · ${plugins.size}",
+                        trailing = "${plugins.count { !it.disabled }} 个启用"
+                    )
+                    SettingsGroup {
+                        if (filteredPlugins.isEmpty()) {
+                            SettingsRow(
+                                title = "没有匹配的插件",
+                                subtitle = "换个关键字再试"
                             )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Surface(color = theme.surfaceContainer, shape = RoundedCornerShape(4.dp)) {
-                                Text("v${pkg.version}", style = MaterialTheme.typography.labelSmall, color = theme.textSecondary, maxLines = 1, softWrap = false, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
-                            }
                         }
-
-                        Switch(
-                            checked = isEnabled,
-                            onCheckedChange = { enabled ->
-                                onManagePlugin(if (enabled) "enable" else "disable", pkgSource, pkgScope)
-                            },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = Color(0xFF2EA043),
-                                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-
-                    if (!pkg.description.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(pkg.description ?: "", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
-                    }
-
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = pkgSource,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f)
-                        )
-
-                        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            TextButton(
+                        filteredPlugins.forEachIndexed { index, pkg ->
+                            val pkgSource = pkg.source?.takeIf { it.isNotBlank() } ?: pkg.packageName
+                            val pkgScope = pkg.scope ?: "global"
+                            val isEnabled = !pkg.disabled
+                            SettingsRow(
+                                title = pkg.packageName,
+                                subtitle = buildString {
+                                    append("v${pkg.version}")
+                                    append(" · ")
+                                    append(if (pkgScope == "project") "项目" else "全局")
+                                    append(" · ")
+                                    append(pkgSource)
+                                },
+                                monoSubtitle = true,
+                                topDivider = index > 0,
+                                leading = { SettingsStatusDot(active = isEnabled) },
                                 onClick = { editingPluginTarget = pkg },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Icon(Icons.Default.Edit, contentDescription = "编辑插件", modifier = Modifier.size(13.dp), tint = theme.primary)
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Text("编辑", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
-                            }
-                            TextButton(
-                                onClick = { onManagePlugin("update", pkgSource, pkgScope) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("更新", style = MaterialTheme.typography.labelSmall, color = theme.primary, maxLines = 1, softWrap = false)
-                            }
-                            TextButton(
-                                onClick = { onManagePlugin("remove", pkgSource, pkgScope) },
-                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)
-                            ) {
-                                Text("卸载", style = MaterialTheme.typography.labelSmall, color = Color(0xFFCF222E), maxLines = 1, softWrap = false)
-                            }
+                                trailing = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        SettingsInlineAction(
+                                            text = "更新",
+                                            onClick = { onManagePlugin("update", pkgSource, pkgScope) }
+                                        )
+                                        SettingsSwitch(
+                                            checked = isEnabled,
+                                            onCheckedChange = { enabled ->
+                                                onManagePlugin(if (enabled) "enable" else "disable", pkgSource, pkgScope)
+                                            }
+                                        )
+                                    }
+                                }
+                            )
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                SettingsGroupLabel(text = "说明")
+                SettingsGroup {
+                    SettingsRow(
+                        title = "启停与生效",
+                        subtitle = "插件启用后向模型注入工具与命令，重启会话后生效"
+                    )
+                    SettingsRow(
+                        title = "编辑与卸载",
+                        subtitle = "点插件行进入编辑弹窗，左下角可卸载",
+                        topDivider = true
+                    )
                 }
             }
         }
@@ -2907,8 +2915,19 @@ fun GlobalPluginsTab(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { editingPluginTarget = null }) {
-                    Text("取消", color = theme.textMuted)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(
+                        onClick = {
+                            val src = target.source?.takeIf { it.isNotBlank() } ?: target.packageName
+                            onManagePlugin("remove", src, target.scope ?: "global")
+                            editingPluginTarget = null
+                        }
+                    ) {
+                        Text("卸载", color = Color(0xFFCF222E))
+                    }
+                    TextButton(onClick = { editingPluginTarget = null }) {
+                        Text("取消", color = theme.textMuted)
+                    }
                 }
             }
         )
