@@ -2181,7 +2181,6 @@ fun GlobalMcpTab(
                     SettingsGroup {
                         SettingsRow(
                             title = "状态",
-                            subtitle = "启用后随网关启动自动连接",
                             value = when {
                                 !focusedServer.enabled -> "已停用"
                                 isConnected -> "已连接"
@@ -2232,7 +2231,7 @@ fun GlobalMcpTab(
                     SettingsGroup {
                         SettingsRow(
                             title = "工具曝光数",
-                            subtitle = "受「工具清单预算」裁切后仍可见的数量",
+                            subtitle = "受 Token 预算裁切后可见",
                             value = "${focusedServer.toolExposureCount}",
                             monoValue = true
                         )
@@ -2290,7 +2289,6 @@ fun GlobalMcpTab(
                         )
                         SettingsRow(
                             title = "编辑配置",
-                            subtitle = "改端点、传输方式与备注",
                             topDivider = true,
                             showChevron = true,
                             onClick = {
@@ -2394,7 +2392,7 @@ fun GlobalMcpTab(
                         }
                         SettingsRow(
                             title = "脚本模式",
-                            subtitle = "一次性脚本批处理执行，节约 Token 与上下文",
+                            subtitle = "一次性脚本批处理，省 Token 与上下文",
                             topDivider = true,
                             trailing = {
                                 SettingsSwitch(
@@ -2783,8 +2781,7 @@ fun GlobalPluginsTab(
                     SettingsGroup {
                         if (filteredPlugins.isEmpty()) {
                             SettingsRow(
-                                title = "没有匹配的插件",
-                                subtitle = "换个关键字再试"
+                                title = "没有匹配的插件"
                             )
                         }
                         filteredPlugins.forEachIndexed { index, pkg ->
@@ -2828,12 +2825,7 @@ fun GlobalPluginsTab(
                 SettingsGroup {
                     SettingsRow(
                         title = "启停与生效",
-                        subtitle = "插件启用后向模型注入工具与命令，重启会话后生效"
-                    )
-                    SettingsRow(
-                        title = "编辑与卸载",
-                        subtitle = "点插件行进入编辑弹窗，左下角可卸载",
-                        topDivider = true
+                        subtitle = "启用后注入工具与命令，重启会话生效"
                     )
                 }
             }
@@ -3061,7 +3053,7 @@ fun GlobalSystemSettingsTab(
                 SettingsGroup {
                     SettingsRow(
                         title = "主题外观",
-                        subtitle = "${ThemeManager.currentTheme.titleZh} · ${if (ThemeManager.currentTheme.isDark) "深色" else "浅色"}",
+                        value = "${ThemeManager.currentTheme.titleZh} · ${if (ThemeManager.currentTheme.isDark) "深色" else "浅色"}",
                         trailing = {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -3089,7 +3081,6 @@ fun GlobalSystemSettingsTab(
                     )
                     SettingsRow(
                         title = "马达触觉反馈",
-                        subtitle = "完成双振、审批重振",
                         topDivider = true,
                         trailing = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3100,7 +3091,6 @@ fun GlobalSystemSettingsTab(
                     )
                     SettingsRow(
                         title = "任务完成提示音",
-                        subtitle = "任务完成时播放一次提示音",
                         topDivider = true,
                         trailing = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -3127,7 +3117,6 @@ fun GlobalSystemSettingsTab(
                     )
                     SettingsRow(
                         title = "任务完成独立弹窗通知",
-                        subtitle = "完成时额外弹一张通知卡片",
                         topDivider = true,
                         trailing = {
                             SettingsSwitch(checked = taskCompletedNotifyEnabled, onCheckedChange = onToggleTaskCompletedNotify)
@@ -3154,7 +3143,6 @@ fun GlobalSystemSettingsTab(
                     )
                     SettingsRow(
                         title = "CPU 唤醒锁与断线自愈",
-                        subtitle = "任务期持有唤醒锁，断线自动重连",
                         value = "已就绪",
                         valueColor = Color(0xFF2EA043),
                         topDivider = true
@@ -3170,14 +3158,13 @@ fun GlobalSystemSettingsTab(
                 SettingsGroup {
                     SettingsRow(
                         title = "自动压缩上下文",
-                        subtitle = "接近窗口上限时在回合边界压缩，不打断当前请求",
+                        subtitle = "接近窗口上限时压缩，不打断当前请求",
                         trailing = {
                             SettingsSwitch(checked = autoCompactionEnabled, onCheckedChange = onToggleAutoCompaction)
                         }
                     )
                     SettingsRow(
                         title = "自动重试",
-                        subtitle = "模型报错或断流时自动重试本轮",
                         topDivider = true,
                         trailing = {
                             SettingsSwitch(checked = autoRetryEnabled, onCheckedChange = onToggleAutoRetry)

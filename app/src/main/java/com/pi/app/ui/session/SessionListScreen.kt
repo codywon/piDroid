@@ -1523,7 +1523,6 @@ fun SessionListScreen(
                     icon = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
                     iconTint = if (isPinned) Color(0xFFEAB308) else theme.primary,
                     title = if (isPinned) "取消置顶项目" else "置顶项目",
-                    subtitle = if (isPinned) "从大盘顶部移除常驻优先排列" else "固定在工作区项目列表最顶端",
                     onClick = {
                         // 项目置顶的真源在 pi-web 的 ui-state（pin-project），本地只做乐观镜像
                         val willPin = !isPinned
@@ -1535,12 +1534,11 @@ fun SessionListScreen(
                     }
                 )
 
-                // 2. 重命名项目别名...
+                // 2. 重命名项目…（当前别名已由面板头部显示，无需再写一行说明）
                 WorkspaceMenuActionItem(
                     icon = Icons.Default.Edit,
                     iconTint = theme.textPrimary,
-                    title = "重命名项目名称...",
-                    subtitle = if (customName != null) "当前别名: $customName (支持一键恢复)" else "为项目设置更友好的专属显示名称",
+                    title = "重命名项目…",
                     onClick = {
                         renameWsInput = wsDisplayName
                         showRenameWsDialog = targetWs
@@ -1553,7 +1551,6 @@ fun SessionListScreen(
                     icon = Icons.Default.OpenInNew,
                     iconTint = theme.primary,
                     title = "在新会话中打开",
-                    subtitle = "切换至该工作区并直接开启新的任务会话",
                     onClick = {
                         selectedWorkspacePath = targetWs.path
                         selectedMenuWorkspace = null
@@ -1624,72 +1621,43 @@ fun SessionListScreen(
                     selectedMenuWorkspace = null
                 }
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "列表排序",
-                        fontSize = 11.5.sp,
+                        text = "排序",
+                        fontSize = 11.sp,
                         color = theme.textMuted,
                         modifier = Modifier.weight(1f)
                     )
 
-                    Surface(
-                        shape = RoundedCornerShape(7.dp),
-                        color = theme.surfaceContainer,
-                        border = BorderStroke(0.6.dp, theme.outline)
+                    // 裸图标而非带边框胶囊：排序是低频工具动作，不应与「置顶 / 重命名」同一声量
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clickable(enabled = canMoveUp) { upPlan?.let { applyMovePlan(it) } },
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .clickable(enabled = canMoveUp) {
-                                    upPlan?.let { applyMovePlan(it) }
-                                }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.KeyboardArrowUp,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = if (canMoveUp) theme.textPrimary else theme.textMuted
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                "上移",
-                                fontSize = 11.5.sp,
-                                color = if (canMoveUp) theme.textPrimary else theme.textMuted
-                            )
-                        }
+                        Icon(
+                            Icons.Default.KeyboardArrowUp,
+                            contentDescription = "上移",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (canMoveUp) theme.textSecondary else theme.textMuted.copy(alpha = 0.45f)
+                        )
                     }
 
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    Surface(
-                        shape = RoundedCornerShape(7.dp),
-                        color = theme.surfaceContainer,
-                        border = BorderStroke(0.6.dp, theme.outline)
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clickable(enabled = canMoveDown) { downPlan?.let { applyMovePlan(it) } },
+                        contentAlignment = Alignment.Center
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .clickable(enabled = canMoveDown) {
-                                    downPlan?.let { applyMovePlan(it) }
-                                }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Default.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(14.dp),
-                                tint = if (canMoveDown) theme.textPrimary else theme.textMuted
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                "下移",
-                                fontSize = 11.5.sp,
-                                color = if (canMoveDown) theme.textPrimary else theme.textMuted
-                            )
-                        }
+                        Icon(
+                            Icons.Default.KeyboardArrowDown,
+                            contentDescription = "下移",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (canMoveDown) theme.textSecondary else theme.textMuted.copy(alpha = 0.45f)
+                        )
                     }
                 }
 
@@ -1717,7 +1685,6 @@ fun SessionListScreen(
                     icon = Icons.Default.Archive,
                     iconTint = if (olderSessions.isNotEmpty()) theme.primary else theme.textMuted,
                     title = "归档 7 天前的会话 · ${olderSessions.size}",
-                    subtitle = if (olderSessions.isNotEmpty()) "一键批量沉淀已逾一周的 ${olderSessions.size} 个历史会话" else "暂无超过 7 天的未归档历史会话",
                     enabled = olderSessions.isNotEmpty(),
                     onClick = {
                         // 一次提交全部 id 到 pi-web 的 ui-state（本地标记由外层回调同步）
@@ -1731,7 +1698,6 @@ fun SessionListScreen(
                     icon = Icons.Default.FolderZip,
                     iconTint = if (archivedCount > 0) Color(0xFF8B5CF6) else theme.textMuted,
                     title = "查看已归档会话 · $archivedCount",
-                    subtitle = if (archivedCount > 0) "浏览该项目已沉淀的 $archivedCount 个归档会话，支持一键恢复" else "该项目暂无归档会话",
                     enabled = archivedCount > 0,
                     onClick = {
                         showArchivedSessionsDialog = targetWs

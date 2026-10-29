@@ -72,9 +72,20 @@
 
 ---
 
+### 3.0 说明性标签（subtitle）的使用边界
+
+新增或修改「一行标题 + 一行灰色说明」的列表行时，必须先读 `docs/DESIGN-labels.md`。三条硬约束：
+
+- **一项一行**：`subtitle` 默认 `null`，只有满足「不写会造成不可逆损失 / 方向性错误 / 误以为失败」
+  或它本身是**数据/状态**时才允许填；复述标题、状态重复、操作步骤说明一律不得写。
+- **一屏一说明**：单个 tab / 面板的常驻说明 ≤ 2 条，第 3 条起改用 `InfoTitle` 的 `ⓘ`。
+- **形态唯一**：同一面板内不得同时存在 `subtitle`、`ⓘ`、脚注三种解释方式；subtitle ≤ 18 个汉字且 1 行。
+
+---
+
 ## 4. Git 提交与交互语言规范
 
-- **Git Commit Messages**:
+- **Git Commit Messages**：
   - **Strict English Only**: 所有提交信息必须使用英文；
   - 采用 Conventional Commits 格式：`fix(...)`, `feat(...)`, `refactor(...)`, `docs(...)`, `chore(...)`。
 - **User Interaction**:
