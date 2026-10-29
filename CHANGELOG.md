@@ -2,6 +2,20 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.36] - 2026-10-29
+
+### ✏️ 补齐 pi-web 编辑态两项：源消息气泡高亮 + 附件随草稿一起恢复
+
+- **编辑目标消息高亮（对标 pi-web `MessageView` 的 `isEditing`）**（`ChatScreen.kt`）：
+  - 被「从此处编辑」选中的那条提问气泡本身会进入编辑视觉态：底色混入 14% 主题色、边框换成 62% 主题色、外侧再加一圈 2dp 的 16% 主题色光环（完全复刻 pi-web 的 `color-mix` + `box-shadow`）；
+  - 该消息底部工具条把「从此处编辑」换成主题色的「取消」按钮（pi-web 的 `canEdit && !canCancelEdit` + `canCancelEdit` 分支），点击即退出编辑态；
+  - 编辑态同时覆盖首屏前置消息区与每个回合的用户提问，条目匹配以 `entryId` 为准（不是文本匹配）。
+- **回填与恢复都带上附件（对标 pi-web `replaceMessage` / `restoreSubmission`）**（`ChatScreen.kt`）：
+  - `ChatAttachment` 扩展为「本地 Uri」或「内联 base64」两种来源；`encodePickedImages` / `readPickedFiles` 同时支持两者；
+  - **进入编辑态**：复刻 pi-web `getUserMessageDraftImages(message)` —— 该条提问当时附带的图片会一并回填进输入框附件区（`mediaList` 的底图直接复用，不需要重新读盘）；
+  - **发送被拒时恢复**：复刻 pi-web `restoreSubmission(text, images)` —— 除正文与编辑态外，本次提交的附件也原样退回，不再只恢复文字；
+  - 复刻 pi-web `canRestoreUserMessage` 守卫：输入框已有正文或附件时**不覆盖用户草稿**，只武装编辑态并提示「未覆盖你的草稿」。
+
 ## [1.7.35] - 2026-10-29
 
 ### 🔬 分支回退链路代码审查复核：补齐 4 处与 pi-web 不一致的遗漏

@@ -94,8 +94,16 @@ import java.util.*
 
 data class ChatAttachment(
     val name: String,
-    val uri: Uri,
-    val isImage: Boolean
+    /** 本地选中的 Uri；从历史消息回填的内联图片为 null */
+    val uri: Uri? = null,
+    val isImage: Boolean,
+    /**
+     * 历史消息里内联的图片（pi 的 base64 image content block）。
+     * 对标 pi-web 的 `replaceMessage` → `getUserMessageDraftImages(message)`：
+     * 点「从此处编辑」时把那条提问当时附带的图片一并回填进输入框。
+     */
+    val inlineMimeType: String? = null,
+    val inlineBase64: String? = null
 )
 
 data class PromptTimelineEntry(
@@ -282,8 +290,9 @@ fun ChatScreen(
     fun submitMessage(rawText: String, kind: SendKind) {
         val currentEditId = editingEntryId
         editingEntryId = null
-        // 对标 pi-web 的 restoreSubmission：分支切换失败（如服务端还在跑、条目已不存在）时
-        // 把正文与编辑态原样恢复回去，绝不让用户丢掉刚改好的内容。
+        val picked = attachments.toList()
+        // 对标 pi-web 的 restoreSubmission(text, images)：分支切换失败（服务端还在跑、条目已不存在）时
+        // 把正文、编辑态与本次提交的附件原样恢复回去，绝不让用户丢掉刚改好的内容。
         val rejectedEdit: (() -> Unit)?
         if (currentEditId.isNullOrBlank()) {
             rejectedEdit = null
@@ -291,9 +300,9 @@ fun ChatScreen(
             rejectedEdit = {
                 editingEntryId = currentEditId
                 inputText = rawText
+                if (picked.isNotEmpty() && attachments.isEmpty()) attachments.addAll(picked)
             }
         }
-        val picked = attachments.toList()
         attachments.clear()
         if (picked.isEmpty()) {
             dispatchSend(rawText, emptyList(), kind, currentEditId, rejectedEdit)
@@ -728,15 +737,33 @@ fun ChatScreen(
             // 优先使用当前消息的 entryId；若当前对象缺失，尝试从已同步列表中按内容匹配
             val resolvedEntryId = msg.entryId?.takeIf { it.isNotBlank() }
                 ?: conversation.lastOrNull { it.role == MessageRole.USER && it.content == msg.content && !it.entryId.isNullOrBlank() }?.entryId
-            inputText = msg.content
+            // 对标 pi-web 的 replaceMessage：只有输入框「干净」（无正文且无附件）时才回填，
+            // 避免把用户正在写的草稿冲掉；但编辑态无论如何都会武装。
+            val composerIsEmpty = inputText.isBlank() && attachments.isEmpty()
+            if (composerIsEmpty) {
+                inputText = msg.content
+                // 同 pi-web 的 getUserMessageDraftImages：把该条提问当时附带的图片一并回填
+                val msgImages = msg.mediaList
+                    .filter { it.kind == MediaKind.IMAGE && !it.dataBase64.isNullOrBlank() }
+                    .map {
+                        ChatAttachment(
+                            name = it.title.ifBlank { "image" },
+                            uri = null,
+                            isImage = true,
+                            inlineMimeType = it.mimeType,
+                            inlineBase64 = it.dataBase64
+                        )
+                    }
+                if (msgImages.isNotEmpty()) attachments.addAll(msgImages)
+            }
             editingEntryId = resolvedEntryId
             coroutineScope.launch { scrollToVeryBottom() }
             // 无 entryId（本地实时气泡未落盘）时不能许诺「开新分支」，否则发送会退化成普通追加，
             // 与 pi-web 的 canEdit = !!entryId 一致：这里明确告知用户而非静默降级。
-            val tip = if (resolvedEntryId.isNullOrBlank()) {
-                "已填入输入框；该条尚未写入会话文件，发送将作为新消息追加"
-            } else {
-                "已填入输入框，修改后发送将从此处开启新分支"
+            val tip = when {
+                resolvedEntryId.isNullOrBlank() -> "已填入输入框；该条尚未写入会话文件，发送将作为新消息追加"
+                !composerIsEmpty -> "已进入编辑态；输入框已有内容，未覆盖你的草稿"
+                else -> "已填入输入框，修改后发送将从此处开启新分支"
             }
             android.widget.Toast.makeText(
                 context,
@@ -1698,6 +1725,8 @@ fun ChatScreen(
                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                             onOpenFilePreview = { p -> openFilePreview(p) },
                             onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                            isEditing = !editingEntryId.isNullOrBlank() && item.entryId == editingEntryId,
+                            onCancelEdit = { editingEntryId = null },
                             isLiveStreamingTail = item.id == liveStreamingItemId
                         )
                     }
@@ -1715,6 +1744,9 @@ fun ChatScreen(
                             defaultModelName = selectedModel.displayName,
                             onApproveTool = onApproveTool,
                             onEditFromHere = editFromMessage,
+                            // 对标 pi-web：编辑目标条目高亮，工具条换成「取消」
+                            isEditing = !editingEntryId.isNullOrBlank() && turn.userMessage.entryId == editingEntryId,
+                            onCancelEdit = { editingEntryId = null },
                             onForkFromHere = { userItem ->
                                 onForkFromMessage?.invoke(userItem)
                             },
@@ -2263,8 +2295,11 @@ fun ChatMessageItem(
     onOpenFilePreview: ((path: String) -> Unit)? = null,
     /** Markdown 链接点击（对标 pi-web MarkdownBody 的 onOpenFile）：由 ChatScreen 注入 */
     onOpenLink: ((href: String) -> Unit)? = null,
-    /** 是否为「当前唯一在流式的那条」（对标 pi-web 的单数 streamingMessage）：只有它为真才挂实时指标 */
-    isLiveStreamingTail: Boolean = false
+    /** 「当前唯一在流式的那条」（对标 pi-web 的单数 streamingMessage）：只有它为真才挂实时指标 */
+    isLiveStreamingTail: Boolean = false,
+    /** 该条正是「从此处编辑」的编辑目标（对标 pi-web 的 isEditing）：气泡高亮 + 工具条换成「取消」 */
+    isEditing: Boolean = false,
+    onCancelEdit: (() -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     var isThinkingExpanded by remember { mutableStateOf(false) }
@@ -2306,7 +2341,14 @@ fun ChatMessageItem(
             MessageRole.USER -> {
                 // 对标 pi-web MessageView.tsx & globals.css (--user-bg: #EFF6FF / #232C3F, border: rgba(59,130,246,0.22), color: var(--text))
                 val userBubbleBg = if (theme.isDark) Color(0xFF232C3F) else Color(0xFFEFF6FF)
-                val userBubbleBorder = Color(0xFF3B82F6).copy(alpha = if (theme.isDark) 0.28f else 0.22f)
+                // pi-web：isEditing ? accent 14% 混入 user-bg / 边框 accent 62% / 外圈 16% 红色光环
+                val editTint = theme.primary
+                val bubbleBg = if (isEditing) {
+                    androidx.compose.ui.graphics.lerp(userBubbleBg, editTint, 0.14f)
+                } else userBubbleBg
+                val bubbleBorder = if (isEditing) {
+                    editTint.copy(alpha = if (theme.isDark) 0.62f else 0.55f)
+                } else Color(0xFF3B82F6).copy(alpha = if (theme.isDark) 0.28f else 0.22f)
                 val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
                 val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -2314,30 +2356,39 @@ fun ChatMessageItem(
                     modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                     horizontalAlignment = Alignment.End
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = userBubbleBg,
-                        border = BorderStroke(1.dp, userBubbleBorder),
-                        modifier = Modifier.widthIn(max = 330.dp)
+                    // 编辑态外圈光环（pi-web 的 boxShadow: 0 0 0 2px accent 16%）
+                    Box(
+                        modifier = if (isEditing) {
+                            Modifier
+                                .border(2.dp, editTint.copy(alpha = 0.16f), RoundedCornerShape(14.dp))
+                                .padding(2.dp)
+                        } else Modifier
                     ) {
-                        Column(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = bubbleBg,
+                            border = BorderStroke(1.dp, bubbleBorder),
+                            modifier = Modifier.widthIn(max = 330.dp)
                         ) {
-                            if (item.content.isNotBlank()) {
-                                MarkdownRenderer(
-                                    content = item.content,
-                                    isUser = true,
-                                    onOpenLink = onOpenLink
-                                )
-                            }
-                            if (item.mediaList.isNotEmpty()) {
-                                MediaAttachmentGallery(mediaList = item.mediaList)
+                            Column(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                if (item.content.isNotBlank()) {
+                                    MarkdownRenderer(
+                                        content = item.content,
+                                        isUser = true,
+                                        onOpenLink = onOpenLink
+                                    )
+                                }
+                                if (item.mediaList.isNotEmpty()) {
+                                    MediaAttachmentGallery(mediaList = item.mediaList)
+                                }
                             }
                         }
                     }
 
-                    // 1:1 对标 pi-web 用户消息底部的操作工具条 (复制 · 从此处编辑 · 新会话 · 时间戳)
+                    // 1:1 对标 pi-web 用户消息底部的操作工具条 (复制 · 从此处编辑/取消 · 新会话 · 时间戳)
                     Row(
                         modifier = Modifier.padding(top = 3.dp, end = 2.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -2359,19 +2410,33 @@ fun ChatMessageItem(
                             Text("复制", fontSize = 10.5.sp, color = theme.textMuted)
                         }
 
-                        // 2. 从此处编辑按钮
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .clickable {
-                                    onEditFromHere?.invoke(item)
-                                }
-                                .padding(horizontal = 4.dp, vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp)
-                        ) {
-                            Icon(Icons.Default.Edit, contentDescription = "从此处编辑", modifier = Modifier.size(11.dp), tint = theme.textMuted)
-                            Text("从此处编辑", fontSize = 10.5.sp, color = theme.textMuted)
+                        // 2. 从此处编辑 / 取消编辑（对标 pi-web：canEdit && !canCancelEdit，编辑中换成 Cancel）
+                        if (isEditing && onCancelEdit != null) {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable { onCancelEdit() }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(Icons.Default.Close, contentDescription = "取消编辑", modifier = Modifier.size(11.dp), tint = theme.primary)
+                                Text("取消", fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, color = theme.primary)
+                            }
+                        } else {
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(4.dp))
+                                    .clickable {
+                                        onEditFromHere?.invoke(item)
+                                    }
+                                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "从此处编辑", modifier = Modifier.size(11.dp), tint = theme.textMuted)
+                                Text("从此处编辑", fontSize = 10.5.sp, color = theme.textMuted)
+                            }
                         }
 
                         // 3. 新会话按钮
@@ -3149,9 +3214,25 @@ private fun encodePickedImages(
             skipped++
             continue
         }
+        // 从历史消息回填的内联图片（无 Uri）：直接沿用它的 base64
+        val inline = att.inlineBase64
+        if (!inline.isNullOrBlank()) {
+            images.add(
+                ChatImageInput(
+                    mimeType = att.inlineMimeType?.takeIf { it.startsWith("image/") } ?: "image/png",
+                    base64Data = inline
+                )
+            )
+            continue
+        }
+        val sourceUri = att.uri
+        if (sourceUri == null) {
+            skipped++
+            continue
+        }
         try {
-            val mime = context.contentResolver.getType(att.uri)?.takeIf { it.startsWith("image/") } ?: "image/png"
-            val bytes = readBoundedBytes(context, att.uri, MAX_PROMPT_IMAGE_BYTES)
+            val mime = context.contentResolver.getType(sourceUri)?.takeIf { it.startsWith("image/") } ?: "image/png"
+            val bytes = readBoundedBytes(context, sourceUri, MAX_PROMPT_IMAGE_BYTES)
             if (bytes == null) {
                 skipped++
                 continue
@@ -3179,8 +3260,9 @@ private fun readPickedFiles(
 ): List<UploadFileInput> {
     val out = mutableListOf<UploadFileInput>()
     for (att in picked) {
+        val sourceUri = att.uri ?: continue
         try {
-            val bytes = readBoundedBytes(context, att.uri, MAX_UPLOAD_FILE_BYTES) ?: continue
+            val bytes = readBoundedBytes(context, sourceUri, MAX_UPLOAD_FILE_BYTES) ?: continue
             out.add(UploadFileInput(name = att.name.ifBlank { "attachment" }, bytes = bytes))
         } catch (e: Exception) {
             // 单个文件失败不影响其它文件
