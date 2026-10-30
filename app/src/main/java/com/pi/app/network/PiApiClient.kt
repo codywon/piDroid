@@ -114,21 +114,83 @@ class PiApiClient(private val prefs: AppPreferences) {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(120, TimeUnit.SECONDS)
         .writeTimeout(120, TimeUnit.SECONDS)
+        // 经 Cloudflare 隧道时是 HTTP/2：ping 让 OkHttp 自己发现「半开连接」，
+        // 同时把运营商 NAT 映射踩醒。没有它时，被静默丢弃的旧连接只能靠下一次请求
+        // 撞上去、等超时才能发现 —— 那正是「获取会话失败: timeout」的直接来源。
+        // HTTP/1.1（局域网直连）下该参数无副作用。
+        .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
     /**
-     * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加 30s 硬超时。
+     * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加硬超时。
      *
      * 没有 callTimeout 时，readTimeout=120s 只在「一个字节都读不到」才触发。隧道半死、CDN 卡住
      * 或者服务端边算边吐的情况下，一次 300KB 的会话列表 / 快照可以被拖成两分钟的「没有进展的转圈」。
+     * 12s 的依据：实测同一条 303KB 列表经 Cloudflare 固定隧道 gzip 后 81KB、中位 1.7s；
+     * 留给弱网 4G 一个 7 倍余量。超时后由 [readGet] 换新连接重试一次。
+     *
      * 这里只给这些**幂等只读**请求加时限；写操作（发消息 / 压缩 / 生成标题等可能长时间等模型）
      * 仍走 [client]，不受影响。
      */
     private val readClient = client.newBuilder()
+        .callTimeout(12, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 首屏会话快照专用：同样带重试，但给更长预算。
+     *
+     * 单个会话可能很大（本机实测最大的会话文件 64MB，首屏快照要解完整个 jsonl：直连 1.1s /
+     * 隧道 4.4s，线上 gzip 后 109KB），12s 对这种会话偏紧，给到 30s。
+     */
+    private val snapshotClient = client.newBuilder()
         .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    /** 只读 GET 的结果：状态码 + 已解压的响应正文。 */
+    private data class ReadPayload(val code: Int, val body: String)
+
+    /**
+     * 所有幂等只读 GET 的唯一出口：硬超时 + 传输层失败自动重试一次 + 可排查的日志。
+     *
+     * 为什么必须重试：OkHttp 不会重试读超时（`isRecoverable` 里 `SocketTimeoutException`
+     * 且请求已开始发送就直接放弃），而手机现实里最常遇到的失败恰恰是「连接被静默弄丢」——
+     * 隧道重建 / 蜂窝网切基站 / 运营商 NAT 把旧的 TCP 映射回收，旧 socket 不发 RST，
+     * 于是请求写进黑洞，只能等到超时。重连一次就能好，但旧代码一次不重试，直接把
+     * “获取会话失败: timeout” 甩给用户。
+     *
+     * 重试前 `evictAll()`：把连接池里的可疑旧连接全部清掉，保证第二次一定是新连接，
+     * 否则复用同一条半开连接只会再超一次。SSE 用的是独立连接池（PiSseClient），不受影响。
+     */
+    private fun readGet(req: Request, httpClient: OkHttpClient = readClient): ReadPayload {
+        var lastError: IOException? = null
+        for (attempt in 1..2) {
+            val startedAt = System.currentTimeMillis()
+            try {
+                httpClient.newCall(req).execute().use { response ->
+                    val body = response.body?.string() ?: ""
+                    val elapsed = System.currentTimeMillis() - startedAt
+                    if (elapsed > 5_000L) {
+                        // 慢但成功：留一条样本，便于判断“超时”到底是隧道还是服务端
+                        Log.i("PiNet", "GET ${req.url.encodedPath} ok in ${elapsed}ms (${body.length}B, attempt $attempt)")
+                    }
+                    return ReadPayload(response.code, body)
+                }
+            } catch (e: IOException) {
+                lastError = e
+                val elapsed = System.currentTimeMillis() - startedAt
+                Log.w(
+                    "PiNet",
+                    "GET ${req.url.encodedPath} failed in ${elapsed}ms (attempt $attempt/2): " +
+                        "${e.javaClass.simpleName}: ${e.message}"
+                )
+                if (attempt == 2) break
+                readClient.connectionPool.evictAll()
+            }
+        }
+        throw lastError ?: IOException("读取失败")
+    }
 
     suspend fun ping(targetUrl: String? = null, token: String? = null): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = targetUrl ?: prefs.serverUrl
@@ -164,49 +226,46 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions").get().build()
-            // 只读轮询：走带 30s 硬超时的 readClient（隧道半死时快速失败，不会挂两分钟）
-            readClient.newCall(req).execute().use { response ->
-                if (response.isSuccessful) {
-                    val body = response.body?.string() ?: "{}"
-                    val jsonElement = JsonParser.parseString(body)
-                    val type = object : TypeToken<List<Session>>() {}.type
-                    var runningIds = emptySet<String>()
-                    var awaitingIds = emptySet<String>()
-
-                    val rawList: List<Session> = if (jsonElement.isJsonObject) {
-                        val obj = jsonElement.asJsonObject
-                        if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
-                            runningIds = obj.getAsJsonArray("runningSessionIds")
-                                .mapNotNull { runCatching { it.asString }.getOrNull() }
-                                .toSet()
-                        }
-                        if (obj.has("awaitingInputSessionIds") && obj.get("awaitingInputSessionIds").isJsonArray) {
-                            awaitingIds = obj.getAsJsonArray("awaitingInputSessionIds")
-                                .mapNotNull { runCatching { it.asString }.getOrNull() }
-                                .toSet()
-                        }
-                        if (obj.has("sessions")) {
-                            gson.fromJson(obj.get("sessions"), type) ?: emptyList()
-                        } else {
-                            emptyList()
-                        }
-                    } else if (jsonElement.isJsonArray) {
-                        gson.fromJson(jsonElement, type) ?: emptyList()
-                    } else {
-                        emptyList()
-                    }
-
-                    val enrichedList = rawList.map { s ->
-                        s.copy(
-                            isRunning = runningIds.contains(s.id),
-                            awaitingInput = s.awaitingInput || awaitingIds.contains(s.id)
-                        )
-                    }
-                    Result.success(enrichedList)
-                } else {
-                    Result.failure(IOException("Failed to load sessions: ${response.code}"))
-                }
+            // 只读轮询：走 readGet（单次 12s 硬超时 + 传输失败换新连接重试一次）
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("Failed to load sessions: ${payload.code}"))
             }
+            val jsonElement = JsonParser.parseString(payload.body)
+            val type = object : TypeToken<List<Session>>() {}.type
+            var runningIds = emptySet<String>()
+            var awaitingIds = emptySet<String>()
+
+            val rawList: List<Session> = if (jsonElement.isJsonObject) {
+                val obj = jsonElement.asJsonObject
+                if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
+                    runningIds = obj.getAsJsonArray("runningSessionIds")
+                        .mapNotNull { runCatching { it.asString }.getOrNull() }
+                        .toSet()
+                }
+                if (obj.has("awaitingInputSessionIds") && obj.get("awaitingInputSessionIds").isJsonArray) {
+                    awaitingIds = obj.getAsJsonArray("awaitingInputSessionIds")
+                        .mapNotNull { runCatching { it.asString }.getOrNull() }
+                        .toSet()
+                }
+                if (obj.has("sessions")) {
+                    gson.fromJson(obj.get("sessions"), type) ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            } else if (jsonElement.isJsonArray) {
+                gson.fromJson(jsonElement, type) ?: emptyList()
+            } else {
+                emptyList()
+            }
+
+            val enrichedList = rawList.map { s ->
+                s.copy(
+                    isRunning = runningIds.contains(s.id),
+                    awaitingInput = s.awaitingInput || awaitingIds.contains(s.id)
+                )
+            }
+            Result.success(enrichedList)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -223,27 +282,26 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/agent/running").get().build()
-            readClient.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("读取运行态失败 (${response.code})"))
-                }
-                val root = runCatching {
-                    JsonParser.parseString(response.body?.string() ?: "{}").asJsonObject
-                }.getOrNull() ?: return@withContext Result.failure(IOException("运行态响应无法解析"))
-                fun idSet(key: String): Set<String> =
-                    root.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
-                        ?.mapNotNull { runCatching { it.asString }.getOrNull() }
-                        ?.toSet()
-                        ?: emptySet()
-                Result.success(
-                    RunningSessionsSnapshot(
-                        sessionListVersion = root.get("sessionListVersion")
-                            ?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                        runningIds = idSet("runningSessionIds"),
-                        awaitingInputIds = idSet("awaitingInputSessionIds")
-                    )
-                )
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取运行态失败 (${payload.code})"))
             }
+            val root = runCatching {
+                JsonParser.parseString(payload.body).asJsonObject
+            }.getOrNull() ?: return@withContext Result.failure(IOException("运行态响应无法解析"))
+            fun idSet(key: String): Set<String> =
+                root.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+                    ?.toSet()
+                    ?: emptySet()
+            Result.success(
+                RunningSessionsSnapshot(
+                    sessionListVersion = root.get("sessionListVersion")
+                        ?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    runningIds = idSet("runningSessionIds"),
+                    awaitingInputIds = idSet("awaitingInputSessionIds")
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -461,16 +519,14 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary")
                 .get()
                 .build()
-            readClient.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("Failed to load session details: ${response.code}"))
-                }
-                val body = response.body?.string() ?: "{}"
-                val historyData = parseSessionHistoryBody(sessionId, body, tail)
-                sessionHistoryCache[sessionId] = historyData
-                persistSessionSnapshot(sessionId, body)
-                Result.success(historyData)
+            val payload = readGet(req, snapshotClient)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("Failed to load session details: ${payload.code}"))
             }
+            val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
+            sessionHistoryCache[sessionId] = historyData
+            persistSessionSnapshot(sessionId, payload.body)
+            Result.success(historyData)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -2314,14 +2370,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .url("$baseUrl/api/sessions/$sessionId/context?tail=1")
                 .get()
                 .build()
-            readClient.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("读取会话模型失败 (${response.code})"))
-                }
-                val ref = SessionModelRefParser.parse(response.body?.string())
-                    ?: return@withContext Result.failure(IOException("会话快照未带模型信息"))
-                Result.success(ref)
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取会话模型失败 (${payload.code})"))
             }
+            val ref = SessionModelRefParser.parse(payload.body)
+                ?: return@withContext Result.failure(IOException("会话快照未带模型信息"))
+            Result.success(ref)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -2345,64 +2400,63 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/state").get().build()
-            readClient.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("读取 agent 状态失败 (${response.code})"))
-                }
-                val raw = response.body?.string() ?: ""
-                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
-                    ?: return@withContext Result.failure(IOException("agent 状态响应无法解析"))
-                // 兼容两种形态：{running, state:{...}} 或直接是 state 本体
-                val data = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject
-                    ?: root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
-                    ?: root
-                val usage = data.get("contextUsage")?.takeIf { it.isJsonObject }?.asJsonObject
-                val modelObj = data.get("model")?.takeIf { it.isJsonObject }?.asJsonObject
-                val queue = data.get("queuedMessages")?.takeIf { it.isJsonObject }?.asJsonObject
-                fun queueTexts(key: String): List<String> {
-                    val arr = queue?.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
-                    return arr.mapNotNull { el ->
-                        when {
-                            el.isJsonPrimitive -> el.asString
-                            el.isJsonObject -> el.asJsonObject.get("message")?.takeIf { !it.isJsonNull }?.asString
-                                ?: el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
-                            else -> null
-                        }
-                    }.filter { it.isNotBlank() }
-                }
-                val isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true
-                val isPromptRunning = data.get("isPromptRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
-                val isBashRunning = data.get("isBashRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
-                // 顶层 running = 「pi-web 里有没有活着的 agent 运行时」，不等于正在执行。
-                // 兼容 POST /api/agent/{id} 的 {success,data} 形态（没有顶层 running 字段）。
-                val runtimeAlive = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean
-                    ?: data.has("isStreaming")
-                Result.success(
-                    AgentRuntimeState(
-                        percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
-                        contextWindow = usage?.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                        contextTokens = usage?.get("tokens")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                        hasContextUsage = usage != null,
-                        provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
-                        modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString
-                            ?: modelObj?.get("modelId")?.takeIf { !it.isJsonNull }?.asString,
-                        thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
-                        isStreaming = isStreaming,
-                        isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        isBashRunning = isBashRunning,
-                        pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                        // 与 pi-web 前端同一口径：运行态 = 有活跃运行时 且（流式生成 / 提示词在跑 / bash 在跑）
-                        running = runtimeAlive && (isStreaming || isPromptRunning || isBashRunning),
-                        runtimeAlive = runtimeAlive,
-                        autoCompactionEnabled =
-                            data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        autoRetryEnabled =
-                            data.get("autoRetryEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        steering = queueTexts("steering"),
-                        followUp = queueTexts("followUp")
-                    )
-                )
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取 agent 状态失败 (${payload.code})"))
             }
+            val raw = payload.body
+            val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                ?: return@withContext Result.failure(IOException("agent 状态响应无法解析"))
+            // 兼容两种形态：{running, state:{...}} 或直接是 state 本体
+            val data = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: root
+            val usage = data.get("contextUsage")?.takeIf { it.isJsonObject }?.asJsonObject
+            val modelObj = data.get("model")?.takeIf { it.isJsonObject }?.asJsonObject
+            val queue = data.get("queuedMessages")?.takeIf { it.isJsonObject }?.asJsonObject
+            fun queueTexts(key: String): List<String> {
+                val arr = queue?.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+                return arr.mapNotNull { el ->
+                    when {
+                        el.isJsonPrimitive -> el.asString
+                        el.isJsonObject -> el.asJsonObject.get("message")?.takeIf { !it.isJsonNull }?.asString
+                            ?: el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
+                        else -> null
+                    }
+                }.filter { it.isNotBlank() }
+            }
+            val isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            val isPromptRunning = data.get("isPromptRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            val isBashRunning = data.get("isBashRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            // 顶层 running = 「pi-web 里有没有活着的 agent 运行时」，不等于正在执行。
+            // 兼容 POST /api/agent/{id} 的 {success,data} 形态（没有顶层 running 字段）。
+            val runtimeAlive = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean
+                ?: data.has("isStreaming")
+            Result.success(
+                AgentRuntimeState(
+                    percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
+                    contextWindow = usage?.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    contextTokens = usage?.get("tokens")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    hasContextUsage = usage != null,
+                    provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
+                    modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString
+                        ?: modelObj?.get("modelId")?.takeIf { !it.isJsonNull }?.asString,
+                    thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
+                    isStreaming = isStreaming,
+                    isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                    isBashRunning = isBashRunning,
+                    pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                    // 与 pi-web 前端同一口径：运行态 = 有活跃运行时 且（流式生成 / 提示词在跑 / bash 在跑）
+                    running = runtimeAlive && (isStreaming || isPromptRunning || isBashRunning),
+                    runtimeAlive = runtimeAlive,
+                    autoCompactionEnabled =
+                        data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                    autoRetryEnabled =
+                        data.get("autoRetryEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                    steering = queueTexts("steering"),
+                    followUp = queueTexts("followUp")
+                )
+            )
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -2420,13 +2474,11 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/sessions/ui-state").get().build()
-            readClient.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("读取置顶/归档状态失败 (${response.code})"))
-                }
-                val raw = response.body?.string() ?: "{}"
-                Result.success(parseUiState(raw))
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取置顶/归档状态失败 (${payload.code})"))
             }
+            Result.success(parseUiState(payload.body))
         } catch (e: Exception) {
             Result.failure(e)
         }

@@ -44,6 +44,15 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/**
+ * 会话列表「自动重拉」的最小间隔（手动刷新不受限）。
+ *
+ * 实测 `/api/sessions` = 303KB（gzip 81KB），经 Cloudflare 隧道中位 1.5s / p90 2.6s。
+ * agent 跑动时 sessionListVersion 每个回合都会 bump，逐次重拉会把手机链路常年占满，
+ * 弱网下就直接表现为「获取会话列表失败：timeout」。
+ */
+private const val LIST_AUTO_REFRESH_MIN_INTERVAL_MS = 15_000L
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: AppPreferences
@@ -190,13 +199,18 @@ class MainActivity : ComponentActivity() {
     private fun connectErrorMessage(error: Throwable?): String {
         val raw = error?.message.orEmpty()
         val lower = raw.lowercase()
+        val name = error?.javaClass?.simpleName.orEmpty()
         return when {
             raw.contains("401") -> "密钥已失效，请重新扫码配对"
             raw.contains("403") -> "访问被拒绝（可能是 Cloudflare Access 或防火墙策略）"
             raw.contains("502") -> "网关连不上本机 pi-web，请确认 pi-web 已启动"
-            lower.contains("timeout") || lower.contains("connectexception") ||
-                lower.contains("failed to connect") || lower.contains("unable to resolve host") ->
-                "连不上服务器，请检查网关地址与网络"
+            // 传输层失败（读超时 / callTimeout / 连接被重置）都归到同一句：
+            // 已自动重试过一次还失败，说明这条链路现在真不通。
+            name.contains("Timeout") || name.contains("InterruptedIOException") ||
+                lower.contains("timeout") || lower.contains("connectexception") ||
+                lower.contains("failed to connect") || lower.contains("unable to resolve host") ||
+                lower.contains("stream reset") || lower.contains("unexpected end of stream") ->
+                "网络超时或中断（已自动重试一次），请检查网络或网关地址"
             raw.isBlank() -> "连接失败，请重试"
             else -> "连接失败：$raw"
         }
@@ -497,8 +511,15 @@ class MainActivity : ComponentActivity() {
                         syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
                     }.onFailure {
                         isGatewayOnline = false
+                        // 原来直接把 OkHttp 的原文案（“timeout”/“Stream Reset”）砸给用户，
+                        // 既看不懂也不知道该做什么。这里换成可执行的说法，再带上原文便于排查。
+                        android.util.Log.w("PiNet", "loadSessions failed: ${it.javaClass.simpleName}: ${it.message}")
                         if (!silent) {
-                            Toast.makeText(this@MainActivity, "获取会话列表失败: ${it.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(
+                                this@MainActivity,
+                                connectErrorMessage(it),
+                                Toast.LENGTH_SHORT
+                            ).show()
                         }
                     }
                 } catch (e: java.util.concurrent.CancellationException) {
@@ -1034,9 +1055,10 @@ class MainActivity : ComponentActivity() {
                     val now = System.currentTimeMillis()
                     if (!isAutoFillingFirstScreen && now - lastHistorySyncErrorAt > 10_000L) {
                         lastHistorySyncErrorAt = now
+                        android.util.Log.w("PiNet", "session snapshot failed for $sessionId: ${err.javaClass.simpleName}: ${err.message}")
                         Toast.makeText(
                             this@MainActivity,
-                            "会话同步失败: ${err.message ?: "网络异常"}",
+                            connectErrorMessage(err),
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -1663,6 +1685,12 @@ class MainActivity : ComponentActivity() {
             if (activeSession == null) {
                 loadSessions(silent = true)
                 loadCapabilitiesAndModels()
+                // 全量列表自动重拉的最小间隔。实测 /api/sessions = 303KB（gzip 81KB），
+                // 经 Cloudflare 隧道中位 1.5s / p90 2.6s；agent 跑动时 sessionListVersion
+                // 每个回合就 bump 一次，逐次重拉等于持续占着链路，弱网下就变成“获取会话超时”。
+                // 手动刷新（onRefresh）不走这个限制。
+                var lastListRefreshAt = System.currentTimeMillis()
+                var pendingListRefresh = false
                 while (true) {
                     kotlinx.coroutines.delay(2_500L)
                     val snap = apiClient.getRunningSessions().getOrNull()
@@ -1677,6 +1705,12 @@ class MainActivity : ComponentActivity() {
                         lastSessionListVersion = snap.sessionListVersion
                     } else if (snap.sessionListVersion != 0L && snap.sessionListVersion != lastSessionListVersion) {
                         lastSessionListVersion = snap.sessionListVersion
+                        pendingListRefresh = true
+                    }
+                    val nowMs = System.currentTimeMillis()
+                    if (pendingListRefresh && nowMs - lastListRefreshAt >= LIST_AUTO_REFRESH_MIN_INTERVAL_MS) {
+                        pendingListRefresh = false
+                        lastListRefreshAt = nowMs
                         loadSessions(silent = true)
                     }
                 }
