@@ -76,7 +76,14 @@ const val GENERATIVE_UI_READ_ME_TOOL = "visualize_read_me"
 
 /** 内嵌缩略图高度：按声明宽高比等比缩放后的高度夹在这个区间。 */
 private const val PREVIEW_MIN_DP = 120
-private const val PREVIEW_MAX_DP = 460
+
+/**
+ * 缩略图高度上限。
+ *
+ * 460dp 对 1:1 的架构图够用，但纵长图（1:2、1:3）会被截掉底部——而这一块的目的是
+ * “一眼能看清图”，所以放宽到 560dp（约 0.6 屏），仍然不让单张卡牌吃掉整屏。
+ */
+private const val PREVIEW_MAX_DP = 560
 
 /**
  * 一个可渲染的微组件。`width` / `height` 是模型声明的**桌面**尺寸（默认 800×600）。
@@ -461,8 +468,22 @@ fun buildWidgetHtml(
     val body = if (payload.isSvg) {
         """
         <style>
-          #root { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 16px); }
-          #root svg { max-width: 100%; max-height: calc(100vh - 16px); height: auto; width: auto; }
+          /*
+           * 纯 SVG 微组件：**永远以宽度为准、高度跟随宽高比**。
+           *
+           * 曾经这里用 100vh 同时限高 #root 与 svg，而卡片高度又是
+           * “实测内容高度 × 缩放比”算出来的 —— 两条规则互相咬住：
+           *  - `min-height: 100vh` 让实测高度永远等于当前视口高，测量只能“确认”当前高度、
+           *    永远无法把卡片改大或改小；
+           *  - `max-height: 100vh` 又把正方形 SVG 压到卡片自身的高度上。
+           * 结果：卡片一旦偏矮，SVG 就按矮边等比缩小，7 6 0×7 6 0 的架构图只占卡片宽度约 40%，
+           * 四周全是白边（真机截图就是这个症状）。
+           *
+           * 现在改为宽 100%、高 auto：SVG 总是撑满卡片宽度，实测高度自然等于
+           * 宽度 × 宽高比，卡片高度就是读图需要的高度，不再自我参照。
+           */
+          #root { display: flex; align-items: center; justify-content: center; }
+          #root > svg { display: block; width: 100%; height: auto; }
         </style>
         ${payload.code}
         """.trimIndent()
@@ -512,7 +533,13 @@ fun buildWidgetHtml(
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             overflow: $overflow;
           }
-          body { min-height: calc(100vh - 16px); box-sizing: border-box; }
+          /*
+           * 不能再用 100vh 给 body 抬下限：
+           * 那会让“实测内容高度”永远等于当前视口高，于是 `实测高度 × 缩放比` 永远算出
+           * 当前高度 —— 测量从“自适应”退化成“自我确认”，卡片一旦偏矮就再也长不大。
+           * 高度交给内容自身决定，两端再由 `previewHeightDp` 的夹紧保护。
+           */
+          body { box-sizing: border-box; min-height: 0; }
           img, svg, canvas, video { max-width: 100%; }
           ::-webkit-scrollbar { width: 0; height: 0; }
         </style>

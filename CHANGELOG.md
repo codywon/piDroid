@@ -2,6 +2,37 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.67] - 2026-10-31
+
+### 🐛 修「SVG 架构图缩在卡片中间特别小」：去掉高度自我参照的死循环
+
+**现象**：760×760 的架构图只占卡片宽度约 40%，四周大片白边；卡片本身也很矮，根本看不清。
+
+**根因：卡片高度与内容高度互相咬住，是个死循环**：
+- 卡片高度 = `实测内容高度 × 缩放比`；
+- 但 `#root { min-height: 100vh }` 让「实测内容高度」**永远等于当前卡片高** —— 测量只能确认现状，永远无法纠正；
+- 同时 `#root svg { max-height: 100vh }` 又把正方形 SVG 压到卡片**自身高度**上。
+
+于是：卡片矮 → SVG 按矮边缩小 → 测量“确认”矮 → 卡片还是矮。把 760×760 图压成 40% 宽、四周白边。
+
+**改法（宽度决定一切）**：
+```css
+#root       { display: flex; align-items: center; justify-content: center; }
+#root > svg { display: block; width: 100%; height: auto; }
+body        { box-sizing: border-box; min-height: 0; }
+```
+- SVG 永远撑满卡片宽度，高度自然等于 `宽度 × 宽高比`；
+- 实测回填后 `previewHeightDp` 算出的正是这个值，两张公式一致 —— 760×760 得到近乎满宽的方图；
+- 高度上限从 460dp 放宽到 **560dp**（约 0.6 屏），纵长图（1:2 / 1:3）不再被截掉底部。
+
+这与社区/参考实现的做法一致：`claude.ai` 产物 iframe 与 `pi-generative-ui` 的 Glimpse 窗口
+都是**容器高度跟随内容**，从不拿容器高度反过来限流内容。
+
+**单测**：新增 2 项断言（SVG 必须 `width:100%/height:auto` 且不得出现任何 100vh 耦合；
+body 不得用 vh 抬下限），高度夹紧用例同步到 560。单测合计 **42 项全绿**。
+
+---
+
 ## [1.7.66] - 2026-10-31
 
 ### ✨ SVG 生成式微组件支持保存与导出：PNG 相册即开 + 自包含 SVG 下载（对标 pi-generative-ui）

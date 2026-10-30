@@ -127,7 +127,7 @@ class GenerativeUiTest {
     // ── 内嵌预览区高度 ─────────────────────────────────────────────
 
     /**
-     * 缩略图高度 = 容器宽 ×（声明高 / 声明宽），再夹进 120~460dp。
+     * 缩略图高度 = 容器宽 ×（声明高 / 声明宽），再夹进 120~560dp。
      * 800×600 是插件默认尺寸，在 336dp 宽容器里约 252dp。
      */
     @Test
@@ -138,7 +138,7 @@ class GenerativeUiTest {
     @Test
     fun `preview height is clamped at both ends`() {
         assertEquals(120, previewHeightDp(WidgetPayload("t", "<b/>", 1600, 400), 336))
-        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 400, 3000), 336))
+        assertEquals(560, previewHeightDp(WidgetPayload("t", "<b/>", 400, 3000), 336))
     }
 
     @Test
@@ -147,7 +147,7 @@ class GenerativeUiTest {
         val narrow = previewHeightDp(WidgetPayload("t", "<b/>", 800, 600), 240)
         assertTrue(wide > narrow)
         // 模型写出 width=0 时不能除零崩掉
-        assertTrue(previewHeightDp(WidgetPayload("t", "<b/>", 0, 600), 336) in 120..460)
+        assertTrue(previewHeightDp(WidgetPayload("t", "<b/>", 0, 600), 336) in 120..560)
     }
 
     // ── 渲染失败检测的钩子 ─────────────────────────────────────────
@@ -179,6 +179,39 @@ class GenerativeUiTest {
             foregroundHex = "#1F2328"
         )
         assertTrue(html.contains("overflow: hidden"))
+    }
+
+    // ── SVG 宽高比自适应（不得自我参照）──────────────────────────
+
+    /**
+     * 真机回归：760×760 的架构图只占卡片宽度约 40%、四周大片白边。
+     * 根因是 `max-height: calc(100vh - 16px)` 把正方形 SVG 压到卡片自身高度上，
+     * 而卡片高度又是“实测高度 × 缩放比”算出来的 —— 两边互相咬住。
+     */
+    @Test
+    fun `svg fills the card width and never locks to viewport height`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<svg viewBox=\"0 0 760 760\"></svg>", 760, 760),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328"
+        )
+        // SVG 必须以宽度为准、高度跟随宽高比
+        assertTrue(html.contains("#root > svg { display: block; width: 100%; height: auto; }"))
+        // 不得再出现任何 vh 耦合（否则测量会退化成「自我确认」）
+        assertFalse(html.contains("max-height: calc(100vh"))
+        assertFalse(html.contains("min-height: calc(100vh"))
+    }
+
+    /** HTML 微组件同理：body 不得用 vh 抬下限，否则实测高度永远等于当前卡片高。 */
+    @Test
+    fun `html body no longer pins its height to the viewport`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>"),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328"
+        )
+        assertFalse(html.contains("min-height: calc(100vh"))
+        assertTrue(html.contains("body { box-sizing: border-box; min-height: 0; }"))
     }
 
     // ── 全屏模式 ────────────────────────────────────────────────
@@ -282,10 +315,10 @@ class GenerativeUiTest {
         // 900×920 缩进 387dp 宽 → 387×920/900 = 395.6 → 取整 395
         assertEquals(395, previewHeightDp(WidgetPayload("t", "<b/>", 900, 920), 387))
         // 超高 → 夹到上限，避免一张图把会话撑成几屏
-        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 900, 4000), 387))
+        assertEquals(560, previewHeightDp(WidgetPayload("t", "<b/>", 900, 4000), 387))
         // 超扁 → 夹到下限，避免缩成一条线
         assertEquals(120, previewHeightDp(WidgetPayload("t", "<b/>", 4000, 200), 387))
-        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 200, 3000), 387))
+        assertEquals(560, previewHeightDp(WidgetPayload("t", "<b/>", 200, 3000), 387))
     }
 
     /** 缩放比就是「容器宽 / 声明宽」，异常输入不外溢。 */
