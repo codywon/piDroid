@@ -124,6 +124,13 @@ fun ChatScreen(
     currentProject: String,
     projects: List<ProjectInfo> = emptyList(),
     selectedModel: ModelInfo,
+    /**
+     * 当前模型的 provider：**仅当同一个模型 id 同时还挂在其他供应商下时**才传。
+     *
+     * 例：`deepseek-flash` 在 codywon 和 deepseek 各有一份，胶囊只写模型名根本分不出
+     * 用的是哪一家，用户只能认为「切了没生效 / 又串回去了」。歧义时才拼上 provider。
+     */
+    modelProviderLabel: String? = null,
     thinkingLevel: ThinkingLevel,
     tokenStats: TokenStats,
     messages: List<ChatItem>,
@@ -1070,7 +1077,9 @@ fun ChatScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "${selectedModel.displayName} · ${thinkingLevel.value}",
+                                    text = "${selectedModel.displayName}" +
+                                        (modelProviderLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "") +
+                                        " · ${thinkingLevel.value}",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 11.sp,

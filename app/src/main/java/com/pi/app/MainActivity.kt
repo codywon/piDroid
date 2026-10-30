@@ -819,7 +819,11 @@ class MainActivity : ComponentActivity() {
                     runtime = runtime,
                     historyProvider = history?.provider,
                     historyModelId = history?.modelId
-                )?.let { selectedModel = it }
+                )?.let { resolved ->
+                    selectedModel = resolved
+                    // 服务端才是权威：每次对账都把这条会话的身份落盘，下次「回到会话」直接用它
+                    prefs.saveSessionModelIdentity(sessionId, resolved.provider, resolved.id)
+                }
                 val thinking = runtime?.takeIf { it.runtimeAlive }?.thinkingLevel
                     ?.takeIf { it.isNotBlank() }
                 if (thinking != null) {
@@ -1487,10 +1491,16 @@ class MainActivity : ComponentActivity() {
             startListeningEvents(sid, initialBusy = busy)
         }
 
-        /** 把快照里的模型/统计/翻页游标落到 UI 状态（内存缓存、磁盘缓存、网络快照共用） */
+        /**
+         * 把快照里的统计 / 翻页游标落到 UI 状态（内存缓存、磁盘缓存、网络快照共用）。
+         *
+         * **只不写模型身份**：缓存快照（内存/磁盘）里的 `provider/modelId` 是**切换之前**的旧元数据，
+         * 拿它刷新界面就会把供应商显示回上一家 —— 用户看到的就是「回到会话又从 deepseek
+         * 变回 codywon」。模型身份只认两条来源：本机刚切的选择（[prefs] 里按会话记的那份）
+         * 与服务端网络快照（`/api/sessions/{id}`、`/api/sessions/{id}/state`）。
+         * 思考档位只有单值、不存在「选错供应商」，仍按快照回放。
+         */
         fun applyHistoryMeta(hist: SessionHistoryData) {
-            SessionModelSelection.resolve(dynamicCatalog.models, hist.provider, hist.modelId)
-                ?.let { selectedModel = it }
             currentThinkingLevel = hist.thinkingLevel
             tokenStats = hist.stats
             hasEarlierOnServer = hist.hasMoreOnServer
@@ -1510,6 +1520,12 @@ class MainActivity : ComponentActivity() {
             }
             modelMetaRevision++
             currentSession = session
+            // 「回到会话」先按这条会话上次确认的身份还原模型：
+            // 否则在服务端快照回来之前，界面只能用全局默认 / 上一条会话的模型顶着，
+            // 同名模型下就表现为「供应商又变回去了」。
+            prefs.getSessionModelIdentity(session.id)?.let { (p, m) ->
+                SessionModelSelection.resolve(dynamicCatalog.models, p, m)?.let { selectedModel = it }
+            }
             currentProject = session.workspaceName
             lastOpenedWorkspacePath = session.workspacePath
             session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
@@ -2063,6 +2079,10 @@ class MainActivity : ComponentActivity() {
                         ?: "",
                     currentProject = currentProject,
                     selectedModel = selectedModel,
+                    // 同名模型在多个供应商下都有一份时，胶囊里必须写清是哪一家，否则切了看不出来
+                    modelProviderLabel = selectedModel.provider.takeIf {
+                        SessionModelSelection.isProviderAmbiguous(dynamicCatalog.models, selectedModel.id)
+                    },
                     thinkingLevel = currentThinkingLevel,
                     tokenStats = tokenStats,
                     messages = messages,
@@ -2428,8 +2448,8 @@ class MainActivity : ComponentActivity() {
                                     try {
                                         apiClient.updateModel(sess.id, model.provider, model.id)
                                             .onSuccess {
-                                                // 刚切的模型立刻写进内存快照，避免重进会话时被旧快照弹回上一个供应商
-                                                apiClient.rememberSessionModel(sess.id, model.provider, model.id)
+                                                // 刚切的模型立刻记到这条会话名下（覆盖可能存在的旧快照身份）
+                                                prefs.saveSessionModelIdentity(sess.id, model.provider, model.id)
                                                 // 同名模型在多个供应商下都有一份时，提示里必须带上 provider 才看得出切了哪一家
                                                 val suffix = if (SessionModelSelection.isProviderAmbiguous(dynamicCatalog.models, model.id)) {
                                                     " (${model.provider})"

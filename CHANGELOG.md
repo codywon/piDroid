@@ -2,6 +2,40 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.60] - 2026-10-30
+
+### 🐛 修「回到会话又变回上一家供应商」：本地快照不得再决定模型身份
+
+1.7.57 修的是「选择器 ✓ 只比 modelId」（同名模型两行都勾上），这次接着查真正的回弹源。
+直接拿你正在跑的网关实测了截图里那条会话（`01a188b1…`）：
+
+- `GET /api/sessions/{id}` → `context.model = {provider: deepseek, modelId: deepseek-flash}`
+- `GET /api/sessions/{id}/state` → `state.model = {provider: deepseek, modelId: deepseek-flash}`
+- `POST /api/agent/{id} {"type":"get_state"}` → 同一个身份
+
+也就是**服务端早就切到 deepseek 了，codywon 只可能是 App 本地旧数据变出来的**。三条路堵死：
+
+**① 缓存快照不再刷模型身份**
+
+- 根因：`applyHistoryMeta`（内存/磁盘快照回放）会把快照里的 `provider/modelId` 写进界面。
+  磁盘快照有 10s 写节流、只留 8 个，回到会话时先回放的往往是**切换之前**那一份 → codywon。
+- 改法：缓存只回放正文/统计/游标，模型身份只认「本机刚切的选择」与「服务端网络快照」。
+
+**② 按会话记一份「最后确认的模型身份」**
+
+- 切换成功、以及每次服务端对账，都把 `provider/modelId` 落盘（`SessionModelIdentityCodec`，上限 300 条）；
+  打开会话先用它还原，不再先拿全局默认或上一条会话的模型顶上。
+
+**③ 输入框上方的胶囊直接写出供应商**
+
+- 仅在「同一个 modelId 同时挂在多个供应商」时拼上 provider，例如
+  `DeepSeek V4.1 Flash · deepseek · max`，一眼可验，不用开面板猜。
+
+**工程**
+
+- 新增 `SessionModelIdentityCodecTest`（7 项）；纯逻辑校验（含真实会话数据同构用例）全绿。
+
+
 ## [1.7.59] - 2026-10-30
 
 ### ✨ 生成式 UI 内嵌改成位图缩略图：从结构上消除频闪，并按实测高度消除底部裁切

@@ -101,17 +101,6 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
 
-    /**
-     * 刚在本机切过模型：把内存快照里的 (provider, modelId) 一起改写。
-     *
-     * 否则下一次进入这个会话会先拿旧快照回放，把模型「弹回」上一个供应商的同名模型，
-     * 等网络快照回来才纠正——用户看到的正是「切了供应商却没生效 / 又串回去了」。
-     */
-    fun rememberSessionModel(sessionId: String, provider: String, modelId: String) {
-        val cached = sessionHistoryCache[sessionId] ?: return
-        sessionHistoryCache[sessionId] = cached.copy(provider = provider, modelId = modelId)
-    }
-
     fun clearSessionCache(sessionId: String? = null) {
         if (sessionId == null) {
             sessionHistoryCache.clear()

@@ -2,6 +2,7 @@ package com.pi.app.data.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.pi.app.data.model.SessionModelIdentityCodec
 
 class AppPreferences(context: Context) {
     /** 应用缓存目录：会话快照离线缓存放在这里（不占用户可见空间，系统可回收） */
@@ -278,6 +279,31 @@ class AppPreferences(context: Context) {
         prefs.edit().putString(KEY_MODEL_OVERRIDES, root.toString()).apply()
     }
 
+    // ── 每个会话最后确认的模型身份 (provider/modelId) ──
+    // 「回到会话」时先用它还原模型，否则只能拿到全局默认或切换之前的旧快照，
+    // 会把 provider 显示回上一家（例如 deepseek 又变回 codywon）。
+    fun getSessionModelIdentity(sessionId: String): Pair<String, String>? {
+        if (sessionId.isBlank()) return null
+        val raw = prefs.getString(KEY_SESSION_MODEL_IDENTITIES, "{}") ?: return null
+        val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return null
+        val value = root.get(sessionId)?.takeIf { it.isJsonPrimitive }?.asString ?: return null
+        return SessionModelIdentityCodec.decode(value)
+    }
+
+    fun saveSessionModelIdentity(sessionId: String, provider: String, modelId: String) {
+        if (sessionId.isBlank() || provider.isBlank() || modelId.isBlank()) return
+        val raw = prefs.getString(KEY_SESSION_MODEL_IDENTITIES, "{}") ?: "{}"
+        val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
+            ?: com.google.gson.JsonObject()
+        val current = LinkedHashMap<String, String>()
+        for ((k, v) in root.entrySet()) {
+            if (v.isJsonPrimitive) current[k] = v.asString
+        }
+        val next = SessionModelIdentityCodec.withEntry(current, sessionId, provider, modelId)
+        val obj = com.google.gson.JsonObject().apply { next.forEach { (k, v) -> addProperty(k, v) } }
+        prefs.edit().putString(KEY_SESSION_MODEL_IDENTITIES, obj.toString()).apply()
+    }
+
     fun getModelOverrides(): Map<String, StoredModelOverride> {
         val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
@@ -393,6 +419,7 @@ class AppPreferences(context: Context) {
     private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
     private const val KEY_LAST_SELECTED_CWD = "key_last_selected_cwd"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
+    private const val KEY_SESSION_MODEL_IDENTITIES = "key_session_model_identities"
     }
 }
 
