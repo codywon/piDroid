@@ -332,4 +332,33 @@ class GenerativeUiTest {
         assertTrue(html.contains("#CECBF6"))
         assertTrue(html.contains("--bg2: #2a2a2a;"))
     }
+
+    // ── 独立自包含 SVG 文件序列化 ───────────────────────────────────
+
+    @Test
+    fun `serializeSelfContainedSvg inlines styles and ensures background`() {
+        val payload = WidgetPayload(
+            title = "openclaw_architecture",
+            code = "<svg viewBox=\"0 0 680 680\"><g class=\"c-teal\"><rect x=\"24\" y=\"24\"/></g></svg>"
+        )
+
+        val darkSvg = serializeSelfContainedSvg(payload, isDark = true)
+        assertTrue(darkSvg.startsWith("<?xml version=\"1.0\" encoding=\"UTF-8\"?>"))
+        assertTrue(darkSvg.contains("xmlns=\"http://www.w3.org/2000/svg\""))
+        assertTrue(darkSvg.contains("<style>"))
+        assertTrue(darkSvg.contains("svg .c-teal > rect"))
+        assertTrue(darkSvg.contains("<rect width=\"100%\" height=\"100%\" fill=\"#1a1a1a\"/>"))
+
+        val lightSvg = serializeSelfContainedSvg(payload, isDark = false)
+        assertTrue(lightSvg.contains("<rect width=\"100%\" height=\"100%\" fill=\"#FFFFFF\"/>"))
+        assertTrue(lightSvg.contains("#E1F5EE")) // 浅色薄荷绿
+    }
+
+    @Test
+    fun `export helper sanitizes filenames safely`() {
+        assertEquals("openclaw_architecture", WidgetExportHelper.cleanFilename("openclaw architecture", "default"))
+        assertEquals("diagram_1", WidgetExportHelper.cleanFilename("diagram/1:?*", "default"))
+        assertEquals("架构设计图", WidgetExportHelper.cleanFilename("架构设计图", "default"))
+        assertEquals("fallback", WidgetExportHelper.cleanFilename("   ???///   ", "fallback"))
+    }
 }

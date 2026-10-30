@@ -1,10 +1,15 @@
 package com.pi.app.ui.chat
 
 import android.annotation.SuppressLint
+import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import android.widget.Toast
 import android.view.MotionEvent
 import android.view.ViewGroup
 import android.webkit.ConsoleMessage
@@ -26,6 +31,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
@@ -35,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import java.io.File
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -395,6 +404,44 @@ private fun widgetTokens(dark: Boolean): String {
  * 所以 `Chart` 一定在内联脚本之前就位。参考实现里那套 `runScripts()` 顺序调度
  * 是为「流式追加片段」准备的，这里用不着。
  */
+/**
+ * 把 SVG 源码序列化成独立、自包含的单文件（内嵌 CSS 色阶与背景底色）。
+ *
+ * 关键背景：模型输出的 SVG 只带 `class="c-teal"`、`class="th"` 等类名，不包含任何颜色；
+ * 如果直接将原样代码保存成 `.svg`，在外部看图软件、浏览器或矢量设计工具打开时，因为缺少宿主注入的 CSS，
+ * 所有矩形与文字都会回落成纯黑 (#000000) 死黑块！
+ * 因此必须在 `<svg>` 内部注入 `<style>` 标签（写入对应深浅色模式的色阶定义），
+ * 并根据深浅色补充一层背景底色矩形，保证外部无论用什么查看器打开都能 100% 还原。
+ */
+fun serializeSelfContainedSvg(payload: WidgetPayload, isDark: Boolean): String {
+    val raw = payload.code.trim()
+    val bgHex = if (isDark) "#1a1a1a" else "#FFFFFF"
+    val tokens = widgetTokens(isDark)
+
+    val svgTagEnd = raw.indexOf('>')
+    if (svgTagEnd < 0) return raw
+
+    val svgHeader = raw.substring(0, svgTagEnd + 1)
+    val svgBody = raw.substring(svgTagEnd + 1)
+
+    val headerWithXmlns = if (!svgHeader.contains("xmlns=")) {
+        svgHeader.replaceFirst("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"")
+    } else {
+        svgHeader
+    }
+
+    val styleBlock = """
+<style>
+/* 自包含设计令牌与色阶定义（piDroid 导出） */
+$tokens
+svg { background-color: $bgHex; }
+</style>
+<rect width="100%" height="100%" fill="$bgHex"/>
+""".trimIndent()
+
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n$headerWithXmlns\n$styleBlock\n$svgBody"
+}
+
 fun buildWidgetHtml(
     payload: WidgetPayload,
     backgroundHex: String,
@@ -545,6 +592,96 @@ internal object WidgetThumbs {
     }
 }
 
+/**
+ * SVG 导出与存储工具。
+ *
+ * 负责两件事：
+ * 1. 保存高清 PNG 图片到系统相册 (Pictures/piDroid)；
+ * 2. 保存自包含 SVG 矢量文件到系统下载目录 (Download/piDroid)。
+ */
+internal object WidgetExportHelper {
+
+    fun cleanFilename(title: String, defaultName: String): String {
+        return title.trim()
+            .replace(Regex("[^a-zA-Z0-9_\\-\u4e00-\u9fa5]+"), "_")
+            .trim('_')
+            .ifBlank { defaultName }
+    }
+
+    /**
+     * 将 Bitmap 保存到系统相册 (Pictures/piDroid)
+     */
+    fun saveImageToGallery(context: Context, bitmap: Bitmap, title: String): Result<String> {
+        val name = cleanFilename(title, "widget")
+        val filename = "${name}_${System.currentTimeMillis()}.png"
+
+        return runCatching {
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/piDroid")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+            }
+
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+                ?: throw IllegalStateException("无法创建相册媒体项")
+
+            resolver.openOutputStream(uri)?.use { out ->
+                if (!bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)) {
+                    throw IllegalStateException("压缩 PNG 失败")
+                }
+            } ?: throw IllegalStateException("无法写入相册文件流")
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+            }
+            "Pictures/piDroid/$filename"
+        }
+    }
+
+    /**
+     * 将自包含 SVG 文本保存到下载目录 (Download/piDroid)
+     */
+    fun saveSvgToDownloads(context: Context, svgContent: String, title: String): Result<String> {
+        val name = cleanFilename(title, "diagram")
+        val filename = "${name}_${System.currentTimeMillis()}.svg"
+
+        return runCatching {
+            val resolver = context.contentResolver
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "image/svg+xml")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/piDroid")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+
+                val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    ?: throw IllegalStateException("无法创建下载项")
+
+                resolver.openOutputStream(uri)?.use { out ->
+                    out.write(svgContent.toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("无法写入下载文件流")
+
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+            } else {
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "piDroid")
+                if (!dir.exists()) dir.mkdirs()
+                val file = File(dir, filename)
+                file.writeText(svgContent, Charsets.UTF_8)
+            }
+            "Download/piDroid/$filename"
+        }
+    }
+}
+
 /** 本地化的第三方库：命中的 CDN 请求直接由 assets 回吐，弱网/离线也能秒开。 */
 private val LOCAL_LIB_ASSETS = mapOf(
     "chart.umd.js" to "libs/chart.umd.js",
@@ -637,6 +774,89 @@ private class WidgetWebView(
  * 预览区只吃「主轴为横向 / 点击 / 控件拖拽」的手势，纵向拖拽还给列表；
  * 全屏入口放在标题行右侧，**不做「点预览区就全屏」** —— 那会让页内点击变成切换页面。
  */
+/**
+ * SVG 专用导出按钮（带下拉菜单：保存 PNG 图片 / 保存 SVG 矢量图）。
+ */
+@Composable
+private fun SvgExportButton(
+    payload: WidgetPayload,
+    isDark: Boolean,
+    onGetBitmap: () -> Bitmap?,
+    modifier: Modifier = Modifier
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val theme = LocalAppTheme.current
+
+    Box(modifier = modifier) {
+        IconButton(
+            onClick = { menuOpen = true },
+            modifier = Modifier.size(32.dp)
+        ) {
+            Icon(
+                Icons.Default.Download,
+                contentDescription = "下载保存",
+                modifier = Modifier.size(16.dp),
+                tint = theme.primary
+            )
+        }
+
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { menuOpen = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("保存图片 (PNG)", fontSize = 13.sp) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Image,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = theme.primary
+                    )
+                },
+                onClick = {
+                    menuOpen = false
+                    val bmp = onGetBitmap()
+                    if (bmp != null) {
+                        WidgetExportHelper.saveImageToGallery(context, bmp, payload.title)
+                            .onSuccess { path ->
+                                Toast.makeText(context, "已保存到相册 ($path)", Toast.LENGTH_SHORT).show()
+                            }
+                            .onFailure { e ->
+                                Toast.makeText(context, "保存图片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            }
+                    } else {
+                        Toast.makeText(context, "图片渲染中，请稍后再试", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("保存矢量图 (SVG)", fontSize = 13.sp) },
+                leadingIcon = {
+                    Icon(
+                        Icons.Default.Code,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = theme.textSecondary
+                    )
+                },
+                onClick = {
+                    menuOpen = false
+                    val svg = serializeSelfContainedSvg(payload, isDark)
+                    WidgetExportHelper.saveSvgToDownloads(context, svg, payload.title)
+                        .onSuccess { path ->
+                            Toast.makeText(context, "已保存矢量图 ($path)", Toast.LENGTH_SHORT).show()
+                        }
+                        .onFailure { e ->
+                            Toast.makeText(context, "保存 SVG 失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                }
+            )
+        }
+    }
+}
+
 @Composable
 fun WidgetToolCallCard(
     payload: WidgetPayload,
@@ -677,6 +897,17 @@ fun WidgetToolCallCard(
                     softWrap = false,
                     modifier = Modifier.padding(horizontal = 6.dp)
                 )
+                if (payload.isSvg && !isRunning) {
+                    val thumbKey = remember(payload.code, theme.isDark) {
+                        "thumb:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
+                    }
+                    SvgExportButton(
+                        payload = payload,
+                        isDark = theme.isDark,
+                        onGetBitmap = { WidgetThumbs.get(thumbKey) }
+                    )
+                }
+
                 IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
                     Icon(
                         Icons.Default.OpenInFull,
@@ -732,6 +963,7 @@ fun WidgetViewerScreen(
     onClose: () -> Unit
 ) {
     val theme = LocalAppTheme.current
+    val fullWebRef = remember { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
     BackHandler { onClose() }
 
     Scaffold(
@@ -759,11 +991,24 @@ fun WidgetViewerScreen(
                     }
                 },
                 actions = {
+                    if (payload.isSvg) {
+                        val thumbKey = remember(payload.code, theme.isDark) {
+                            "thumb:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
+                        }
+                        SvgExportButton(
+                            payload = payload,
+                            isDark = theme.isDark,
+                            onGetBitmap = {
+                                fullWebRef.get()?.let { WidgetThumbs.capture(it) } ?: WidgetThumbs.get(thumbKey)
+                            }
+                        )
+                    }
+
                     Text(
                         text = "${payload.width}×${payload.height}",
                         fontSize = 11.sp,
                         color = theme.textMuted,
-                        modifier = Modifier.padding(end = 14.dp)
+                        modifier = Modifier.padding(start = 4.dp, end = 14.dp)
                     )
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.surfaceContainerLow)
@@ -783,6 +1028,7 @@ fun WidgetViewerScreen(
             WidgetCanvas(
                 payload = payload,
                 scale = scale,
+                onWebViewCreated = { fullWebRef.set(it) },
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -919,7 +1165,8 @@ private fun createWidgetWebView(
 private fun WidgetCanvas(
     payload: WidgetPayload,
     scale: Float,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onWebViewCreated: ((WebView) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
@@ -968,7 +1215,10 @@ private fun WidgetCanvas(
                 allowVerticalScroll = true,
                 isDisposed = { disposed.get() },
                 onFail = { failed = true }
-            ).also { holder.set(it) }
+            ).also {
+                holder.set(it)
+                onWebViewCreated?.invoke(it)
+            }
         },
         update = { webView ->
             val key = html.hashCode().toString() + "#" + retry
