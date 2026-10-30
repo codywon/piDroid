@@ -295,4 +295,41 @@ class GenerativeUiTest {
         assertEquals(1f, widgetFitScale(WidgetPayload("t", "<b/>", 320, 600), 900), 0f)
         assertTrue(widgetFitScale(WidgetPayload("t", "<b/>", 0, 600), 387) <= 1f)
     }
+
+    // ── 设计令牌与 SVG 色阶注入 ─────────────────────────────────────
+
+    /**
+     * SVG 架构图依赖宿主注入的 `c-teal` / `c-purple` / `box` 样式。
+     * 若未注入，W3C 规范默认无 fill 的 rect 回落为纯黑 (#000000)，直接变成黑块。
+     */
+    @Test
+    fun `light mode injects light color ramps and tokens`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<svg><g class=\"c-teal\"><rect/><text class=\"th\">hi</text></g></svg>"),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328",
+            dark = false
+        )
+        // 浅色模式：薄荷绿 50 填充 (#E1F5EE) + 深绿 800 文字 (#085041) + 浅灰网关框 (#F6F8FA)
+        assertTrue(html.contains(".c-teal > rect"))
+        assertTrue(html.contains("#E1F5EE"))
+        assertTrue(html.contains("#085041"))
+        assertTrue(html.contains(".box { fill: var(--bg2);"))
+        assertTrue(html.contains("--bg2: #F6F8FA;"))
+    }
+
+    @Test
+    fun `dark mode injects dark color ramps and tokens matching pi-generative-ui`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<svg><g class=\"c-purple\"><rect/><text class=\"th\">hi</text></g></svg>"),
+            backgroundHex = "#0D1117",
+            foregroundHex = "#F0F6FC",
+            dark = true
+        )
+        // 深色模式：深紫 800 填充 (#3C3489) + 紫粉 100 文字 (#CECBF6) + 暗炭灰网关框 (#2a2a2a)
+        assertTrue(html.contains(".c-purple > rect"))
+        assertTrue(html.contains("#3C3489"))
+        assertTrue(html.contains("#CECBF6"))
+        assertTrue(html.contains("--bg2: #2a2a2a;"))
+    }
 }

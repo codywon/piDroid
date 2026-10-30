@@ -2,6 +2,24 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.64] - 2026-10-30
+
+### 🎨 修复 SVG 架构图全变黑块：注入 Claude.ai / pi-generative-ui 完整设计系统色阶（深浅色自适应）
+
+**现象**：模型生成的架构图/流程图在手机端呈现为几个实心黑色矩形，所有文字和边框被淹没。
+
+**根因**：
+- 模型输出的 SVG 严格遵循 Claude.ai 规范，使用 `class="c-teal"`、`class="c-purple"`、`class="box"` 等语义类名，**不包含任何内嵌 fill 属性或 `<style>`**；
+- 按照 W3C SVG 规范，无 fill 且无 CSS 规则命中的 `<rect>` 与 `<text>` **一律回退为默认纯黑 (#000000)**；
+- 手机端 WebView 外壳此前缺少这套设计系统样式表，导致所有框体与文字全部回落成黑色，黑字写在黑块上，直接变死黑块。
+
+**改法（方案 1：深浅色自适应）**：
+- 注入完整的 9 组语义色阶（purple, teal, coral, pink, gray, blue, green, amber, red）与基础元件类（box, node, arr, leader, th, ts, t）；
+- **浅色模式（当前）**：注入 Anthropic 官方规范的 50 级淡彩底色（如淡绿 `#E1F5EE`、淡紫 `#EEEDFE`）+ 600 级实色边框 + 800 级深色文字，白底呈现清爽高雅的白纸彩墨质感；
+- **深色模式**：1:1 注入 PC 端 `pi-generative-ui` 同款深色令牌（800 级暗色底 + 400 级亮色边框 + 100 级发光字），呈现高对比度暗黑极客风；
+- 补齐单元测试 `GenerativeUiTest`（浅色与深色色阶注入断言）。
+
+---
 
 ## [1.7.63] - 2026-10-30
 

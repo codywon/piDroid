@@ -177,6 +177,194 @@ internal fun widgetFitScale(payload: WidgetPayload, containerWidthDp: Int): Floa
 private const val ERROR_SENTINEL = "__PI_ERR:"
 
 /**
+ * 一条色阶：SVG 里的 `class="c-teal"` 之类。
+ *
+ * 这些类名**不是模型自造的**，而是宿主必须注入的设计令牌。缺了它们，`<rect>` 会回落到
+ * SVG 默认的 `fill: black`、`<text>` 也变黑 —— 真机上就是「整张图一堆黑块、字全看不见」。
+ */
+private data class SvgRamp(
+    val cls: String,
+    val fill: String,
+    val stroke: String,
+    val title: String,
+    val subtitle: String
+)
+
+/**
+ * 深色色阶：**逐字取自** `pi-generative-ui` 的 `svg-styles.ts`（那份是从 claude.ai 逆向提取的
+ * 权威样式），填充用 800、描边用 400、标题 100、副标题 200。
+ */
+private val RAMPS_DARK = listOf(
+    SvgRamp("purple", "#3C3489", "#7F77DD", "#CECBF6", "#AFA9EC"),
+    SvgRamp("teal", "#085041", "#1D9E75", "#9FE1CB", "#5DCAA5"),
+    SvgRamp("coral", "#712B13", "#D85A30", "#F5C4B3", "#F0997B"),
+    SvgRamp("pink", "#72243E", "#D4537E", "#F4C0D1", "#ED93B1"),
+    SvgRamp("gray", "#444441", "#888780", "#D3D1C7", "#B4B2A9"),
+    SvgRamp("blue", "#0C447C", "#378ADD", "#B5D4F4", "#85B7EB"),
+    SvgRamp("green", "#27500A", "#639922", "#C0DD97", "#97C459"),
+    SvgRamp("amber", "#633806", "#BA7517", "#FAC775", "#EF9F27"),
+    SvgRamp("red", "#791F1F", "#E24B4A", "#F7C1C1", "#F09595")
+)
+
+/**
+ * 浅色色阶：参考实现只发深色一套（它的 Glimpse 外壳固定深色），所以这里按**同一份设计规范**
+ * 推导 —— 规范原文是「浅色：50 填充 + 600 描边 + 800 标题 / 600 副标题」，
+ * 色值取自 `visualize_read_me` 给出的 9 色阶表。
+ */
+private val RAMPS_LIGHT = listOf(
+    SvgRamp("purple", "#EEEDFE", "#534AB7", "#3C3489", "#534AB7"),
+    SvgRamp("teal", "#E1F5EE", "#0F6E56", "#085041", "#0F6E56"),
+    SvgRamp("coral", "#FAECE7", "#993C1D", "#712B13", "#993C1D"),
+    SvgRamp("pink", "#FBEAF0", "#993556", "#72243E", "#993556"),
+    SvgRamp("gray", "#F1EFE8", "#5F5E5A", "#444441", "#5F5E5A"),
+    SvgRamp("blue", "#E6F1FB", "#185FA5", "#0C447C", "#185FA5"),
+    SvgRamp("green", "#EAF3DE", "#3B6D11", "#27500A", "#3B6D11"),
+    SvgRamp("amber", "#FAEEDA", "#854F0B", "#633806", "#854F0B"),
+    SvgRamp("red", "#FCEBEB", "#A32D2D", "#791F1F", "#A32D2D")
+)
+
+/**
+ * 宿主必须注入的样式表。
+ *
+ * 微组件在 claude.ai 上是「跑在一个已经装好设计系统的沙箱里」，所以模型可以放心写
+ * `class="c-teal"`、`class="t"`、`var(--color-text-primary)`、裸 `<button>`。
+ * 我们这边如果不注入，这些全部失效：色阶回落成黑色矩形、文字看不见、表单控件变成
+ * 浏览器默认样式 —— 真机截图里那张「黑块架构图」就是这么来的。
+ *
+ * 深色值逐字对齐 pi-generative-ui；浅色值按同一份规范推导（见 RAMPS_LIGHT）。
+ */
+private fun widgetTokens(dark: Boolean): String {
+    val ramps = if (dark) RAMPS_DARK else RAMPS_LIGHT
+    val vars = if (dark) {
+        """
+        --p: #e0e0e0; --s: #a0a0a0; --t: #b4b2a9; --bg2: #2a2a2a; --b: #404040;
+        --color-text-primary: #e0e0e0;
+        --color-text-secondary: #a0a0a0;
+        --color-text-tertiary: #707070;
+        --color-text-info: #85B7EB;
+        --color-text-danger: #F09595;
+        --color-text-success: #97C459;
+        --color-text-warning: #EF9F27;
+        --color-background-primary: #1a1a1a;
+        --color-background-secondary: #2a2a2a;
+        --color-background-tertiary: #111111;
+        --color-background-info: #0C447C;
+        --color-background-danger: #791F1F;
+        --color-background-success: #27500A;
+        --color-background-warning: #633806;
+        --color-border-primary: rgba(255,255,255,0.4);
+        --color-border-secondary: rgba(255,255,255,0.3);
+        --color-border-tertiary: rgba(255,255,255,0.15);
+        --color-border-info: #85B7EB;
+        --color-border-danger: #F09595;
+        --color-border-success: #97C459;
+        --color-border-warning: #EF9F27;
+        """.trimIndent()
+    } else {
+        """
+        --p: #1F2328; --s: #57606A; --t: #8C959F; --bg2: #F6F8FA; --b: #D0D7DE;
+        --color-text-primary: #1F2328;
+        --color-text-secondary: #57606A;
+        --color-text-tertiary: #8C959F;
+        --color-text-info: #185FA5;
+        --color-text-danger: #A32D2D;
+        --color-text-success: #3B6D11;
+        --color-text-warning: #854F0B;
+        --color-background-primary: #FFFFFF;
+        --color-background-secondary: #F6F8FA;
+        --color-background-tertiary: #FFFFFF;
+        --color-background-info: #E6F1FB;
+        --color-background-danger: #FCEBEB;
+        --color-background-success: #EAF3DE;
+        --color-background-warning: #FAEEDA;
+        --color-border-primary: rgba(0,0,0,0.4);
+        --color-border-secondary: rgba(0,0,0,0.3);
+        --color-border-tertiary: rgba(0,0,0,0.15);
+        --color-border-info: #185FA5;
+        --color-border-danger: #A32D2D;
+        --color-border-success: #3B6D11;
+        --color-border-warning: #854F0B;
+        """.trimIndent()
+    }
+
+    val rampCss = ramps.joinToString("\n") { r ->
+        """
+        svg .c-${r.cls} > rect, svg .c-${r.cls} > circle, svg .c-${r.cls} > ellipse,
+        svg rect.c-${r.cls}, svg circle.c-${r.cls}, svg ellipse.c-${r.cls} { fill: ${r.fill}; stroke: ${r.stroke}; stroke-width: 1; }
+        svg .c-${r.cls} > .th, svg .c-${r.cls} > .t { fill: ${r.title}; }
+        svg .c-${r.cls} > .ts { fill: ${r.subtitle}; }
+        """.trimIndent()
+    }
+
+    return """
+        :root {
+          $vars
+          --font-sans: system-ui, -apple-system, sans-serif;
+          --font-serif: Georgia, serif;
+          --font-mono: ui-monospace, monospace;
+          --border-radius-md: 8px;
+          --border-radius-lg: 12px;
+          --border-radius-xl: 16px;
+        }
+
+        svg .t  { font-family: var(--font-sans); font-size: 14px; fill: var(--p); }
+        svg .ts { font-family: var(--font-sans); font-size: 12px; fill: var(--s); }
+        svg .th { font-family: var(--font-sans); font-size: 14px; font-weight: 500; fill: var(--p); }
+        svg .box { fill: var(--bg2); stroke: var(--b); }
+        svg .node { cursor: pointer; }
+        svg .node:hover { opacity: 0.8; }
+        svg .arr { stroke: var(--t); stroke-width: 1.5; fill: none; }
+        svg .leader { stroke: var(--t); stroke-width: 0.5; stroke-dasharray: 4 3; fill: none; }
+
+        $rampCss
+
+        button {
+          background: transparent;
+          border: 0.5px solid var(--color-border-secondary);
+          border-radius: var(--border-radius-md);
+          color: var(--color-text-primary);
+          padding: 6px 14px;
+          font-size: 14px;
+          cursor: pointer;
+          font-family: var(--font-sans);
+        }
+        button:hover { background: var(--color-background-secondary); }
+        button:active { transform: scale(0.98); }
+
+        input[type="range"] {
+          -webkit-appearance: none;
+          height: 4px;
+          background: var(--color-border-secondary);
+          border-radius: 2px;
+          outline: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          width: 18px;
+          height: 18px;
+          border-radius: 50%;
+          background: var(--color-text-primary);
+          cursor: pointer;
+        }
+
+        input[type="text"], input[type="number"], textarea, select {
+          height: 36px;
+          background: var(--color-background-primary);
+          border: 0.5px solid var(--color-border-tertiary);
+          border-radius: var(--border-radius-md);
+          color: var(--color-text-primary);
+          padding: 0 10px;
+          font-size: 14px;
+          font-family: var(--font-sans);
+          outline: none;
+        }
+        input[type="text"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
+          border-color: var(--color-border-primary);
+        }
+    """.trimIndent()
+}
+
+/**
  * 把 `widget_code` 包成可加载的完整文档。
  *
  * `widget_code` 按插件约定是**片段**（没有 DOCTYPE/html/head/body），所以这里补
@@ -212,6 +400,8 @@ fun buildWidgetHtml(
     backgroundHex: String,
     foregroundHex: String,
     fullscreen: Boolean = false,
+    /** 当前是深色主题吗：决定注入哪一套设计令牌（色阶 / CSS 变量）。 */
+    dark: Boolean = false,
     /**
      * 全屏态的缩放比：把 `payload.width` 的布局缩进屏幕宽度。
      *
@@ -265,6 +455,9 @@ fun buildWidgetHtml(
           });
         })();
         </script>
+        <style>
+        ${widgetTokens(dark)}
+        </style>
         <style>
           html, body {
             margin: 0; padding: 8px; background: $backgroundHex; color: $foregroundHex;
@@ -740,6 +933,7 @@ private fun WidgetCanvas(
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
             foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
             fullscreen = true,
+            dark = theme.isDark,
             initialScale = scale
         )
     }
@@ -873,6 +1067,7 @@ private fun WidgetThumbnail(
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
             foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
             fullscreen = false,
+            dark = theme.isDark,
             initialScale = fitScale
         )
     }

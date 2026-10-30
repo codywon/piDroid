@@ -427,11 +427,19 @@ app.get('/api/files/raw', authMiddleware, (req, res, next) => {
   next();
 });
 
-// 4. 反向代理到 pi-web
+// 4. 反向代理到 pi-web（启用 HTTP Keep-Alive 连接池，避免高频轮询时反复创建销毁本地 socket）
+const proxyAgent = new http.Agent({
+  keepAlive: true,
+  maxSockets: 100,
+  keepAliveMsecs: 30000,
+  timeout: 30000
+});
+
 const proxy = createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
   ws: true,
+  agent: proxyAgent,
   router: () => TARGET, // 动态支持更新后的目标端口
   on: {
     error: (err, req, res) => {
@@ -513,7 +521,7 @@ async function start(options = {}) {
         console.log(`\n🌐 正在启动固定域名隧道 "${STABLE_TUNNEL_NAME}" -> ${publicUrl} ...`);
         const tunnelProcess = spawn(
           'cloudflared',
-          ['tunnel', 'run', STABLE_TUNNEL_NAME],
+          ['tunnel', '--protocol', 'http2', '--edge-ip-version', '4', 'run', STABLE_TUNNEL_NAME],
           { shell: true }
         );
 
@@ -550,7 +558,12 @@ async function start(options = {}) {
         resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
-        const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
+        const tunnelProcess = spawn('cloudflared', [
+          'tunnel',
+          '--protocol', 'http2',
+          '--edge-ip-version', '4',
+          '--url', `http://127.0.0.1:${listenPort}`
+        ], {
           shell: true
         });
 
