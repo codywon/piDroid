@@ -2,8 +2,6 @@ package com.pi.app.ui.chat
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.net.Uri
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -17,7 +15,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -32,11 +29,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -187,7 +181,15 @@ fun buildWidgetHtml(
     payload: WidgetPayload,
     backgroundHex: String,
     foregroundHex: String,
-    fullscreen: Boolean = false
+    fullscreen: Boolean = false,
+    /**
+     * 全屏态的缩放比：把 `payload.width` 的布局缩进屏幕宽度。
+     *
+     * 只给 `width=<声明宽度>` 是不够的 —— WebView 会按 900px 布局**但不缩出去**，
+     * 结果只看到左边一半（真机表现：右侧「未来 24 小时」整块被切掉）。
+     * 必须把初始缩放比显式写进 viewport，让整张图按比例缩进屏宽，细节靠双指放大。
+     */
+    initialScale: Float? = null
 ): String {
     val body = if (payload.isSvg) {
         """
@@ -202,9 +204,10 @@ fun buildWidgetHtml(
     }
 
     val viewport = if (fullscreen) {
-        // 按模型声明的桌面宽度布局，再由 WebView 等比缩放到屏幕宽度：
-        // 横排多栏的微组件不会因为窄屏被压扁，双指缩放看细节。
-        "width=${payload.width}, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+        // 按模型声明的桌面宽度布局，再等比缩到屏幕宽度：
+        // 横排多栏的微组件不会因为窄屏被压扁，双指放大看细节。
+        val scale = initialScale?.takeIf { it > 0f && it.isFinite() } ?: 1f
+        "width=${payload.width}, initial-scale=$scale, maximum-scale=5.0, user-scalable=yes"
     } else {
         "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
     }
@@ -252,47 +255,29 @@ fun buildWidgetHtml(
 }
 
 /**
- * 离屏快照缓存。
+ * 实测内容高度缓存（key = widget 内容哈希 + 深浅色）。
  *
- * 为什么需要：`LazyColumn` 会把滑出视口的 item 整个 dispose，内嵌的 WebView 也随之销毁；
- * 滑回来时重新加载会有几百毫秒白屏。这里在销毁前抓一帧存下来，回来时先贴图、再由新建的
- * WebView 顶上去 —— 视觉上接近 claude.ai 的 iframe（浏览器帮它回收），又不会让
- * Chromium 实例跟着会话条数增长。
+ * 为什么必须放在组合**外面**：`LazyColumn` 会 dispose 离开视口的 item，item 里的
+ * `remember` 随之丢失。若高度只存在 item 内，滑出去再回来就回到估算值 → 卡片高度一变，
+ * 列表重新排版 → 可能又把 item 挤出视口 → 再测一次 → 来回抖动（真机上看到的就是频闪）。
+ * 放到全局后，同一份 widget 内容在任何时刻都只有一个确定高度。
  *
- * 缓存的是**渲染结果**，不是交互态：滚回去之后页内临时状态（拖过的滑块）会回到初始值。
+ * 存的是**渲染结果**，不是交互态。
  */
-internal object WidgetSnapshots {
-    private const val MAX_ENTRIES = 8
-    private const val MAX_WIDTH_PX = 720
+internal object WidgetHeights {
+    private const val MAX_ENTRIES = 32
 
-    private val entries = object : LinkedHashMap<String, Bitmap>(MAX_ENTRIES, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+    private val entries = object : LinkedHashMap<String, Int>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean =
             size > MAX_ENTRIES
     }
 
     @Synchronized
-    fun get(key: String): Bitmap? = entries[key]
+    fun get(key: String): Int? = entries[key]
 
     @Synchronized
-    fun put(key: String, bitmap: Bitmap) {
-        entries[key] = bitmap
-    }
-
-    /** 在销毁前抓一帧。缩放上限 720px 宽，避免整页大图把堆吃掉。 */
-    fun capture(view: WebView, key: String) {
-        val w = view.width
-        val h = view.height
-        if (w <= 0 || h <= 0) return
-        runCatching {
-            val scale = if (w > MAX_WIDTH_PX) MAX_WIDTH_PX.toFloat() / w else 1f
-            val outW = (w * scale).toInt().coerceAtLeast(1)
-            val outH = (h * scale).toInt().coerceAtLeast(1)
-            val bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.scale(scale, scale)
-            view.draw(canvas)
-            put(key, bitmap)
-        }
+    fun put(key: String, heightDp: Int) {
+        entries[key] = heightDp
     }
 }
 
@@ -396,15 +381,18 @@ fun WidgetToolCallCard(
 ) {
     val theme = LocalAppTheme.current
     val configuration = LocalConfiguration.current
-    val density = LocalDensity.current
     val initialHeight = remember(payload.width, payload.height, configuration.screenWidthDp) {
         previewHeightDp(payload, (configuration.screenWidthDp - 24).coerceAtLeast(200))
     }
     val maxHeightDp = remember(configuration.screenHeightDp) {
         minOf((configuration.screenHeightDp * 0.6f).toInt(), 480)
     }
-    // 实测高度：null 表示还没测到，先用初始估算
-    var measuredHeight by remember(payload.code) { mutableStateOf<Int?>(null) }
+    // 实测高度：优先用全局缓存（item 被 LazyColumn 回收后仍然记得），
+    // 没有才用按声明比例的估算值。
+    val heightKey = remember(payload.code, theme.isDark) {
+        "h:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
+    }
+    var measuredHeight by remember(heightKey) { mutableStateOf(WidgetHeights.get(heightKey)) }
     val previewHeight = measuredHeight ?: initialHeight
 
     Surface(
@@ -471,10 +459,12 @@ fun WidgetToolCallCard(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(previewHeight.dp),
-                    onContentHeightPx = { px ->
-                        // CSS px → dp（WebView 的 CSS px 已按设备像素比归一，按 density 换算即可）
-                        val dp = with(density) { px.toDp().value }
-                        measuredHeight = dp.roundToInt().coerceIn(PREVIEW_MIN_DP, maxHeightDp)
+                    onContentHeightPx = { cssPx ->
+                        // WebView 在 zoom=1 时 1 CSS px == 1 dp，这里**不能**再除 density：
+                        // 当成设备像素换算会把高度算小（真机上表现为预览区仍然只露一半）。
+                        val dp = cssPx.roundToInt().coerceIn(PREVIEW_MIN_DP, maxHeightDp)
+                        WidgetHeights.put(heightKey, dp)
+                        measuredHeight = dp
                     }
                 )
             }
@@ -570,19 +560,27 @@ private fun WidgetCanvas(
     var retry by remember(payload.code) { mutableStateOf(0) }
     var failed by remember(payload.code, retry) { mutableStateOf(false) }
 
-    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen) {
+    // 全屏：把声明宽度等比缩进屏幕宽度。内嵌走回流，不需要缩放。
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val initialScale = if (fullscreen) {
+        (screenWidthDp.toFloat() / payload.width.coerceAtLeast(1)).coerceIn(0.2f, 1f)
+    } else {
+        null
+    }
+
+    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen, initialScale) {
         buildWidgetHtml(
             payload = payload,
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
             foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
-            fullscreen = fullscreen
+            fullscreen = fullscreen,
+            initialScale = initialScale
         )
     }
 
     val snapshotKey = remember(payload.code, theme.isDark) {
         "widget:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
     }
-    val snapshot = remember(snapshotKey) { WidgetSnapshots.get(snapshotKey) }
 
     if (failed) {
         WidgetSourceFallback(
@@ -604,18 +602,10 @@ private fun WidgetCanvas(
     val loadedKey = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<String?>(null) }
     // 高度只测一次：反复回填会让 WebView 视口高度变化，触发微组件自身的响应式 JS 重排（振荡）
     val measured = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    // 销毁标志：用于区分「页面加载完成」与「销毁时清场加载」
+    val disposed = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     Box(modifier = modifier) {
-        // 滑回来时先贴快照，WebView 首帧画出来后会盖住它
-        if (snapshot != null) {
-            Image(
-                bitmap = snapshot.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.FillWidth,
-                modifier = Modifier.fillMaxSize()
-            )
-        }
-
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -691,8 +681,12 @@ private fun WidgetCanvas(
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {
-                            // 销毁前清场的那次加载不参与白板检测，否则会在已离开组合的实例上写状态
-                            if (url == null || url == "about:blank") return
+                            // 只跳过「销毁时清场」的那次加载，用显式标志判断。
+                            //
+                            // 不能用 `url == "about:blank"` 判断：`loadDataWithBaseURL(null, …)`
+                            // 加载出来的页面 URL **本身就是 about:blank**，那样会把正常的
+                            // 白板检测与高度测量一起跳过（真机上表现为预览区高度永远停在估算值）。
+                            if (disposed.get()) return
                             // 白板检测 + 实测内容高度，共用一个脚本往返
                             view?.evaluateJavascript(
                                 "(function(){var r=document.getElementById('root');" +
@@ -729,9 +723,8 @@ private fun WidgetCanvas(
 
     DisposableEffect(snapshotKey, retry) {
         onDispose {
+            disposed.set(true)
             holder.get()?.let { wv ->
-                // 失败页的快照不能存：下次进来会先把一张白板贴上去
-                if (!failed) WidgetSnapshots.capture(wv, snapshotKey)
                 runCatching {
                     wv.stopLoading()
                     wv.loadUrl("about:blank")

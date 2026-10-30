@@ -217,6 +217,46 @@ class GenerativeUiTest {
         assertFalse(full.contains("overflow: hidden"))
     }
 
+    /**
+     * 全屏必须把初始缩放比写进 viewport。
+     *
+     * 只给 `width=900` 是不够的：WebView 会按 900px 布局**但不缩出去**，
+     * 真机表现就是只看到左边一半（右侧「未来 24 小时」整块被切掉）。
+     */
+    @Test
+    fun `fullscreen writes the fit-to-width initial scale`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>", width = 900, height = 900),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328",
+            fullscreen = true,
+            initialScale = 411f / 900f
+        )
+        assertTrue(html.contains("initial-scale=0.4566"))
+        assertTrue(html.contains("width=900"))
+    }
+
+    /** 缩放比异常（0 / NaN）时退回 1.0，不生成非法 viewport。 */
+    @Test
+    fun `invalid initial scale falls back to one`() {
+        val zero = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>", 900, 900),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328",
+            fullscreen = true,
+            initialScale = 0f
+        )
+        assertTrue(zero.contains("initial-scale=1.0"))
+        val nan = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>", 900, 900),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328",
+            fullscreen = true,
+            initialScale = Float.NaN
+        )
+        assertTrue(nan.contains("initial-scale=1.0"))
+    }
+
     /** 内嵌仍然要回流到手机宽度（控件得大到能点、能拖）。 */
     @Test
     fun `inline keeps device width viewport`() {

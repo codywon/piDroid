@@ -2,6 +2,50 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.56] - 2026-10-30
+
+### 🐛 修生成式 UI：频闪 / 预览区仍只露一半 / 全屏没缩进屏宽
+
+上一版（1.7.55）的三处修复都建立在三个错误判断上，真机逐条对照后重做。
+
+**① 频闪 —— 移除了「离屏快照」叠层**
+
+- 根因：销毁前抓一帧、回来先贴图再重建。快照是**旧帧**，页面画好后换成实时内容，
+  两者不一致就是一次跳变；滚动补位期间反复发生 —— 不是"闪白"，是"闪跳"。
+  它只掩盖了几百毫秒空白，重建与重跑页面的真实成本一点没省。
+- 改法：直接删掉快照机制（`WidgetSnapshots` 整个移除）。实例数本来就跟着视口走
+  （`LazyColumn` 会 dispose 离开视口的 item），不需要额外回收。
+- **彻底解决要 WebView 实例池**（按内容哈希驻留 2~3 个已加载实例），
+  需逐机型验证，本版不做，已写入 `DESIGN-generative-ui.md` 的已知问题。
+
+**② 预览区仍只露一半 —— 高度测量一直被跳过**
+
+- 根因：我用 `url == "about:blank"` 跳过销毁时的清理加载，但 `loadDataWithBaseURL(null, …)`
+  加载出来的页面 URL **本身就是 `about:blank`**，于是整个 `onPageFinished` 函数体
+  （白板检测 + 高度测量）从来没执行过，高度永远停在按声明比例的估算值。
+- 改法：用显式的 `disposed` 标志判断，不用 URL。
+- 另修一处量纲错误：WebView 在 zoom=1 时 **1 CSS px == 1 dp**，早期又按 density 除了一次，
+  高度会被算小到 1/3。
+- 实测高度改存到**组合之外**的 `WidgetHeights`（LRU 32）：`LazyColumn` 回收 item 会连同
+  item 内的 `remember` 一起丢掉，高度退回估算值 → 卡片高度一变、列表重排 → 可能又把 item
+  挤出视口 → 再测一次，来回抖动。
+
+**③ 全屏没缩进屏宽 —— `width=900` 只改布局宽度，不改缩放**
+
+- 根因：`loadWithOverviewMode = false` + viewport `width=900`，WebView 按 900px 布局
+  **但不缩出去**，所以只看到左边一半（右侧「未来 24 小时」整块被切、「成都」被切）。
+- 改法：把初始缩放比显式写进 viewport —— `initial-scale = 屏幕宽 / 声明宽`
+  （411/900 ≈ 0.457），整张图等比缩进屏宽，细节靠双指放大；异常值（0 / NaN）退回 1.0。
+
+**工程**
+
+- `GenerativeUiTest` 补 2 项：全屏必须写 fit-to-width 的 initial-scale；非法缩放比退回 1.0。
+  单测合计 34 项全绿。
+- `docs/DESIGN-generative-ui.md` 同步：§3.4 重写（说明快照叠层为什么被删、高度为什么必须
+  存在组合之外）、§3.5 记下 `about:blank` 这个坑、§3.6 补 initial-scale 要求。
+
+---
+
 ## [1.7.55] - 2026-10-30
 
 ### 🐛 修生成式 UI 真机三宗罪：闪动 / 只显示一半 / 全屏右侧看不到
