@@ -18,6 +18,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -33,6 +35,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1648,49 +1651,105 @@ fun GlobalSkillsTab(
                         }
                     }
 
-                    // 搜索输入栏 (例如 react、testing、deploy)
+                    // 搜索输入栏（与已安装页工具条同规格：输入框与按钮同为 44dp，基线严格对齐）
                     item {
+                        val canSearch = searchQuery.isNotBlank() && !isSearching
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedTextField(
-                                value = searchQuery,
-                                onValueChange = { searchQuery = it },
-                                placeholder = { Text("例如 react、testing、deploy", fontSize = 12.sp, color = theme.textMuted) },
-                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp), tint = theme.textMuted) },
-                                trailingIcon = {
-                                    if (searchQuery.isNotBlank()) {
-                                        IconButton(onClick = { searchQuery = "" }, modifier = Modifier.size(24.dp)) {
-                                            Icon(Icons.Default.Clear, contentDescription = "清除", modifier = Modifier.size(14.dp), tint = theme.textMuted)
-                                        }
-                                    }
-                                },
-                                singleLine = true,
-                                modifier = Modifier.weight(1f),
-                                textStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp, color = theme.textPrimary),
-                                colors = OutlinedTextFieldDefaults.colors(
-                                    focusedBorderColor = theme.primary,
-                                    unfocusedBorderColor = theme.outline,
-                                    focusedTextColor = theme.textPrimary,
-                                    unfocusedTextColor = theme.textPrimary
-                                )
-                            )
-
-                            Button(
-                                onClick = { doSearch() },
-                                enabled = searchQuery.isNotBlank() && !isSearching,
-                                colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            Surface(
+                                shape = RoundedCornerShape(9.dp),
+                                color = theme.surfaceContainerLow,
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (searchQuery.isBlank()) theme.outline else theme.primary.copy(alpha = 0.6f)
+                                ),
+                                modifier = Modifier.weight(1f).height(44.dp)
                             ) {
-                                if (isSearching) {
-                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("搜索中", fontSize = 12.sp)
-                                } else {
-                                    Text("搜索", fontSize = 12.sp)
+                                Row(
+                                    modifier = Modifier.fillMaxSize().padding(horizontal = 9.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Search,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(15.dp),
+                                        tint = theme.textMuted
+                                    )
+                                    Spacer(modifier = Modifier.width(7.dp))
+                                    BasicTextField(
+                                        value = searchQuery,
+                                        onValueChange = { searchQuery = it },
+                                        singleLine = true,
+                                        textStyle = TextStyle(fontSize = 12.5.sp, color = theme.textPrimary),
+                                        cursorBrush = SolidColor(theme.primary),
+                                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                                        keyboardActions = KeyboardActions(onSearch = { if (canSearch) doSearch() }),
+                                        modifier = Modifier.weight(1f),
+                                        decorationBox = { innerTextField ->
+                                            Box(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                contentAlignment = Alignment.CenterStart
+                                            ) {
+                                                if (searchQuery.isBlank()) {
+                                                    Text(
+                                                        text = "搜索 skills.sh 技能，如 react、testing",
+                                                        fontSize = 12.sp,
+                                                        color = theme.textMuted,
+                                                        maxLines = 1,
+                                                        overflow = TextOverflow.Ellipsis
+                                                    )
+                                                }
+                                                innerTextField()
+                                            }
+                                        }
+                                    )
+                                    if (searchQuery.isNotBlank()) {
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Icon(
+                                            Icons.Default.Clear,
+                                            contentDescription = "清除",
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .clickable { searchQuery = "" },
+                                            tint = theme.textMuted
+                                        )
+                                    }
+                                }
+                            }
+
+                            // 搜索动作：与输入框同高同圆角；禁用态用中性底色而非半透明主色
+                            Surface(
+                                shape = RoundedCornerShape(9.dp),
+                                color = if (canSearch) theme.primary else theme.surfaceContainer,
+                                border = if (canSearch) null else BorderStroke(1.dp, theme.outline),
+                                modifier = Modifier
+                                    .height(44.dp)
+                                    .clickable(enabled = canSearch) { doSearch() }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxHeight()
+                                        .widthIn(min = 64.dp)
+                                        .padding(horizontal = 14.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSearching) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = Color.White
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "搜索",
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            color = if (canSearch) Color.White else theme.textMuted
+                                        )
+                                    }
                                 }
                             }
                         }

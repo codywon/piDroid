@@ -83,6 +83,14 @@ data class TurnOutline(
     val assistantIndex: Int?,
     val assistantHeadings: List<String>,
     val processItems: List<ChatItem>,
+    /**
+     * 本回合的生成式 UI 微组件（`show_widget`）。
+     *
+     * 它们和工具调用一样产生于「过程」阶段，但**语义是内容**（用户要看的就是那张图），
+     * 所以必须独立成行、不参与过程折叠；否则回合答完后它跟着 ProcessDetailsGroup 一起收起，
+     * 用户得先展开「N 条消息 · M 次工具调用」才看得见。
+     */
+    val widgetItems: List<ChatItem> = emptyList(),
     val finalAnswerItem: ChatItem?,
     val durationMs: Long?,
     val isRunning: Boolean

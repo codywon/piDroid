@@ -64,6 +64,11 @@ jobs:
           mkdir -p keystore
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > keystore/release.jks
 
+      # 单测门禁：解析与流式提取这类纯 JVM 逻辑一旦回归，宁可不发版也不能把已知坏掉的构建推给用户。
+      # 放在签名/打包之前，失败即中断，不浪费一次 release。
+      - name: Run Unit Tests
+        run: ./gradlew :app:testDebugUnitTest --stacktrace
+
       - name: Build Release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}

@@ -2,6 +2,83 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.54] - 2026-10-30
+
+### ✨ 生成式 UI：微组件从「要先点开的过程」变成「会话里直接能玩的图」
+
+上一版（1.7.49）把 `show_widget` 接到了手机端，但只给了一行文字入口卡，而且要先进「过程详情」才找得到。
+这一版按 **claude.ai 的形态**重做承载层（依据 `docs/DESIGN-generative-ui.md`）。
+
+**① 微组件是内容，不再藏在过程折叠组里**
+
+- 根因：`show_widget` 混在 `processItems` 里，而 `ProcessDetailsGroup` 在回合答完后会自动收起。
+  于是要看图得点**两级**：先展开「N 条消息 · M 次工具调用」，再点卡片。
+- 改法：新增 `TurnOutline.widgetItems`，微组件独立成行，排在过程组之后、最终答复之前。
+- 顺带：`visualize_read_me` 不再计入「M 次工具调用」——报一个用户看不见的调用与所见不符。
+
+**② 卡片里就是那张图，可以直接拖滑块**
+
+- 固定高度预览区，高度按模型声明的桌面宽高比换算后夹在 180~320dp（800×600 在 360dp 屏上约 250dp）。
+- 全屏入口只放标题行右侧（⛶）。**不做「点预览区就全屏」**：那会把页内点按钮变成切换页面。
+
+**③ 手势按主轴归属**
+
+- 页面设 `overflow: hidden`，内嵌态永不自滚；`DOWN` 先声明独占（避免滑块拖到一半被列表抢走），
+  首个明显纵向的 `MOVE`（>16px）主动交还列表。
+- `docs/DESIGN-artifact-viewer.md` 里「WebView 不能内嵌」那条针对的是需要自身纵向滚动的长内容
+  （docx / 代码 / 长图），微组件是固定尺寸组件，不适用。
+
+**④ 离屏快照：像 iframe 一样回收，不爆内存**
+
+- `LazyColumn` dispose 掉滑出视口的 item 前，先抓一帧存进 `WidgetSnapshots`（LRU 8 条，宽 ≤720px）；
+  滑回来先贴快照、再由新建 WebView 顶上去，没有白屏闪烁。
+- 如实说明：缓存的是**渲染结果**不是交互态，滚回去后页内临时状态会回到初始值。
+
+**⑤ 白屏不可接受：三重哨兵 + 自动降级**
+
+- 页面内 `window.onerror` / `unhandledrejection` / 捕获阶段的脚本加载失败监听
+  （外链脚本 404 不触发 `window.onerror`，必须看 `event.target`），统一以 `__PI_ERR:` 前缀回报；
+- `onPageFinished` 检查 `#root` 子节点数，为 0 视为白板；
+- 主文档 `onReceivedError`。
+- 命中任一条 → 自动切源码视图（等宽代码块 + 重试），不新增解释性副标题。
+
+**⑥ 离线可用：Chart.js 本地化**
+
+- `shouldInterceptRequest` 拦下 cdnjs / jsdelivr / unpkg / esm.sh 上已知文件名，改由 `assets/libs/` 回吐
+  （只做 allowlist，`mermaid` 压缩后 >1MB 不本地化）。弱网与离线时图表仍能渲染。
+
+**⑦ 不需要手工调度脚本顺序**
+
+- 走整篇文档加载：浏览器按文档顺序同步执行脚本，普通外链脚本还会阻塞解析到下载完成，
+  所以 `Chart` 必定在内联脚本之前就位。参考实现里那套 `runScripts()` 是为流式追加片段准备的，这里用不着。
+
+**工程**
+
+- 新增 `docs/DESIGN-generative-ui.md`：写明「参照 claude.ai 而非 pi-web」、手势/回收/降级三条边界，
+  以及流式接入时必须遵守的两条（`_delta` 可丢弃 → 终态必须全量兜底；`delta` 是原始 JSON 分片）。
+- 新增 `WidgetCodeStream` + `WidgetCodeStreamTest`（14 项）：为流式做好了增量提取，本次**未接线**。
+- CI 加单测门禁：`.github/workflows/build-and-release.yml` 在打包前跑 `:app:testDebugUnitTest`。
+  此前 `GenerativeUiTest` 在流水线里一次都没被执行过。
+- `GenerativeUiTest` 补 5 项：预览区高度换算与夹紧、错误哨兵与 `#root`、`overflow` 关闭自滚。
+
+### 🧱 修技能中心「添加技能」搜索栏过高、与搜索按钮不在一个水平线上
+
+**问题**：`OutlinedTextField` 自带 56dp 最小高度 + 内部上下留白，旁边那颗 `Button` 只有 ~36dp，
+两个控件靠 `verticalAlignment=Center` 勉强居中，视觉上输入框高一大截、按钮往下坠，
+并且输入框圆角/边框/底色与同屏幕「已安装」页 44dp 工具条完全不同族。
+
+**改法**（与已安装页工具条统一为同一套视觉语汇）：
+
+1. **弃用 `OutlinedTextField`，改 `Surface + BasicTextField`**：固定 **44dp** 高、`RoundedCornerShape(9.dp)`、
+   `surfaceContainerLow` 底 + 1dp 边框（有输入时边框转主色），与已安装页搜索框同规格；
+   放大镜 15dp、文字 12.5sp、清除按钮 14dp，单行居中对齐，不再有任何 Material 内建垂直留白。
+2. **搜索按钮同高同圆角（44dp / 9dp）**：与输入框基线严格对齐；禁用态不再用「半透明主色」
+   （看起来像脏色块），改为中性 `surfaceContainer` + 边框 + 弱化文字；加载态只留 14dp 进度圈，
+   文案里的「搜索中」去掉，避免按钮在两种宽度之间跳。
+3. **键盘直接回车即搜**：`imeAction = ImeAction.Search` + `KeyboardActions(onSearch)`，
+   不用再收键盘去点按钮；占位文案改为「搜索 skills.sh 技能，如 react、testing」并按单行省略，
+   窄屏不再被长占位文撑破。
+
 ## [1.7.52] - 2026-10-30
 
 ### 🌀 修「进会话一直同步不下来、右上角一直转圈」：把同步从「排队」变回「按需」

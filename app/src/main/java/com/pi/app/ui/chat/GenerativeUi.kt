@@ -1,23 +1,42 @@
 package com.pi.app.ui.chat
 
 import android.annotation.SuppressLint
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.net.Uri
+import android.view.MotionEvent
 import android.view.ViewGroup
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.OpenInFull
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,30 +44,33 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.pi.app.data.model.ToolCallInfo
 import com.pi.app.ui.theme.LocalAppTheme
+import kotlin.math.abs
 
 /**
  * 生成式 UI（`pi-generative-ui` 插件）承载层。
  *
- * 插件侧（pi-generative-ui 0.3.x，`EXTENSIONS/generative-ui/index.ts`）注册两个工具：
+ * 插件侧（pi-generative-ui，`EXTENSIONS/generative-ui/index.ts`）注册两个工具：
  *  - `visualize_read_me(modules)`：模型自用的设计指南，插件明确要求「不要向用户提及」；
  *  - `show_widget(title, widget_code, width, height, floating)`：把一段 HTML 片段或裸 SVG
  *    渲染出来，`widget_code` 是唯一的内容载体，`details` 里只回 `{title,width,height,isSVG}`。
  *
- * 桌面端 pi 用 Glimpse 开一个**独立原生窗口**；`pi-web` 里没有这条链路
- * （它那份 `widgets` 是 TUI 状态栏微件，与本工具无关），所以这里没有可 1:1 复刻的容器形态，
- * 按 `docs/DESIGN-artifact-viewer.md` 已定的口径裁量：**手机用独立全屏页承载**，理由是
- *  1) WebView 不参与 Compose 的 nested scroll，塞进 LazyColumn 会抢走整列滚动手势；
- *  2) `widget_code` 常见 5~50KB，直接铺在气泡里能把一条消息撑成两三屏；
- *  3) 桌面窗口的语义是「另一个可交互表面」，全屏页是手机上最接近的等价物。
+ * 容器形态**对标 claude.ai，而不是 pi-web**：pi-web 没有这条链路（它那份 `widgets` 是 TUI
+ * 状态栏微件，与本工具无关），桌面端 pi 用 Glimpse 开独立原生窗口。手机上最接近的等价物是
+ * 「会话内嵌可交互预览 + 点击全屏接管手势」，而不是「一行入口卡 + 手动全屏」——
+ * 后者把「看见」变成了「去查找」。理由与边界见 `docs/DESIGN-generative-ui.md`。
  */
 private const val SHOW_WIDGET_TOOL = "show_widget"
 
 /** 插件内部的设计指南工具名：聊天流里不展示（插件本身要求对用户不可见）。 */
 const val GENERATIVE_UI_READ_ME_TOOL = "visualize_read_me"
 
+/** 内嵌预览区高度：按模型声明的桌面宽高比换算后夹在这个区间。 */
+private const val PREVIEW_MIN_DP = 180
+private const val PREVIEW_MAX_DP = 320
+
 /**
  * 一个可渲染的微组件。`width` / `height` 是模型声明的**桌面**尺寸（默认 800×600），
- * 手机端只作提示展示，实际渲染按设备宽度回流（见 [buildWidgetHtml]）。
+ * 手机端用它的**宽高比**决定内嵌预览区高度，内容按设备宽度回流（见 [buildWidgetHtml]）。
  */
 data class WidgetPayload(
     val title: String,
@@ -122,20 +144,39 @@ private fun List<Pair<String, String>>.intFieldOf(
 }
 
 /**
+ * 内嵌预览区高度：按模型声明的桌面宽高比换算到当前可用宽度，再夹进
+ * [PREVIEW_MIN_DP]~[PREVIEW_MAX_DP]。800×600 在 360dp 宽的屏上约 250dp。
+ */
+internal fun previewHeightDp(payload: WidgetPayload, containerWidthDp: Int): Int {
+    val ratio = payload.height.toFloat() / payload.width.toFloat().coerceAtLeast(1f)
+    return (containerWidthDp * ratio).toInt().coerceIn(PREVIEW_MIN_DP, PREVIEW_MAX_DP)
+}
+
+/** 控制台哨兵：页面里的运行错误会以这个前缀打到 `onConsoleMessage`，宿主据此降级。 */
+private const val ERROR_SENTINEL = "__PI_ERR:"
+
+/**
  * 把 `widget_code` 包成可加载的完整文档。
  *
  * `widget_code` 按插件约定是**片段**（没有 DOCTYPE/html/head/body），所以这里补
- * viewport 与基础样式。viewport 用 `width=device-width` 而不是模型声明的桌面宽度：
- * 桌面窗口的等价物在手机上就是手机宽度的窗口，`width:100%` / flex 类的微组件会自然回流；
- * 确实写死宽度的内容仍可双指缩放（`user-scalable=yes`）。
+ * viewport、基础样式、错误哨兵与 `#root` 容器。viewport 用 `width=device-width`
+ * 而不是模型声明的桌面宽度：桌面窗口的等价物在手机上就是手机宽度的窗口，
+ * `width:100%` / flex 类的微组件会自然回流；确实写死宽度的内容仍可双指缩放。
+ *
+ * `#root` 容器有两个用途：一是归一化结构（内嵌预览与全屏页共用同一份 DOM 形状），
+ * 二是让宿主能用一个固定表达式判断「页面是不是白板」。
+ *
+ * 脚本顺序不需要手工调度：这段 HTML 是**整篇文档加载**的，浏览器解析时会按文档顺序
+ * 同步执行 `<script>`，普通外链脚本（无 async/defer）还会阻塞解析直到下载执行完毕 ——
+ * 所以 `Chart` 一定在内联脚本之前就位。参考实现里那套 `runScripts()` 顺序调度
+ * 是为「流式追加片段」准备的，这里用不着。
  */
 fun buildWidgetHtml(payload: WidgetPayload, backgroundHex: String, foregroundHex: String): String {
     val body = if (payload.isSvg) {
-        // 裸 SVG 单独居中，并限制在视口内（等价于桌面窗口里的预览态）
         """
         <style>
-          html, body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-          svg { max-width: 100%; max-height: 100vh; height: auto; width: auto; }
+          #root { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 16px); }
+          #root svg { max-width: 100%; max-height: calc(100vh - 16px); height: auto; width: auto; }
         </style>
         ${payload.code}
         """.trimIndent()
@@ -149,29 +190,162 @@ fun buildWidgetHtml(payload: WidgetPayload, backgroundHex: String, foregroundHex
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+        <script>
+        (function () {
+          function report(m) { try { console.log('$ERROR_SENTINEL' + m); } catch (e) {} }
+          window.addEventListener('error', function (e) {
+            var t = e && e.target;
+            if (t && t.tagName === 'SCRIPT') { report('script failed: ' + (t.src || '')); return; }
+            report((e && e.message) || 'script error');
+          }, true);
+          window.addEventListener('unhandledrejection', function (e) {
+            var r = e && e.reason;
+            report('unhandled: ' + ((r && r.message) || r));
+          });
+        })();
+        </script>
         <style>
           html, body {
-            margin: 0; padding: 0; background: $backgroundHex; color: $foregroundHex;
+            margin: 0; padding: 8px; background: $backgroundHex; color: $foregroundHex;
             -webkit-text-size-adjust: 100%;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
           }
-          body { min-height: 100vh; box-sizing: border-box; }
+          body { min-height: calc(100vh - 16px); box-sizing: border-box; }
           img, svg, canvas, video { max-width: 100%; }
           ::-webkit-scrollbar { width: 0; height: 0; }
         </style>
         </head>
         <body>
+        <div id="root">
         $body
+        </div>
         </body>
         </html>
     """.trimIndent()
 }
 
 /**
- * 聊天流里的一行入口卡：标题 + 状态/尺寸 + 打开。
+ * 离屏快照缓存。
  *
- * 刻意只保留「一行主体 + 一行状态」，不写任何解释性副标题 —— 见
- * `CHANGELOG 1.7.48 / docs` 里关于「说明性标签过载」的整改口径。
+ * 为什么需要：`LazyColumn` 会把滑出视口的 item 整个 dispose，内嵌的 WebView 也随之销毁；
+ * 滑回来时重新加载会有几百毫秒白屏。这里在销毁前抓一帧存下来，回来时先贴图、再由新建的
+ * WebView 顶上去 —— 视觉上接近 claude.ai 的 iframe（浏览器帮它回收），又不会让
+ * Chromium 实例跟着会话条数增长。
+ *
+ * 缓存的是**渲染结果**，不是交互态：滚回去之后页内临时状态（拖过的滑块）会回到初始值。
+ */
+internal object WidgetSnapshots {
+    private const val MAX_ENTRIES = 8
+    private const val MAX_WIDTH_PX = 720
+
+    private val entries = object : LinkedHashMap<String, Bitmap>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(key: String): Bitmap? = entries[key]
+
+    @Synchronized
+    fun put(key: String, bitmap: Bitmap) {
+        entries[key] = bitmap
+    }
+
+    /** 在销毁前抓一帧。缩放上限 720px 宽，避免整页大图把堆吃掉。 */
+    fun capture(view: WebView, key: String) {
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) return
+        runCatching {
+            val scale = if (w > MAX_WIDTH_PX) MAX_WIDTH_PX.toFloat() / w else 1f
+            val outW = (w * scale).toInt().coerceAtLeast(1)
+            val outH = (h * scale).toInt().coerceAtLeast(1)
+            val bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            canvas.scale(scale, scale)
+            view.draw(canvas)
+            put(key, bitmap)
+        }
+    }
+}
+
+/** 本地化的第三方库：命中的 CDN 请求直接由 assets 回吐，弱网/离线也能秒开。 */
+private val LOCAL_LIB_ASSETS = mapOf(
+    "chart.umd.js" to "libs/chart.umd.js",
+    "chart.umd.min.js" to "libs/chart.umd.js",
+    "chart.min.js" to "libs/chart.umd.js",
+    "chart.js" to "libs/chart.umd.js"
+)
+
+/** 只对这几家 CDN 做本地化替换，其余请求照常走网络。 */
+private val CDN_HOSTS = setOf(
+    "cdnjs.cloudflare.com",
+    "cdn.jsdelivr.net",
+    "unpkg.com",
+    "esm.sh"
+)
+
+/**
+ * 内嵌预览用的 WebView：**永不抢占纵向滚动手势**。
+ *
+ * 背景：`WebView` 不参与 Compose 的 nested scroll（见 `docs/DESIGN-artifact-viewer.md`），
+ * 直接塞进 `LazyColumn` 会把整列滚动抢走。但那条约束针对的是**需要自己纵向滚动的长内容**
+ * （docx、代码、长图）；微组件是按桌面窗口设计的固定尺寸组件，页面已设 `overflow: hidden`
+ * 且内容溢出时本来就该进全屏 —— 所以内嵌态根本不需要纵向滚动。
+ *
+ * 于是规则可以简化成「按主轴归属」：
+ *  - `DOWN`：先声明独占，避免列表一开始就把手势抢走（否则滑块拖到一半被打断）；
+ *  - 首个明显纵向的 `MOVE`：主动交还，列表继续滚，widget 一动不动；
+ *  - `UP` / `CANCEL`：复位。
+ */
+private class WidgetWebView(
+    context: Context,
+    private val allowVerticalScroll: Boolean
+) : WebView(context) {
+
+    private var downX = 0f
+    private var downY = 0f
+    private var released = false
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!allowVerticalScroll) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    released = false
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!released) {
+                        val dx = abs(event.x - downX)
+                        val dy = abs(event.y - downY)
+                        // 纵向占优且超过触摸抖动阈值 → 判定为「用户在滚列表」
+                        if (dy > dx && dy > VERTICAL_SLOP_PX) {
+                            released = true
+                            parent?.requestDisallowInterceptTouchEvent(false)
+                        }
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                    parent?.requestDisallowInterceptTouchEvent(false)
+            }
+        }
+        return super.onTouchEvent(event)
+    }
+
+    private companion object {
+        /** 8dp @ mdpi 的近似值：转换在 Compose 侧按 density 生成，这里是保守下限。 */
+        const val VERTICAL_SLOP_PX = 16f
+    }
+}
+
+/**
+ * 会话内的微组件卡片：标题行（⛶ 进全屏）+ 固定高预览区。
+ *
+ * 预览区只吃「主轴为横向 / 点击 / 控件拖拽」的手势，纵向拖拽还给列表；
+ * 全屏入口放在标题行右侧，**不做「点预览区就全屏」** —— 那会让页内点击变成切换页面。
  */
 @Composable
 fun WidgetToolCallCard(
@@ -180,32 +354,26 @@ fun WidgetToolCallCard(
     onOpen: () -> Unit
 ) {
     val theme = LocalAppTheme.current
+    val widthDp = LocalConfiguration.current.screenWidthDp
+    // 卡片左右各 4dp 外边距 + 卡片内水平 padding，减去后才是预览区可用宽度
+    val previewHeight = remember(payload.width, payload.height, widthDp) {
+        previewHeightDp(payload, (widthDp - 24).coerceAtLeast(200))
+    }
 
     Surface(
         shape = RoundedCornerShape(10.dp),
         color = theme.surfaceContainerLow,
         border = BorderStroke(1.dp, theme.outline),
-        modifier = Modifier.fillMaxWidth().clickable { onOpen() }
+        modifier = Modifier.fillMaxWidth()
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(start = 9.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Box(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(
                 modifier = Modifier
-                    .size(28.dp)
-                    .background(theme.primary.copy(alpha = 0.12f), RoundedCornerShape(7.dp)),
-                contentAlignment = Alignment.Center
+                    .fillMaxWidth()
+                    .clickable { onOpen() }
+                    .padding(start = 10.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(
-                    Icons.Default.OpenInFull,
-                    contentDescription = null,
-                    modifier = Modifier.size(14.dp),
-                    tint = theme.primary
-                )
-            }
-            Spacer(modifier = Modifier.width(9.dp))
-            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = payload.title,
                     fontSize = 12.5.sp,
@@ -213,23 +381,34 @@ fun WidgetToolCallCard(
                     color = theme.textPrimary,
                     maxLines = 1,
                     softWrap = false,
-                    overflow = TextOverflow.Ellipsis
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 Text(
                     text = if (isRunning) "生成中…" else "${payload.width}×${payload.height}",
                     fontSize = 10.5.sp,
                     color = theme.textMuted,
                     maxLines = 1,
-                    softWrap = false
+                    softWrap = false,
+                    modifier = Modifier.padding(horizontal = 6.dp)
                 )
+                IconButton(onClick = onOpen, modifier = Modifier.size(32.dp)) {
+                    Icon(
+                        Icons.Default.OpenInFull,
+                        contentDescription = "全屏查看",
+                        modifier = Modifier.size(15.dp),
+                        tint = theme.primary
+                    )
+                }
             }
-            Icon(
-                Icons.Default.OpenInFull,
-                contentDescription = "全屏查看",
-                modifier = Modifier.size(15.dp),
-                tint = theme.primary
+            HorizontalDivider(color = theme.outline.copy(alpha = 0.6f))
+            WidgetCanvas(
+                payload = payload,
+                allowVerticalScroll = false,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(previewHeight.dp)
             )
-            Spacer(modifier = Modifier.width(4.dp))
         }
     }
 }
@@ -283,15 +462,23 @@ fun WidgetViewerScreen(
             )
         }
     ) { innerPadding ->
-        WidgetWebView(
+        WidgetCanvas(
             payload = payload,
-            modifier = Modifier.fillMaxSize().padding(innerPadding)
+            allowVerticalScroll = false,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
         )
     }
 }
 
 /**
- * 微组件 WebView。
+ * 渲染微组件的 WebView 画布，带三条保险：
+ *
+ *  1. **失败自动降级**：页面里的 `window.onerror` / `unhandledrejection` / 外链脚本加载失败
+ *     都会打上 `__PI_ERR:` 前缀，宿主收到就切源码视图 —— 白屏是不可接受的最低线；
+ *  2. **离线可用**：常见 CDN 的 Chart.js 由 `assets/libs/` 回吐，不依赖网络；
+ *  3. **离屏快照**：销毁前抓一帧，滑回来先贴图再重建，不闪白。
  *
  * 安全口径：开启 JS（微组件依赖 Canvas / Chart.js），但**不注入任何 JS 桥**、
  * 关闭文件与 content 访问、所有跳转一律交给系统浏览器 —— 页面内容来自模型输出，
@@ -299,10 +486,19 @@ fun WidgetViewerScreen(
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun WidgetWebView(payload: WidgetPayload, modifier: Modifier = Modifier) {
+private fun WidgetCanvas(
+    payload: WidgetPayload,
+    allowVerticalScroll: Boolean,
+    modifier: Modifier = Modifier
+) {
     val theme = LocalAppTheme.current
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val html = remember(payload.code, theme.isDark) {
+    val context = LocalContext.current
+
+    // 重试计数参与 key：点「重试」时重建 WebView，而不是复用已经报错的那个实例。
+    var retry by remember(payload.code) { mutableStateOf(0) }
+    var failed by remember(payload.code, retry) { mutableStateOf(false) }
+
+    val html = remember(payload.code, theme.isDark, payload.isSvg) {
         buildWidgetHtml(
             payload = payload,
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
@@ -310,64 +506,204 @@ private fun WidgetWebView(payload: WidgetPayload, modifier: Modifier = Modifier)
         )
     }
 
-    val holder = remember { mutableStateOf<WebView?>(null) }
+    val snapshotKey = remember(payload.code, theme.isDark) {
+        "widget:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
+    }
+    val snapshot = remember(snapshotKey) { WidgetSnapshots.get(snapshotKey) }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            WebView(ctx).apply {
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                settings.apply {
-                    javaScriptEnabled = true
-                    domStorageEnabled = true
-                    useWideViewPort = true
-                    loadWithOverviewMode = false
-                    setSupportZoom(true)
-                    builtInZoomControls = true
-                    displayZoomControls = false
-                    cacheMode = WebSettings.LOAD_NO_CACHE
-                    allowFileAccess = false
-                    allowContentAccess = false
-                    mediaPlaybackRequiresUserGesture = true
-                }
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                webViewClient = object : WebViewClient() {
-                    override fun shouldOverrideUrlLoading(
-                        view: WebView?,
-                        request: android.webkit.WebResourceRequest?
-                    ): Boolean {
-                        val url = request?.url?.toString() ?: return false
-                        // 微组件里的外链一律走系统浏览器，不在卡片里接管导航
-                        runCatching {
-                            context.startActivity(
-                                android.content.Intent(
-                                    android.content.Intent.ACTION_VIEW,
-                                    android.net.Uri.parse(url)
-                                )
-                            )
-                        }
-                        return true
-                    }
-                }
-                holder.value = this
+    if (failed) {
+        WidgetSourceFallback(
+            payload = payload,
+            modifier = modifier,
+            onRetry = {
+                failed = false
+                retry++
             }
-        },
-        update = { webView ->
-            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-        }
-    )
+        )
+        return
+    }
 
-    DisposableEffect(Unit) {
+    val holder = remember { mutableStateOf<WebView?>(null) }
+    // `AndroidView.update` 每次重组都会跑，而重载页面会丢掉页内交互态并重新拉 CDN。
+    // 用非可观察的持有者记一份「已加载内容指纹」，只在内容真的换了时才重新加载。
+    val loadedKey = remember { java.util.concurrent.atomic.AtomicReference<String?>(null) }
+
+    Box(modifier = modifier) {
+        // 滑回来时先贴快照，WebView 首帧画出来后会盖住它
+        if (snapshot != null) {
+            Image(
+                bitmap = snapshot.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.FillWidth,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
+
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WidgetWebView(ctx, allowVerticalScroll).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    settings.apply {
+                        javaScriptEnabled = true
+                        domStorageEnabled = true
+                        useWideViewPort = true
+                        loadWithOverviewMode = false
+                        setSupportZoom(true)
+                        builtInZoomControls = true
+                        displayZoomControls = false
+                        cacheMode = WebSettings.LOAD_NO_CACHE
+                        allowFileAccess = false
+                        allowContentAccess = false
+                        mediaPlaybackRequiresUserGesture = true
+                    }
+                    // 页面自带深浅色背景，画布留透明才能在加载期间透出快照
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    webChromeClient = object : WebChromeClient() {
+                        override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
+                            val text = msg?.message() ?: return false
+                            if (!text.contains(ERROR_SENTINEL)) return false
+                            failed = true
+                            return true
+                        }
+                    }
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            val url = request?.url?.toString() ?: return false
+                            // 只接管真正的网页跳转；`about:blank`（销毁时清理）这类内部导航不能外抛
+                            if (!url.startsWith("http://") && !url.startsWith("https://")) return false
+                            // 微组件里的外链一律走系统浏览器，不在卡片里接管导航
+                            runCatching {
+                                context.startActivity(
+                                    android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
+                                )
+                            }
+                            return true
+                        }
+
+                        override fun shouldInterceptRequest(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): WebResourceResponse? {
+                            val url = request?.url ?: return null
+                            val host = url.host?.lowercase() ?: return null
+                            if (host !in CDN_HOSTS) return null
+                            val name = url.lastPathSegment?.lowercase() ?: return null
+                            val asset = LOCAL_LIB_ASSETS[name] ?: return null
+                            return runCatching {
+                                WebResourceResponse(
+                                    "application/javascript",
+                                    "UTF-8",
+                                    context.assets.open(asset)
+                                )
+                            }.getOrNull()
+                        }
+
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?
+                        ) {
+                            if (request?.isForMainFrame == true) failed = true
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            // 销毁前清场的那次加载不参与白板检测，否则会在已离开组合的实例上写状态
+                            if (url == null || url == "about:blank") return
+                            // 白板检测：没有报错但 #root 里一个节点都没有，同样按失败处理
+                            view?.evaluateJavascript(
+                                "(function(){var r=document.getElementById('root');" +
+                                    "return r ? r.children.length : 0;})()"
+                            ) { count ->
+                                val n = count?.trim('"')?.toIntOrNull() ?: 0
+                                if (n == 0) failed = true
+                            }
+                        }
+                    }
+                    holder.value = this
+                }
+            },
+            update = { webView ->
+                val key = html.hashCode().toString() + "#" + retry
+                if (loadedKey.getAndSet(key) != key) {
+                    webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
+            }
+        )
+    }
+
+    DisposableEffect(snapshotKey, retry) {
         onDispose {
-            holder.value?.apply {
-                stopLoading()
-                loadUrl("about:blank")
-                destroy()
+            holder.value?.let { wv ->
+                // 失败页的快照不能存：下次进来会先把一张白板贴上去
+                if (!failed) WidgetSnapshots.capture(wv, snapshotKey)
+                runCatching {
+                    wv.stopLoading()
+                    wv.loadUrl("about:blank")
+                    wv.destroy()
+                }
             }
             holder.value = null
+        }
+    }
+}
+
+/**
+ * 渲染失败时的降级视图：源码块 + 重试。
+ *
+ * 不给说明性副标题 —— 失败原因对用户没有可操作性，能做的只有「以另一种形式把内容给他」
+ * 和「再试一次」（说明性标签的口径见 `docs/DESIGN-labels.md`）。
+ */
+@Composable
+private fun WidgetSourceFallback(
+    payload: WidgetPayload,
+    modifier: Modifier = Modifier,
+    onRetry: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    Column(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(theme.surfaceContainer)
+                .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "无法渲染，已显示源码",
+                fontSize = 11.sp,
+                color = theme.textMuted,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(onClick = onRetry, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Default.Refresh,
+                    contentDescription = "重试",
+                    tint = theme.primary,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .horizontalScroll(rememberScrollState())
+        ) {
+            Text(
+                text = payload.code,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = theme.textSecondary,
+                softWrap = false,
+                modifier = Modifier.padding(10.dp)
+            )
         }
     }
 }

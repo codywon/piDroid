@@ -123,4 +123,62 @@ class GenerativeUiTest {
         assertTrue(html.contains("justify-content: center"))
         assertTrue(html.contains("<svg></svg>"))
     }
+
+    // ── 内嵌预览区高度 ─────────────────────────────────────────────
+
+    /**
+     * 预览区高度按模型声明的桌面宽高比换算，再夹进 180~320dp。
+     * 800×600 是插件默认尺寸，在 360dp 宽的屏上应当约 250dp —— 太小看不清，
+     * 太大就把「一眼看到」变成「又占一屏」。
+     */
+    @Test
+    fun `preview height follows declared aspect ratio`() {
+        assertEquals(252, previewHeightDp(WidgetPayload("t", "<b/>", 800, 600), 336))
+    }
+
+    @Test
+    fun `preview height is clamped at both ends`() {
+        assertEquals(180, previewHeightDp(WidgetPayload("t", "<b/>", 1600, 400), 336))
+        assertEquals(320, previewHeightDp(WidgetPayload("t", "<b/>", 400, 3000), 336))
+    }
+
+    @Test
+    fun `preview height tracks container width and survives zero width`() {
+        val wide = previewHeightDp(WidgetPayload("t", "<b/>", 800, 600), 336)
+        val narrow = previewHeightDp(WidgetPayload("t", "<b/>", 800, 600), 240)
+        assertTrue(wide > narrow)
+        // 模型写出 width=0 时不能除零崩掉
+        assertTrue(previewHeightDp(WidgetPayload("t", "<b/>", 0, 600), 336) in 180..320)
+    }
+
+    // ── 渲染失败检测的钩子 ─────────────────────────────────────────
+
+    /**
+     * 白屏是不可接受的最低线：外壳必须内置错误哨兵与 `#root` 容器，
+     * 宿主才能靠一个固定表达式判断「是不是什么都没画出来」并降级成源码视图。
+     */
+    @Test
+    fun `html wrapper carries error sentinel and root container`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>"),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328"
+        )
+        assertTrue(html.contains("id=\"root\""))
+        assertTrue(html.contains("__PI_ERR:"))
+        // 外链脚本加载失败不走 window.onerror，必须靠捕获阶段监听 target 补上
+        assertTrue(html.contains("tagName === 'SCRIPT'"))
+        assertTrue(html.contains("unhandledrejection"))
+    }
+
+    /** 内嵌态永不自滚：纵向手势全部还给外层 LazyColumn。 */
+    @Test
+    fun `html wrapper disables page scrolling`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>"),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328"
+        )
+        assertTrue(html.contains("overflow: hidden"))
+    }
 }

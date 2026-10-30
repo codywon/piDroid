@@ -644,9 +644,20 @@ fun ChatScreen(
 
             var toolCount = 0
             turnSlice.forEach { m ->
-                if (m.role == MessageRole.TOOL || m.toolCall != null) {
+                // `visualize_read_me` 是插件内部步骤（本身就不在聊天流里展示），
+                // 继续把它算进「M 次工具调用」会让折叠组多报一次，与所见不符。
+                if ((m.role == MessageRole.TOOL || m.toolCall != null) &&
+                    m.toolCall?.let { isGenerativeUiInternalTool(it) } != true
+                ) {
                     toolCount++
                 }
+            }
+
+            // 生成式 UI 微组件是**内容**不是**过程**：从过程折叠组里剥出来，独立成行渲染
+            // （排在过程组之后、最终答复之前）。不剥离的话，回合一旦答完，
+            // ProcessDetailsGroup 自动收起，用户必须先展开那行灰字才看得见图。
+            val (widgetItems, processOnly) = processItems.partition { item ->
+                item.toolCall?.let { showWidgetPayload(it) } != null
             }
 
             val endTime = (finalAns ?: processItems.lastOrNull() ?: userMsg).timestamp
@@ -660,7 +671,8 @@ fun ChatScreen(
                 toolCount = toolCount,
                 assistantIndex = finalAnsIdx,
                 assistantHeadings = headings,
-                processItems = processItems,
+                processItems = processOnly,
+                widgetItems = widgetItems,
                 finalAnswerItem = finalAns,
                 durationMs = durationMs,
                 isRunning = isCurrentRunning
@@ -679,9 +691,10 @@ fun ChatScreen(
     val showTopSentinel = hasEarlierOnServer || isLoadingOlder || conversation.size > 6
     val leadingRowCount = allTurns.firstOrNull()?.userIndex ?: conversation.size
 
-    // 一个回合不是一行：可能还有「过程折叠组」与「最终答复」
+    // 一个回合不是一行：还可能有「过程折叠组」、「生成式 UI 微组件」与「最终答复」
     fun turnRowCount(turn: TurnOutline): Int =
-        1 + (if (turn.processItems.isNotEmpty()) 1 else 0) + (if (turn.finalAnswerItem != null) 1 else 0)
+        1 + (if (turn.processItems.isNotEmpty()) 1 else 0) + turn.widgetItems.size +
+            (if (turn.finalAnswerItem != null) 1 else 0)
 
     fun turnStartRowIndex(turnIdx: Int): Int {
         var rows = (if (showTopSentinel) 1 else 0) + leadingRowCount
@@ -1793,7 +1806,29 @@ fun ChatScreen(
                         }
                     }
 
-                    // 3. 助手最终答复 (Final Answer)
+                    // 3. 生成式 UI 微组件（`show_widget`）
+                    //
+                    // 刻意放在过程组**之外**、最终答复之前：它是本回合的内容产出，
+                    // 跟着过程组收起就变成「要先展开才看得到」。
+                    turn.widgetItems.forEach { widgetItem ->
+                        item(key = "turn_${turn.turnNumber}_widget_${widgetItem.id}") {
+                            ChatMessageItem(
+                                item = widgetItem,
+                                showModelHeader = false,
+                                defaultModelName = selectedModel.displayName,
+                                onApproveTool = onApproveTool,
+                                onEditFromHere = editFromMessage,
+                                onForkFromHere = onForkFromMessage,
+                                onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                onOpenFilePreview = { p -> openFilePreview(p) },
+                                onOpenWidget = { w -> widgetOverlay = w },
+                                onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                                isLiveStreamingTail = widgetItem.id == liveStreamingItemId
+                            )
+                        }
+                    }
+
+                    // 4. 助手最终答复 (Final Answer)
                     if (turn.finalAnswerItem != null) {
                         val ans = turn.finalAnswerItem
                         val showModelHeader = !ans.modelName.isNullOrBlank()
@@ -1920,6 +1955,7 @@ fun ChatScreen(
                             // 否则会多跑一格、直接跳到下一个回合。
                             var row = turnStartRowIndex(turnIdx)
                             if (t.processItems.isNotEmpty()) row += 1
+                            row += t.widgetItems.size
                             if (t.finalAnswerItem != null) row += 1
                             val maxRow = listState.layoutInfo.totalItemsCount - 1
                             if (maxRow >= 0) row = row.coerceIn(0, maxRow)
