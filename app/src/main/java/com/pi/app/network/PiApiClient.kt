@@ -2301,6 +2301,33 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
+     * 轻量读一次这条会话现在的模型身份（`GET /api/sessions/{id}/context?tail=1`，实测 **1.9 KB**）。
+     *
+     * 为什么需要它：pi-web 的 `set_model` **不发 SSE 事件**（实测事件流里只有 `connected`），
+     * PC 端切的模型只能靠主动拉；而全量快照 267 KB、`/state` 25 KB，都不适合放进 3s 循环。
+     */
+    suspend fun getSessionModelRef(sessionId: String): Result<SessionModelRef> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId/context?tail=1")
+                .get()
+                .build()
+            readClient.newCall(req).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取会话模型失败 (${response.code})"))
+                }
+                val ref = SessionModelRefParser.parse(response.body?.string())
+                    ?: return@withContext Result.failure(IOException("会话快照未带模型信息"))
+                Result.success(ref)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
      * 读取会话运行时的权威状态 (GET /api/sessions/{id}/state)。
      *
      * 一次调用同时解决三件事，取代原先三个各自为政的来源：

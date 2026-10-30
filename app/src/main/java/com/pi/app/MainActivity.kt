@@ -425,7 +425,11 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun loadCapabilitiesAndModels() {
+        /**
+         * @param modelsOnly 只要模型目录（`/api/models`，实测 2.9KB），不拉技能/插件/MCP。
+         *   模型面板打开、以及周期对账时用这个，避免为了刷新一个模型列表把 4 个无关请求也发出去。
+         */
+        fun loadCapabilitiesAndModels(modelsOnly: Boolean = false) {
             if (!prefs.isConfigured) return
             lifecycleScope.launch {
                 apiClient.getDynamicModels().onSuccess { catalog ->
@@ -442,6 +446,7 @@ class MainActivity : ComponentActivity() {
                         defaultModelId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
                     )
                 }
+                if (modelsOnly) return@launch
 
                 val cwd = currentProject
                 apiClient.getSkills(cwd).onSuccess { list ->
@@ -1497,6 +1502,31 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
+         * 轻量对账这条会话的模型身份：PC 端切的模型 **不会推 SSE 事件**（pi-web 的 set_model
+         * 实测静默），只能靠 `context?tail=1`（1.9 KB）主动拉。
+         *
+         * 与全量快照共用同一套「本地切换优先」护栏：请求发出后会比对 revision，
+         * 中途用户自己切了模型 / 思考档就丢弃这次结果。
+         */
+        suspend fun refreshSessionModelRef(sessionId: String) {
+            if (pendingModelMetaChanges > 0) return
+            val revision = modelMetaRevision
+            val ref = apiClient.getSessionModelRef(sessionId).getOrNull() ?: return
+            if (currentSession?.id != sessionId) return
+            if (pendingModelMetaChanges > 0 || modelMetaRevision != revision) return
+            if (!SessionModelSelection.matches(selectedModel, ref.provider, ref.modelId)) {
+                SessionModelSelection.resolve(dynamicCatalog.models, ref.provider, ref.modelId)?.let { resolved ->
+                    selectedModel = resolved
+                    prefs.saveSessionModelIdentity(sessionId, resolved.provider, resolved.id)
+                }
+            }
+            ref.thinkingLevel?.let { level ->
+                val parsed = ThinkingLevel.fromValue(level)
+                if (parsed != currentThinkingLevel) currentThinkingLevel = parsed
+            }
+        }
+
+        /**
          * 把快照里的统计 / 翻页游标落到 UI 状态（内存缓存、磁盘缓存、网络快照共用）。
          *
          * **只不写模型身份**：缓存快照（内存/磁盘）里的 `provider/modelId` 是**切换之前**的旧元数据，
@@ -1654,56 +1684,68 @@ class MainActivity : ComponentActivity() {
                 var lastDetailSyncAt = System.currentTimeMillis()
                 var lastServerRunning = activeSession.isRunning
                 while (true) {
-                    val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 3_000L
-                    kotlinx.coroutines.delay(delayMs)
-                    val snap = apiClient.getRunningSessions().getOrNull()
-                    if (snap != null) applyRunningSnapshot(snap)
-                    val versionChanged = snap != null && snap.sessionListVersion != 0L &&
-                        lastSessionListVersion != 0L && snap.sessionListVersion != lastSessionListVersion
-                    if (snap != null && lastSessionListVersion == 0L) {
-                        lastSessionListVersion = snap.sessionListVersion
-                    } else if (versionChanged && snap != null) {
-                        lastSessionListVersion = snap.sessionListVersion
-                    }
-                    val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
-                    // 事件流健康检查：服务端确实在跑，而流已断或者长时间没有任何事件 →
-                    // 重挂一次（pi-web 重连会补发当前正在生成的 message 快照，丢的正文能补回来）。
-                    // 静默阈值必须大于 pi 的心跳周期（30s，events 路由里的 NN），否则心跳之间的空白
-                    // 会被当成断流，造成「每 15s 重挂一次、每重挂一次补发一份快照」的雪崩。
-                    val nowMs = System.currentTimeMillis()
-                    if (serverSaysRunning) {
-                        val streamDown = sseConnectionState != SseConnectionState.CONNECTED
-                        val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
-                            lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 45_000L
-                        if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
-                            lastSseReattachAt = nowMs
-                            lastSseActivityAt = nowMs
-                            reattachSseCallback?.invoke(activeSession.id, true)
+                    // 整轮包一层 try：单次解析/网络异常绝不能把这个 while 弄死，
+                    // 否则「同步」会永久停掉（界面只能靠 SSE 正文动，模型/运行态全部冻结）。
+                    try {
+                        val delayMs = if (isAgentBusy || sseConnectionState == SseConnectionState.RECONNECTING) 1_500L else 3_000L
+                        kotlinx.coroutines.delay(delayMs)
+                        val snap = apiClient.getRunningSessions().getOrNull()
+                        if (snap != null) applyRunningSnapshot(snap)
+                        val versionChanged = snap != null && snap.sessionListVersion != 0L &&
+                            lastSessionListVersion != 0L && snap.sessionListVersion != lastSessionListVersion
+                        if (snap != null && lastSessionListVersion == 0L) {
+                            lastSessionListVersion = snap.sessionListVersion
+                        } else if (versionChanged && snap != null) {
+                            lastSessionListVersion = snap.sessionListVersion
                         }
-                    }
-                    // 快照对账节奏（实测单次 230–435KB，旧实现“在跑就 1.5s 一次”会在手机上
-                    // 持续占满带宽，正文/列表全排队，看上去就是“进会话同步不下来”）：
-                    //   · 事件流健康 → 正文交给 SSE，快照只做 10s 安全网；
-                    //   · 流断了/长时间无事件 → 收紧到 3s，用快照兜底补正文；
-                    //   · 运行态翻转、列表版本变化 → 立刻对账（否则会弄丢“任务结束”）。
-                    val streamHealthy = SessionSyncCadence.isStreamHealthy(
-                        connected = sseConnectionState == SseConnectionState.CONNECTED,
-                        lastActivityAt = lastSseActivityAt,
-                        now = nowMs
-                    )
-                    val runTransition = snap != null && serverSaysRunning != lastServerRunning
-                    lastServerRunning = serverSaysRunning
-                    val shouldSyncDetail = SessionSyncCadence.shouldSyncDetail(
-                        now = nowMs,
-                        lastSyncAt = lastDetailSyncAt,
-                        listVersionChanged = versionChanged,
-                        runStateTransition = runTransition,
-                        serverSaysRunning = serverSaysRunning,
-                        streamHealthy = streamHealthy
-                    )
-                    if (shouldSyncDetail) {
-                        lastDetailSyncAt = System.currentTimeMillis()
-                        syncSessionSnapshot(activeSession.id, allowCompletionTransition = true)
+                        val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
+                        // 事件流健康检查：服务端确实在跑，而流已断或者长时间没有任何事件 →
+                        // 重挂一次（pi-web 重连会补发当前正在生成的 message 快照，丢的正文能补回来）。
+                        // 静默阈值必须大于 pi 的心跳周期（30s，events 路由里的 NN），否则心跳之间的空白
+                        // 会被当成断流，造成「每 15s 重挂一次、每重挂一次补发一份快照」的雪崩。
+                        val nowMs = System.currentTimeMillis()
+                        if (serverSaysRunning) {
+                            val streamDown = sseConnectionState != SseConnectionState.CONNECTED
+                            val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
+                                lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 45_000L
+                            if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
+                                lastSseReattachAt = nowMs
+                                lastSseActivityAt = nowMs
+                                reattachSseCallback?.invoke(activeSession.id, true)
+                            }
+                        }
+                        // 快照对账节奏（实测单次 230–435KB，旧实现“在跑就 1.5s 一次”会在手机上
+                        // 持续占满带宽，正文/列表全排队，看上去就是“进会话同步不下来”）：
+                        //   · 事件流健康 → 正文交给 SSE，快照只做 10s 安全网；
+                        //   · 流断了/长时间无事件 → 收紧到 3s，用快照兜底补正文；
+                        //   · 运行态翻转、列表版本变化 → 立刻对账（否则会弄丢“任务结束”）。
+                        val streamHealthy = SessionSyncCadence.isStreamHealthy(
+                            connected = sseConnectionState == SseConnectionState.CONNECTED,
+                            lastActivityAt = lastSseActivityAt,
+                            now = nowMs
+                        )
+                        val runTransition = snap != null && serverSaysRunning != lastServerRunning
+                        lastServerRunning = serverSaysRunning
+                        val shouldSyncDetail = SessionSyncCadence.shouldSyncDetail(
+                            now = nowMs,
+                            lastSyncAt = lastDetailSyncAt,
+                            listVersionChanged = versionChanged,
+                            runStateTransition = runTransition,
+                            serverSaysRunning = serverSaysRunning,
+                            streamHealthy = streamHealthy
+                        )
+                        if (shouldSyncDetail) {
+                            lastDetailSyncAt = System.currentTimeMillis()
+                            syncSessionSnapshot(activeSession.id, allowCompletionTransition = true)
+                        } else {
+                            // 每轮都跟一下「PC 端切的模型/思考档」：pi-web 的 set_model 不发 SSE 事件，
+                            // 不做这一步就得等下一次全量快照（空闲 15s / 在跑 10s）才跟上。
+                            refreshSessionModelRef(activeSession.id)
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // 单轮失败不能停掉同步循环，下一轮接着来。
                     }
                 }
             }
@@ -2181,7 +2223,16 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                         }
                     },
-                    onOpenModelSheet = { showModelSheet = true },
+                    onOpenModelSheet = {
+                        showModelSheet = true
+                        // 打开面板 = 「我要看 PC 端现在到底用的谁」：立刻拉一次目录（2.9KB）
+                        // 与会话当前模型（1.9KB）。pi-web 的 set_model 不发 SSE 事件，
+                        // 不主动拉就只能看到轮询循环上一拍的旧值。
+                        loadCapabilitiesAndModels(modelsOnly = true)
+                        currentSession?.let { sess ->
+                            lifecycleScope.launch { refreshSessionModelRef(sess.id) }
+                        }
+                    },
                     // 「从此处编辑」已完全下沉到 ChatScreen（对标 pi-web 的 handleEditContent）：
                     // 点击只预填正文并记录 entryId，真正的 navigate_tree 在「发送」时原子执行。
                     onCompactContext = {

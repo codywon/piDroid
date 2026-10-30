@@ -2,6 +2,43 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.62] - 2026-10-30
+
+### 🐛 PC 端切模型/供应商，手机端真正跟上（新增 1.9KB 模型探针）
+
+先拿正在跑的网关实测了一轮（会话 `01a188b1…`）：
+
+- `POST /api/agent/{id} {"type":"set_model",…}` 成功，`/context`、`/state`、`get_state` 立即变成新值；
+- 但 **SSE 事件流里什么也没有**（只收到 `connected`；切思考档才有 `thinking_level_changed`）。
+  即 pi-web 不推模型变更事件，手机端只能自己拉。
+- 而 App 之前只在「全量快照」里读模型，节流到**空闲 15s / 在跑 10s**；模型面板打开时更是什么都不拉 ——
+  所以 PC 上切完，手机上看上去就像“没同步”。
+
+修法（全部基于实测体积/行为）：
+
+**① 3s 轻量探针代替等快照**
+
+- 新增 `GET /api/sessions/{id}/context?tail=1`（实测 **1898 字节**，带 `context.model` + `thinkingLevel`；
+  对比全量快照 267KB、`/state` 25KB）→ 进同步循环，每轮与当前选中比对，变了就更新并落盘身份。
+- 与本地切换同一套护栏：请求前后比对 `modelMetaRevision` + `pendingModelMetaChanges`，
+  用户刚在手机上切的不会被在途探针盖回去。
+
+**② 打开模型面板 = 立即对账**
+
+- 面板打开时立刻拉一次模型目录（`/api/models`，2.9KB，`modelsOnly` 不拖技能/插件/MCP）
+  与当前会话模型（1.9KB），所以 PC 上新加的供应商/模型、刚切的模型，一打开就能看到。
+
+**③ 同步循环不再可能被单次异常弄死**
+
+- 每轮包 try/catch（`CancellationException` 仍然上抛）；以前一次解析/网络异常会让这个
+  `while` 直接退出，表现为“正文因为 SSE 还在动，但模型/运行态永远冻结”。
+
+**工程**
+
+- 新增 `SessionModelRefParser`（纯逻辑，+8 项校验）：只半边身份（缺 provider 或 id）一律拒识，不开半更新。
+- `SessionModelRefParserTest` 覆盖真实探针 JSON、PC 侧换供应商、`id` 兼容字段、垃圾响应。
+
+
 ## [1.7.61] - 2026-10-30
 
 ### 🐛 密钥失效不再是「静默 401 刷屏」：停轮询 + 明确提示 + 一条机器可读的 401 标记
