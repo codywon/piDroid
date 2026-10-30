@@ -521,7 +521,7 @@ async function start(options = {}) {
         console.log(`\n🌐 正在启动固定域名隧道 "${STABLE_TUNNEL_NAME}" -> ${publicUrl} ...`);
         const tunnelProcess = spawn(
           'cloudflared',
-          ['tunnel', '--protocol', 'http2', '--edge-ip-version', '4', 'run', STABLE_TUNNEL_NAME],
+          ['tunnel', 'run', STABLE_TUNNEL_NAME],
           { shell: true }
         );
 
@@ -558,12 +558,7 @@ async function start(options = {}) {
         resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
-        const tunnelProcess = spawn('cloudflared', [
-          'tunnel',
-          '--protocol', 'http2',
-          '--edge-ip-version', '4',
-          '--url', `http://127.0.0.1:${listenPort}`
-        ], {
+        const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
           shell: true
         });
 
