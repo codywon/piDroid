@@ -107,7 +107,7 @@ class GenerativeUiTest {
             backgroundHex = "#0D1117",
             foregroundHex = "#F0F6FC"
         )
-        assertTrue(html.contains("width=device-width"))
+        assertTrue(html.contains("initial-scale="))
         assertTrue(html.contains("<div id=\"root\">x</div>"))
         assertTrue(html.contains("#0D1117"))
         assertTrue(html.contains("<body>"))
@@ -127,9 +127,8 @@ class GenerativeUiTest {
     // ── 内嵌预览区高度 ─────────────────────────────────────────────
 
     /**
-     * 预览区高度按模型声明的桌面宽高比换算，再夹进 180~320dp。
-     * 800×600 是插件默认尺寸，在 360dp 宽的屏上应当约 250dp —— 太小看不清，
-     * 太大就把「一眼看到」变成「又占一屏」。
+     * 缩略图高度 = 容器宽 ×（声明高 / 声明宽），再夹进 120~460dp。
+     * 800×600 是插件默认尺寸，在 336dp 宽容器里约 252dp。
      */
     @Test
     fun `preview height follows declared aspect ratio`() {
@@ -138,8 +137,8 @@ class GenerativeUiTest {
 
     @Test
     fun `preview height is clamped at both ends`() {
-        assertEquals(180, previewHeightDp(WidgetPayload("t", "<b/>", 1600, 400), 336))
-        assertEquals(320, previewHeightDp(WidgetPayload("t", "<b/>", 400, 3000), 336))
+        assertEquals(120, previewHeightDp(WidgetPayload("t", "<b/>", 1600, 400), 336))
+        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 400, 3000), 336))
     }
 
     @Test
@@ -148,7 +147,7 @@ class GenerativeUiTest {
         val narrow = previewHeightDp(WidgetPayload("t", "<b/>", 800, 600), 240)
         assertTrue(wide > narrow)
         // 模型写出 width=0 时不能除零崩掉
-        assertTrue(previewHeightDp(WidgetPayload("t", "<b/>", 0, 600), 336) in 180..320)
+        assertTrue(previewHeightDp(WidgetPayload("t", "<b/>", 0, 600), 336) in 120..460)
     }
 
     // ── 渲染失败检测的钩子 ─────────────────────────────────────────
@@ -257,14 +256,43 @@ class GenerativeUiTest {
         assertTrue(nan.contains("initial-scale=1.0"))
     }
 
-    /** 内嵌仍然要回流到手机宽度（控件得大到能点、能拖）。 */
+    /**
+     * 内嵌也**不再**回流到手机宽度，而是按声明宽度布局 + 整体等比缩放。
+     *
+     * 真机回归：回流到 360dp 时，一个 900px 设计、横排两栏的天气微组件会被压成竖排文字，
+     * 内容高度还膨胀到声明值的两倍以上 —— 无论给多高的框都会裁掉一部分。
+     * 现在的语义是「一张看全局的缩略图」：整张图缩进来，点开再看大图。
+     */
     @Test
-    fun `inline keeps device width viewport`() {
+    fun `inline scales the declared width instead of reflowing`() {
         val html = buildWidgetHtml(
-            payload = WidgetPayload("t", "<div>x</div>", width = 900, height = 880),
+            payload = WidgetPayload("t", "<div>x</div>", width = 900, height = 920),
             backgroundHex = "#FFFFFF",
-            foregroundHex = "#1F2328"
+            foregroundHex = "#1F2328",
+            initialScale = 387f / 900f
         )
-        assertTrue(html.contains("width=device-width"))
+        assertTrue(html.contains("width=900"))
+        assertFalse(html.contains("width=device-width"))
+        assertTrue(html.contains("initial-scale=0.43"))
+    }
+
+    /** 缩略图高度 = 声明高度 × 缩放比，且两端有夹紧（防超高/超扁）。 */
+    @Test
+    fun `thumbnail height follows the fit scale`() {
+        // 900×920 缩进 387dp 宽 → 387×920/900 = 395.6 → 取整 395
+        assertEquals(395, previewHeightDp(WidgetPayload("t", "<b/>", 900, 920), 387))
+        // 超高 → 夹到上限，避免一张图把会话撑成几屏
+        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 900, 4000), 387))
+        // 超扁 → 夹到下限，避免缩成一条线
+        assertEquals(120, previewHeightDp(WidgetPayload("t", "<b/>", 4000, 200), 387))
+        assertEquals(460, previewHeightDp(WidgetPayload("t", "<b/>", 200, 3000), 387))
+    }
+
+    /** 缩放比就是「容器宽 / 声明宽」，异常输入不外溢。 */
+    @Test
+    fun `fit scale is container width over declared width`() {
+        assertEquals(0.43f, widgetFitScale(WidgetPayload("t", "<b/>", 900, 920), 387), 0.001f)
+        assertEquals(1f, widgetFitScale(WidgetPayload("t", "<b/>", 320, 600), 900), 0f)
+        assertTrue(widgetFitScale(WidgetPayload("t", "<b/>", 0, 600), 387) <= 1f)
     }
 }

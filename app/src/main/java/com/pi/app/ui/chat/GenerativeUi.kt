@@ -29,7 +29,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -40,7 +39,6 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.pi.app.data.model.ToolCallInfo
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlin.math.abs
-import kotlin.math.roundToInt
 
 /**
  * 生成式 UI（`pi-generative-ui` 插件）承载层。
@@ -60,13 +58,14 @@ private const val SHOW_WIDGET_TOOL = "show_widget"
 /** 插件内部的设计指南工具名：聊天流里不展示（插件本身要求对用户不可见）。 */
 const val GENERATIVE_UI_READ_ME_TOOL = "visualize_read_me"
 
-/** 内嵌预览区高度：按模型声明的桌面宽高比换算后夹在这个区间。 */
-private const val PREVIEW_MIN_DP = 180
-private const val PREVIEW_MAX_DP = 320
+/** 内嵌缩略图高度：按声明宽高比等比缩放后的高度夹在这个区间。 */
+private const val PREVIEW_MIN_DP = 120
+private const val PREVIEW_MAX_DP = 460
 
 /**
- * 一个可渲染的微组件。`width` / `height` 是模型声明的**桌面**尺寸（默认 800×600），
- * 手机端用它的**宽高比**决定内嵌预览区高度，内容按设备宽度回流（见 [buildWidgetHtml]）。
+ * 一个可渲染的微组件。`width` / `height` 是模型声明的**桌面**尺寸（默认 800×600）。
+ * 两处都用它做**等比缩放**的依据（见 [buildWidgetHtml]）：内嵌是一张看全局的缩略图，
+ * 全屏是可放大查看大图，都不做窄屏回流。
  */
 data class WidgetPayload(
     val title: String,
@@ -143,10 +142,29 @@ private fun List<Pair<String, String>>.intFieldOf(
  * 内嵌预览区高度：按模型声明的桌面宽高比换算到当前可用宽度，再夹进
  * [PREVIEW_MIN_DP]~[PREVIEW_MAX_DP]。800×600 在 360dp 宽的屏上约 250dp。
  */
+/**
+ * 内嵌缩略图的高度：**整张图按宽度等比缩进容器**之后的高度。
+ *
+ * 前提是页面按声明的桌面宽度布局（不是回流到手机宽度）—— 这样 `height` 才是可信的：
+ * 它就是模型自己在那个宽度下排出来的高度。早期版本让内容回流到 360dp，
+ * 而 360dp 下同样内容会变成两倍以上高度，于是"按声明比例算出来的框"永远装不下，
+ * 真机表现就是只露一半。
+ *
+ * 单测钉住：800×600 在 336dp 宽容器里 → 252dp；1600×400 → 夹到下限；400×3000 → 夹到上限。
+ */
 internal fun previewHeightDp(payload: WidgetPayload, containerWidthDp: Int): Int {
     val ratio = payload.height.toFloat() / payload.width.toFloat().coerceAtLeast(1f)
     return (containerWidthDp * ratio).toInt().coerceIn(PREVIEW_MIN_DP, PREVIEW_MAX_DP)
 }
+
+/**
+ * 等比缩放比：把声明的桌面宽度整体缩进容器宽度。
+ *
+ * 注意单位：WebView 在 `initial-scale=1` 时 1 CSS px == 1 dp，所以直接
+ * `容器宽dp / 声明宽` 就是这个比例。
+ */
+internal fun widgetFitScale(payload: WidgetPayload, containerWidthDp: Int): Float =
+    (containerWidthDp.toFloat() / payload.width.toFloat().coerceAtLeast(1f)).coerceIn(0.05f, 1f)
 
 /** 控制台哨兵：页面里的运行错误会以这个前缀打到 `onConsoleMessage`，宿主据此降级。 */
 private const val ERROR_SENTINEL = "__PI_ERR:"
@@ -157,17 +175,22 @@ private const val ERROR_SENTINEL = "__PI_ERR:"
  * `widget_code` 按插件约定是**片段**（没有 DOCTYPE/html/head/body），所以这里补
  * viewport、基础样式、错误哨兵与 `#root` 容器。
  *
- * **两种布局模式，差别只在 viewport 宽度与是否允许滚动**，这一条是被真机推翻过的：
+ * **两种模式都用「声明的桌面宽度」布局，再整体等比缩放**，差别只在是否允许滚动。
+ * 这一条被真机反复推翻过两次，最终定论是：
  *
- * - **内嵌（`fullscreen = false`）**：`width=device-width`，让内容回流到手机宽度。
- *   理由：内嵌区要给滑块/按钮留出可点可拖的尺寸，按桌面宽度整体缩小会让控件小到无法操作。
- * - **全屏（`fullscreen = true`）**：`width=<模型声明的桌面宽度>`，WebView 按设计宽度布局后
- *   再等比缩放到屏宽，并允许纵向滚动。
- *   理由：模型常用横排多栏（主卡 + 侧栏）。在 360dp 下回流会把侧栏压成一条竖排文字，
- *   而按 900px 布局再缩放能完整还原模型的设计意图；字小了可以双指放大。
+ * - **内嵌（`fullscreen = false`）**：一张**看全局的缩略图**。超长图靠高度夹紧保护。
+ * - **全屏（`fullscreen = true`）**：同一布局占满整屏，可滚、可双指放大看细节。
  *
- * 滚动同理：内嵌必须 `overflow: hidden`（纵向手势要还给列表），全屏必须 `auto`
- * —— 之前两处都写死 `hidden`，导致全屏页超出视口的内容**既不能滚也不能缩**，永久被裁掉。
+ * 为什么不让内容回流到手机宽度：模型常用横排多栏（主卡 + 24 小时侧栏）。回流到 360dp 时
+ * 侧栏会被压成一条竖排文字，**同时内容高度膨胀到声明值的两倍以上** —— 于是无论给多高的框
+ * 都会裁掉一部分（真机上就是「只显示一半」）。而按声明宽度布局时，`payload.height` 就是
+ * 模型自己在该宽度下排出来的高度，等比缩放后整张图自然完整可见。
+ *
+ * 缩放的关键是 WebView 的 `loadWithOverviewMode = true`：设为 false 时它按声明宽度布局
+ * 却**不缩出去**，真机表现就是只看到左边一半。
+ *
+ * 滚动：内嵌必须 `overflow: hidden`（纵向手势要还给列表），全屏必须 `auto`
+ * —— 早期两处都写死 `hidden`，导致全屏页超出视口的内容**既不能滚也不能缩**。
  *
  * `#root` 容器有两个用途：一是归一化结构（内嵌预览与全屏页共用同一份 DOM 形状），
  * 二是让宿主能用一个固定表达式判断「页面是不是白板」并测量实际内容高度。
@@ -203,14 +226,16 @@ fun buildWidgetHtml(
         payload.code
     }
 
-    val viewport = if (fullscreen) {
-        // 按模型声明的桌面宽度布局，再等比缩到屏幕宽度：
-        // 横排多栏的微组件不会因为窄屏被压扁，双指放大看细节。
-        val scale = initialScale?.takeIf { it > 0f && it.isFinite() } ?: 1f
-        "width=${payload.width}, initial-scale=$scale, maximum-scale=5.0, user-scalable=yes"
-    } else {
-        "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
-    }
+    // 两种模式都按**声明的桌面宽度**布局，再整体等比缩放：
+    //  - 内嵌 → 一张看全局的缩略图；
+    //  - 全屏 → 同一布局，但占满整屏、可滚可双指放大。
+    //
+    // 不再让内容回流到手机宽度。回流会让横排多栏的微组件（主卡 + 24 小时侧栏）
+    // 在 360dp 下被压成一条竖排文字，同时内容高度膨胀到声明值的两倍以上 ——
+    // 无论给多高的框都会裁掉一部分。
+    val scale = initialScale?.takeIf { it > 0f && it.isFinite() } ?: 1f
+    val viewport = "width=${payload.width}, " +
+        "initial-scale=$scale, maximum-scale=5.0, user-scalable=yes"
     val overflow = if (fullscreen) "auto" else "hidden"
 
     return """
@@ -252,33 +277,6 @@ fun buildWidgetHtml(
         </body>
         </html>
     """.trimIndent()
-}
-
-/**
- * 实测内容高度缓存（key = widget 内容哈希 + 深浅色）。
- *
- * 为什么必须放在组合**外面**：`LazyColumn` 会 dispose 离开视口的 item，item 里的
- * `remember` 随之丢失。若高度只存在 item 内，滑出去再回来就回到估算值 → 卡片高度一变，
- * 列表重新排版 → 可能又把 item 挤出视口 → 再测一次 → 来回抖动（真机上看到的就是频闪）。
- * 放到全局后，同一份 widget 内容在任何时刻都只有一个确定高度。
- *
- * 存的是**渲染结果**，不是交互态。
- */
-internal object WidgetHeights {
-    private const val MAX_ENTRIES = 32
-
-    private val entries = object : LinkedHashMap<String, Int>(MAX_ENTRIES, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>?): Boolean =
-            size > MAX_ENTRIES
-    }
-
-    @Synchronized
-    fun get(key: String): Int? = entries[key]
-
-    @Synchronized
-    fun put(key: String, heightDp: Int) {
-        entries[key] = heightDp
-    }
 }
 
 /** 本地化的第三方库：命中的 CDN 请求直接由 assets 回吐，弱网/离线也能秒开。 */
@@ -380,20 +378,6 @@ fun WidgetToolCallCard(
     onOpen: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val configuration = LocalConfiguration.current
-    val initialHeight = remember(payload.width, payload.height, configuration.screenWidthDp) {
-        previewHeightDp(payload, (configuration.screenWidthDp - 24).coerceAtLeast(200))
-    }
-    val maxHeightDp = remember(configuration.screenHeightDp) {
-        minOf((configuration.screenHeightDp * 0.6f).toInt(), 480)
-    }
-    // 实测高度：优先用全局缓存（item 被 LazyColumn 回收后仍然记得），
-    // 没有才用按声明比例的估算值。
-    val heightKey = remember(payload.code, theme.isDark) {
-        "h:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
-    }
-    var measuredHeight by remember(heightKey) { mutableStateOf(WidgetHeights.get(heightKey)) }
-    val previewHeight = measuredHeight ?: initialHeight
 
     Surface(
         shape = RoundedCornerShape(10.dp),
@@ -437,36 +421,41 @@ fun WidgetToolCallCard(
                 }
             }
             HorizontalDivider(color = theme.outline.copy(alpha = 0.6f))
-            when {
-                // 生成中不挂 WebView。
-                //
-                // 生成期间列表一直往下自动补位（回合还在跑），卡片正好在视口边界上反复进出组合，
-                // 而 `LazyColumn` 会 dispose 离开视口的 item —— WebView 于是被反复销毁、重建、
-                // 重新加载页面，用户看到的就是「出图的时候画面一直在闪」。
-                // 等工具调用跑完（isRunning = false）再挂一次，那时列表已经不再自动滚动。
-                isRunning -> Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(previewHeight.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text("生成中…", fontSize = 11.5.sp, color = theme.textMuted)
+            // 用实测容器宽度算缩放比与缩略图高度：整张图按宽度等比缩进来，
+            // 高度 = 声明高度 × 缩放比 —— 看的是全局，不是被裁掉的一段。
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                val containerWidthDp = maxWidth.value.toInt().coerceAtLeast(1)
+                val previewHeight = remember(payload.width, payload.height, containerWidthDp) {
+                    previewHeightDp(payload, containerWidthDp)
                 }
-
-                else -> WidgetCanvas(
-                    payload = payload,
-                    fullscreen = false,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(previewHeight.dp),
-                    onContentHeightPx = { cssPx ->
-                        // WebView 在 zoom=1 时 1 CSS px == 1 dp，这里**不能**再除 density：
-                        // 当成设备像素换算会把高度算小（真机上表现为预览区仍然只露一半）。
-                        val dp = cssPx.roundToInt().coerceIn(PREVIEW_MIN_DP, maxHeightDp)
-                        WidgetHeights.put(heightKey, dp)
-                        measuredHeight = dp
+                val scale = remember(payload.width, containerWidthDp) {
+                    widgetFitScale(payload, containerWidthDp)
+                }
+                when {
+                    // 生成中不挂 WebView。
+                    //
+                    // 生成期间列表一直往下自动补位（回合还在跑），卡片正好在视口边界上反复进出组合，
+                    // 而 `LazyColumn` 会 dispose 离开视口的 item —— WebView 于是被反复销毁、重建、
+                    // 重新加载页面，用户看到的就是「出图的时候画面一直在闪」。
+                    // 等工具调用跑完（isRunning = false）再挂一次，那时列表已经不再自动滚动。
+                    isRunning -> Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(previewHeight.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("生成中…", fontSize = 11.5.sp, color = theme.textMuted)
                     }
-                )
+
+                    else -> WidgetCanvas(
+                        payload = payload,
+                        fullscreen = false,
+                        scale = scale,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(previewHeight.dp)
+                    )
+                }
             }
         }
     }
@@ -521,14 +510,24 @@ fun WidgetViewerScreen(
             )
         }
     ) { innerPadding ->
-        WidgetCanvas(
-            payload = payload,
-            // 全屏：页面自己滚动，不再拦截纵向手势（之前传 false 让它滚不动）
-            fullscreen = true,
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-        )
+        ) {
+            // 与内嵌同一套等比缩放：先看全局，再用双指放大看细节
+            val containerWidthDp = maxWidth.value.toInt().coerceAtLeast(1)
+            val scale = remember(payload.width, containerWidthDp) {
+                widgetFitScale(payload, containerWidthDp)
+            }
+            WidgetCanvas(
+                payload = payload,
+                // 全屏：页面自己滚动，不再拦截纵向手势
+                fullscreen = true,
+                scale = scale,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
 }
 
@@ -549,9 +548,9 @@ fun WidgetViewerScreen(
 private fun WidgetCanvas(
     payload: WidgetPayload,
     fullscreen: Boolean,
-    modifier: Modifier = Modifier,
-    /** 内嵌态：页面加载完后回报**实测内容高度**（px，已按 CSS 像素计），由调用方决定卡片高度。 */
-    onContentHeightPx: ((Float) -> Unit)? = null
+    /** 等比缩放比：由调用方用**实测容器宽度**算好传进来（见 [widgetFitScale]）。 */
+    scale: Float,
+    modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
@@ -560,21 +559,13 @@ private fun WidgetCanvas(
     var retry by remember(payload.code) { mutableStateOf(0) }
     var failed by remember(payload.code, retry) { mutableStateOf(false) }
 
-    // 全屏：把声明宽度等比缩进屏幕宽度。内嵌走回流，不需要缩放。
-    val screenWidthDp = LocalConfiguration.current.screenWidthDp
-    val initialScale = if (fullscreen) {
-        (screenWidthDp.toFloat() / payload.width.coerceAtLeast(1)).coerceIn(0.2f, 1f)
-    } else {
-        null
-    }
-
-    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen, initialScale) {
+    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen, scale) {
         buildWidgetHtml(
             payload = payload,
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
             foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
             fullscreen = fullscreen,
-            initialScale = initialScale
+            initialScale = scale
         )
     }
 
@@ -601,7 +592,6 @@ private fun WidgetCanvas(
     // 用非可观察的持有者记一份「已加载内容指纹」，只在内容真的换了时才重新加载。
     val loadedKey = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<String?>(null) }
     // 高度只测一次：反复回填会让 WebView 视口高度变化，触发微组件自身的响应式 JS 重排（振荡）
-    val measured = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
     // 销毁标志：用于区分「页面加载完成」与「销毁时清场加载」
     val disposed = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
 
@@ -618,7 +608,9 @@ private fun WidgetCanvas(
                         javaScriptEnabled = true
                         domStorageEnabled = true
                         useWideViewPort = true
-                        loadWithOverviewMode = false
+                        // 必须为 true：配合 viewport 里的声明宽度，WebView 会把整页缩放到视口宽度。
+                        // 设为 false 时它按声明宽度布局却**不缩出去**，真机表现就是只看到左边一半。
+                        loadWithOverviewMode = true
                         setSupportZoom(true)
                         builtInZoomControls = true
                         displayZoomControls = false
@@ -687,25 +679,18 @@ private fun WidgetCanvas(
                             // 加载出来的页面 URL **本身就是 about:blank**，那样会把正常的
                             // 白板检测与高度测量一起跳过（真机上表现为预览区高度永远停在估算值）。
                             if (disposed.get()) return
-                            // 白板检测 + 实测内容高度，共用一个脚本往返
+                            // 白板检测：`#root` 里一个节点都没有就当渲染失败。
+                            //
+                            // 高度不再测量：页面按声明的桌面宽度布局后，`payload.height` 就是可信的
+                            // 内容高度（模型自己在该宽度下排出来的），等比缩放即可，
+                            // 不需要再靠 `getBoundingClientRect` 回填 —— 那条路会随 item 回收反复
+                            // 改视口高度，正是抖动的来源。
                             view?.evaluateJavascript(
                                 "(function(){var r=document.getElementById('root');" +
-                                    "if(!r)return '0|0';" +
-                                    "return r.children.length + '|' + Math.ceil(r.getBoundingClientRect().height);})()"
+                                    "return r ? r.children.length : 0;})()"
                             ) { raw ->
-                                val payload = raw?.trim('"') ?: return@evaluateJavascript
-                                val parts = payload.split('|')
-                                val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
-                                if (n == 0) {
-                                    failed = true
-                                    return@evaluateJavascript
-                                }
-                                // 高度只回填一次：反复改 WebView 视口高度会触发微组件的
-                                // 响应式布局自己重排，看起来就是页面在抱（振荡）
-                                val h = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
-                                if (h > 0f && measured.compareAndSet(false, true)) {
-                                    onContentHeightPx?.invoke(h)
-                                }
+                                val n = raw?.trim('"')?.toIntOrNull() ?: 0
+                                if (n == 0) failed = true
                             }
                         }
                     }
