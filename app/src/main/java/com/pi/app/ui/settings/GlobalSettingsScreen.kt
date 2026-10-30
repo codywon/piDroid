@@ -65,6 +65,7 @@ fun GlobalSettingsScreen(
     apiClient: PiApiClient? = null,
     models: List<ModelInfo>,
     currentDefaultModelId: String,
+    currentDefaultProvider: String? = null,
     currentDefaultThinkingLevel: ThinkingLevel,
     onSetDefaultModel: (ModelInfo) -> Unit,
     onSetDefaultThinkingLevel: (ThinkingLevel) -> Unit,
@@ -240,6 +241,7 @@ fun GlobalSettingsScreen(
                         GlobalModelsTab(
                             models = models,
                             currentDefaultModelId = currentDefaultModelId,
+                            currentDefaultProvider = currentDefaultProvider,
                             currentDefaultThinkingLevel = currentDefaultThinkingLevel,
                             onSetDefaultModel = onSetDefaultModel,
                             onSetDefaultThinkingLevel = onSetDefaultThinkingLevel,
@@ -493,6 +495,7 @@ fun GlobalSettingsScreen(
 fun GlobalModelsTab(
     models: List<ModelInfo>,
     currentDefaultModelId: String,
+    currentDefaultProvider: String? = null,
     currentDefaultThinkingLevel: ThinkingLevel,
     onSetDefaultModel: (ModelInfo) -> Unit,
     onSetDefaultThinkingLevel: (ThinkingLevel) -> Unit,
@@ -678,7 +681,7 @@ fun GlobalModelsTab(
         }
 
         items(filtered, key = { "${it.provider}:${it.id}" }) { model ->
-            val isDefault = model.id == currentDefaultModelId
+            val isDefault = SessionModelSelection.isSelected(model, currentDefaultProvider, currentDefaultModelId)
             Surface(
                 shape = RoundedCornerShape(10.dp),
                 color = theme.surfaceContainerLow,

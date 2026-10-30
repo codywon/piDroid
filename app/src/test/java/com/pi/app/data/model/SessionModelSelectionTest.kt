@@ -90,4 +90,50 @@ class SessionModelSelectionTest {
         assertNull(SessionModelSelection.fromSnapshot(models, null, "", ""))
         assertNull(SessionModelSelection.resolve(models, null, gpt.id))
     }
+
+    // ── 同名不同供应商：切了供应商必须能看出切了哪一行 ──
+
+    private val deepseekOtherProvider = ModelInfo("deepseek-flash", "DeepSeek Flash", "deepseek")
+
+    @Test
+    fun `only the row of the selected provider is marked as current`() {
+        val catalog = listOf(deepseek, deepseekOtherProvider, gpt)
+        val selected = SessionModelSelection.isSelected(deepseekOtherProvider, "deepseek", "deepseek-flash")
+        val stale = SessionModelSelection.isSelected(deepseek, "deepseek", "deepseek-flash")
+        assertEquals(true, selected)
+        assertEquals(false, stale)
+        assertEquals(1, catalog.count { SessionModelSelection.isSelected(it, "deepseek", "deepseek-flash") })
+    }
+
+    @Test
+    fun `unknown provider falls back to model id so something is still highlighted`() {
+        assertEquals(true, SessionModelSelection.isSelected(deepseek, null, "deepseek-flash"))
+        assertEquals(false, SessionModelSelection.isSelected(deepseek, "deepseek", "deepseek-flash"))
+        assertEquals(false, SessionModelSelection.isSelected(deepseek, "codywon", "gpt-6-sol"))
+    }
+
+    @Test
+    fun `same id under two providers is flagged as ambiguous and single provider is not`() {
+        val catalog = listOf(deepseek, deepseekOtherProvider, gpt)
+        assertEquals(true, SessionModelSelection.isProviderAmbiguous(catalog, "deepseek-flash"))
+        assertEquals(false, SessionModelSelection.isProviderAmbiguous(catalog, "gpt-6.1-sol"))
+        assertEquals(false, SessionModelSelection.isProviderAmbiguous(catalog, null))
+    }
+
+    @Test
+    fun `strict identity match keeps provider apart`() {
+        assertEquals(true, SessionModelSelection.matches(deepseekOtherProvider, "deepseek", "deepseek-flash"))
+        assertEquals(false, SessionModelSelection.matches(deepseek, "deepseek", "deepseek-flash"))
+        assertEquals(false, SessionModelSelection.matches(deepseek, null, "deepseek-flash"))
+        assertSame(deepseekOtherProvider, SessionModelSelection.resolve(listOf(deepseek, deepseekOtherProvider), "deepseek", "deepseek-flash"))
+    }
+
+    @Test
+    fun `switching provider keeps the new provider after the next snapshot`() {
+        val catalog = listOf(deepseek, deepseekOtherProvider)
+        val switched = SessionModelSelection.resolve(catalog, "deepseek", "deepseek-flash")!!
+        assertEquals("deepseek", switched.provider)
+        val runtime = AgentRuntimeState(provider = "deepseek", modelId = "deepseek-flash", runtimeAlive = true)
+        assertSame(deepseekOtherProvider, SessionModelSelection.fromSnapshot(catalog, runtime, "codywon", "deepseek-flash"))
+    }
 }

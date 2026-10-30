@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.ModelInfo
+import com.pi.app.data.model.SessionModelSelection
 import com.pi.app.data.model.ThinkingLevel
 import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.theme.*
@@ -33,12 +34,17 @@ import com.pi.app.ui.theme.*
  * - 右侧五角星星标系统：实心金星 ★ (全局默认模型) / 空心灰星 ☆ (点击一键设为默认模型，调用 PUT /api/models/default)
  *   （实心星本身即默认标识，不再额外显示「默认」文字徽标，保持列表清爽）
  * - 左侧勾选 ✓：当前会话正在使用的模型
+ *
+ * 模型身份是 **provider + modelId 一对**（与 pi-web model-selector 的 `active` 同口径）：
+ * 同一个 modelId 可以同时挂在多个 provider 下，只比 id 会让两行都是 ✓，
+ * 用户切了供应商却看不出变化 —— 必须带上 [selectedProvider] 才能定位到唯一那一行。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModelAndThinkingSheet(
     availableModels: List<ModelInfo>,
     selectedModelId: String,
+    selectedProvider: String? = null,
     currentThinkingLevel: ThinkingLevel,
     defaultModelId: String? = null,
     defaultProvider: String? = null,
@@ -48,21 +54,23 @@ fun ModelAndThinkingSheet(
     onDismiss: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    var selectedProvider by remember { mutableStateOf<String?>(null) }
+    var providerFilter by remember { mutableStateOf<String?>(null) }
     var searchQuery by remember { mutableStateOf("") }
 
     val providers = remember(availableModels) {
         availableModels.map { it.provider }.distinct()
     }
 
-    val filteredModels = remember(availableModels, selectedProvider, searchQuery) {
-        var list = if (selectedProvider == null) availableModels else availableModels.filter { it.provider == selectedProvider }
+    val filteredModels = remember(availableModels, providerFilter, searchQuery) {
+        var list = if (providerFilter == null) availableModels else availableModels.filter { it.provider == providerFilter }
         if (searchQuery.isNotBlank()) {
             val q = searchQuery.trim().lowercase()
+            // 与 pi-web 一致：`provider/modelId` 这种写法（如 codywon/deepseek-flash）也能搜到
             list = list.filter {
                 it.displayName.lowercase().contains(q) ||
                 it.id.lowercase().contains(q) ||
-                it.provider.lowercase().contains(q)
+                it.provider.lowercase().contains(q) ||
+                "${it.provider}/${it.id}".lowercase().contains(q)
             }
         }
         list
@@ -203,25 +211,25 @@ fun ModelAndThinkingSheet(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
-                        color = if (selectedProvider == null) theme.primary.copy(alpha = 0.14f) else theme.background,
-                        border = BorderStroke(1.dp, if (selectedProvider == null) theme.primary else theme.outline),
-                        modifier = Modifier.clickable { selectedProvider = null }
+                        color = if (providerFilter == null) theme.primary.copy(alpha = 0.14f) else theme.background,
+                        border = BorderStroke(1.dp, if (providerFilter == null) theme.primary else theme.outline),
+                        modifier = Modifier.clickable { providerFilter = null }
                     ) {
                         Text(
                             text = "全部 (${availableModels.size})",
                             style = MaterialTheme.typography.labelSmall,
                             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            color = if (selectedProvider == null) theme.primary else theme.textSecondary
+                            color = if (providerFilter == null) theme.primary else theme.textSecondary
                         )
                     }
 
                     providers.forEach { p ->
-                        val isSel = selectedProvider == p
+                        val isSel = providerFilter == p
                         Surface(
                             shape = RoundedCornerShape(6.dp),
                             color = if (isSel) theme.primary.copy(alpha = 0.14f) else theme.background,
                             border = BorderStroke(1.dp, if (isSel) theme.primary else theme.outline),
-                            modifier = Modifier.clickable { selectedProvider = p }
+                            modifier = Modifier.clickable { providerFilter = p }
                         ) {
                             Text(
                                 text = p,
@@ -242,8 +250,8 @@ fun ModelAndThinkingSheet(
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 items(filteredModels, key = { "${it.provider}:${it.id}" }) { model ->
-                    val isSelected = model.id == selectedModelId
-                    val isDefault = (model.id == defaultModelId) && (defaultProvider.isNullOrBlank() || defaultProvider == model.provider)
+                    val isSelected = SessionModelSelection.isSelected(model, selectedProvider, selectedModelId)
+                    val isDefault = SessionModelSelection.isSelected(model, defaultProvider, defaultModelId)
 
                     Surface(
                         modifier = Modifier.fillMaxWidth(),

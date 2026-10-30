@@ -2,6 +2,41 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.57] - 2026-10-30
+
+### 🐛 修「换供应商切模型看不出变化 / 同名模型串供应商」
+
+根因不是没把 provider 发出去（`set_model` 一直是 `provider + modelId` 成对发送的），
+而是**模型身份在本机被拆成了半个**：同一个 `modelId` 可以同时挂在多个 provider 下
+（`deepseek-flash` 在 `codywon` 与 `deepseek` 各有一份），而选择器只比 id。
+逐条对照 pi-web 的 model-selector 修掉：
+
+**① 选择器 ✓ 改成 provider + modelId 成对判定**
+
+- 根因：`isSelected = model.id == selectedModelId`。两行同名模型会同时出现 ✓ 和高亮，
+  切到另一家供应商后界面像素级不变 —— 用户只能理解为「没同步 / 串了」。
+- 改法：与 pi-web 一致（`active: e.modelId===m.modelId && e.provider===m.provider`）
+  新增 `SessionModelSelection.isSelected/matches`，面板接收 `selectedProvider`；
+  默认模型的星标同样按这一对判定。
+- 顺带对齐 pi-web 的搜索：`codywon/deepseek-flash` 这种 `provider/modelId` 写法也能搜到。
+
+**② models.json 覆盖不再写到别人的同名模型上**
+
+- 根因：`applyModelOverrides` 三处定位都是 `精确命中 ?: 按 id 兜底`。给 B 供应商存的
+  上下文窗口 / 最大输出 / `provider` 字段会落到 A 供应商的同名模型上 —— 真正的串供应商。
+- 改法：新增 `ModelCatalogMerge.indexOf`：精确命中优先；id 在目录里唯一时才允许跨 provider
+  回退；重名时直接跳过，宁可不生效也不写错对象。
+
+**③ 切完模型不再被旧快照弹回上一个供应商**
+
+- 切成功后立刻把内存会话快照的 `(provider, modelId)` 一起改写，重进会话不会先用旧快照回放。
+- 切换成功的提示在模型名重名时补上 provider，一眼确认切的是哪一家。
+
+**工程**
+
+- 新增 `ModelCatalogMergeTest`，`SessionModelSelectionTest` 补同名不同供应商、
+  未知 provider 回退、重名判定等用例；纯逻辑校验 23 项全绿（用项目同版本 kotlinc 2.0.21 直编源码验证）。
+
 ## [1.7.56] - 2026-10-30
 
 ### 🐛 修生成式 UI：频闪 / 预览区仍只露一半 / 全屏没缩进屏宽

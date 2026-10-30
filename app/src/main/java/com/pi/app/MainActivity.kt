@@ -1709,6 +1709,7 @@ class MainActivity : ComponentActivity() {
                     apiClient = apiClient,
                     models = dynamicCatalog.models,
                     currentDefaultModelId = prefs.defaultModelId,
+                    currentDefaultProvider = prefs.defaultProvider,
                     currentDefaultThinkingLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),
                     onSetDefaultModel = { model ->
                         prefs.defaultModelId = model.id
@@ -2412,6 +2413,7 @@ class MainActivity : ComponentActivity() {
                     ModelAndThinkingSheet(
                         availableModels = dynamicCatalog.models,
                         selectedModelId = selectedModel.id,
+                        selectedProvider = selectedModel.provider,
                         currentThinkingLevel = currentThinkingLevel,
                         defaultModelId = currentDefaultModelId,
                         defaultProvider = currentDefaultProvider,
@@ -2426,7 +2428,13 @@ class MainActivity : ComponentActivity() {
                                     try {
                                         apiClient.updateModel(sess.id, model.provider, model.id)
                                             .onSuccess {
-                                                Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                                // 刚切的模型立刻写进内存快照，避免重进会话时被旧快照弹回上一个供应商
+                                                apiClient.rememberSessionModel(sess.id, model.provider, model.id)
+                                                // 同名模型在多个供应商下都有一份时，提示里必须带上 provider 才看得出切了哪一家
+                                                val suffix = if (SessionModelSelection.isProviderAmbiguous(dynamicCatalog.models, model.id)) {
+                                                    " (${model.provider})"
+                                                } else ""
+                                                Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}$suffix", Toast.LENGTH_SHORT).show()
                                             }
                                             .onFailure { err ->
                                                 if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {

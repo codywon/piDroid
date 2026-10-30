@@ -101,6 +101,17 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
 
+    /**
+     * 刚在本机切过模型：把内存快照里的 (provider, modelId) 一起改写。
+     *
+     * 否则下一次进入这个会话会先拿旧快照回放，把模型「弹回」上一个供应商的同名模型，
+     * 等网络快照回来才纠正——用户看到的正是「切了供应商却没生效 / 又串回去了」。
+     */
+    fun rememberSessionModel(sessionId: String, provider: String, modelId: String) {
+        val cached = sessionHistoryCache[sessionId] ?: return
+        sessionHistoryCache[sessionId] = cached.copy(provider = provider, modelId = modelId)
+    }
+
     fun clearSessionCache(sessionId: String? = null) {
         if (sessionId == null) {
             sessionHistoryCache.clear()
@@ -1652,9 +1663,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
                             runCatching { it.asString }.getOrNull()
                         }
-                        val idx = merged.indexOfFirst {
-                            it.provider.equals(provName, ignoreCase = true) && it.id.equals(mId, ignoreCase = true)
-                        }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(mId, ignoreCase = true) }
+                        val idx = ModelCatalogMerge.indexOf(merged, provName, mId)
 
                         if (idx >= 0) {
                             val old = merged[idx]
@@ -1703,9 +1712,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
                             runCatching { it.asString }.getOrNull()
                         }
-                        val idx = merged.indexOfFirst {
-                            it.provider.equals(provName, ignoreCase = true) && it.id.equals(mId, ignoreCase = true)
-                        }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(mId, ignoreCase = true) }
+                        val idx = ModelCatalogMerge.indexOf(merged, provName, mId)
 
                         if (idx >= 0) {
                             val old = merged[idx]
@@ -1736,9 +1743,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 3. 应用用户在 App 内部针对具体模型保存的持久化配置
         val localOverrides = prefs.getModelOverrides()
         for ((_, ov) in localOverrides) {
-            val idx = merged.indexOfFirst {
-                it.provider.equals(ov.provider, ignoreCase = true) && it.id.equals(ov.modelId, ignoreCase = true)
-            }.takeIf { it >= 0 } ?: merged.indexOfFirst { it.id.equals(ov.modelId, ignoreCase = true) }
+            val idx = ModelCatalogMerge.indexOf(merged, ov.provider, ov.modelId)
 
             // 如果该模型所属的 Provider 根本不在当前服务端的有效列表中 (已被用户在模型管理中彻底删除)，
             // 坚决不复活孤儿模型，并同步从本地清除该已失效的持久化条目，消除幽灵模型
