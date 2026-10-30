@@ -2,6 +2,35 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.61] - 2026-10-30
+
+### 🐛 密钥失效不再是「静默 401 刷屏」：停轮询 + 明确提示 + 一条机器可读的 401 标记
+
+网关日志里那一大片 `[auth] 401 ... token=present(len=35)` 的来源找到了：轮换 Token 后
+App 手里还是上一轮的值，而各条轮询（`/api/agent/running` 每 2.5s、会话页另外几条）都用
+`getOrNull()` 把错误吞掉 —— 于是网关满屏 401，界面上只表现为「怎么都不更新」，没有任何出路提示。
+
+**① 网关：401 带机器可读标记，日志不再被扫描器挤掉**
+
+- 401 响应固定带 `WWW-Authenticate: Bearer realm="pi-gateway", error="invalid_token"`
+  与响应体 `{"code":"TOKEN_INVALID"}`；WebSocket upgrade 的 401 同样带这个头。
+- `auth-fail.log` 的 3s 节流只作用于「压根没带 token」的请求（公网扫描器一天几十万条）；
+  **带了 token 却不匹配的永远记** —— 以前是全局节流，扫描器刷屏时恰好会把最要紧的那几条挤掉。
+
+**② App：只有网关的标记才算「密钥失效」**
+
+- 新增 `AuthRejection`：判定条件是 `401 + invalid_token 标记 + 这次用的是本地存的 Token`。
+  pi-web 在**模型 API Key 填错**时也返回 401（`Invalid API key`），那属于去清 Key，
+  误判会把用户往「重新扫码」的死路上推；配对对话框里手填/扫码的候选 Token 试连失败
+  也不会把整个 App 判成失效（否则正在用的会话会被停掉）。
+- 新增 `AuthRejectionSignal`：置位后列表页/会话页的轮询循环直接退出，弹一次
+  「密钥已失效，请重新扫码配对」；任何一次成功请求（含重扫后的试连）自动清零，
+  轮询自动恢复，并把因为 401 停掉的 SSE 重新挂上（不用退出会话再进来）。
+
+覆盖 `server/logs/auth-fail.log` 里历史的 107 条样本做了复盘：31 条 `present(len=35)` 全部来自
+`okhttp/4.12.0`、集中在轮换后的 2 分钟内（`fp` 与 `expected` 不同）；其余 76 条 `token=missing`
+是伪造 UA 随机路径的公网扫描，网关返 401 是正确行为。
+
 ## [1.7.60] - 2026-10-30
 
 ### 🐛 修「回到会话又变回上一家供应商」：本地快照不得再决定模型身份

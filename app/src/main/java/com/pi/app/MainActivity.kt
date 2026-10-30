@@ -267,6 +267,11 @@ class MainActivity : ComponentActivity() {
         var autoFillUserTurnTriedFor by remember { mutableStateOf<String?>(null) }
         // /api/agent/running 的 sessionListVersion：只有它变了才值得重拉完整会话列表
         var lastSessionListVersion by remember { mutableStateOf(0L) }
+        // 网关密钥已失效（轮换 Token 后本地存的还是旧值）。置位后停掉巡检，只提示一次。
+        val authRejected by com.pi.app.network.AuthRejectionSignal.rejected.collectAsState()
+        var authRejectedNoticeShown by remember { mutableStateOf(false) }
+        // 失效过才需要「恢复后重挂流」：首次组合时值为 false，不会多起一条 SSE
+        var authRejectedBefore by remember { mutableStateOf(false) }
 
         var dynamicCatalog by remember { mutableStateOf(DynamicModelCatalog(emptyList(), emptyMap())) }
         var currentDefaultModelId by remember { mutableStateOf(prefs.defaultModelId) }
@@ -1592,13 +1597,38 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 「密钥已失效」只提示一次：轮询停手后不会反复刷屏，重新扫码成功后自动复位。
+        // 判定来自 AuthRejection（网关 401 的 WWW-Authenticate 标记），
+        // pi-web 自己的「模型 API Key 填错」401 不会落到这里。
+        LaunchedEffect(authRejected) {
+            if (authRejected) {
+                authRejectedBefore = true
+                if (!authRejectedNoticeShown) {
+                    authRejectedNoticeShown = true
+                    Toast.makeText(this@MainActivity, "密钥已失效，请重新扫码配对", Toast.LENGTH_LONG).show()
+                }
+                return@LaunchedEffect
+            }
+            authRejectedNoticeShown = false
+            // 重扫成功后把因为 401 而停掉的实时流重新挂上：
+            // 否则要退出会话再进来才恢复，用户看到的是「配对成功了但正文不动」。
+            if (authRejectedBefore) {
+                authRejectedBefore = false
+                val open = currentSession ?: return@LaunchedEffect
+                reattachSseCallback?.invoke(open.id, isAgentBusy)
+            }
+        }
+
         // 全场景实时同步循环（与 pi-web 同一套机制：轻量 running 快照 + SSE 实时流）：
         // 1) 首页：每 2.5s 只拉 /api/agent/running（约 230 字节）对账 runningSessionIds，
         //    只有 sessionListVersion 变化时才重拉完整会话列表（240KB），不再每 4s 全量。
         // 2) 会话页：运行中 1.5s 一轮快照；空闲时也只先拉轻量快照，只有「本会话在跑」
         //    或列表版本变化时才拉完整历史，避免对着一个静止的会话每 2.5s 下载 200KB。
-        LaunchedEffect(prefs.isConfigured, currentSession?.id) {
+        LaunchedEffect(prefs.isConfigured, currentSession?.id, authRejected) {
             if (!prefs.isConfigured) return@LaunchedEffect
+            // 密钥失效时不再轮询：每 2.5s 一次「必然 401」只会把网关日志打满，界面也永远等不到数据。
+            // 重新配对写进新 Token 后，第一条成功请求会把 authRejected 清零，这个 effect 自动重启。
+            if (authRejected) return@LaunchedEffect
             val activeSession = currentSession
             if (activeSession == null) {
                 loadSessions(silent = true)

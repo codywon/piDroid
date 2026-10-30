@@ -24,6 +24,8 @@
 | WebSocket | `server.on('upgrade')` 单独校验 Token，堵住 Express 中间件管不到的 upgrade 通道 |
 | 暴露面 | 只暴露网关 4100；pi-web 绑 `127.0.0.1:30141`，公网不可达 |
 | 日志脱敏 | 隧道日志过滤 SSE 断开噪声，并把 `?token=` 打码（`server/gateway.js` 的 `pipeTunnelLogs`）；App 侧 `PiSseClient` 不再把 token 放进 URL（需重打 APK 生效） |
+| 401 机器可读 | 网关 401 固定带 `WWW-Authenticate: Bearer realm="pi-gateway", error="invalid_token"` 与响应体 `{"code":"TOKEN_INVALID"}`；App 只认这个标记才判「密钥失效」——pi-web 自己的 `401 Invalid API key`（模型 Key 填错）不参与判定 |
+| 401 日志节流 | 只节流「压根没带 token」的（公网扫描器，3s 一条）；**带了 token 却不匹配的永远记**，避免扫描器刷屏时把轮换 Token 后 App 的失败记录挤掉 |
 
 **核心事实**：Token 等价于本机命令行权限（pi-web 能执行 shell、读写任意文件），
 所以它必须按 SSH 私钥对待。当前没有第二因子。
@@ -43,6 +45,12 @@
 已修：`AuthInterceptor` 现在尊重请求自带的 `Authorization`（等下次构建生效）。
 诊断：网关会把 401 写入 `server/logs/auth-fail.log`（只存 Token 的 SHA-256 前 8 位指纹、
 长度、路径、UA，不存原值），可用来判断客户端发的是旧 Token 还是压根没带。
+
+> 1.7.61 补的是这个坑的**尾巴**：轮换后即使能重新配对，在那之前 App 的各条轮询
+> （`/api/agent/running` 每 2.5s）仍在用旧 Token 静默 401，界面上只表现为「怎么都不更新」。
+> 现在这种 401 会被 `AuthRejectionSignal` 接住：停掉轮询、弹一次「密钥已失效，请重新扫码配对」，
+> 重扫后第一条成功请求自动复位并重挂 SSE。`server/logs/auth-fail.log` 里 `token=present(len=35)`
+> 的行就是这一类（`fp=` 与 `expected=` 不同 = 手里是旧值）。
 
 ### 威胁模型（决定要不要加 Access 的关键）
 

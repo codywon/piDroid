@@ -114,6 +114,23 @@ class PiSseClient(private val prefs: AppPreferences) {
 
                 override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
                     Log.w("PiSseClient", "SSE Disconnected (${response?.code ?: t?.message}), scheduling reconnect...")
+                    // 网关在拒绝我们手里的 Token（轮换过）：退避重连只会一直 401，把结论交给
+                    // 全局信号后就停手 —— 界面会提示重新扫码，重扫成功后按 state 变化重新挂流。
+                    if (AuthRejection.isGatewayInvalidToken(
+                            response?.code ?: 0,
+                            response?.header("WWW-Authenticate")
+                        )
+                    ) {
+                        AuthRejectionSignal.reportRejected()
+                        _connectionState.value = SseConnectionState.DISCONNECTED
+                        trySend(
+                            AgentSseEvent(
+                                type = "connection_state",
+                                connectionState = SseConnectionState.DISCONNECTED.name
+                            )
+                        )
+                        return
+                    }
                     if (!isClosedByUser) {
                         scheduleReconnect()
                     }

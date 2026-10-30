@@ -120,8 +120,12 @@ const app = express();
 // 以免 token 落进反向代理 / CDN / Cloudflare Tunnel 的访问日志。
 const QUERY_TOKEN_PATH_PATTERN = /\/events$/;
 
-// 401 诊断日志：只记录长度和 UA，不打印 token 本身；最多每 3 秒一条，避免扫器刷屏。
+// 401 诊断日志：只记录长度和 UA，不打印 token 本身。
+// 节流只作用于「压根没带 token」的请求 —— 公网扫描器一天能刷出几十万条，不节流会把日志写爆；
+// 而**带了 token 却不匹配**只可能来自自己的客户端（App / 试连脚本），那种记录一条都不能丢：
+// 全局节流会让「扫描器刷屏 + 轮换 Token 后 App 疯狂 401」同时发生时，恰好把最要紧的那几条挤掉。
 let lastAuthFailureLogAt = 0;
+const MISSING_TOKEN_LOG_INTERVAL_MS = 3000;
 const LOG_DIR = path.join(__dirname, 'logs');
 const AUTH_FAIL_LOG = path.join(LOG_DIR, 'auth-fail.log');
 
@@ -131,12 +135,14 @@ function tokenFingerprint(value) {
 
 const AUTH_TOKEN_FP = tokenFingerprint(AUTH_TOKEN);
 function logAuthFailure(req, token) {
-  const now = Date.now();
-  if (now - lastAuthFailureLogAt < 3000) return;
-  lastAuthFailureLogAt = now;
   const provided = typeof token === 'string' && token.length > 0
     ? `present(len=${token.length})`
     : 'missing';
+  if (provided === 'missing') {
+    const now = Date.now();
+    if (now - lastAuthFailureLogAt < MISSING_TOKEN_LOG_INTERVAL_MS) return;
+    lastAuthFailureLogAt = now;
+  }
   const ua = (req.headers['user-agent'] || 'n/a').toString().slice(0, 48);
   const pathOnly = (req.path || '/').split('?')[0];
   console.warn(`[auth] 401 ${req.method} ${pathOnly} token=${provided} ua=${ua}`);
@@ -182,10 +188,19 @@ function authMiddleware(req, res, next) {
     // 排查用：只记录「有没有带 token、长度多少」，绝不打印 token 内容。
     // 长度 35 且不匹配通常意味着客户端手里还是上一轮轮换掉的旧 token。
     logAuthFailure(req, token);
-    return res.status(401).json({
-      error: 'Unauthorized',
-      message: 'Invalid or missing authentication token.'
-    });
+    // `WWW-Authenticate: ... invalid_token` 是给客户端做**机器判定**用的：
+    // App 只有看到这个标记才认定「本地 Token 失效」（停止轮询 + 提示重新扫码）。
+    // 不能见到 401 就判 —— pi-web 自己会在模型 API Key 填错时返回 401 `Invalid API key`，
+    // 那是另一回事，误判会把用户往「重新扫码」的死路上推。
+    // 响应体里的 `code` 是同一件事的文本版，方便 curl / 日志肉眼比对。
+    return res
+      .status(401)
+      .set('WWW-Authenticate', 'Bearer realm="pi-gateway", error="invalid_token"')
+      .json({
+        code: 'TOKEN_INVALID',
+        error: 'Unauthorized',
+        message: 'Invalid or missing authentication token.'
+      });
   }
 
   next();
@@ -587,7 +602,11 @@ async function start(options = {}) {
         }
       }
       if (!safeTokenEquals(token, AUTH_TOKEN)) {
-        socket.end('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
+        socket.end(
+          'HTTP/1.1 401 Unauthorized\r\n' +
+          'WWW-Authenticate: Bearer realm="pi-gateway", error="invalid_token"\r\n' +
+          'Connection: close\r\n\r\n'
+        );
         return;
       }
       if (typeof proxy.upgrade === 'function') {
