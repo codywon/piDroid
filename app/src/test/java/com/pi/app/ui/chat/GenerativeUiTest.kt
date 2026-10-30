@@ -181,4 +181,50 @@ class GenerativeUiTest {
         )
         assertTrue(html.contains("overflow: hidden"))
     }
+
+    // ── 全屏模式 ────────────────────────────────────────────────
+
+    /**
+     * 全屏必须按**模型声明的桌面宽度**布局，而不是手机宽度。
+     *
+     * 真机回归：一个 900×880 的天气微组件用横排两栏（主卡 + 24 小时侧栏），
+     * 在 360dp 宽下侧栏被压成一条竖排文字，右侧内容等于看不到。
+     * 按声明宽度布局后由 WebView 等比缩放到屏宽，桌面布局得以完整还原。
+     */
+    @Test
+    fun `fullscreen lays out at the declared desktop width`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>", width = 900, height = 880),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328",
+            fullscreen = true
+        )
+        assertTrue(html.contains("width=900"))
+        assertTrue(!html.contains("width=device-width"))
+    }
+
+    /**
+     * 全屏必须可滚。两个地方都得放开：页面 `overflow`，以及宿主不再拦截手势。
+     * 早期两处都写死 hidden / 拦截，导致超出视口的内容既不能滚也不能缩。
+     */
+    @Test
+    fun `fullscreen allows scrolling while inline does not`() {
+        val payload = WidgetPayload("t", "<div>x</div>")
+        val inline = buildWidgetHtml(payload, "#FFFFFF", "#1F2328")
+        val full = buildWidgetHtml(payload, "#FFFFFF", "#1F2328", fullscreen = true)
+        assertTrue(inline.contains("overflow: hidden"))
+        assertTrue(full.contains("overflow: auto"))
+        assertFalse(full.contains("overflow: hidden"))
+    }
+
+    /** 内嵌仍然要回流到手机宽度（控件得大到能点、能拖）。 */
+    @Test
+    fun `inline keeps device width viewport`() {
+        val html = buildWidgetHtml(
+            payload = WidgetPayload("t", "<div>x</div>", width = 900, height = 880),
+            backgroundHex = "#FFFFFF",
+            foregroundHex = "#1F2328"
+        )
+        assertTrue(html.contains("width=device-width"))
+    }
 }

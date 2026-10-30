@@ -36,6 +36,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -45,6 +46,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.pi.app.data.model.ToolCallInfo
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 生成式 UI（`pi-generative-ui` 插件）承载层。
@@ -159,19 +161,34 @@ private const val ERROR_SENTINEL = "__PI_ERR:"
  * 把 `widget_code` 包成可加载的完整文档。
  *
  * `widget_code` 按插件约定是**片段**（没有 DOCTYPE/html/head/body），所以这里补
- * viewport、基础样式、错误哨兵与 `#root` 容器。viewport 用 `width=device-width`
- * 而不是模型声明的桌面宽度：桌面窗口的等价物在手机上就是手机宽度的窗口，
- * `width:100%` / flex 类的微组件会自然回流；确实写死宽度的内容仍可双指缩放。
+ * viewport、基础样式、错误哨兵与 `#root` 容器。
+ *
+ * **两种布局模式，差别只在 viewport 宽度与是否允许滚动**，这一条是被真机推翻过的：
+ *
+ * - **内嵌（`fullscreen = false`）**：`width=device-width`，让内容回流到手机宽度。
+ *   理由：内嵌区要给滑块/按钮留出可点可拖的尺寸，按桌面宽度整体缩小会让控件小到无法操作。
+ * - **全屏（`fullscreen = true`）**：`width=<模型声明的桌面宽度>`，WebView 按设计宽度布局后
+ *   再等比缩放到屏宽，并允许纵向滚动。
+ *   理由：模型常用横排多栏（主卡 + 侧栏）。在 360dp 下回流会把侧栏压成一条竖排文字，
+ *   而按 900px 布局再缩放能完整还原模型的设计意图；字小了可以双指放大。
+ *
+ * 滚动同理：内嵌必须 `overflow: hidden`（纵向手势要还给列表），全屏必须 `auto`
+ * —— 之前两处都写死 `hidden`，导致全屏页超出视口的内容**既不能滚也不能缩**，永久被裁掉。
  *
  * `#root` 容器有两个用途：一是归一化结构（内嵌预览与全屏页共用同一份 DOM 形状），
- * 二是让宿主能用一个固定表达式判断「页面是不是白板」。
+ * 二是让宿主能用一个固定表达式判断「页面是不是白板」并测量实际内容高度。
  *
  * 脚本顺序不需要手工调度：这段 HTML 是**整篇文档加载**的，浏览器解析时会按文档顺序
  * 同步执行 `<script>`，普通外链脚本（无 async/defer）还会阻塞解析直到下载执行完毕 ——
  * 所以 `Chart` 一定在内联脚本之前就位。参考实现里那套 `runScripts()` 顺序调度
  * 是为「流式追加片段」准备的，这里用不着。
  */
-fun buildWidgetHtml(payload: WidgetPayload, backgroundHex: String, foregroundHex: String): String {
+fun buildWidgetHtml(
+    payload: WidgetPayload,
+    backgroundHex: String,
+    foregroundHex: String,
+    fullscreen: Boolean = false
+): String {
     val body = if (payload.isSvg) {
         """
         <style>
@@ -184,12 +201,21 @@ fun buildWidgetHtml(payload: WidgetPayload, backgroundHex: String, foregroundHex
         payload.code
     }
 
+    val viewport = if (fullscreen) {
+        // 按模型声明的桌面宽度布局，再由 WebView 等比缩放到屏幕宽度：
+        // 横排多栏的微组件不会因为窄屏被压扁，双指缩放看细节。
+        "width=${payload.width}, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+    } else {
+        "width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes"
+    }
+    val overflow = if (fullscreen) "auto" else "hidden"
+
     return """
         <!DOCTYPE html>
         <html>
         <head>
         <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+        <meta name="viewport" content="$viewport">
         <script>
         (function () {
           function report(m) { try { console.log('$ERROR_SENTINEL' + m); } catch (e) {} }
@@ -209,7 +235,7 @@ fun buildWidgetHtml(payload: WidgetPayload, backgroundHex: String, foregroundHex
             margin: 0; padding: 8px; background: $backgroundHex; color: $foregroundHex;
             -webkit-text-size-adjust: 100%;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            overflow: hidden;
+            overflow: $overflow;
           }
           body { min-height: calc(100vh - 16px); box-sizing: border-box; }
           img, svg, canvas, video { max-width: 100%; }
@@ -287,17 +313,23 @@ private val CDN_HOSTS = setOf(
 )
 
 /**
- * 内嵌预览用的 WebView：**永不抢占纵向滚动手势**。
+ * 微组件的 WebView。
+ *
+ * **内嵌态（`allowVerticalScroll = false`）：永不抢占纵向滚动手势。**
  *
  * 背景：`WebView` 不参与 Compose 的 nested scroll（见 `docs/DESIGN-artifact-viewer.md`），
  * 直接塞进 `LazyColumn` 会把整列滚动抢走。但那条约束针对的是**需要自己纵向滚动的长内容**
- * （docx、代码、长图）；微组件是按桌面窗口设计的固定尺寸组件，页面已设 `overflow: hidden`
- * 且内容溢出时本来就该进全屏 —— 所以内嵌态根本不需要纵向滚动。
+ * （docx、代码、长图）；微组件页面已设 `overflow: hidden`，内嵌态根本不需要纵向滚动，
+ * 内容装不下就走全屏。
  *
  * 于是规则可以简化成「按主轴归属」：
  *  - `DOWN`：先声明独占，避免列表一开始就把手势抢走（否则滑块拖到一半被打断）；
  *  - 首个明显纵向的 `MOVE`：主动交还，列表继续滚，widget 一动不动；
  *  - `UP` / `CANCEL`：复位。
+ *
+ * **全屏态（`allowVerticalScroll = true`）：完全不干预**，页面 `overflow: auto` 自己滚。
+ * 早期全屏也传了 false，结果内容超出视口时**既不能滚也不能缩**，右边就直接看不到 ——
+ * 这也是真机反馈「点全屏后右边内容没显示」的直接原因。
  */
 private class WidgetWebView(
     context: Context,
@@ -342,7 +374,16 @@ private class WidgetWebView(
 }
 
 /**
- * 会话内的微组件卡片：标题行（⛶ 进全屏）+ 固定高预览区。
+ * 会话内的微组件卡片：标题行（⛶ 进全屏）+ 预览区。
+ *
+ * 预览区高度**不信任模型声明的 `height`**。声明值是它在**桌面宽度**下的高度（例如
+ * 900×880）；手机按 360dp 回流后，同样的内容会变成 1400dp 级高度。按声明比例换算出来的
+ * 框必然装不下 —— 真机上看到的就是「只显示一半」。
+ *
+ * 所以：先用声明宽高比算一个**初始估算**，页面加载完后回填**实测高度**，
+ * 夹在 `[180dp, min(0.6×屏高, 480dp)]`：
+ *  - 下限保证小卡片不至于扁成一条；
+ *  - 上限保证一张图不会把会话撑成好几屏（否则换成「必须滚很久才能越过一个 widget」）。
  *
  * 预览区只吃「主轴为横向 / 点击 / 控件拖拽」的手势，纵向拖拽还给列表；
  * 全屏入口放在标题行右侧，**不做「点预览区就全屏」** —— 那会让页内点击变成切换页面。
@@ -354,11 +395,17 @@ fun WidgetToolCallCard(
     onOpen: () -> Unit
 ) {
     val theme = LocalAppTheme.current
-    val widthDp = LocalConfiguration.current.screenWidthDp
-    // 卡片左右各 4dp 外边距 + 卡片内水平 padding，减去后才是预览区可用宽度
-    val previewHeight = remember(payload.width, payload.height, widthDp) {
-        previewHeightDp(payload, (widthDp - 24).coerceAtLeast(200))
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    val initialHeight = remember(payload.width, payload.height, configuration.screenWidthDp) {
+        previewHeightDp(payload, (configuration.screenWidthDp - 24).coerceAtLeast(200))
     }
+    val maxHeightDp = remember(configuration.screenHeightDp) {
+        minOf((configuration.screenHeightDp * 0.6f).toInt(), 480)
+    }
+    // 实测高度：null 表示还没测到，先用初始估算
+    var measuredHeight by remember(payload.code) { mutableStateOf<Int?>(null) }
+    val previewHeight = measuredHeight ?: initialHeight
 
     Surface(
         shape = RoundedCornerShape(10.dp),
@@ -402,13 +449,35 @@ fun WidgetToolCallCard(
                 }
             }
             HorizontalDivider(color = theme.outline.copy(alpha = 0.6f))
-            WidgetCanvas(
-                payload = payload,
-                allowVerticalScroll = false,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(previewHeight.dp)
-            )
+            when {
+                // 生成中不挂 WebView。
+                //
+                // 生成期间列表一直往下自动补位（回合还在跑），卡片正好在视口边界上反复进出组合，
+                // 而 `LazyColumn` 会 dispose 离开视口的 item —— WebView 于是被反复销毁、重建、
+                // 重新加载页面，用户看到的就是「出图的时候画面一直在闪」。
+                // 等工具调用跑完（isRunning = false）再挂一次，那时列表已经不再自动滚动。
+                isRunning -> Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(previewHeight.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("生成中…", fontSize = 11.5.sp, color = theme.textMuted)
+                }
+
+                else -> WidgetCanvas(
+                    payload = payload,
+                    fullscreen = false,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(previewHeight.dp),
+                    onContentHeightPx = { px ->
+                        // CSS px → dp（WebView 的 CSS px 已按设备像素比归一，按 density 换算即可）
+                        val dp = with(density) { px.toDp().value }
+                        measuredHeight = dp.roundToInt().coerceIn(PREVIEW_MIN_DP, maxHeightDp)
+                    }
+                )
+            }
         }
     }
 }
@@ -464,7 +533,8 @@ fun WidgetViewerScreen(
     ) { innerPadding ->
         WidgetCanvas(
             payload = payload,
-            allowVerticalScroll = false,
+            // 全屏：页面自己滚动，不再拦截纵向手势（之前传 false 让它滚不动）
+            fullscreen = true,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
@@ -488,8 +558,10 @@ fun WidgetViewerScreen(
 @Composable
 private fun WidgetCanvas(
     payload: WidgetPayload,
-    allowVerticalScroll: Boolean,
-    modifier: Modifier = Modifier
+    fullscreen: Boolean,
+    modifier: Modifier = Modifier,
+    /** 内嵌态：页面加载完后回报**实测内容高度**（px，已按 CSS 像素计），由调用方决定卡片高度。 */
+    onContentHeightPx: ((Float) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
@@ -498,11 +570,12 @@ private fun WidgetCanvas(
     var retry by remember(payload.code) { mutableStateOf(0) }
     var failed by remember(payload.code, retry) { mutableStateOf(false) }
 
-    val html = remember(payload.code, theme.isDark, payload.isSvg) {
+    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen) {
         buildWidgetHtml(
             payload = payload,
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
-            foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328"
+            foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
+            fullscreen = fullscreen
         )
     }
 
@@ -523,10 +596,14 @@ private fun WidgetCanvas(
         return
     }
 
-    val holder = remember { mutableStateOf<WebView?>(null) }
+    // 用��可观察的持有者：之前写成 `mutableStateOf` 并在 factory 里回写，会让每次
+    // WebView 创建额外触发一轮重组，正好撞在页面加载的首帧上（闪动的直接来源之一）。
+    val holder = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
     // `AndroidView.update` 每次重组都会跑，而重载页面会丢掉页内交互态并重新拉 CDN。
     // 用非可观察的持有者记一份「已加载内容指纹」，只在内容真的换了时才重新加载。
-    val loadedKey = remember { java.util.concurrent.atomic.AtomicReference<String?>(null) }
+    val loadedKey = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<String?>(null) }
+    // 高度只测一次：反复回填会让 WebView 视口高度变化，触发微组件自身的响应式 JS 重排（振荡）
+    val measured = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
 
     Box(modifier = modifier) {
         // 滑回来时先贴快照，WebView 首帧画出来后会盖住它
@@ -542,7 +619,7 @@ private fun WidgetCanvas(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                WidgetWebView(ctx, allowVerticalScroll).apply {
+                WidgetWebView(ctx, allowVerticalScroll = fullscreen).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -616,17 +693,29 @@ private fun WidgetCanvas(
                         override fun onPageFinished(view: WebView?, url: String?) {
                             // 销毁前清场的那次加载不参与白板检测，否则会在已离开组合的实例上写状态
                             if (url == null || url == "about:blank") return
-                            // 白板检测：没有报错但 #root 里一个节点都没有，同样按失败处理
+                            // 白板检测 + 实测内容高度，共用一个脚本往返
                             view?.evaluateJavascript(
                                 "(function(){var r=document.getElementById('root');" +
-                                    "return r ? r.children.length : 0;})()"
-                            ) { count ->
-                                val n = count?.trim('"')?.toIntOrNull() ?: 0
-                                if (n == 0) failed = true
+                                    "if(!r)return '0|0';" +
+                                    "return r.children.length + '|' + Math.ceil(r.getBoundingClientRect().height);})()"
+                            ) { raw ->
+                                val payload = raw?.trim('"') ?: return@evaluateJavascript
+                                val parts = payload.split('|')
+                                val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                                if (n == 0) {
+                                    failed = true
+                                    return@evaluateJavascript
+                                }
+                                // 高度只回填一次：反复改 WebView 视口高度会触发微组件的
+                                // 响应式布局自己重排，看起来就是页面在抱（振荡）
+                                val h = parts.getOrNull(1)?.toFloatOrNull() ?: 0f
+                                if (h > 0f && measured.compareAndSet(false, true)) {
+                                    onContentHeightPx?.invoke(h)
+                                }
                             }
                         }
                     }
-                    holder.value = this
+                    holder.set(this)
                 }
             },
             update = { webView ->
@@ -640,7 +729,7 @@ private fun WidgetCanvas(
 
     DisposableEffect(snapshotKey, retry) {
         onDispose {
-            holder.value?.let { wv ->
+            holder.get()?.let { wv ->
                 // 失败页的快照不能存：下次进来会先把一张白板贴上去
                 if (!failed) WidgetSnapshots.capture(wv, snapshotKey)
                 runCatching {
@@ -649,7 +738,7 @@ private fun WidgetCanvas(
                     wv.destroy()
                 }
             }
-            holder.value = null
+            holder.set(null)
         }
     }
 }

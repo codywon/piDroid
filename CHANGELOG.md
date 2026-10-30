@@ -2,6 +2,46 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.55] - 2026-10-30
+
+### 🐛 修生成式 UI 真机三宗罪：闪动 / 只显示一半 / 全屏右侧看不到
+
+上一版（1.7.54）把微组件挪进了会话流，但三种现象都是**设计前提错了**，不是实现细节：
+
+**① 闪动：生成期表里一直在滚动，WebView 反复销毁重建**
+
+- 根因：生成中回合还在跑，列表持续向下自动补位，卡片正好在视口边界上反复进出组合；
+  `LazyColumn` 会 dispose 离开视口的 item → WebView 销毁 → 回来时新建并 `loadDataWithBaseURL`
+  重新加载页面。另外 `holder` 写成 `mutableStateOf` 并在 factory 里回写，每次创建又额外触发一轮重组。
+- 改法：`isRunning` 时只显示占位行，工具调用结束再挂一次 WebView；`holder` / `loadedKey`
+  改成非可观察的 `AtomicReference`，不再在创建阶段触发重组。
+
+**② 只显示一半：把桌面声明高度当成了内容高度**
+
+- 根因：`previewHeightDp()` 用 `360 × 880/900 ≈ 328 → 夹到 320dp`。但 `880` 是它在**900px 宽**下的高度；
+  手机按 360dp 回流后同样内容变成 1400dp 级 —— 按错误前提算出来的框必然装不下。
+- 改法：页面加载完后**实测** `#root.getBoundingClientRect().height` 回填给 Compose，
+  夹在 `[180dp, min(0.6×屏高, 480dp)]`，且只回填一次（反复改视口高度会触发微组件自身重排，表现为抖动）。
+
+**③ 全屏右侧看不到：两处都把滚动锁死了**
+
+- 根因：`buildWidgetHtml()` 把 `overflow: hidden` 写死，全屏页同样继承；而全屏传的是
+  `allowVerticalScroll = false`。两个都锁死 → 超出视口的内容**既不能滚也不能缩**。
+  右侧那条被压成竖排文字的「未来24小时段无降水」不是消失，是被 360dp 窄宽度挤扁的侧栏。
+- 改法：引入两种布局模式——
+  - **内嵌**：`width=device-width` + `overflow:hidden`（控件要大到能点能拖，纵向手势给列表）；
+  - **全屏**：`width=<声明的桌面宽度>` + `overflow:auto`（WebView 按 900px 布局后等比缩放到屏宽，
+    完整还原模型的设计意图，可滚、可双指放大）。
+
+**工程**
+
+- `GenerativeUiTest` 补 3 项并改写 1 项：全屏按声明宽度布局、全屏可滚/内嵌不可滚、内嵌仍然回流。
+- `docs/DESIGN-generative-ui.md` 更新：「固定高度预览区」这条已被真机推翻，改为实测高度；
+  新增 §3.6 两种布局模式、§3.7 生成期不挂 WebView，并把「快速滑动时仍会重建重载」
+  作为已知剩余问题写进去（彻底解决需 WebView 实例池，需逐机型验证）。
+
+---
+
 ## [1.7.54] - 2026-10-30
 
 ### ✨ 生成式 UI：微组件从「要先点开的过程」变成「会话里直接能玩的图」
