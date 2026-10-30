@@ -2,6 +2,8 @@ package com.pi.app.ui.chat
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.net.Uri
 import android.view.MotionEvent
 import android.view.ViewGroup
@@ -15,6 +17,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -29,6 +32,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -38,7 +43,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.pi.app.data.model.ToolCallInfo
 import com.pi.app.ui.theme.LocalAppTheme
+import kotlinx.coroutines.delay
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 生成式 UI（`pi-generative-ui` 插件）承载层。
@@ -279,6 +286,72 @@ fun buildWidgetHtml(
     """.trimIndent()
 }
 
+/**
+ * 内嵌缩略图缓存（key = 内容哈希 + 深浅色）。
+ *
+ * 内嵌态**不保留活 WebView**：渲染一次、抓成位图、之后只显示这张图。
+ * 这样滚动、流式补字、列表回收都不会再引起重排或重绘 —— 位图不会闪。
+ * 代价是缩略图不能交互，交互统一放到全屏（那才是「看大图」的地方）。
+ */
+internal object WidgetThumbs {
+    private const val MAX_ENTRIES = 3
+    /** 抓图宽度上限：太大吃堆，太小字发虚。 */
+    private const val MAX_WIDTH_PX = 1080
+
+    private val entries = object : LinkedHashMap<String, Bitmap>(MAX_ENTRIES, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Bitmap>?): Boolean =
+            size > MAX_ENTRIES
+    }
+
+    @Synchronized
+    fun get(key: String): Bitmap? = entries[key]
+
+    @Synchronized
+    fun put(key: String, bitmap: Bitmap) {
+        entries[key] = bitmap
+    }
+
+    /** 把已绘制的 WebView 抓成位图；空白（还没画出来）时返回 null，由调用方重试。 */
+    fun capture(view: android.view.View): Bitmap? {
+        val w = view.width
+        val h = view.height
+        if (w <= 0 || h <= 0) return null
+        return runCatching {
+            val raw = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(raw))
+            if (isBlank(raw)) {
+                raw.recycle()
+                return null
+            }
+            if (w <= MAX_WIDTH_PX) {
+                raw
+            } else {
+                val outH = (h.toLong() * MAX_WIDTH_PX / w).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(raw, MAX_WIDTH_PX, outH, true)
+                raw.recycle()
+                scaled
+            }
+        }.getOrNull()
+    }
+
+    /** 抽样一圈像素，全同即视为「还没画出来」。 */
+    private fun isBlank(bmp: Bitmap): Boolean {
+        val stepX = (bmp.width / 6).coerceAtLeast(1)
+        val stepY = (bmp.height / 8).coerceAtLeast(1)
+        val first = bmp.getPixel(bmp.width / 2, bmp.height / 2)
+        var y = stepY / 2
+        while (y < bmp.height) {
+            var x = stepX / 2
+            while (x < bmp.width) {
+                if (bmp.getPixel(x, y) != first) return false
+                x += stepX
+            }
+            y += stepY
+        }
+        return true
+    }
+}
+
 /** 本地化的第三方库：命中的 CDN 请求直接由 assets 回吐，弱网/离线也能秒开。 */
 private val LOCAL_LIB_ASSETS = mapOf(
     "chart.umd.js" to "libs/chart.umd.js",
@@ -421,39 +494,33 @@ fun WidgetToolCallCard(
                 }
             }
             HorizontalDivider(color = theme.outline.copy(alpha = 0.6f))
-            // 用实测容器宽度算缩放比与缩略图高度：整张图按宽度等比缩进来，
-            // 高度 = 声明高度 × 缩放比 —— 看的是全局，不是被裁掉的一段。
+            // 实测容器宽度 → 等比缩放比。缩略图高度由「实测内容高度 × 缩放比」决定，
+            // 不用模型声明的 height（模型经常少报，照它裁就是「底部差一截」）。
             BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
                 val containerWidthDp = maxWidth.value.toInt().coerceAtLeast(1)
-                val previewHeight = remember(payload.width, payload.height, containerWidthDp) {
+                val initialHeight = remember(payload.width, payload.height, containerWidthDp) {
                     previewHeightDp(payload, containerWidthDp)
                 }
                 val scale = remember(payload.width, containerWidthDp) {
                     widgetFitScale(payload, containerWidthDp)
                 }
-                when {
-                    // 生成中不挂 WebView。
-                    //
-                    // 生成期间列表一直往下自动补位（回合还在跑），卡片正好在视口边界上反复进出组合，
-                    // 而 `LazyColumn` 会 dispose 离开视口的 item —— WebView 于是被反复销毁、重建、
-                    // 重新加载页面，用户看到的就是「出图的时候画面一直在闪」。
-                    // 等工具调用跑完（isRunning = false）再挂一次，那时列表已经不再自动滚动。
-                    isRunning -> Box(
+                if (isRunning) {
+                    // 生成中不挂 WebView：生成期列表一直在自动补位，卡片反复进出组合，
+                    // WebView 会跟着反复销毁重建。
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(previewHeight.dp),
+                            .height(initialHeight.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text("生成中…", fontSize = 11.5.sp, color = theme.textMuted)
                     }
-
-                    else -> WidgetCanvas(
+                } else {
+                    WidgetThumbnail(
                         payload = payload,
-                        fullscreen = false,
-                        scale = scale,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(previewHeight.dp)
+                        fitScale = scale,
+                        initialHeightDp = initialHeight,
+                        onOpen = onOpen
                     )
                 }
             }
@@ -522,8 +589,6 @@ fun WidgetViewerScreen(
             }
             WidgetCanvas(
                 payload = payload,
-                // 全屏：页面自己滚动，不再拦截纵向手势
-                fullscreen = true,
                 scale = scale,
                 modifier = Modifier.fillMaxSize()
             )
@@ -544,33 +609,139 @@ fun WidgetViewerScreen(
  * 不给它任何与应用通信的能力。
  */
 @SuppressLint("SetJavaScriptEnabled")
+private fun createWidgetWebView(
+    context: Context,
+    allowVerticalScroll: Boolean,
+    isDisposed: () -> Boolean,
+    onFail: () -> Unit,
+    onContentHeightCss: ((Float) -> Unit)? = null
+): WidgetWebView = WidgetWebView(context, allowVerticalScroll = allowVerticalScroll).apply {
+    layoutParams = ViewGroup.LayoutParams(
+        ViewGroup.LayoutParams.MATCH_PARENT,
+        ViewGroup.LayoutParams.MATCH_PARENT
+    )
+    settings.apply {
+        javaScriptEnabled = true
+        domStorageEnabled = true
+        useWideViewPort = true
+        // 必须为 true：配合 viewport 里的声明宽度，WebView 会把整页缩放到视口宽度。
+        // 设为 false 时它按声明宽度布局却**不缩出去**，真机表现就是只看到左边一半。
+        loadWithOverviewMode = true
+        setSupportZoom(true)
+        builtInZoomControls = true
+        displayZoomControls = false
+        cacheMode = WebSettings.LOAD_NO_CACHE
+        allowFileAccess = false
+        allowContentAccess = false
+        mediaPlaybackRequiresUserGesture = true
+    }
+    setBackgroundColor(android.graphics.Color.TRANSPARENT)
+    webChromeClient = object : WebChromeClient() {
+        override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
+            val text = msg?.message() ?: return false
+            if (!text.contains(ERROR_SENTINEL)) return false
+            onFail()
+            return true
+        }
+    }
+    webViewClient = object : WebViewClient() {
+        override fun shouldOverrideUrlLoading(
+            view: WebView?,
+            request: WebResourceRequest?
+        ): Boolean {
+            val url = request?.url?.toString() ?: return false
+            // 只接管真正的网页跳转；about:blank（销毁时清理）这类内部导航不能外抛
+            if (!url.startsWith("http://") && !url.startsWith("https://")) return false
+            // 微组件里的外链一律走系统浏览器，不在卡片里接管导航
+            runCatching {
+                context.startActivity(
+                    android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
+                )
+            }
+            return true
+        }
+
+        override fun shouldInterceptRequest(
+            view: WebView?,
+            request: WebResourceRequest?
+        ): WebResourceResponse? {
+            val url = request?.url ?: return null
+            val host = url.host?.lowercase() ?: return null
+            if (host !in CDN_HOSTS) return null
+            val name = url.lastPathSegment?.lowercase() ?: return null
+            val asset = LOCAL_LIB_ASSETS[name] ?: return null
+            return runCatching {
+                WebResourceResponse("application/javascript", "UTF-8", context.assets.open(asset))
+            }.getOrNull()
+        }
+
+        override fun onReceivedError(
+            view: WebView?,
+            request: WebResourceRequest?,
+            error: WebResourceError?
+        ) {
+            if (request?.isForMainFrame == true) onFail()
+        }
+
+        override fun onPageFinished(view: WebView?, url: String?) {
+            // 只跳过「销毁时清场」的那次加载，用显式标志判断。
+            //
+            // 不能用 url == "about:blank" 判断：loadDataWithBaseURL(null, …) 加载出来的
+            // 页面 URL 本身就是 about:blank，那样会把正常的测量一起跳过。
+            if (isDisposed()) return
+            // 一次脚本往返同时拿两样东西：
+            //  - #root 子节点数 → 白板检测；
+            //  - 真实内容高度（CSS px）→ 内嵌缩略图的高度。
+            //
+            // 为什么必须实测而不是信 payload.height：模型经常少报（真机上声明 900x900、
+            // 实际内容却高出几十像素），照声明裁剪就是看到的「底部差一截」。
+            view?.evaluateJavascript(
+                "(function(){var r=document.getElementById('root');" +
+                    "if(!r)return '0|0';" +
+                    "var h=Math.max(document.body?document.body.scrollHeight:0," +
+                    "r.getBoundingClientRect().height);" +
+                    "return r.children.length+'|'+Math.ceil(h);})()"
+            ) { raw ->
+                val parsed = raw?.trim('"') ?: return@evaluateJavascript
+                val parts = parsed.split('|')
+                val n = parts.getOrNull(0)?.toIntOrNull() ?: 0
+                if (n == 0) {
+                    onFail()
+                    return@evaluateJavascript
+                }
+                parts.getOrNull(1)?.toFloatOrNull()
+                    ?.takeIf { it > 0f }
+                    ?.let { onContentHeightCss?.invoke(it) }
+            }
+        }
+    }
+}
+
+/**
+ * 全屏查看用的 WebView：活实例、可滚、可双指放大。
+ *
+ * 与内嵌的区别只有两点：不拦纵向手势、页面 overflow: auto。
+ */
 @Composable
 private fun WidgetCanvas(
     payload: WidgetPayload,
-    fullscreen: Boolean,
-    /** 等比缩放比：由调用方用**实测容器宽度**算好传进来（见 [widgetFitScale]）。 */
     scale: Float,
     modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
 
-    // 重试计数参与 key：点「重试」时重建 WebView，而不是复用已经报错的那个实例。
     var retry by remember(payload.code) { mutableStateOf(0) }
     var failed by remember(payload.code, retry) { mutableStateOf(false) }
 
-    val html = remember(payload.code, theme.isDark, payload.isSvg, fullscreen, scale) {
+    val html = remember(payload.code, theme.isDark, payload.isSvg, scale) {
         buildWidgetHtml(
             payload = payload,
             backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
             foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
-            fullscreen = fullscreen,
+            fullscreen = true,
             initialScale = scale
         )
-    }
-
-    val snapshotKey = remember(payload.code, theme.isDark) {
-        "widget:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
     }
 
     if (failed) {
@@ -585,128 +756,35 @@ private fun WidgetCanvas(
         return
     }
 
-    // 用��可观察的持有者：之前写成 `mutableStateOf` 并在 factory 里回写，会让每次
-    // WebView 创建额外触发一轮重组，正好撞在页面加载的首帧上（闪动的直接来源之一）。
-    val holder = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
-    // `AndroidView.update` 每次重组都会跑，而重载页面会丢掉页内交互态并重新拉 CDN。
-    // 用非可观察的持有者记一份「已加载内容指纹」，只在内容真的换了时才重新加载。
-    val loadedKey = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicReference<String?>(null) }
-    // 高度只测一次：反复回填会让 WebView 视口高度变化，触发微组件自身的响应式 JS 重排（振荡）
-    // 销毁标志：用于区分「页面加载完成」与「销毁时清场加载」
-    val disposed = remember(snapshotKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
-
-    Box(modifier = modifier) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                WidgetWebView(ctx, allowVerticalScroll = fullscreen).apply {
-                    layoutParams = ViewGroup.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.MATCH_PARENT
-                    )
-                    settings.apply {
-                        javaScriptEnabled = true
-                        domStorageEnabled = true
-                        useWideViewPort = true
-                        // 必须为 true：配合 viewport 里的声明宽度，WebView 会把整页缩放到视口宽度。
-                        // 设为 false 时它按声明宽度布局却**不缩出去**，真机表现就是只看到左边一半。
-                        loadWithOverviewMode = true
-                        setSupportZoom(true)
-                        builtInZoomControls = true
-                        displayZoomControls = false
-                        cacheMode = WebSettings.LOAD_NO_CACHE
-                        allowFileAccess = false
-                        allowContentAccess = false
-                        mediaPlaybackRequiresUserGesture = true
-                    }
-                    // 页面自带深浅色背景，画布留透明才能在加载期间透出快照
-                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                    webChromeClient = object : WebChromeClient() {
-                        override fun onConsoleMessage(msg: ConsoleMessage?): Boolean {
-                            val text = msg?.message() ?: return false
-                            if (!text.contains(ERROR_SENTINEL)) return false
-                            failed = true
-                            return true
-                        }
-                    }
-                    webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): Boolean {
-                            val url = request?.url?.toString() ?: return false
-                            // 只接管真正的网页跳转；`about:blank`（销毁时清理）这类内部导航不能外抛
-                            if (!url.startsWith("http://") && !url.startsWith("https://")) return false
-                            // 微组件里的外链一律走系统浏览器，不在卡片里接管导航
-                            runCatching {
-                                context.startActivity(
-                                    android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
-                                )
-                            }
-                            return true
-                        }
-
-                        override fun shouldInterceptRequest(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): WebResourceResponse? {
-                            val url = request?.url ?: return null
-                            val host = url.host?.lowercase() ?: return null
-                            if (host !in CDN_HOSTS) return null
-                            val name = url.lastPathSegment?.lowercase() ?: return null
-                            val asset = LOCAL_LIB_ASSETS[name] ?: return null
-                            return runCatching {
-                                WebResourceResponse(
-                                    "application/javascript",
-                                    "UTF-8",
-                                    context.assets.open(asset)
-                                )
-                            }.getOrNull()
-                        }
-
-                        override fun onReceivedError(
-                            view: WebView?,
-                            request: WebResourceRequest?,
-                            error: WebResourceError?
-                        ) {
-                            if (request?.isForMainFrame == true) failed = true
-                        }
-
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            // 只跳过「销毁时清场」的那次加载，用显式标志判断。
-                            //
-                            // 不能用 `url == "about:blank"` 判断：`loadDataWithBaseURL(null, …)`
-                            // 加载出来的页面 URL **本身就是 about:blank**，那样会把正常的
-                            // 白板检测与高度测量一起跳过（真机上表现为预览区高度永远停在估算值）。
-                            if (disposed.get()) return
-                            // 白板检测：`#root` 里一个节点都没有就当渲染失败。
-                            //
-                            // 高度不再测量：页面按声明的桌面宽度布局后，`payload.height` 就是可信的
-                            // 内容高度（模型自己在该宽度下排出来的），等比缩放即可，
-                            // 不需要再靠 `getBoundingClientRect` 回填 —— 那条路会随 item 回收反复
-                            // 改视口高度，正是抖动的来源。
-                            view?.evaluateJavascript(
-                                "(function(){var r=document.getElementById('root');" +
-                                    "return r ? r.children.length : 0;})()"
-                            ) { raw ->
-                                val n = raw?.trim('"')?.toIntOrNull() ?: 0
-                                if (n == 0) failed = true
-                            }
-                        }
-                    }
-                    holder.set(this)
-                }
-            },
-            update = { webView ->
-                val key = html.hashCode().toString() + "#" + retry
-                if (loadedKey.getAndSet(key) != key) {
-                    webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-                }
-            }
-        )
+    val holder = remember(payload.code, retry) {
+        java.util.concurrent.atomic.AtomicReference<WebView?>(null)
+    }
+    val loadedKey = remember(payload.code, retry) {
+        java.util.concurrent.atomic.AtomicReference<String?>(null)
+    }
+    val disposed = remember(payload.code, retry) {
+        java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
-    DisposableEffect(snapshotKey, retry) {
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            createWidgetWebView(
+                context = ctx,
+                allowVerticalScroll = true,
+                isDisposed = { disposed.get() },
+                onFail = { failed = true }
+            ).also { holder.set(it) }
+        },
+        update = { webView ->
+            val key = html.hashCode().toString() + "#" + retry
+            if (loadedKey.getAndSet(key) != key) {
+                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        }
+    )
+
+    DisposableEffect(payload.code, retry) {
         onDispose {
             disposed.set(true)
             holder.get()?.let { wv ->
@@ -717,6 +795,136 @@ private fun WidgetCanvas(
                 }
             }
             holder.set(null)
+        }
+    }
+}
+
+/**
+ * 会话内的内嵌缩略图。
+ *
+ * **渲染一次 → 抓成位图 → 之后只显示静态图**。这是把「频闪」从结构上消灭掉：
+ * 位图不参与 WebView 的布局与重绘，流式补字、列表滚动、item 回收都不会让它动一下；
+ * 每张 widget 也不再常驻一个 Chromium 实例。
+ *
+ * 高度用**实测内容高度 × 缩放比**，不信模型声明的 height —— 模型经常少报，
+ * 照声明裁剪就是真机上看到的「底部差一截」。
+ *
+ * 抓图失败（少数机型首帧拿不到像素）时退回活 WebView，行为等同旧版，不会白屏。
+ */
+@Composable
+private fun WidgetThumbnail(
+    payload: WidgetPayload,
+    fitScale: Float,
+    initialHeightDp: Int,
+    onOpen: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    val thumbKey = remember(payload.code, theme.isDark) {
+        "thumb:${payload.code.hashCode()}:${if (theme.isDark) "d" else "l"}"
+    }
+    var bitmap by remember(thumbKey) { mutableStateOf(WidgetThumbs.get(thumbKey)) }
+    var measuredCss by remember(thumbKey) { mutableStateOf(0f) }
+    var failed by remember(thumbKey) { mutableStateOf(false) }
+    var retry by remember(thumbKey) { mutableStateOf(0) }
+
+    val heightDp = remember(measuredCss, fitScale, initialHeightDp) {
+        if (measuredCss > 0f) {
+            (measuredCss * fitScale).roundToInt().coerceIn(PREVIEW_MIN_DP, PREVIEW_MAX_DP)
+        } else {
+            initialHeightDp
+        }
+    }
+
+    val ready = bitmap
+    if (ready != null) {
+        Image(
+            bitmap = ready.asImageBitmap(),
+            contentDescription = payload.title,
+            contentScale = ContentScale.FillBounds,
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(ready.width.toFloat() / ready.height.toFloat())
+                .clickable { onOpen() }
+        )
+        return
+    }
+
+    if (failed) {
+        WidgetSourceFallback(
+            payload = payload,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(heightDp.dp),
+            onRetry = {
+                failed = false
+                retry++
+            }
+        )
+        return
+    }
+
+    val disposed = remember(thumbKey, retry) { java.util.concurrent.atomic.AtomicBoolean(false) }
+    val webRef = remember(thumbKey, retry) { java.util.concurrent.atomic.AtomicReference<WebView?>(null) }
+    val loadedKey = remember(thumbKey, retry) { java.util.concurrent.atomic.AtomicReference<String?>(null) }
+
+    val html = remember(payload.code, theme.isDark, payload.isSvg, fitScale) {
+        buildWidgetHtml(
+            payload = payload,
+            backgroundHex = if (theme.isDark) "#0D1117" else "#FFFFFF",
+            foregroundHex = if (theme.isDark) "#F0F6FC" else "#1F2328",
+            fullscreen = false,
+            initialScale = fitScale
+        )
+    }
+
+    AndroidView(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(heightDp.dp),
+        factory = { ctx ->
+            createWidgetWebView(
+                context = ctx,
+                allowVerticalScroll = false,
+                isDisposed = { disposed.get() },
+                onFail = { failed = true },
+                onContentHeightCss = { h -> if (measuredCss <= 0f) measuredCss = h }
+            ).also { webRef.set(it) }
+        },
+        update = { webView ->
+            val key = html.hashCode().toString() + "#" + retry
+            if (loadedKey.getAndSet(key) != key) {
+                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        }
+    )
+
+    // 抓图：必须先拿到实测高度，否则抓下来的是「按估计高度裁剪」的残缺版，
+    // 缓存住就再也不会纠正。实测高度到达会让 heightDp 变化 → 本 effect 重启 → 重新抓。
+    LaunchedEffect(thumbKey, heightDp, retry) {
+        if (measuredCss <= 0f) return@LaunchedEffect
+        repeat(4) {
+            delay(if (it == 0) 320L else 220L)
+            val wv = webRef.get() ?: return@LaunchedEffect
+            val shot = WidgetThumbs.capture(wv)
+            if (shot != null) {
+                WidgetThumbs.put(thumbKey, shot)
+                bitmap = shot
+                return@LaunchedEffect
+            }
+        }
+    }
+
+    DisposableEffect(thumbKey, retry) {
+        onDispose {
+            disposed.set(true)
+            webRef.get()?.let { wv ->
+                runCatching {
+                    wv.stopLoading()
+                    wv.loadUrl("about:blank")
+                    wv.destroy()
+                }
+            }
+            webRef.set(null)
         }
     }
 }

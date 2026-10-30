@@ -59,6 +59,15 @@ import com.pi.app.updater.UpdateCheckResult
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** 全局设置页签顺序：系统设置优先，便于进入即配置本机行为 */
+private enum class GlobalSettingsTab(val title: String) {
+    SystemSettings("系统设置"),
+    Models("模型管理"),
+    Skills("技能中心"),
+    Mcp("MCP协议"),
+    Plugins("插件扩展")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GlobalSettingsScreen(
@@ -132,8 +141,8 @@ fun GlobalSettingsScreen(
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("模型管理", "技能中心", "MCP协议", "插件扩展", "系统设置")
+    var selectedTab by remember { mutableStateOf(GlobalSettingsTab.SystemSettings) }
+    val tabs = GlobalSettingsTab.entries
 
     var selectedSkillForDetail by remember { mutableStateOf<SkillInfo?>(null) }
     var skillMarkdownContent by remember { mutableStateOf<String?>(null) }
@@ -206,22 +215,23 @@ fun GlobalSettingsScreen(
                 .background(theme.background)
         ) {
             ScrollableTabRow(
-                selectedTabIndex = selectedTab,
+                selectedTabIndex = GlobalSettingsTab.entries.indexOf(selectedTab),
                 containerColor = theme.surfaceContainerLow,
                 contentColor = theme.primary,
                 divider = { HorizontalDivider(color = theme.outline) },
                 edgePadding = 12.dp
             ) {
-                tabs.forEachIndexed { index, title ->
+                tabs.forEach { tab ->
+                    val isSelected = selectedTab == tab
                     Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
+                        selected = isSelected,
+                        onClick = { selectedTab = tab },
                         text = {
                             Text(
-                                text = title,
+                                text = tab.title,
                                 style = MaterialTheme.typography.labelMedium,
-                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selectedTab == index) theme.primary else theme.textSecondary
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) theme.primary else theme.textSecondary
                             )
                         }
                     )
@@ -229,7 +239,7 @@ fun GlobalSettingsScreen(
             }
 
             when (selectedTab) {
-                0 -> {
+                GlobalSettingsTab.Models -> {
                     if (apiClient != null) {
                         GlobalModelsConfigTab(
                             apiClient = apiClient,
@@ -254,7 +264,7 @@ fun GlobalSettingsScreen(
                         )
                     }
                 }
-                1 -> GlobalSkillsTab(
+                GlobalSettingsTab.Skills -> GlobalSkillsTab(
                     skills = skills,
                     currentProject = currentProject,
                     apiClient = apiClient,
@@ -293,7 +303,7 @@ fun GlobalSettingsScreen(
                     onInstallSkill = onInstallSkill,
                     onRefreshSkills = onRefreshSkills
                 )
-                2 -> GlobalMcpTab(
+                GlobalSettingsTab.Mcp -> GlobalMcpTab(
                     mcpConfig = mcpConfig,
                     onUpdateMcpCodeMode = onUpdateMcpCodeMode,
                     mcpServers = mcpServers,
@@ -301,12 +311,12 @@ fun GlobalSettingsScreen(
                     onAddMcpServer = onAddMcpServer,
                     onManageMcpServer = onManageMcpServer
                 )
-                3 -> GlobalPluginsTab(
+                GlobalSettingsTab.Plugins -> GlobalPluginsTab(
                     plugins = plugins,
                     onManagePlugin = onManagePlugin,
                     onEditPlugin = onEditPlugin
                 )
-                4 -> GlobalSystemSettingsTab(
+                GlobalSettingsTab.SystemSettings -> GlobalSystemSettingsTab(
                     isIgnoringBattery = isIgnoringBattery,
                     onRequestIgnoreBattery = onRequestIgnoreBattery,
                     persistentNotifyEnabled = persistentNotifyEnabled,
