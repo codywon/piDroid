@@ -25,6 +25,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -640,7 +641,17 @@ fun ChatScreen(
             // 如果处于最后一轮且正在运行，且最后一条是工具调用或在流式生成，按 pi-web 规范视作中间过程
             val isCurrentRunning = (turnIdx == userIndices.lastIndex) && isAgentBusy
 
-            val processItems = if (finalAns != null && (!isCurrentRunning || finalAnsIdx != conversation.lastIndex)) {
+            // 本回合是否产生了生成式 UI 微组件。若**是**，流式正文绝不能再塞回过程折叠组：
+            // 折叠组排在微组件卡片**上方**，正文每多一行就把卡片往下推一行，
+            // 真机上看到的就是「每输出一行，卡片跳一下」。把它提成独立的最终答复行后，
+            // 版面顺序与答案完成后的稳定态完全一致，正文只在卡片下方生长。
+            val turnHasWidget = turnSlice.any { m ->
+                m.toolCall?.let { showWidgetPayload(it) } != null
+            }
+
+            val processItems = if (finalAns != null &&
+                (!isCurrentRunning || finalAnsIdx != conversation.lastIndex || turnHasWidget)
+            ) {
                 val pEnd = finalAnsIdx!! - (uIdx + 1)
                 turnSlice.subList(0, pEnd)
             } else {
@@ -748,6 +759,27 @@ fun ChatScreen(
     }
 
     /**
+     * 流式跟随用的平滑版本。
+     *
+     * `scrollToVeryBottom()` 是「瞬间滚到尽头」（6000px 硬跳），而流式正文每秒会触发十几次，
+     * 于是整屏被反复猛拽 —— 视觉上就是正文和它上方的微组件卡片在抖。
+     *
+     * 这里改成按视口高度分步、带动画：滚动本身会被 clamp 到真实剩余距离，所以内容只多了一行
+     * 时它就是「平滑移动那一行」，不会过冲；一次性插入一张大卡片时才需要多步循环。
+     *
+     * 用默认 spring 而不是 tween：流式期间本动画会被下一段增量的重组反复重启，
+     * spring 会带上当前速度继续，tween 则会从头缓入，看起来更顿。
+     */
+    suspend fun followToBottomSmoothly() {
+        var guard = 0
+        while (listState.canScrollForward && guard < 200) {
+            guard++
+            val step = listState.layoutInfo.viewportSize.height.toFloat().coerceAtLeast(1f)
+            listState.animateScrollBy(step)
+        }
+    }
+
+    /**
      * 「从此处编辑」统一入口（1:1 对标 pi-web 的 handleEditContent）：
      * 1) 把该条正文填回输入框（本地行为，立即生效）；
      * 2) 记录待回退条目 ID（editingEntryId）—— 绝不提前切分支，等用户真正点击「发送」时
@@ -819,7 +851,7 @@ fun ChatScreen(
                 scrollToVeryBottom()
                 hasInitialScrolled = true
             } else if (!listState.canScrollForward || isImeVisible || isAgentBusy) {
-                scrollToVeryBottom()
+                followToBottomSmoothly()
             }
         }
     }
