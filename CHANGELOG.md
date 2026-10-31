@@ -42,6 +42,24 @@ Token 等价于本机权限，但拿到 Token 之后也不该能把网关当「�
 - 提示词增强的限流桶按授权头哈希分桶，Token 轮换会留下不回收的键；超过 256 个桶时清理整桶
   都已过窗的主体，长期运行不再慢速增长。
 
+## [1.8.8] - 2026-11-01
+
+### ✨ codywon 全系模型开启 `xhigh`（已用真实请求验证可用）
+
+1.8.7 恢复了 `max`，`xhigh` 因为我担心网关不认而留着。按你的要求开启，并且**先验证再交付**：
+
+- 给 codywon 的 7 个模型的 `thinkingLevelMap` 补上 `"xhigh": "xhigh"`；
+- `/api/models` 复核：7 个模型档位均为
+  `[off, minimal, low, medium, high, xhigh, max]`；
+- **真实跑了一次**：临时会话 → `set_model` codywon/deepseek-flash → `set_thinking_level xhigh`
+  → 发一条极短提示，`stopReason = stop`、无 `errorMessage`，正文正常返回，
+  说明你的 codywon 网关接受 `xhigh` 这个 `reasoning_effort` 取值（会话已删除）。
+- 备份：改前另存 `models.json.bak-xhigh-20261101-042840`。
+
+`deepseek` 内置提供商（`deepseek-flash` / `deepseek-v4-pro`）**未改动**：
+它们的档位来自 pi 官方注册表（`off/low/high/max`），要开 `xhigh` 需要额外在
+`modelOverrides` 里写 map，且未经实测，需要的话说一声我再单独验证后开启。
+
 ## [1.8.7] - 2026-11-01
 
 ### 🐛 codywon 的模型推理档位最高只能到 high（P0 的二次损失，已补回）
