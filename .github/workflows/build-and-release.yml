@@ -64,6 +64,23 @@ jobs:
           mkdir -p keystore
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > keystore/release.jks
 
+      # 轮换护栏（2026-11-01）：旧 release keystore 的私钥曾进入公开仓库历史，
+      # 且与 1.7.x 正式包签名一致 —— 视为已泄露。宁可让流水线红掉，
+      # 也不能再用它签出任何包。
+      - name: Refuse the compromised keystore
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          FP=$(keytool -list -v -keystore keystore/release.jks \
+                 -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
+               | awk -F': ' '/SHA256:/{print $2; exit}' | tr -d ' ')
+          echo "keystore SHA-256 = ${FP:-<unparsed>}"
+          LEAKED="07:B4:1E:74:8B:B9:85:4A:13:F5:33:38:BC:57:5D:AF:22:A8:02:72:79:44:15:8D:E2:6B:BD:9C:86:0A:70:C7"
+          if [ -n "${FP:-}" ] && [ "$FP" = "$(echo "$LEAKED" | tr -d ' ')" ]; then
+            echo "::error::Refusing to sign with the compromised keystore (leaked to a public repository)."
+            exit 1
+          fi
+
       # 单测门禁：解析与流式提取这类纯 JVM 逻辑一旦回归，宁可不发版也不能把已知坏掉的构建推给用户。
       # 放在签名/打包之前，失败即中断，不浪费一次 release。
       - name: Run Unit Tests
