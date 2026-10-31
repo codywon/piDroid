@@ -10,5 +10,9 @@ if not exist node_modules (
     npm install
 )
 
+rem If you use a custom Cloudflare Named Tunnel, configure environment variables:
+rem set "PI_TUNNEL_NAME=pi"
+rem set "PI_TUNNEL_HOSTNAME=your.domain.com"
+
 node --no-deprecation launcher.js --tunnel
 pause

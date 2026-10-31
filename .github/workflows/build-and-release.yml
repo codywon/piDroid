@@ -122,8 +122,8 @@ jobs:
           if [ -f "CHANGELOG.md" ]; then
             awk -v ver="$CLEAN_VERSION" '
               BEGIN { in_ver = 0 }
-              $0 ~ "^## \\[" ver "\\]" { in_ver = 1; next }
-              in_ver && $0 ~ "^## \\[" { in_ver = 0 }
+              index($0, "## [" ver "]") == 1 { in_ver = 1; next }
+              in_ver && index($0, "## [") == 1 { in_ver = 0 }
               in_ver { print }
             ' CHANGELOG.md > "$NOTES_FILE"
           fi

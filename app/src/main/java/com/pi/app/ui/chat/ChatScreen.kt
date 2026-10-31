@@ -155,6 +155,7 @@ fun ChatScreen(
     onRefreshSession: () -> Unit = {},
     onProjectSwitch: (ProjectInfo) -> Unit = {},
     onOpenModelSheet: () -> Unit,
+    onOpenThinkingSheet: () -> Unit = {},
     onCompactContext: () -> Unit,
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
@@ -269,7 +270,6 @@ fun ChatScreen(
         uris.forEach { uri ->
             val cr = context.contentResolver
             val mimeType = cr.getType(uri) ?: ""
-            val isImg = mimeType.startsWith("image/")
             var fileName = "attachment"
             cr.query(uri, null, null, null, null)?.use { cursor ->
                 val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -277,6 +277,10 @@ fun ChatScreen(
                     fileName = cursor.getString(nameIdx) ?: "attachment"
                 }
             }
+            val lowerName = fileName.lowercase(Locale.ROOT)
+            val isImg = mimeType.startsWith("image/") ||
+                lowerName.endsWith(".png") || lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg") ||
+                lowerName.endsWith(".webp") || lowerName.endsWith(".gif") || lowerName.endsWith(".bmp")
             attachments.add(ChatAttachment(name = fileName, uri = uri, isImage = isImg))
         }
     }
@@ -1088,45 +1092,103 @@ fun ChatScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        // 模型与思考档位胶囊芯片
+                        // 一体化分段双胶囊芯片 (Split-Pill：左侧选模型，右侧选思考等级，各自独立呼出专属底板)
                         Surface(
                             shape = CircleShape,
                             color = theme.surfaceContainer,
                             border = BorderStroke(1.dp, theme.outline),
-                            modifier = Modifier
-                                .weight(1f, fill = false)
-                                .clickable { onOpenModelSheet() }
+                            modifier = Modifier.weight(1f, fill = false)
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Icon(
-                                    Icons.Default.Memory,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(13.dp),
-                                    tint = theme.primary
+                                // 1. 左侧：模型选择热区 (自适应截断，点击弹模型选择面板)
+                                Row(
+                                    modifier = Modifier
+                                        .weight(1f, fill = false)
+                                        .clickable { onOpenModelSheet() }
+                                        .padding(start = 8.dp, end = 6.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Memory,
+                                        contentDescription = "模型选择",
+                                        modifier = Modifier.size(13.dp),
+                                        tint = theme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "${selectedModel.displayName}" +
+                                            (modelProviderLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = theme.textPrimary,
+                                        modifier = Modifier.weight(1f, fill = false)
+                                    )
+                                    Spacer(modifier = Modifier.width(2.dp))
+                                    Icon(
+                                        Icons.Default.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(14.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                }
+
+                                // 细垂直分割线
+                                Box(
+                                    modifier = Modifier
+                                        .width(1.dp)
+                                        .height(13.dp)
+                                        .background(theme.outline.copy(alpha = 0.8f))
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = "${selectedModel.displayName}" +
-                                        (modelProviderLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: "") +
-                                        " · ${thinkingLevel.value}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    fontSize = 11.sp,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    color = theme.textPrimary,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Spacer(modifier = Modifier.width(2.dp))
-                                Icon(
-                                    Icons.Default.KeyboardArrowDown,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = theme.textSecondary
-                                )
+
+                                // 2. 右侧：思考等级独立热区 (无 token 括号，高档位琥珀橙醒目预警，杜绝浪费)
+                                val isHighThinking = thinkingLevel.isHighBudget
+                                val thinkingTint = when {
+                                    !selectedModel.supportsThinking -> theme.textMuted
+                                    thinkingLevel == ThinkingLevel.OFF -> theme.textSecondary
+                                    isHighThinking -> Color(0xFFF59E0B) // 琥珀橙醒目警示
+                                    else -> theme.primary
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .clickable {
+                                            if (!selectedModel.supportsThinking) {
+                                                android.widget.Toast.makeText(context, "当前模型不支持深度思考", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                onOpenThinkingSheet()
+                                            }
+                                        }
+                                        .padding(start = 6.dp, end = 8.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Psychology,
+                                        contentDescription = "思考等级",
+                                        modifier = Modifier.size(13.dp),
+                                        tint = thinkingTint
+                                    )
+                                    Spacer(modifier = Modifier.width(3.dp))
+                                    Text(
+                                        text = thinkingLevel.value,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isHighThinking) FontWeight.Bold else FontWeight.SemiBold,
+                                        color = thinkingTint
+                                    )
+                                    Spacer(modifier = Modifier.width(1.dp))
+                                    Icon(
+                                        Icons.Default.KeyboardArrowDown,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(13.dp),
+                                        tint = thinkingTint.copy(alpha = 0.85f)
+                                    )
+                                }
                             }
                         }
 
@@ -3135,7 +3197,8 @@ private fun encodePickedImages(
             images.add(
                 ChatImageInput(
                     mimeType = att.inlineMimeType?.takeIf { it.startsWith("image/") } ?: "image/png",
-                    base64Data = inline
+                    base64Data = inline,
+                    name = att.name
                 )
             )
             continue
@@ -3146,7 +3209,14 @@ private fun encodePickedImages(
             continue
         }
         try {
-            val mime = context.contentResolver.getType(sourceUri)?.takeIf { it.startsWith("image/") } ?: "image/png"
+            val detectedMime = context.contentResolver.getType(sourceUri)?.takeIf { it.startsWith("image/") }
+            val mime = detectedMime ?: when {
+                att.name.endsWith(".jpg", ignoreCase = true) || att.name.endsWith(".jpeg", ignoreCase = true) -> "image/jpeg"
+                att.name.endsWith(".webp", ignoreCase = true) -> "image/webp"
+                att.name.endsWith(".gif", ignoreCase = true) -> "image/gif"
+                att.name.endsWith(".bmp", ignoreCase = true) -> "image/bmp"
+                else -> "image/png"
+            }
             val bytes = readBoundedBytes(context, sourceUri, MAX_PROMPT_IMAGE_BYTES)
             if (bytes == null) {
                 skipped++
@@ -3155,7 +3225,8 @@ private fun encodePickedImages(
             images.add(
                 ChatImageInput(
                     mimeType = mime,
-                    base64Data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                    base64Data = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP),
+                    name = att.name
                 )
             )
         } catch (e: Exception) {

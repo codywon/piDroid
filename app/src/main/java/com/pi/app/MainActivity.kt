@@ -29,6 +29,7 @@ import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
+import com.pi.app.ui.chat.ThinkingLevelBottomSheet
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
 import com.pi.app.ui.settings.GlobalSettingsScreen
@@ -255,6 +256,7 @@ class MainActivity : ComponentActivity() {
         var isScanning by remember { mutableStateOf(false) }
         var showGlobalSettings by remember { mutableStateOf(false) }
         var showModelSheet by remember { mutableStateOf(false) }
+        var showThinkingSheet by remember { mutableStateOf(false) }
         var showManualConfigDialog by remember { mutableStateOf(false) }
 
         // 应用内自动更新状态
@@ -2267,6 +2269,9 @@ class MainActivity : ComponentActivity() {
                             lifecycleScope.launch { refreshSessionModelRef(sess.id) }
                         }
                     },
+                    onOpenThinkingSheet = {
+                        showThinkingSheet = true
+                    },
                     // 「从此处编辑」已完全下沉到 ChatScreen（对标 pi-web 的 handleEditContent）：
                     // 点击只预填正文并记录 entryId，真正的 navigate_tree 在「发送」时原子执行。
                     onCompactContext = {
@@ -2415,7 +2420,14 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                             if (stillHere) {
-                                messages.add(ChatItem(role = MessageRole.USER, content = prompt))
+                                val userMedia = images.toMediaAttachments()
+                                messages.add(
+                                    ChatItem(
+                                        role = MessageRole.USER,
+                                        content = prompt,
+                                        mediaList = userMedia
+                                    )
+                                )
                                 // 新一轮开始：上一条在途消息的身份作废
                                 streamingMessageId = null
                                 isAutoRetrying = false
@@ -2449,7 +2461,14 @@ class MainActivity : ComponentActivity() {
                     onSendSteer = { steerText, steerImages ->
                         val sid = activeSessionId
                         if (currentSession?.id == sid) {
-                            messages.add(ChatItem(role = MessageRole.USER, content = "➔ [引导] $steerText"))
+                            val steerMedia = steerImages.toMediaAttachments()
+                            messages.add(
+                                ChatItem(
+                                    role = MessageRole.USER,
+                                    content = "➔ [引导] $steerText",
+                                    mediaList = steerMedia
+                                )
+                            )
                         }
                         lifecycleScope.launch {
                             apiClient.sendSteer(sid, steerText, steerImages).onSuccess {
@@ -2557,6 +2576,28 @@ class MainActivity : ComponentActivity() {
                             modelMetaRevision++
                             val selectionRevision = modelMetaRevision
                             selectedModel = model
+
+                            // 能力防呆护栏：若新选模型不支持思考且当前非 OFF，自动切为 OFF 并同步，杜绝浪费 token
+                            if (!model.supportsThinking && currentThinkingLevel != ThinkingLevel.OFF) {
+                                val prevLevel = currentThinkingLevel
+                                currentThinkingLevel = ThinkingLevel.OFF
+                                currentSession?.let { sess ->
+                                    pendingModelMetaChanges++
+                                    lifecycleScope.launch {
+                                        try {
+                                            apiClient.updateThinkingLevel(sess.id, ThinkingLevel.OFF).onFailure {
+                                                if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {
+                                                    currentThinkingLevel = prevLevel
+                                                }
+                                            }
+                                        } finally {
+                                            pendingModelMetaChanges--
+                                            modelMetaRevision++
+                                        }
+                                    }
+                                }
+                            }
+
                             currentSession?.let { sess ->
                                 pendingModelMetaChanges++
                                 lifecycleScope.launch {
@@ -2584,7 +2625,28 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onThinkingLevelChanged = { level ->
+                        onSetDefaultModel = { model ->
+                            currentDefaultModelId = model.id
+                            currentDefaultProvider = model.provider
+                            prefs.defaultModelId = model.id
+                            prefs.defaultProvider = model.provider
+                            lifecycleScope.launch {
+                                apiClient.setDefaultModel(model.provider, model.id).onSuccess {
+                                    Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "设置默认模型失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        },
+                        onDismiss = { showModelSheet = false }
+                    )
+                }
+
+                if (showThinkingSheet) {
+                    ThinkingLevelBottomSheet(
+                        currentLevel = currentThinkingLevel,
+                        defaultLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),
+                        onLevelSelected = { level ->
                             val previous = currentThinkingLevel
                             modelMetaRevision++
                             val selectionRevision = modelMetaRevision
@@ -2610,20 +2672,17 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
                         },
-                        onSetDefaultModel = { model ->
-                            currentDefaultModelId = model.id
-                            currentDefaultProvider = model.provider
-                            prefs.defaultModelId = model.id
-                            prefs.defaultProvider = model.provider
+                        onSetDefaultLevel = { level ->
+                            prefs.defaultThinkingLevel = level.value
                             lifecycleScope.launch {
-                                apiClient.setDefaultModel(model.provider, model.id).onSuccess {
-                                    Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                apiClient.setDefaultThinkingLevel(level.value).onSuccess {
+                                    Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "设置默认模型失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "设置默认思考档位失败: ${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         },
-                        onDismiss = { showModelSheet = false }
+                        onDismissRequest = { showThinkingSheet = false }
                     )
                 }
             }

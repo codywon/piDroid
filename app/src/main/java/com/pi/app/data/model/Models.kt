@@ -171,7 +171,8 @@ data class AgentRuntimeState(
  */
 data class ChatImageInput(
     val mimeType: String,
-    val base64Data: String
+    val base64Data: String,
+    val name: String = ""
 )
 
 /**
@@ -429,6 +430,26 @@ enum class ThinkingLevel(val value: String, val label: String, val budgetTokens:
     XHIGH("xhigh", "超深 (32k)", 32768),
     MAX("max", "极限 (64k)", 65536);
 
+    /**
+     * 纯净中文名称（不带类似 "(16k)" 这种 token 括号数值）
+     */
+    val cleanLabel: String
+        get() = when (this) {
+            OFF -> "关闭思考"
+            MINIMAL -> "微弱"
+            LOW -> "轻度"
+            MEDIUM -> "适度"
+            HIGH -> "深度"
+            XHIGH -> "超深"
+            MAX -> "极限"
+        }
+
+    /**
+     * 是否为高消耗思考档位（用于警示色醒目提醒，避免遗忘导致 token 浪费）
+     */
+    val isHighBudget: Boolean
+        get() = this == HIGH || this == XHIGH || this == MAX
+
     companion object {
         fun fromValue(v: String?): ThinkingLevel {
             return entries.firstOrNull { it.value.equals(v, ignoreCase = true) } ?: HIGH
@@ -620,6 +641,17 @@ data class MediaAttachment(
     val svgOrCode: String? = null,
     val rawContent: String? = svgOrCode
 )
+
+fun ChatImageInput.toMediaAttachment(): MediaAttachment {
+    return MediaAttachment(
+        kind = MediaKind.IMAGE,
+        mimeType = mimeType.ifBlank { "image/png" },
+        dataBase64 = base64Data,
+        title = name.ifBlank { "图片附件" }
+    )
+}
+
+fun List<ChatImageInput>.toMediaAttachments(): List<MediaAttachment> = map { it.toMediaAttachment() }
 
 /**
  * 聊天消息项（对标 pi-web MessageView）

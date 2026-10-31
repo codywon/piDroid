@@ -2,6 +2,21 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.68] - 2026-10-31
+
+### 🐛 修复用户提问带图乐观上屏缺失与快照对账丢图问题
+
+- **提问附图即时上屏**：修复 `onSendMessage` 和 `onSendSteer` 追加本地乐观气泡时遗漏 `mediaList` 的问题，点击发送瞬间即刻渲染图片缩略图，消除用户对图片是否上传成功的疑虑。
+- **快照对账保留媒体**：重构 `SessionSnapshotMerge`，加入零堆内存分配的流式双指针 Base64 等价判定算法，自动剥离前缀与换行，防止快照轮询因 Base64 格式差异误判导致图片闪烁重新解码；同时服务端带图时以服务端为准，快照临时空数据时保护本地乐观附件不被冲掉。
+- **图片扩展名保底识别**：在附件选择器中补充 `.jpg`/`.png`/`.webp`/`.gif`/`.bmp` 等扩展名推断，解决部分定制系统文件管理器返回空 MIME 类型导致图片被误判为普通文件的问题。
+- **模型与思考级别体验升级**：
+  - 输入框上方胶囊升级为一体化分段双胶囊（Split-Pill），左侧点击弹模型选择，右侧点击弹独立思考等级底板（`ThinkingLevelBottomSheet`）。
+  - 思考档位展示纯净中文标签与高档位（`high`/`xhigh`/`max`）琥珀橙警示色，并在切换不支持思考的模型时增加自动降级至 OFF 的安全防呆护栏与竞态保护。
+- **清理隧道脚本硬编码**：移除 `start-server-tunnel.bat` 中的私有域名与隧道名硬编码，恢复公共 Quick Tunnel 开箱即用体验。
+- **单测守护**：在 `SessionTreeNavigationTest` 和 `ThinkingLevelTest` 补充针对长 Base64 等价对账、媒体保留以及思考等级纯净标签等单测用例。
+
+---
+
 ## [1.7.67] - 2026-10-31
 
 ### 🐛 修「SVG 架构图缩在卡片中间特别小」：去掉高度自我参照的死循环

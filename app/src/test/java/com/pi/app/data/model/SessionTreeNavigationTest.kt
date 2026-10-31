@@ -104,6 +104,80 @@ class SessionTreeNavigationTest {
     }
 
     @Test
+    fun `merge preserves local media attachments when optimistic user message is backfilled with entryId`() {
+        val localMedia = listOf(
+            MediaAttachment(id = "loc_img_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = "base64payload", title = "screenshot.png")
+        )
+        val diskMedia = listOf(
+            MediaAttachment(id = "srv_img_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = "base64payload", title = "图片附件")
+        )
+        val local = ChatItem(id = "local_1", entryId = null, role = MessageRole.USER, content = "测试附图", mediaList = localMedia)
+        val disk = ChatItem(id = "disk_1", entryId = "u1", role = MessageRole.USER, content = "测试附图", mediaList = diskMedia)
+
+        val merged = SessionSnapshotMerge.mergeItem(local, disk)
+
+        assertEquals("local_1", merged.id)
+        assertEquals("u1", merged.entryId)
+        assertEquals(1, merged.mediaList.size)
+        // 保持本地稳定的附件 ID 和原始文件名，避免 Compose 闪烁重组
+        assertEquals("loc_img_1", merged.mediaList[0].id)
+        assertEquals("screenshot.png", merged.mediaList[0].title)
+    }
+
+    @Test
+    fun `merge takes server media attachments when local message had none`() {
+        val diskMedia = listOf(
+            MediaAttachment(id = "srv_img_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = "remote_img_data", title = "图片附件")
+        )
+        val local = ChatItem(id = "local_1", entryId = "u1", role = MessageRole.USER, content = "测试附图", mediaList = emptyList())
+        val disk = ChatItem(id = "disk_1", entryId = "u1", role = MessageRole.USER, content = "测试附图", mediaList = diskMedia)
+
+        val merged = SessionSnapshotMerge.mergeItem(local, disk)
+
+        assertEquals(1, merged.mediaList.size)
+        assertEquals("remote_img_data", merged.mediaList[0].dataBase64)
+    }
+
+    @Test
+    fun `merge retains local media if server snapshot media is temporarily empty`() {
+        val localMedia = listOf(
+            MediaAttachment(id = "loc_img_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = "local_payload", title = "photo.jpg")
+        )
+        val local = ChatItem(id = "local_1", entryId = null, role = MessageRole.USER, content = "带图发送", mediaList = localMedia)
+        val disk = ChatItem(id = "disk_1", entryId = "u1", role = MessageRole.USER, content = "带图发送", mediaList = emptyList())
+
+        val merged = SessionSnapshotMerge.mergeItem(local, disk)
+
+        assertEquals(1, merged.mediaList.size)
+        assertEquals("local_payload", merged.mediaList[0].dataBase64)
+    }
+
+    @Test
+    fun `merge recognizes line-wrapped and prefixed base64 media as identical content`() {
+        // 模拟一个大图 Base64：unwrapped (本地 NO_WRAP) vs wrapped (服务端带 \n 换行且带 data:image/png;base64, 前缀)
+        val rawChunk = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+        val unwrappedB64 = rawChunk.repeat(20) // 约 2KB
+        val wrappedB64 = "data:image/png;base64," + unwrappedB64.chunked(64).joinToString("\r\n")
+
+        val localMedia = listOf(
+            MediaAttachment(id = "loc_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = unwrappedB64, title = "test.png")
+        )
+        val diskMedia = listOf(
+            MediaAttachment(id = "srv_1", kind = MediaKind.IMAGE, mimeType = "image/png", dataBase64 = wrappedB64, title = "图片附件")
+        )
+
+        val local = ChatItem(id = "l1", entryId = "u1", role = MessageRole.USER, content = "看图", mediaList = localMedia)
+        val disk = ChatItem(id = "d1", entryId = "u1", role = MessageRole.USER, content = "看图", mediaList = diskMedia)
+
+        // 验证两份 Base64 虽有前缀和大量回车换行，实质内容判定为相同
+        assertTrue(SessionSnapshotMerge.isSameChatContent(local, disk))
+
+        val merged = SessionSnapshotMerge.mergeItem(local, disk)
+        // 保持本地实例，避免轮询重复触发 Compose 重绘
+        assertSame(local, merged)
+    }
+
+    @Test
     fun `merge without entryId keeps the very same instance (no needless recompose)`() {
         val local = ChatItem(id = "l", entryId = "u1", role = MessageRole.USER, content = "x")
         val disk = ChatItem(id = "d", entryId = "u1", role = MessageRole.USER, content = "x")

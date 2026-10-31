@@ -13,6 +13,47 @@ package com.pi.app.data.model
  */
 object SessionSnapshotMerge {
 
+    private fun isSameBase64(a: String?, b: String?): Boolean {
+        if (a == b) return true
+        if (a.isNullOrBlank() && b.isNullOrBlank()) return true
+        if (a.isNullOrBlank() || b.isNullOrBlank()) return false
+        val rawA = a.substringAfter("base64,", a)
+        val rawB = b.substringAfter("base64,", b)
+        var i = 0
+        var j = 0
+        val lenA = rawA.length
+        val lenB = rawB.length
+        while (i < lenA || j < lenB) {
+            while (i < lenA && (rawA[i] == '\r' || rawA[i] == '\n' || rawA[i] == ' ')) i++
+            while (j < lenB && (rawB[j] == '\r' || rawB[j] == '\n' || rawB[j] == ' ')) j++
+            val hasA = i < lenA
+            val hasB = j < lenB
+            if (hasA != hasB) return false
+            if (hasA && rawA[i] != rawB[j]) return false
+            i++
+            j++
+        }
+        return true
+    }
+
+    private fun isSameMediaAttachment(a: MediaAttachment, b: MediaAttachment): Boolean {
+        if (a.kind != b.kind) return false
+        if (!a.mimeType.equals(b.mimeType, ignoreCase = true)) return false
+        if (a.filePath != b.filePath) return false
+        if (a.url != b.url) return false
+        if (a.rawContent != b.rawContent) return false
+        if (!isSameBase64(a.dataBase64, b.dataBase64)) return false
+        return true
+    }
+
+    fun isSameMediaList(a: List<MediaAttachment>, b: List<MediaAttachment>): Boolean {
+        if (a.size != b.size) return false
+        for (i in a.indices) {
+            if (!isSameMediaAttachment(a[i], b[i])) return false
+        }
+        return true
+    }
+
     /** 两条消息的实质内容是否一致（忽略 id 与 timestamp，用于消除轮询闪屏）。 */
     fun isSameChatContent(a: ChatItem, b: ChatItem): Boolean {
         return a.role == b.role &&
@@ -20,7 +61,8 @@ object SessionSnapshotMerge {
             a.thinking == b.thinking &&
             a.isStreaming == b.isStreaming &&
             a.toolCall == b.toolCall &&
-            a.usageSummary == b.usageSummary
+            a.usageSummary == b.usageSummary &&
+            isSameMediaList(a.mediaList, b.mediaList)
     }
 
     /**
@@ -40,7 +82,40 @@ object SessionSnapshotMerge {
             } else {
                 diskItem.streamMessageId
             }
-            diskItem.copy(id = keepId, timestamp = keepTs, streamMessageId = keepStreamId)
+            // 媒体附件合并策略：
+            // - 若服务端快照包含媒体附件，以服务端为准，但对匹配的附件保留本地 id 与文件名，杜绝闪烁重解
+            // - 若服务端快照暂无媒体附件（例如刚写入但字段尚未序列化完），但本地角色匹配且有媒体，保留本地媒体
+            val resolvedMedia = when {
+                diskItem.mediaList.isNotEmpty() -> {
+                    if (localItem.role == diskItem.role && localItem.mediaList.size == diskItem.mediaList.size) {
+                        diskItem.mediaList.mapIndexed { idx, diskMedia ->
+                            val localMedia = localItem.mediaList.getOrNull(idx)
+                            if (localMedia != null && isSameMediaAttachment(localMedia, diskMedia)) {
+                                diskMedia.copy(
+                                    id = localMedia.id,
+                                    title = if (diskMedia.title.isBlank() || diskMedia.title == "图片附件") {
+                                        localMedia.title.ifBlank { diskMedia.title }
+                                    } else {
+                                        diskMedia.title
+                                    }
+                                )
+                            } else {
+                                diskMedia
+                            }
+                        }
+                    } else {
+                        diskItem.mediaList
+                    }
+                }
+                localItem.role == diskItem.role && localItem.mediaList.isNotEmpty() -> localItem.mediaList
+                else -> emptyList()
+            }
+            diskItem.copy(
+                id = keepId,
+                timestamp = keepTs,
+                streamMessageId = keepStreamId,
+                mediaList = resolvedMedia
+            )
         } else if (localItem.entryId.isNullOrBlank() && !diskItem.entryId.isNullOrBlank()) {
             localItem.copy(entryId = diskItem.entryId)
         } else {

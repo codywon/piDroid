@@ -29,7 +29,7 @@ import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.theme.*
 
 /**
- * 1:1 对标 pi-web 官方交互的模型与思考级别切换面板：
+ * 对标 pi-web 官方交互的模型选择面板（思考级别已独立拆分为 [ThinkingLevelBottomSheet]）：
  * - 顶部增加“筛选模型...”即时搜索栏
  * - 右侧五角星星标系统：实心金星 ★ (全局默认模型) / 空心灰星 ☆ (点击一键设为默认模型，调用 PUT /api/models/default)
  *   （实心星本身即默认标识，不再额外显示「默认」文字徽标，保持列表清爽）
@@ -45,11 +45,11 @@ fun ModelAndThinkingSheet(
     availableModels: List<ModelInfo>,
     selectedModelId: String,
     selectedProvider: String? = null,
-    currentThinkingLevel: ThinkingLevel,
+    currentThinkingLevel: ThinkingLevel? = null,
     defaultModelId: String? = null,
     defaultProvider: String? = null,
     onModelSelected: (ModelInfo) -> Unit,
-    onThinkingLevelChanged: (ThinkingLevel) -> Unit,
+    onThinkingLevelChanged: ((ThinkingLevel) -> Unit)? = null,
     onSetDefaultModel: ((ModelInfo) -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
@@ -99,11 +99,28 @@ fun ModelAndThinkingSheet(
                 .padding(bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            InfoTitle(
-                title = "模型与思考级别切换",
-                infoDescription = "仅作用于当前会话；全局默认在设置页",
-                style = MaterialTheme.typography.titleMedium
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                InfoTitle(
+                    title = "选择模型",
+                    infoDescription = "仅作用于当前会话；全局默认在设置页",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.size(28.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "关闭",
+                        tint = theme.textSecondary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
 
             // 1. 对标 pi-web 的“筛选模型...”即时搜索栏
             Surface(
@@ -162,46 +179,7 @@ fun ModelAndThinkingSheet(
                 }
             }
 
-            // 2. 思考深度选择 (7 档横向平滑滑动)
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    text = "思考深度 (Thinking Level)",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = theme.textSecondary
-                )
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    ThinkingLevel.entries.forEach { level ->
-                        val isSelected = currentThinkingLevel == level
-                        Surface(
-                            shape = RoundedCornerShape(8.dp),
-                            color = if (isSelected) theme.primary.copy(alpha = 0.14f) else theme.background,
-                            border = BorderStroke(1.dp, if (isSelected) theme.primary else theme.outline),
-                            modifier = Modifier.clickable { onThinkingLevelChanged(level) }
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = level.value,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                    fontFamily = FontFamily.Monospace,
-                                    color = if (isSelected) theme.primary else theme.textSecondary
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 3. Provider 分组选择
+            // 2. Provider 分组选择
             if (providers.size > 1) {
                 Row(
                     modifier = Modifier
@@ -242,11 +220,11 @@ fun ModelAndThinkingSheet(
                 }
             }
 
-            // 4. 模型列表 (对标 pi-web：左侧勾选当前会话 + 右侧五角星默认模型标记)
+            // 3. 模型列表 (对标 pi-web：左侧勾选当前会话 + 右侧五角星默认模型标记)
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 320.dp),
+                    .heightIn(max = 380.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 items(filteredModels, key = { "${it.provider}:${it.id}" }) { model ->
