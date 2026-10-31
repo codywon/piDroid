@@ -15,6 +15,13 @@ const https = require('https');
 const path = require('path');
 const gateway = require('./gateway');
 const frpClient = require('./frp-client');
+const {
+  checkUrlAlive,
+  isPortListening,
+  probeWithRetry,
+  waitForReady,
+  waitForReadyOrExit,
+} = require('./startup-probe');
 
 // 命令行参数解析
 const args = process.argv.slice(2);
@@ -71,28 +78,7 @@ let piWebProcess = null;
 let tunnelProcess = null;
 let gatewayServer = null;
 
-// 1. 探测 HTTP 服务是否存活
-function checkUrlAlive(targetUrl, timeoutMs = 800) {
-  return new Promise((resolve) => {
-    try {
-      const parsed = new URL(targetUrl);
-      const req = http.request({
-        hostname: parsed.hostname,
-        port: parsed.port,
-        path: '/',
-        method: 'GET',
-        timeout: timeoutMs
-      }, (res) => {
-        resolve(res.statusCode < 500);
-      });
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.end();
-    } catch (e) {
-      resolve(false);
-    }
-  });
-}
+// 1. 探测 HTTP 服务是否存活（实现搬到了 startup-probe.js，可单测）
 
 // 探测是否已有正在运行的 companion gateway
 function checkGatewayRunning(port, timeoutMs = 800) {
@@ -297,16 +283,7 @@ async function launchPiWeb() {
   return proc;
 }
 
-// 4. 等待服务就绪轮询
-async function waitForReady(url, maxWaitMs = 25000) {
-  const startTime = Date.now();
-  while (Date.now() - startTime < maxWaitMs) {
-    const alive = await checkUrlAlive(url);
-    if (alive) return true;
-    await new Promise((r) => setTimeout(r, 600));
-  }
-  return false;
-}
+// 4. 等待服务就绪轮询（实现搬到了 startup-probe.js，可单测）
 
 // 主启动流程
 async function main() {
@@ -316,18 +293,37 @@ async function main() {
   console.log('======================================================\n');
 
   // 步骤 A: 检查 pi-web 是否已运行
-  const alreadyRunning = await checkUrlAlive(piWebUrl, 1000);
-  // 横幅里“pi-web 是否正常”必须反映当前真实状态：刚拉起的也可能还没就绪。
+  //
+  // 先看端口再看 HTTP：Next.js 首次编译时 `/` 可能 1 秒以上才应答，只靠一次 HTTP 探测
+  // 会把"正在跑的"判成"没在跑"，于是又拉起第二份 —— 必然 EADDRINUSE 30141 秒退，
+  // 日志里留下一串假的 "Next.js exited unexpectedly"（线上真的碰过）。
+  const piWebPort = Number(new URL(piWebUrl).port || 80);
+  let alreadyRunning = await isPortListening(piWebPort);
+  if (!alreadyRunning) {
+    alreadyRunning = await probeWithRetry(() => checkUrlAlive(piWebUrl, 1200), {
+      attempts: 3,
+      delayMs: 600,
+    });
+  }
+
+  // 横幅里"pi-web 是否正常"必须反映当前真实状态：刚拉起的也可能还没就绪。
   let piWebReady = alreadyRunning;
   if (alreadyRunning) {
     console.log(`[1/3] ✓ 检测到本地已存在运行中的 pi-web (${piWebUrl})，直接接入。`);
   } else if (!skipPiWeb) {
     piWebProcess = await launchPiWeb();
     process.stdout.write('[2/3] 等待 pi-web 服务就绪中...');
-    const isReady = await waitForReady(piWebUrl);
-    piWebReady = isReady;
-    if (isReady) {
+    // 同时盯 exit：自己拉起的那份如果因为端口被抢占而秒退，就不要白等 25 秒。
+    const outcome = await waitForReadyOrExit(piWebUrl, piWebProcess);
+    if (outcome.ready) {
+      piWebReady = true;
       console.log(' ✓ 服务已就绪！');
+    } else if (outcome.exited && (await isPortListening(piWebPort))) {
+      // 端口另有实例（自启 + 手动启动各一份、或刚被别人拉起）：直接接入现有实例。
+      piWebReady = await waitForReady(piWebUrl, 8000);
+      console.log(` ✓ 端口 ${piWebPort} 上已有其它 pi-web 实例，直接接入。`);
+    } else if (outcome.exited) {
+      console.log(` ⚠️ pi-web 启动失败（exit=${outcome.code}），继续启动伴侣网关。`);
     } else {
       console.log(' ⚠️ 探测超时，继续启动伴侣网关。');
     }
