@@ -16,11 +16,10 @@ All notable changes to the piDroid application will be documented in this file.
   - 修复客户端 `clip` 逻辑中多计 1 个省略号字符导致的边界溢出；
 - **网关与单测验证**：已更新服务端 33 项自动化测试并全部通过，实测单条 3000+ 字符超长日志会话 200 OK 顺畅增强。
 
----
-
-## [1.7.75] - 2026-10-31
-
 ### ⚙️ 自动压缩改成 `/auto-compact` 命令（对标 pi-web），设置页清掉三条伪选项
+
+> 本批与上一条提示词增强一起发布：`/auto-compact` 由 v1.7.76 的安装包首发，
+> 之前误标的 v1.7.75 从未单独发版（版本号被本批任务占用）。
 
 - **删除「系统设置 → 会话行为」整组**（自动压缩上下文 / 自动重试）。这两项是 pi 内核 `settings.json` 的全局策略（`compaction.enabled` / `retry.enabled` 默认都是 `true`），不是手机端旋钮；`pi-web` 也从不把它们放进设置页，只提供一条 `/auto-compact` 命令；
 - **新增内置斜杠命令 `/auto-compact`**：输入框敲 `/` 即可在面板看到（`source=builtin`，描述沿用 pi-web 的 zh-CN「切换自动上下文压缩（全局设置）」）。执行链与 pi-web 同构：`get_state` → 取反 → `set_auto_compaction` → 回提示「自动压缩已开启 / 已关闭」。三个细节：
