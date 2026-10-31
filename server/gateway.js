@@ -24,11 +24,38 @@ const TOKEN_FILE = path.join(__dirname, '.token');
 //
 // 安全约束：隧道名最终会进入 `spawn(..., { shell: true })` 的命令行，所以必须按
 // 白名单校验。config.yml 是本地文件，但它的内容仍不该被当成 shell 片段执行。
-const TUNNEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-const HOSTNAME_PATTERN = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
+const TUNNEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;const HOSTNAME_PATTERN = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
 
 function isSafeTunnelName(value) {
   return typeof value === 'string' && TUNNEL_NAME_PATTERN.test(value);
+}
+
+/**
+ * 命名隧道进程的守望状态。
+ *
+ * `child` 每次重连都会换成新进程，所以不能只把最初的 PID 交给 launcher；
+ * 退出时统一走 stopTunnel()（它会停止重连并杀掉当前子进程），
+ * 否则 Ctrl+C 后可能在后台留一个孤儿隧道。
+ */
+const tunnelState = { child: null, timer: null, attempt: 0, stopping: false };
+
+/** 主动停止命名隧道（重连不再发生），供 launcher 退出时调用。 */
+function stopTunnel() {
+  tunnelState.stopping = true;
+  tunnelState.attempt = 0;
+  if (tunnelState.timer) {
+    clearTimeout(tunnelState.timer);
+    tunnelState.timer = null;
+  }
+  const child = tunnelState.child;
+  tunnelState.child = null;
+  if (child && child.pid) {
+    try {
+      child.kill();
+    } catch {
+      /* 已经退出 */
+    }
+  }
 }
 
 function isSafeHostname(value) {
@@ -724,11 +751,6 @@ async function start(options = {}) {
         // 固定域名隧道：地址由 Cloudflare 配置决定，无需再监听输出解析临时域名
         const publicUrl = `https://${stableTunnel.hostname}`;
         console.log(`\n🌐 正在启动固定域名隧道 "${stableTunnel.name}" -> ${publicUrl} ...`);
-        const tunnelProcess = spawn(
-          'cloudflared',
-          ['tunnel', 'run', stableTunnel.name],
-          { shell: true }
-        );
 
         // cloudflared 把运行日志写在 stderr，这里按行转发便于排查 404/1033。
         // 两处处理：
@@ -736,6 +758,7 @@ async function start(options = {}) {
         //    with error code 0"，这是正常现象（手机切页面/息屏/重连），不展示；
         // 2) 日志里会带上 EventSource 的 ?token=...，必须脱敏，不能落到控制台/日志。
         const pipeTunnelLogs = (readable, out) => {
+          if (!readable) return;
           let buffer = '';
           readable.on('data', (chunk) => {
             buffer += chunk.toString();
@@ -750,17 +773,67 @@ async function start(options = {}) {
             }
           });
         };
-        pipeTunnelLogs(tunnelProcess.stdout, process.stdout);
-        pipeTunnelLogs(tunnelProcess.stderr, process.stderr);
 
-        tunnelProcess.on('error', (err) => {
-          console.error(`\n[tunnel] 启动 ${stableTunnel.name} 失败: ${err.message}`);
-          console.error('[tunnel] 请确认 cloudflared 已安装且已完成 cloudflared tunnel login / create / route dns');
-          printBannerAndQr(publicUrl, isAlive, listenPort);
-        });
+        /**
+         * 拉起一次 cloudflared，并在它“自己死掉”时自动重连。
+         *
+         * 为什么需要守护：cloudflared 在所有 edge 连接同时断开时会直接
+         * `no more connections active and exiting` 退出进程（实测 4 条 QUIC 连接
+         * 会在同一秒集体掉线）。没有守护的话隧道就静默消失，手机端表现为
+         * “一直自动重连中”，而网关本身完全健康 —— 用户根本无从判断该重启哪个。
+         *
+         * 为什么不强制 `--protocol http2`：本机实测 http2 连 Cloudflare 边缘直接
+         * TLS handshake EOF（被网络环境拦），而默认的 auto/quic 能正常注册连接。
+         * 协议就交给 cloudflared 自己选（默认 auto），我们只负责它死了就拉起来。
+         */
+        const spawnTunnel = () => {
+          const startedAt = Date.now();
+          const child = spawn(
+            'cloudflared',
+            // 只能给一个位置参数（隧道名）；额外 flag 写在名字后面会被拒：
+            // “accepts only one argument, the ID or name of the tunnel to run”。
+            ['tunnel', 'run', stableTunnel.name],
+            { shell: true }
+          );
+          pipeTunnelLogs(child.stdout, process.stdout);
+          pipeTunnelLogs(child.stderr, process.stderr);
+
+          child.on('error', (err) => {
+            console.error(`\n[tunnel] 启动 ${stableTunnel.name} 失败: ${err.message}`);
+            console.error('[tunnel] 请确认 cloudflared 已安装且已完成 cloudflared tunnel login / create / route dns');
+          });
+
+          child.on('exit', (code, signal) => {
+            if (tunnelState.stopping) return;
+            // 稳定运行超过 60s 后再掉，算一次新故障，退避重置
+            if (Date.now() - startedAt > 60_000) tunnelState.attempt = 0;
+            tunnelState.attempt += 1;
+            const delayMs = Math.min(60_000, 2_000 * 2 ** (tunnelState.attempt - 1));
+            console.warn(
+              `\n[tunnel] ⚠️ 隧道连接断开（code=${code ?? '-'} signal=${signal ?? '-'}），` +
+              `${Math.round(delayMs / 1000)}s 后自动重连（第 ${tunnelState.attempt} 次）`
+            );
+            tunnelState.child = null;
+            tunnelState.timer = setTimeout(() => {
+              tunnelState.timer = null;
+              if (tunnelState.stopping) return;
+              tunnelState.child = spawnTunnel();
+            }, delayMs);
+          });
+
+          return child;
+        };
+
+        tunnelState.child = spawnTunnel();
 
         printBannerAndQr(publicUrl, isAlive, listenPort);
-        resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
+        resolve({
+          server,
+          tunnelProcess: tunnelState.child,
+          publicUrl,
+          token: AUTH_TOKEN,
+          target: TARGET
+        });
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
         const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
@@ -852,5 +925,6 @@ module.exports = {
   parseStableTunnelConfig,
   isSafeTunnelName,
   isSafeHostname,
-  resolveStableTunnel
+  resolveStableTunnel,
+  stopTunnel
 };

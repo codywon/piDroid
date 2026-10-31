@@ -98,24 +98,33 @@ function checkGatewayRunning(port, timeoutMs = 800) {
 }
 
 // 公网地址可达性探测：只看“有没有人应答”，不关心 401/200。
-// 超时短一些（2s）：这只是横幅前的顺手体检，不该把启动卡住。
-function probePublicUrl(hostname, timeoutMs = 2000) {
-  return new Promise((resolve) => {
-    try {
-      const req = https.request(
-        { hostname, path: '/api/ping', method: 'GET', timeout: timeoutMs },
-        (res) => {
-          res.resume();
-          resolve(Boolean(res.statusCode) && res.statusCode < 500);
-        }
-      );
-      req.on('error', () => resolve(false));
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.end();
-    } catch {
-      resolve(false);
+// 重试几次：Cloudflare 边缘刚重连时偶尔瞬断，一次失败就报警只会制造假警报。
+function probePublicUrl(hostname, attempts = 3, timeoutMs = 2500) {
+  const once = () =>
+    new Promise((resolve) => {
+      try {
+        const req = https.request(
+          { hostname, path: '/api/ping', method: 'GET', timeout: timeoutMs },
+          (res) => {
+            res.resume();
+            resolve(Boolean(res.statusCode) && res.statusCode < 500);
+          }
+        );
+        req.on('error', () => resolve(false));
+        req.on('timeout', () => { req.destroy(); resolve(false); });
+        req.end();
+      } catch {
+        resolve(false);
+      }
+    });
+
+  return (async () => {
+    for (let i = 0; i < attempts; i += 1) {
+      if (await once()) return true;
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, 800));
     }
-  });
+    return false;
+  })();
 }
 
 // 2. 递归清理子进程树 (防止 Windows 或 POSIX 残留后台孤儿进程)
@@ -154,6 +163,8 @@ function shutdown(exitCode = 0) {
     killProcessTree(tunnelProcess.pid);
     tunnelProcess = null;
   }
+  // 命名隧道会自己重连（换新 PID），所以要显式让它停手，否则会留孤儿进程。
+  try { gateway.stopTunnel(); } catch (e) {}
 
   if (gatewayServer) {
     try { gatewayServer.close(); } catch (e) {}
@@ -269,17 +280,18 @@ async function main() {
     console.log(`[2/2] ✓ 检测到伴侣安全网关已在端口 ${gatewayPort} 运行中，直接呈现连接凭据：`);
     gateway.printBannerAndQr(connectHost, piWebReady, gatewayPort);
     if (stableHost) {
-      // 已经在跑的网关未必接管了隧道（可能是用 start-server.bat 起的），
-      // 直接探一下公网地址，别把一张打不开的二维码交给用户。
+      // 已经在跑的网关未必接管了隧道（可能是用 start-server.bat 起的，
+      // 也可能隧道进程自己退出了），直接探一下公网地址，
+      // 别把一张打不开的二维码交给用户。
       const reachable = await probePublicUrl(stableHost);
-      if (!reachable) {
-        console.warn(`\n⚠️  ${connectHost} 当前打不开：正在运行的网关进程可能不是带 --tunnel 启动的。`);
-        console.warn('   处理：关掉旧网关窗口后重新运行本脚本；或单独执行 cloudflared tunnel run ' +
-          `${stable.tunnel.name}`);
+      if (reachable) {
+        console.log(`\n✅ ${connectHost} 连通正常：网关与固定域名隧道都在运行，无需重启。`);
+        console.log('   （本窗口只是查看器，Ctrl+C 不会停掉后台服务。）');
+      } else {
+        console.warn(`\n⚠️  ${connectHost} 暂时探测不通。`);
+        console.warn(`   本地网关是正常的（${gatewayPort} 端口在听），常见原因是隧道进程已退出。`);
+        console.warn('   处理：关掉旧网关窗口后重新运行本脚本 —— 新版启动器会把隧道拉起，并在它断开时自动重连。');
       }
-    }
-    if (stableHost && autoTunnel) {
-      console.log('💡 已有网关进程不负责隧道进程。若公网地址打不开，请关掉旧网关窗口后重新运行本脚本。');
     }
     console.log('💡 提示: 网关服务已在后台常驻。随时按 Ctrl+C 可退出此查看窗口。\n');
     // 保持挂起，等待用户扫码或按 Ctrl+C
