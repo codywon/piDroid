@@ -77,11 +77,22 @@
 3. 终端将输出一个带有高熵密钥的安全配对二维码。
 
 #### （可选）开启公网外网访问：
-如果要在外面（蜂窝网络或离开家）访问，使用免费免配置的 Cloudflare Quick Tunnel：
+
+默认通道是**自建 frp 隧道**（TCP 直连，公网地址固定）：配好 `frpc.toml` 后直接
+`npm start` 或用 `start-server.bat`，启动器会把公网地址推导出来并写进配对二维码。
+部署步骤见 [docs/FRP_TUNNEL.md](docs/FRP_TUNNEL.md)。
+
+不想自建服务器时，也可以走 Cloudflare：
+
 ```bash
+# 免配置的临时隧道（每次重启换域名）
 cloudflared tunnel --url http://127.0.0.1:4100
+
+# 或直接交给启动器（命名隧道优先）
+node server/launcher.js --tunnel
 ```
-把生成的临时域名传给环境变量：
+
+把生成的临时域名传给环境变量（临时隧道才需要）：
 ```bash
 set TUNNEL_URL=https://your-tunnel-name.trycloudflare.com
 node gateway.js
@@ -89,8 +100,8 @@ node gateway.js
 终端将自动生成带有外网安全域名的配对二维码！
 
 > ⚠️ Quick Tunnel 每次重启都会换一个随机域名，二维码随之失效。
-> 想做到「扫码一次、长期可用」，请按 [docs/PERMANENT_TUNNEL.md](docs/PERMANENT_TUNNEL.md)
-> 配置固定域名的 Cloudflare Named Tunnel。
+> 想做到「扫码一次、长期可用」，推荐 [docs/FRP_TUNNEL.md](docs/FRP_TUNNEL.md)（frp，默认）
+> 或 [docs/PERMANENT_TUNNEL.md](docs/PERMANENT_TUNNEL.md)（Cloudflare 命名隧道）。
 >
 > 🔐 安全加固路线（Access + Service Token、Tailscale、WAF）与取舍记录见
 > [docs/SECURITY_UPGRADES.md](docs/SECURITY_UPGRADES.md)。

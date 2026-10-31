@@ -1,5 +1,10 @@
 # 固定公网地址（一次扫码，长期可用）
 
+> **通道定位**：默认公网通道已改为自建 frp，见 [FRP_TUNNEL.md](FRP_TUNNEL.md)。
+> 本文描述的是 **Cloudflare 通道（可选）** —— 只有 `node launcher.js --tunnel`
+> 或 `start-server-tunnel.bat` 才会走这里。两者都能做到「扫码一次长期可用」，
+> 区别在网络路径（见两份文档开头的对比表）。
+
 ## 为什么以前每次重启都要重新扫码
 
 > 现状：只要能读到 `~/.cloudflared/config.yml` 里指向网关端口的 ingress，
