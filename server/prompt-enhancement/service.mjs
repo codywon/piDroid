@@ -22,6 +22,9 @@ export const CAPABILITY_VERSION = 1;
 /** 首版明确不支持：斜杠命令与 shell 前缀不参与增强（避免改写执行语义）。 */
 const COMMAND_PREFIX_RE = /^\s*(?:\/|!\s*\S)/;
 
+/** 限流桶数量阈值：超过就在每次限流检查时顺手清理过期主体。 */
+const RATE_BUCKET_SWEEP_AT = 256;
+
 function codePoints(text) {
   return Array.from(text).length;
 }
@@ -138,7 +141,20 @@ export function createEnhancementService({ modelClient, config = readEnhancement
     }
     bucket.push(at);
     rateBuckets.set(subject, bucket);
+    sweepRateBuckets(windowStart);
     return true;
+  }
+
+  /**
+   * 限流桶按「授权头哈希」分桶：Token 轮换、多台设备试连都会留下永不回访的键。
+   * 键本身很小，但没有上界的 Map 在长期运行的网关上就是慢泄漏；超过阈值时
+   * 顺手扫一遍，把整桶都已过窗的键删掉（活跃主体不受影响）。
+   */
+  function sweepRateBuckets(windowStart) {
+    if (rateBuckets.size <= RATE_BUCKET_SWEEP_AT) return;
+    for (const [key, stamps] of rateBuckets) {
+      if (!stamps.some((ts) => ts > windowStart)) rateBuckets.delete(key);
+    }
   }
 
   /**
