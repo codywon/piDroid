@@ -27,6 +27,8 @@ import com.pi.app.network.DynamicModelCatalog
 import com.pi.app.network.GatewayErrorClassifier
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
+import com.pi.app.network.PromptRecovery
+import com.pi.app.network.PromptRecoveryPolicy
 import com.pi.app.network.RecalledPrompts
 import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
@@ -906,12 +908,25 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 kotlinx.coroutines.delay(2_500L)
                 if (currentSession?.id != sessionId) return@launch
-                val state = apiClient.getAgentState(sessionId).getOrNull()
-                if (state?.running == true) return@launch
+                // 探测失败 ≠ 没送达：隧道/网关回错误页时两个探测会同时失败，
+                // 此时只补一次快照对账并保留气泡（pi-web 的 waitForPromptSettlement 同样只在
+                // 拿到服务端状态后才下结论），绝不把「问不到」当成「没发出去」。
+                val state = apiClient.getAgentState(sessionId)
+                val running = state.getOrNull()?.running
+                if (running == true) return@launch
+                if (running == null) {
+                    syncSnapshotCallback?.invoke(sessionId)
+                    return@launch
+                }
                 // 运行态可能刚好在中间结束：再对一次正文，避免把已经落盘的提问当失败
-                val lastUserText = apiClient.getSessionDetail(sessionId).getOrNull()?.messages
+                val detail = apiClient.getSessionDetail(sessionId)
+                val lastUserText = detail.getOrNull()?.messages
                     ?.lastOrNull { it.role == MessageRole.USER }?.content?.trim()
                 if (lastUserText != null && lastUserText == prompt.trim()) return@launch
+                if (detail.isFailure) {
+                    syncSnapshotCallback?.invoke(sessionId)
+                    return@launch
+                }
                 onNotDelivered()
             }
         }
@@ -921,8 +936,15 @@ class MainActivity : ComponentActivity() {
             completionSettleJob = lifecycleScope.launch {
                 kotlinx.coroutines.delay(delayMs)
                 if (isAutoRetrying || isToolExecuting) return@launch
-                val stillRunning = apiClient.getAgentState(sessionId).getOrNull()?.running ?: false
-                if (stillRunning || isAutoRetrying || isToolExecuting) return@launch
+                // 探不到状态 ≠ 跑完了：旧实现 `?: false` 把隧道 404/网关 502 当成「已结束」，
+                // 于是界面在任务还在跑时翻回空闲态（发送箭头又出现 → 下一次发送必然被内核拒掉）。
+                // pi-web 的 reconcileAgentState 同样只在拿到服务端状态后才改运行态。
+                val state = apiClient.getAgentState(sessionId).getOrNull()
+                if (state == null) {
+                    syncSnapshotCallback?.invoke(sessionId)
+                    return@launch
+                }
+                if (state.running || isAutoRetrying || isToolExecuting) return@launch
                 completeAgentSessionRun(sessionId, syncSnapshot = true)
             }
         }
@@ -2698,6 +2720,7 @@ class MainActivity : ComponentActivity() {
                                 .onFailure { err ->
                                     // 区分「确定没收到」与「回执丢了」：
                                     // 前者退还草稿，后者只标记未确认并等对账，绝不自动重发（#1432）。
+                                    // 判定与 pi-web 的 `definitivelyRejected` 一致，见 [PromptRecoveryPolicy]。
                                     val missingCwd = (err as? AgentCommandException)?.missingCwd
                                     if (missingCwd != null) {
                                         messages.removeAll { it.id == optimisticId }
@@ -2709,16 +2732,12 @@ class MainActivity : ComponentActivity() {
                                         ).show()
                                         return@onFailure
                                     }
-                                    if (err is AgentCommandException) {
-                                        // 服务端明确拒收：消息没进去，正文与附件原样退还输入框
+                                    if (PromptRecoveryPolicy.of(err) == PromptRecovery.DEFINITELY_REJECTED) {
+                                        // 服务端明确拒收：消息没进去，正文与附件原样退还输入框。
+                                        // 运行态一律不动：这一轮在跑的是别的消息，本地无权把它判成空闲
+                                        // （旧实现顺手清 isAgentBusy / 阶段文案，界面会变成「消息没了但停止按钮还在」）。
                                         messages.removeAll { it.id == optimisticId }
                                         onSubmissionRestore?.invoke()
-                                        if (currentSession?.id == sid) {
-                                            isAgentBusy = messages.isNotEmpty() && messages.last().isStreaming
-                                            agentPhaseLabel = null
-                                            keepAliveManager.releaseWakeLock()
-                                            syncPersistentForegroundService(isBusy = false, project = currentProject)
-                                        }
                                         Toast.makeText(
                                             this@MainActivity,
                                             "发送失败，已退回输入框：${err.message ?: "未知错误"}",
@@ -2726,7 +2745,7 @@ class MainActivity : ComponentActivity() {
                                         ).show()
                                         return@onFailure
                                     }
-                                    // 传输层异常（超时 / 连接断 / 代理回了非 JSON）：服务端可能已收了。
+                                    // 传输层异常（超时 / 连接断 / 隧道与 nginx 的错误页）：服务端可能已收了。
                                     Toast.makeText(
                                         this@MainActivity,
                                         "发送结果未确认，正在核对…",
@@ -3197,6 +3216,16 @@ class MainActivity : ComponentActivity() {
                                 olderMessages = emptyList()
                                 hasEarlierOnServer = false
                                 earlierTurnCount = 0
+                                // 新会话是全新的界面：上一场会话的运行态/在途身份/阶段文案必须跟着清，
+                                // 否则新会话顶部会盖着旧会话的「正在执行 xxx」+ 停止按钮，看起来
+                                // 就像「我刚发的消息已经在跑了」（pi-web 新建会话时 agentRunning 也是 false）。
+                                streamingMessageId = null
+                                isAgentBusy = false
+                                isAutoRetrying = false
+                                isToolExecuting = false
+                                agentPhaseLabel = null
+                                queuedMessages.clear()
+                                hasNotifiedCompletionForCurrentRun = true
                                 startListeningEvents(realSessionId)
                                 loadSessions(silent = true)
                             }.onFailure { err ->

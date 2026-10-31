@@ -69,6 +69,45 @@ class PromptSubmissionTest {
     }
 
     @Test
+    fun `only pi prompt rejection is treated as definitively rejected`() {
+        // pi 内核拒收（例如运行中发了裸 prompt）会回 code=prompt_rejected / accepted=false
+        val rejected = AgentCommandPayload.failureOf(
+            """{"error":"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.","code":"prompt_rejected","accepted":false}""",
+            500
+        )
+        Assert.assertEquals(PromptRecovery.DEFINITELY_REJECTED, PromptRecoveryPolicy.of(rejected))
+
+        // 会话目录已不存在：服务端点名了原因，也是确定没送达
+        val missingCwd = AgentCommandPayload.failureOf(
+            """{"error":"Directory does not exist: /tmp/gone","reason":"cwd-missing","cwd":"/tmp/gone"}""",
+            400
+        )
+        Assert.assertEquals(PromptRecovery.DEFINITELY_REJECTED, PromptRecoveryPolicy.of(missingCwd))
+    }
+
+    @Test
+    fun `proxy error pages and transport failures stay unconfirmed`() {
+        // frp 隧道离线时用它自己的 HTML 404 页应答每个路径：正文不是 pi 的 JSON，
+        // 既没有 code 也没有 accepted，绝不能当成“服务端拒收”把气泡撤掉。
+        val tunnel404 = AgentCommandPayload.failureOf(
+            "<html><body>404 page not found</body></html>",
+            404
+        )
+        Assert.assertEquals("HTTP 404", tunnel404.message)
+        Assert.assertEquals(PromptRecovery.UNCONFIRMED, PromptRecoveryPolicy.of(tunnel404))
+
+        // 其余带状态码的失败（nginx 502 / pi-web 未启动）同样只能是对账，不能当拒收
+        val gateway502 = AgentCommandPayload.failureOf("", 502)
+        Assert.assertEquals(PromptRecovery.UNCONFIRMED, PromptRecoveryPolicy.of(gateway502))
+
+        // 纯传输层异常（超时 / 连接断）也属于结果未知
+        Assert.assertEquals(
+            PromptRecovery.UNCONFIRMED,
+            PromptRecoveryPolicy.of(java.net.SocketTimeoutException("timeout"))
+        )
+    }
+
+    @Test
     fun `lease payload parses flags correctly`() {
         val active = """{"success":true,"running":true,"awaitingInput":false,"subagentsActive":true}"""
         val reply = SessionLeasePayload.of(active)

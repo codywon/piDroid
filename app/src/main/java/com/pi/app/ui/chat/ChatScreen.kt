@@ -521,6 +521,19 @@ fun ChatScreen(
 
     fun submitMessage(rawText: String, kind: SendKind) {
         val currentEditId = editingEntryId
+        // 运行中不能发「裸 prompt」（「从此处编辑」例外，它有自己更准确的提示）：pi 内核会直接拒掉
+        // （"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp')"），
+        // 那种提交只会白播一次乐观气泡再把正文退回来。pi-web 在运行中同样只给
+        // 「引导 / 排队」两条路（发送键就是停止键），所以这里直接拦住并指向正确按钮。
+        // 注：忙碌时发送箭头本来就不渲染（见输入行右侧），这条只是兵底，防运行态瞬移。
+        if (kind == SendKind.SEND && isAgentBusy && currentEditId.isNullOrBlank()) {
+            android.widget.Toast.makeText(
+                context,
+                "任务执行中：请用上方的引导 / 排队按钮，或先停止本轮",
+                android.widget.Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         editingEntryId = null
         // 发送就把「本次增强」的撤销点作废：后面用户改的是新内容，不能被旧撤销覆盖。
         enhancementUndo = null

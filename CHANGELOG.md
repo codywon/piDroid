@@ -2,6 +2,29 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.79] - 2026-11-01
+
+### 🩹 发送失败不再让消息凭空消失，界面也不再假报「空闲」
+
+- **根因**：`onSendMessage` 把「任何 `AgentCommandException`」都当成「服务端明确拒收」，于是隧道
+  切换那一秒 frp 用它自己的 HTML 404 页应答的那批请求，全被当成「消息没进去」：乐观气泡被撤掉、
+  正文退回输入框，屏幕上只剩上一轮还在跑的「正在执行 ctx_execute…」——看起来就像「我的消息发了、
+  任务在跑、但气泡不见了」。同一分支还顺手把 `isAgentBusy` / 阶段文案清成空闲，于是停止按钮与
+  发送箭头来回跳。
+- **失败判定对齐 pi-web**（新增 `PromptRecoveryPolicy`，纯 JVM + 单测）：只有 pi 自己的
+  `{"code":"prompt_rejected","accepted":false}`（例如内核在运行中拒绝普通 prompt）与
+  `reason:"cwd-missing"` 才算「确定没送达」；HTML 404 / 502 / 超时一律降级为「结果未知」，
+  保留气泡并走 `settleUnconfirmedPrompt` 对账，绝不误撤、也绝不自动重发。
+- **运行态归服务端所有**：被拒的提交不再修改 `isAgentBusy` / `agentPhaseLabel` / 唤醒锁。
+- **探不到状态不再当「跑完了」**：`scheduleAgentCompletionSettle` 与 `settleUnconfirmedPrompt`
+  在 `GET /api/agent/{id}` 失败时只补一次快照对账，把收尾判定交给下一轮成功探测（旧实现
+  `?: false` 会在网络抖动时把正在跑的回合判成结束，骗出那个注定被内核拒掉的发送箭头）。
+- **运行中禁止发裸 prompt**：`submitMessage(SEND)` 在忙碌时直接指向「引导 / 排队」（pi 内核会
+  拒绝 `streamingBehavior` 缺省的 prompt；pi-web 在运行中也只给这两条路）。
+- **新建任务不再继承旧会话的运行态**：`onNewSessionClick` 一并清空 `streamingMessageId` /
+  `isAgentBusy` / `isAutoRetrying` / `isToolExecuting` / 阶段文案 / 排队列表，新会话头顶不会
+  再盖着上一场的「正在执行 xxx」。
+
 ## [1.7.78] - 2026-11-01
 
 ### ✨ 提示词增强体验与 Prompt 深度全面升级（废除微修保守策略）
