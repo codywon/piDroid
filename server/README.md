@@ -35,6 +35,60 @@ node launcher.js --no-pi-web
 
 ---
 
+## 🪟 开机自启（Windows 计划任务，无窗口）
+
+默认公网通道是 frp，但它需要网关常驻，所以「自启动」= 让**整条链路**登录后自己起来；
+只单独跑一个 frpc 没有意义（网关不在，隧道通了也是 502）。
+
+一次性注册（以当前用户身份运行、只在登录时启动）：
+
+```powershell
+$name = 'piDroid Gateway (frp)'
+$repo = 'D:\myscript\pi-app'
+$action   = New-ScheduledTaskAction -Execute 'wscript.exe' `
+              -Argument ('"' + (Join-Path $repo 'server\start-hidden.vbs') + '"') `
+              -WorkingDirectory (Join-Path $repo 'server')
+$trigger  = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+$trigger.Delay = 'PT20S'                       # 等网络就绪
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+              -StartWhenAvailable -MultipleInstances IgnoreNew
+$settings.ExecutionTimeLimit = 'PT0S'          # 默认 3 天会砍掉，必须关
+Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings -Force
+```
+
+| 文件 | 作用 |
+| --- | --- |
+| `start-hidden.vbs` | `Run(..., 0, True)` 隐藏窗口启动，并把退出码交回计划任务（任务因此显示 Running 而不是瞬间"成功"） |
+| `start-hidden.cmd` | 真正的守护：切目录 → 轮转日志 → 补依赖 → **单实例守卫** → `launcher.js` 退出后 5 秒重试 |
+| `stop-gateway.ps1` / `.cmd` | 按命令行匹配杀掉整棵树；只碰 `node/cmd/wscript/frpc`，不误伤其它隧道 |
+
+重启后若 30141 上没有 pi-web，`launcher.js` 会自己把它拉起来，无需另外的自启项。
+
+### 日常操作
+
+```bat
+schtasks /Run  /TN "piDroid Gateway (frp)"    :: 启动
+server\stop-gateway.cmd                       :: 停止（唯一可靠的停止方式）
+schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
+```
+
+日志：`server\logs\gateway.log`（超过 5 MB 时轮转为 `.log.1`）。
+
+### 三个坑（都是实测踩出来的）
+
+1. **`schtasks /End` 停不干净**：Task Scheduler 只结束动作进程（wscript），
+   `cmd → node → frpc` 会变成孤儿继续占着 4100，而任务状态显示已停止。
+   所以提供 `stop-gateway`，同时启动脚本带单实例守卫，重复触发不会起第二份。
+2. **`timeout /t` 不能当退避**：它需要交互式控制台；计划任务里 stdin 是重定向的，
+   会立即返回，循环退化成热转。改用 `ping -n N 127.0.0.1 >nul`。
+3. **`.cmd` / `.vbs` 只能写 ASCII**：cmd 与 wscript 按 OEM 代码页读文件，
+   UTF-8 中文注释会乱码，甚至把注释当命令执行——第一次试就是被这个坑到的。
+   `.gitattributes` 已固定 `*.cmd` / `*.vbs` 为 CRLF。
+
+> 取消开机自启：`Unregister-ScheduledTask -TaskName 'piDroid Gateway (frp)' -Confirm:$false`
+
+---
+
 ## 🛠️ CLI 命令行参数
 
 ```text
