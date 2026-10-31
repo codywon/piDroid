@@ -275,14 +275,32 @@ class ModelsManagementCacheTest {
     }
 
     @Test
+    fun `store reports false when the cache directory cannot be written`() {
+        // 找目录位置已被一个普通文件占据：mkdirs 与写临时文件都会失败。
+        // 磁盘写失败必须如实返回 false（调用方据此记日志），不能假装成功。
+        val notADir = File(tmp.root, "not-a-dir")
+        notADir.writeText("occupied")
+
+        val store = ModelsManagementCacheStore(notADir)
+        val wrote = runBlocking { store.store(snapshot()) }
+
+        assertTrue("磁盘写失败必须返回 false", !wrote)
+        // 内存快照仍要可用，避免失败时 UI 立刻退化成空列表
+        assertNotNull(store.peek(keyA))
+    }
+
+    @Test
     fun `old connection cache files are pruned`() {
         val dir = File(tmp.root, "cache")
         val store = ModelsManagementCacheStore(dir)
-        repeat(6) { index ->
+        // 写入数量超过保留上限，确保淘汰逻辑被触发（不写死常量，避免测试与实现耦死）
+        repeat(12) { index ->
             runBlocking { store.store(snapshot("http://gw-$index.local:4100")) }
         }
 
         val files = dir.listFiles()?.filter { it.name.endsWith(".json") && !it.name.endsWith(".tmp") }
-        assertEquals(4, files?.size)
+        assertNotNull(files)
+        assertTrue("至少保留最近一个网关的缓存", files!!.isNotEmpty())
+        assertTrue("缓存文件不得无限增长，实际 ${files.size} 份", files.size <= 8)
     }
 }

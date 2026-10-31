@@ -1366,7 +1366,13 @@ class PiApiClient(private val prefs: AppPreferences) {
     private suspend fun getDynamicModelsInternal(
         baseUrl: String,
         preFetchedConfig: JsonObject?,
-        preFetchedAuth: Map<String, ProviderAuthState>?
+        preFetchedAuth: Map<String, ProviderAuthState>?,
+        // 目录为空时是否回退到硬编码默认目录。只给模型选择器用：
+        // 模型管理页必须如实反映网关目录（可能真的为空），不允许凭空造模型
+        fallbackToDefaultCatalog: Boolean = true,
+        // 是否把服务端默认模型/思考档位写回 App 全局偏好。只读同步路径必须传 false，
+        // 否则开一次模型管理页就会悄悄改掉用户的全局默认模型
+        applyServerDefaults: Boolean = true
     ): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
@@ -1424,19 +1430,25 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val mId = dObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString ?: ""
                     if (prov.isNotBlank() && mId.isNotBlank()) {
                         defaultModelRef = DefaultModelRef(provider = prov, modelId = mId)
-                        prefs.defaultProvider = prov
-                        prefs.defaultModelId = mId
+                        if (applyServerDefaults) {
+                            prefs.defaultProvider = prov
+                            prefs.defaultModelId = mId
+                        }
                     }
                 }
                 val defaultThinking = json.get("defaultThinkingLevel")?.takeIf { !it.isJsonNull }?.asString
-                if (!defaultThinking.isNullOrBlank()) {
+                if (applyServerDefaults && !defaultThinking.isNullOrBlank()) {
                     prefs.defaultThinkingLevel = defaultThinking
                 }
 
                 // 同时拉取 /api/models-config (models.json) 与本地保存的模型参数覆盖，确保用户修改的 contextWindow 等参数100%生效且不回退
                 val serverModelsConfig = preFetchedConfig ?: fetchServerModelsConfigObject(baseUrl)
                 val baseCatalog = DynamicModelCatalog(
-                    models = models.ifEmpty { getDefaultCatalog().models },
+                    models = if (fallbackToDefaultCatalog) {
+                        models.ifEmpty { getDefaultCatalog().models }
+                    } else {
+                        models
+                    },
                     thinkingLevelsMap = levelsMap,
                     defaultModel = defaultModelRef,
                     defaultThinkingLevel = defaultThinking
@@ -1474,8 +1486,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val fallback = sameId ?: finalModels.firstOrNull()
                     if (fallback != null) {
                         effectiveDefault = DefaultModelRef(provider = fallback.provider, modelId = fallback.id)
-                        prefs.defaultProvider = fallback.provider
-                        prefs.defaultModelId = fallback.id
+                        if (applyServerDefaults) {
+                            prefs.defaultProvider = fallback.provider
+                            prefs.defaultModelId = fallback.id
+                        }
                     } else {
                         effectiveDefault = null
                     }
@@ -4091,7 +4105,14 @@ data class CatalogPreset(
             val freshAuth = authResult.getOrNull()
             // 目录要判断「provider 是否还活着」，凭据拉取失败时用上次的有效值，避免多请求一次
             val effectiveAuth = freshAuth ?: previous?.authStates ?: emptyMap()
-            val catalogResult = getDynamicModelsInternal(baseUrl, rootObj, effectiveAuth)
+            // 只读同步：既不回退硬编码目录，也不改动 App 全局默认模型偏好
+            val catalogResult = getDynamicModelsInternal(
+                baseUrl = baseUrl,
+                preFetchedConfig = rootObj,
+                preFetchedAuth = effectiveAuth,
+                fallbackToDefaultCatalog = false,
+                applyServerDefaults = false
+            )
 
             // 请求期间用户切了网关：这批结果属于上一台机器
             if (connectionKey() != key) {
@@ -4133,7 +4154,9 @@ data class CatalogPreset(
                 authStates = base.authStates,
                 catalogModels = base.catalogModels
             )
-            modelsManagementCache.store(merged.data)
+            if (!modelsManagementCache.store(merged.data)) {
+                Log.w("PiApiClient", "模型管理快照写穿失败（内存已更新，重启后会回到旧快照）")
+            }
         }
     }
 
@@ -4326,7 +4349,7 @@ data class CatalogPreset(
         if (baseUrl.isBlank()) return@withContext Result.success(true)
         try {
             val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
-                ?: return@withContext Result.success(true)
+                ?: return@withContext Result.failure(IOException("读取网关 models.json 失败，删除未生效"))
             val rootConfig = fetched.config
             if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
                 val providersObj = rootConfig.getAsJsonObject("providers")
@@ -4361,8 +4384,11 @@ data class CatalogPreset(
             }
             sanitizeAndHealModelsConfig(rootConfig)
             val ok = putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
-            // 只有服务端确实写入成功才更新本地缓存；否则下次同步又会把「删掉的」模型带回来
-            if (ok) writeThroughLocalConfig(baseUrl, rootConfig)
+            // 服务端没写成功就不能报成功：否则界面显示「已删除」，下次同步模型又回来了
+            if (!ok) {
+                return@withContext Result.failure(IOException("网关上删除未生效，本地缓存未改动"))
+            }
+            writeThroughLocalConfig(baseUrl, rootConfig)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)

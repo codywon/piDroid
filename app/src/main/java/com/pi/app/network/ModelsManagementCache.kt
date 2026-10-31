@@ -14,6 +14,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.security.MessageDigest
 
 /** URL 路径区分大小写；只移除首尾空白与末尾斜杠，避免不同网关共享配置缓存。 */
 internal fun modelsManagementConnectionKey(baseUrl: String): String =
@@ -29,6 +30,10 @@ internal fun modelsManagementConnectionKey(baseUrl: String): String =
  *   切换网关后不会读到上一台机器的配置。
  * @param catalogModels 网关 `/api/models` 的模型列表；`null` 表示「从未成功获取过目录」，
  *   与「成功获取但为空」严格区分，绝不凭空伪造模型。
+ *
+ * 注意：`rootConfig` 是 [JsonObject]（可变、且 equals 按引用比较），所以本类型的
+ * `equals` / `hashCode` 只适合诊断，不要用于业务判等（变化判定请看 `providers`）。
+ * 构造快照时会 `deepCopy`，避免调用方之后改动同一个 JsonObject 而静默改掉快照。
  */
 data class ModelsManagementData(
     val connectionKey: String,
@@ -73,7 +78,8 @@ internal fun mergeModelsManagementSnapshot(
     return ModelsManagementSyncResult(
         data = ModelsManagementData(
             connectionKey = connectionKey,
-            rootConfig = rootConfig,
+            // 防御性拷贝：快照不与被调用方共享同一个可变 JsonObject
+            rootConfig = rootConfig.deepCopy(),
             authStates = effectiveAuth,
             catalogModels = effectiveCatalog,
             providers = providers,
@@ -123,13 +129,17 @@ class ModelsManagementCacheStore(
         lock.withLock { localMutationSeq }
     }
 
-    /** 本地保存写穿：先递增变更序号再落盘，代表它比任何已发起的同步都新。 */
-    suspend fun store(data: ModelsManagementData) = withContext(Dispatchers.IO) {
+    /**
+     * 本地保存写穿：先递增变更序号再落盘，代表它比任何已发起的同步都新。
+     *
+     * @return 磁盘是否真的写成功。内存快照无论如何已更新，但磁盘写失败（满盘 / 无权限）
+     *   会让重启后回到旧数据，调用方不能当成「一切正常」静默吞掉。
+     */
+    suspend fun store(data: ModelsManagementData): Boolean = withContext(Dispatchers.IO) {
         lock.withLock {
             localMutationSeq++
             memory = data
-            runCatching { writeToDisk(data) }
-            Unit
+            runCatching { writeToDisk(data) }.isSuccess
         }
     }
 
@@ -139,20 +149,30 @@ class ModelsManagementCacheStore(
      * 否则「同步发起 → 用户保存 → 旧同步返回」会把用户刚保存的配置从缓存里抹掉，
      * 下次冷启动就回到保存前的状态。UI 侧另有 saveEpoch 守卫，缓存侧必须有这一道。
      *
-     * @return 是否真的写入
+     * @return 是否真的落盘。`false` 有两种含义：被更新的本地保存超越，或磁盘写入失败。
      */
     suspend fun storeSynced(data: ModelsManagementData, observedMutationSeq: Long): Boolean =
         withContext(Dispatchers.IO) {
             lock.withLock {
                 if (localMutationSeq != observedMutationSeq) return@withLock false
                 memory = data
-                runCatching { writeToDisk(data) }
-                true
+                runCatching { writeToDisk(data) }.isSuccess
             }
         }
 
+    /**
+     * 缓存文件名：用 SHA-256 前 8 字节（16 个十六进制字符）。
+     *
+     * 之前用 `String.hashCode()`（32 位），不同网关撞到同一文件名的概率实际不可忽略，
+     * 一旦撞上就会静默地把另一台机器的缓存挤掉。
+     */
     private fun cacheFile(connectionKey: String): File =
-        File(dir, "$FILE_PREFIX${Integer.toHexString(connectionKey.hashCode())}.json")
+        File(dir, "$FILE_PREFIX${stableHash(connectionKey)}.json")
+
+    private fun stableHash(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return digest.take(8).joinToString("") { "%02x".format(it) }
+    }
 
     /**
      * 读磁盘。整段用 [runCatching] 兜底：缓存只是加速层，内容再离谱
@@ -203,7 +223,12 @@ class ModelsManagementCacheStore(
         prune()
     }
 
-    /** 只保留最近几个连接的缓存，防止长期换网关后无限增长；清理中断留下的临时文件。 */
+    /**
+     * 只保留最近使用的几个连接缓存，防止长期换网关后无限增长；清理中断留下的临时文件。
+     *
+     * 淘汰依据是 `lastModified`（≈ 最近一次写入/使用）。保留 8 份而不是 4 份：
+     * 在几台机器之间轮换的用户，否则一回到旧网关就又要冷启动等一次网络。
+     */
     private fun prune() {
         val allFiles = dir.listFiles() ?: return
         val now = System.currentTimeMillis()
@@ -219,6 +244,6 @@ class ModelsManagementCacheStore(
     private companion object {
         const val CACHE_VERSION = 2
         const val FILE_PREFIX = "models_management_"
-        const val MAX_FILES = 4
+        const val MAX_FILES = 8
     }
 }

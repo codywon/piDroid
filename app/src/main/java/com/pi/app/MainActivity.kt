@@ -1950,8 +1950,13 @@ class MainActivity : ComponentActivity() {
                             apiClient.deleteCustomModel(providerName, modelId).onSuccess {
                                 Toast.makeText(this@MainActivity, "已删除模型: $modelId", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
-                            }.onFailure {
-                                Toast.makeText(this@MainActivity, "已移除模型: $modelId", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                // 已从手机本地列表移除，但网关未生效（模型会在下次同步时回来）
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "网关未生效，$modelId 仍保留在 PC 上: ${err.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                     },
