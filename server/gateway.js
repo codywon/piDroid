@@ -18,8 +18,64 @@ const TOKEN_FILE = path.join(__dirname, '.token');
 // 同时设置 PI_TUNNEL_NAME + PI_TUNNEL_HOSTNAME 后，网关不再启动临时 trycloudflare
 // 隧道，而是直接拉起已绑定自有域名的命名隧道。公网地址每次重启都相同，
 // 手机只需扫码/手动填写一次即可长期复用。
-const STABLE_TUNNEL_NAME = (process.env.PI_TUNNEL_NAME || '').trim();
-const STABLE_TUNNEL_HOSTNAME = (process.env.PI_TUNNEL_HOSTNAME || '')
+//
+// 未设环境变量时，再尝试从 `~/.cloudflared/config.yml` 自动识别：只要做过
+// `cloudflared tunnel create/route dns`，配置里就有 tunnel 名与 hostname。
+// 这很重要——Quick Tunnel 每次重启都换随机域名，手机里存的旧地址会永久失效，
+// 表现就是「一直自动重连中」而且App 自己无法自愈（它无从得知新域名）。
+function detectStableTunnelFromConfig(expectedPort) {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  if (!home) return null;
+  for (const fileName of ['config.yml', 'config.yaml']) {
+    const file = path.join(home, '.cloudflared', fileName);
+    let text;
+    try {
+      text = fs.readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    const tunnelName = (text.match(/^\s*tunnel:\s*["']?([^\s"'#]+)/m) || [])[1];
+    if (!tunnelName) continue;
+    // ingress 是「- hostname: X」紧跟「service: http://127.0.0.1:PORT」的列表，
+    // 按行配对，取第一个指向本网关端口的条目。
+    let pendingHost = null;
+    let hostname = null;
+    let targetPort = null;
+    for (const rawLine of text.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      const hostMatch = line.match(/^-?\s*hostname:\s*["']?([^\s"'#]+)/);
+      if (hostMatch) {
+        pendingHost = hostMatch[1];
+        continue;
+      }
+      const portMatch = line.match(/^service:\s*\S*?:(\d{2,5})\s*$/);
+      if (portMatch && pendingHost) {
+        if (Number(portMatch[1]) === expectedPort) {
+          hostname = pendingHost;
+          targetPort = Number(portMatch[1]);
+          break;
+        }
+        pendingHost = null;
+      }
+    }
+    if (!hostname) continue;
+    return { tunnelName, hostname, targetPort, file: fileName };
+  }
+  return null;
+}
+
+// 网关端口先算出来：自动识别命名隧道时要用它做匹配，避免把指向别的服务的域名配上去。
+const EXPECTED_GATEWAY_PORT = (() => {
+  const fromEnv = Number(process.env.GATEWAY_PORT);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
+  const idx = process.argv.indexOf('--port');
+  const fromArg = idx !== -1 ? Number(process.argv[idx + 1]) : NaN;
+  return Number.isFinite(fromArg) && fromArg > 0 ? fromArg : 4100;
+})();
+
+const detectedTunnel = detectStableTunnelFromConfig(EXPECTED_GATEWAY_PORT);
+const STABLE_TUNNEL_NAME = (process.env.PI_TUNNEL_NAME || detectedTunnel?.tunnelName || '').trim();
+const STABLE_TUNNEL_HOSTNAME = (process.env.PI_TUNNEL_HOSTNAME || detectedTunnel?.hostname || '')
   .trim()
   .replace(/^https?:\/\//i, '')
   .replace(/\/+$/, '');

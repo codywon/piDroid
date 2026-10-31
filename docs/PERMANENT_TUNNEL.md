@@ -24,6 +24,21 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 
 ---
 
+## 0. 现在默认就是固定域名（无需环境变量）
+
+`server/gateway.js` 会读取 `%USERPROFILE%\.cloudflared\config.yml`：
+
+- 取 `tunnel:` 指向的隧道名（或 UUID）；
+- 只在 ingress 中找出 **`service` 端口等于网关端口（默认 4100）** 的那个 `hostname`。
+
+两者都拿到时，`start-server-tunnel.bat` 直接拉起这条命名隧道，公网地址恒为
+`https://<该 hostname>`，手机扫码一次即可长期使用。只有 `config.yml` 缺失、
+或其中没有指向网关端口的 ingress 时，才回退到 Quick Tunnel。
+
+> 回退到 Quick Tunnel 时，**每次重启地址都会变**，手机端只会表现为
+> 「一直自动重连中」——App 无法自愈，因为它无从得知新地址。遇到这个现象：
+> 先确认 `cloudflared` 的 `config.yml` 是否指向 4100，再重新扫码。
+
 ## 方案一（推荐）：Cloudflare Named Tunnel + 自有域名
 
 Cloudflare 的「命名隧道」把一条隧道绑定到你自己域名下的固定主机名，免费额度足够个人使用。
