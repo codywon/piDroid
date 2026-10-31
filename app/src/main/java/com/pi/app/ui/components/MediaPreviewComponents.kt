@@ -829,10 +829,15 @@ private fun PdfThumbnailCard(
         val bytes = resolveMediaBytes(attachment, gateway)
         if (bytes != null && bytes.isNotEmpty()) {
             val rendered = withContext(Dispatchers.IO) {
+                // PdfRenderer 只认文件描述符，所以必须先把字节落盘。用唯一临时文件，
+                // 并在 finally 里删掉：以前固定文件名且从不清理，浏览过多少 PDF 就会
+                // 在 cacheDir 里攒下多少份副本。
+                var tempFile: File? = null
                 try {
-                    val tempFile = File(context.cacheDir, "pdf_preview_${attachment.id.hashCode()}.pdf")
-                    tempFile.writeBytes(bytes)
-                    ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
+                    val file = File.createTempFile("pdf_preview_", ".pdf", context.cacheDir)
+                    tempFile = file
+                    file.writeBytes(bytes)
+                    ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                         PdfRenderer(pfd).use { renderer ->
                             val count = renderer.pageCount
                             if (count > 0) {
@@ -849,6 +854,8 @@ private fun PdfThumbnailCard(
                     }
                 } catch (_: Exception) {
                     null
+                } finally {
+                    tempFile?.let { runCatching { it.delete() } }
                 }
             }
             if (rendered != null) {

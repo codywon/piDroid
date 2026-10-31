@@ -101,14 +101,17 @@ object PiSoundSynthesizer {
                     )
                 }
 
-                track.write(pcmBuffer, 0, pcmBuffer.size)
-                track.play()
-
-                Thread.sleep(700)
                 try {
-                    track.stop()
-                    track.release()
-                } catch (_: Exception) {}
+                    track.write(pcmBuffer, 0, pcmBuffer.size)
+                    track.play()
+
+                    Thread.sleep(700)
+                } finally {
+                    // 播放被中断 / write 抛异常时也必须释放：AudioTrack 是有限的系统资源，
+                    // 旧实现只在正常路径上 stop+release，异常路径会漏一个未释放的 track。
+                    runCatching { track.stop() }
+                    runCatching { track.release() }
+                }
             } catch (_: Exception) {
                 try {
                     val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)

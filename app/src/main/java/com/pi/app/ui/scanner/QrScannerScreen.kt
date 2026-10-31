@@ -33,10 +33,48 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.pi.app.ui.theme.LocalAppTheme
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+
+/**
+ * 扫码页需要显式回收的资源：分析线程池、MLKit 解码器、相机绑定。
+ *
+ * Compose 离开页面时不会替你释放这三样，以前每进一次扫码页就多留一个线程和一个
+ * 检测器（含其 Native 句柄）。统一挂在这里，由 DisposableEffect 回收；
+ * 相机初始化是异步的，所以释放后再回调回来要能识别并直接跳过。
+ */
+private class QrScannerResources {
+    @Volatile
+    var released: Boolean = false
+        private set
+
+    private var executor: ExecutorService? = null
+    private var scanner: BarcodeScanner? = null
+    private var provider: ProcessCameraProvider? = null
+
+    fun attach(executor: ExecutorService, scanner: BarcodeScanner) {
+        this.executor = executor
+        this.scanner = scanner
+    }
+
+    fun attach(provider: ProcessCameraProvider) {
+        this.provider = provider
+    }
+
+    fun release() {
+        released = true
+        runCatching { provider?.unbindAll() }
+        provider = null
+        runCatching { scanner?.close() }
+        scanner = null
+        runCatching { executor?.shutdownNow() }
+        executor = null
+    }
+}
 
 @Composable
 fun QrScannerScreen(
@@ -49,6 +87,13 @@ fun QrScannerScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     var isProcessing by remember { mutableStateOf(false) }
+    val scannerResources = remember { QrScannerResources() }
+
+    // 离开扫码页（返回、配对成功、转场）时释放线程池与解码器；
+    // 不释放的话每次进来都会多一个常驻线程。
+    DisposableEffect(scannerResources) {
+        onDispose { scannerResources.release() }
+    }
 
     fun parseAndHandleQrCode(rawValue: String): Boolean {
         val trimmed = rawValue.trim()
@@ -118,6 +163,10 @@ fun QrScannerScreen(
                 .addOnFailureListener { e ->
                     Toast.makeText(context, "解析图片失败: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
+                .addOnCompleteListener {
+                    // 相册识别用的解码器是一次性的，任务结束后必须关闭
+                    runCatching { scanner.close() }
+                }
         } catch (e: Exception) {
             Toast.makeText(context, "读取图片异常: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
         }
@@ -131,9 +180,13 @@ fun QrScannerScreen(
                 val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
                 val cameraExecutor = Executors.newSingleThreadExecutor()
                 val barcodeScanner = BarcodeScanning.getClient()
+                scannerResources.attach(cameraExecutor, barcodeScanner)
 
                 cameraProviderFuture.addListener({
+                    // 相机初始化是异步的：页面可能已经关掉了，这时不能再绑定
+                    if (scannerResources.released) return@addListener
                     val cameraProvider = cameraProviderFuture.get()
+                    scannerResources.attach(cameraProvider)
                     val preview = Preview.Builder().build().also {
                         it.surfaceProvider = previewView.surfaceProvider
                     }

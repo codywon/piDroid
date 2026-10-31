@@ -29,6 +29,18 @@ class VoiceInputManager(private val context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var silenceTimeoutRunnable: Runnable? = null
 
+    /**
+     * `onEndOfSpeech` 派发的延迟提交任务。
+     *
+     * 它以前是个匿名 Runnable，外部拿不到也取消不了：用户在 1 秒内取消并重新开始识别时，
+     * 旧任务会把**新一轮**的部分文字当成上一轮结果提交。现在保存引用，并配合
+     * [recognitionGeneration] 双重防护。
+     */
+    private var endOfSpeechCommitRunnable: Runnable? = null
+
+    /** 识别轮次：旧轮次派发的延迟任务一律作废。 */
+    private var recognitionGeneration = 0
+
     init {
         initRecognizer()
     }
@@ -56,11 +68,17 @@ class VoiceInputManager(private val context: Context) {
 
                     override fun onEndOfSpeech() {
                         // 语音说话停顿，主动在 1 秒后自动提交
-                        mainHandler.postDelayed({
+                        cancelEndOfSpeechCommit()
+                        val generation = recognitionGeneration
+                        val commit = Runnable {
+                            endOfSpeechCommitRunnable = null
+                            if (generation != recognitionGeneration) return@Runnable
                             if (currentPartialText.isNotBlank()) {
                                 _state.value = VoiceInputState.FinalResult(currentPartialText)
                             }
-                        }, 1000)
+                        }
+                        endOfSpeechCommitRunnable = commit
+                        mainHandler.postDelayed(commit, 1000)
                     }
 
                     override fun onError(error: Int) {
@@ -90,6 +108,7 @@ class VoiceInputManager(private val context: Context) {
 
                     override fun onResults(results: Bundle?) {
                         cancelSilenceTimer()
+                        cancelEndOfSpeechCommit()
                         val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                         val text = matches?.firstOrNull() ?: currentPartialText
                         currentPartialText = ""
@@ -129,12 +148,22 @@ class VoiceInputManager(private val context: Context) {
         }
     }
 
+    private fun cancelEndOfSpeechCommit() {
+        endOfSpeechCommitRunnable?.let {
+            mainHandler.removeCallbacks(it)
+            endOfSpeechCommitRunnable = null
+        }
+    }
+
     fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(context)) {
             _state.value = VoiceInputState.Error("当前设备未内置系统语音识别服务")
             return
         }
         currentPartialText = ""
+        cancelEndOfSpeechCommit()
+        // 新一轮识别：旧轮次的延迟提交即使已入队也不能再生效
+        recognitionGeneration += 1
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
@@ -155,6 +184,8 @@ class VoiceInputManager(private val context: Context) {
      */
     fun stopListening() {
         cancelSilenceTimer()
+        cancelEndOfSpeechCommit()
+        recognitionGeneration += 1
         try {
             speechRecognizer?.stopListening()
         } catch (_: Exception) {}
@@ -170,6 +201,8 @@ class VoiceInputManager(private val context: Context) {
 
     fun cancel() {
         cancelSilenceTimer()
+        cancelEndOfSpeechCommit()
+        recognitionGeneration += 1
         currentPartialText = ""
         try {
             speechRecognizer?.cancel()
@@ -179,6 +212,8 @@ class VoiceInputManager(private val context: Context) {
 
     fun destroy() {
         cancelSilenceTimer()
+        cancelEndOfSpeechCommit()
+        recognitionGeneration += 1
         try {
             speechRecognizer?.destroy()
         } catch (_: Exception) {}
