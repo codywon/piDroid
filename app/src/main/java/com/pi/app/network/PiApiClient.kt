@@ -646,8 +646,12 @@ class PiApiClient(private val prefs: AppPreferences) {
         try {
             val encBefore = URLEncoder.encode(beforeEntryId, "UTF-8")
             val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
+            // deferMedia=1 必须带：不带时这一页会把工具结果图的 base64 全塞回来。
+            // 实测同一会话最近 60 条消息 = 6.45MB JSON（其中 6.36MB 是图片 base64），
+            // 往上翻一页就是一次这种量级的请求。pi-web `/context` 原生支持该参数
+            // （`deferToolResultImages`，只对 toolResult 生效，≤10MB 的图改写成 URL）。
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&before=$encBefore$leafParam")
+                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&before=$encBefore&deferMedia=1$leafParam")
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -714,7 +718,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
         val bigPageJson = runCatching {
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail$leafParam")
+                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&deferMedia=1$leafParam")
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -748,7 +752,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             val encBefore = URLEncoder.encode(oldestEntryId, "UTF-8")
             val olderJson = runCatching {
                 val req = Request.Builder()
-                    .url("$baseUrl/api/sessions/$sessionId/context?tail=200&before=$encBefore$leafParam")
+                    .url("$baseUrl/api/sessions/$sessionId/context?tail=200&before=$encBefore&deferMedia=1$leafParam")
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->
@@ -983,7 +987,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val tOut = if (rawOut.length > 12000) {
                     rawOut.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
                 } else rawOut
-                val tMedia = extractMediaFromContent(contentElem, tOut)
+                val tMedia = extractMediaFromContent(contentElem, tOut, tcId)
                 val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                 val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                 val ts = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
@@ -1103,7 +1107,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                                             consumedResultIds.add(tcId)
                                             toolResultById[tcId]
                                         } else null
-                                        val argMedia = MediaAttachmentParsing.fromToolArgs(toolName, preview, inputElem)
+                                        val argMedia = MediaAttachmentParsing.fromToolArgs(
+                                            toolName, preview, inputElem,
+                                            MediaLoadPolicy.toolIdPrefix(tcId)
+                                        )
                                         val combinedMedia = mergeMediaLists(paired?.mediaList ?: emptyList(), argMedia)
 
                                         toolCalls.add(
@@ -1194,7 +1201,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val toolOutput = if (rawToolOutput.length > 12000) {
                             rawToolOutput.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
                         } else rawToolOutput
-                        val toolMedia = extractMediaFromContent(contentElem, toolOutput)
+                        val toolMedia = extractMediaFromContent(contentElem, toolOutput, tcId)
                         val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                         val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                         val recentIdx = chatItems.indexOfLast {
@@ -1332,46 +1339,13 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun extractMediaFromContent(
         element: com.google.gson.JsonElement?,
-        outputText: String? = null
-    ): List<MediaAttachment> {
-        val list = mutableListOf<MediaAttachment>()
-        if (element != null && element.isJsonArray) {
-            for (item in element.asJsonArray) {
-                if (!item.isJsonObject) continue
-                val obj = item.asJsonObject
-                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                if (type == "image" || type == "image_url" || type == "document" || obj.has("data") || obj.has("source")) {
-                    val srcObj = obj.get("source")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val mime = obj.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: obj.get("mediaType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("media_type")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: "image/png"
-                    val b64 = obj.get("data")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("data")?.takeIf { !it.isJsonNull }?.asString
-                    val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString
-                        ?: obj.get("image_url")?.takeIf { it.isJsonObject }?.asJsonObject?.get("url")?.takeIf { !it.isJsonNull }?.asString
-                    val kind = when {
-                        mime.contains("pdf", ignoreCase = true) -> MediaKind.PDF
-                        mime.contains("svg", ignoreCase = true) -> MediaKind.SVG
-                        else -> MediaKind.IMAGE
-                    }
-                    if (!b64.isNullOrBlank() || !urlVal.isNullOrBlank()) {
-                        list.add(
-                            MediaAttachment(
-                                kind = kind,
-                                mimeType = mime,
-                                dataBase64 = b64?.substringAfter("base64,", b64),
-                                url = urlVal
-                            )
-                        )
-                    }
-                }
-            }
-        }
-        MediaAttachmentParsing.firstInlineSvg(outputText)?.let { list.add(it) }
-        return list
-    }
+        outputText: String? = null,
+        toolCallId: String? = null
+    ): List<MediaAttachment> = MediaAttachmentParsing.fromContent(
+        element,
+        outputText,
+        MediaLoadPolicy.toolIdPrefix(toolCallId)
+    )
 
 
     private fun mergeMediaLists(

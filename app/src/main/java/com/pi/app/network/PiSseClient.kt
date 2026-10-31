@@ -7,7 +7,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.pi.app.data.model.AgentSseEvent
 import com.pi.app.data.model.MediaAttachment
-import com.pi.app.data.model.MediaKind
+import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.data.model.SseConnectionState
 import com.pi.app.data.model.TokenStats
 import com.pi.app.data.storage.AppPreferences
@@ -352,7 +352,10 @@ class PiSseClient(private val prefs: AppPreferences) {
                                 val argsElem = tcObj?.get("arguments")
                                 val preview = extractPreview(argsElem)
                                 val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
-                                val pathMedia = MediaAttachmentParsing.fromToolArgs(tName, preview, argsElem)
+                                val pathMedia = MediaAttachmentParsing.fromToolArgs(
+                                    tName, preview, argsElem,
+                                    MediaLoadPolicy.toolIdPrefix(tcId)
+                                )
                                 listOf(
                                     AgentSseEvent(
                                         type = "tool_call_ready",
@@ -386,7 +389,10 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val argsElem = obj.get("args") ?: obj.get("arguments") ?: obj.get("input")
                     val preview = extractPreview(argsElem)
                     val cmdStr = argsElem?.let { if (it.isJsonPrimitive) it.asString else gson.toJson(it) }
-                    val pathMedia = MediaAttachmentParsing.fromToolArgs(tName, preview, argsElem)
+                    val pathMedia = MediaAttachmentParsing.fromToolArgs(
+                        tName, preview, argsElem,
+                        MediaLoadPolicy.toolIdPrefix(tcId)
+                    )
                     listOf(
                         AgentSseEvent(
                             type = "tool_execution_start",
@@ -407,7 +413,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val partial = obj.get("partialResult")?.takeIf { it.isJsonObject }?.asJsonObject
                     val contentElem = partial?.get("content")
                     val outText = extractContentText(contentElem)
-                    val media = extractMediaAttachments(contentElem, outText)
+                    val media = extractMediaAttachments(contentElem, outText, tcId)
                     val isErr = partial?.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                     listOf(
                         AgentSseEvent(
@@ -429,7 +435,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                     val resObj = obj.get("result")?.takeIf { it.isJsonObject }?.asJsonObject
                     val contentElem = resObj?.get("content")
                     val outText = extractContentText(contentElem)
-                    val media = extractMediaAttachments(contentElem, outText)
+                    val media = extractMediaAttachments(contentElem, outText, tcId)
                     val isErr = obj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
                         ?: resObj?.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean
                         ?: false
@@ -645,44 +651,14 @@ class PiSseClient(private val prefs: AppPreferences) {
         return null
     }
 
-    private fun extractMediaAttachments(contentElem: JsonElement?, outputText: String? = null): List<MediaAttachment> {
-        val list = mutableListOf<MediaAttachment>()
-        if (contentElem != null && contentElem.isJsonArray) {
-            for (item in contentElem.asJsonArray) {
-                if (!item.isJsonObject) continue
-                val obj = item.asJsonObject
-                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                if (type == "image" || type == "image_url" || type == "document" || obj.has("data") || obj.has("source")) {
-                    val srcObj = obj.get("source")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val mime = obj.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: obj.get("mediaType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("media_type")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("mimeType")?.takeIf { !it.isJsonNull }?.asString
-                        ?: "image/png"
-                    val b64 = obj.get("data")?.takeIf { !it.isJsonNull }?.asString
-                        ?: srcObj?.get("data")?.takeIf { !it.isJsonNull }?.asString
-                    val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString
-                        ?: obj.get("image_url")?.takeIf { it.isJsonObject }?.asJsonObject?.get("url")?.takeIf { !it.isJsonNull }?.asString
-                    val kind = when {
-                        mime.contains("pdf", ignoreCase = true) -> MediaKind.PDF
-                        mime.contains("svg", ignoreCase = true) -> MediaKind.SVG
-                        else -> MediaKind.IMAGE
-                    }
-                    if (!b64.isNullOrBlank() || !urlVal.isNullOrBlank()) {
-                        list.add(
-                            MediaAttachment(
-                                kind = kind,
-                                mimeType = mime,
-                                dataBase64 = b64?.substringAfter("base64,", b64),
-                                url = urlVal
-                            )
-                        )
-                    }
-                }
-            }
-        }
-        MediaAttachmentParsing.firstInlineSvg(outputText)?.let { list.add(it) }
-        return list
-    }
+    private fun extractMediaAttachments(
+        contentElem: JsonElement?,
+        outputText: String? = null,
+        toolCallId: String? = null
+    ): List<MediaAttachment> = MediaAttachmentParsing.fromContent(
+        contentElem,
+        outputText,
+        MediaLoadPolicy.toolIdPrefix(toolCallId)
+    )
 
 }

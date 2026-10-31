@@ -2413,7 +2413,9 @@ class MainActivity : ComponentActivity() {
                     mediaGatewayConfig = com.pi.app.ui.components.MediaGatewayConfig(
                         serverUrl = prefs.serverUrl,
                         authToken = prefs.authToken,
-                        cwd = currentSession?.cwd ?: currentProject
+                        cwd = currentSession?.cwd ?: currentProject,
+                        // 图片字节磁盘池：进程被回收后重新打开会话不用再拉一遍原图
+                        diskCacheDir = prefs.cacheDir
                     ),
                     onTogglePin = {
                         // 先在本地乐观切换（下拉/图标立刻响应），随后写回 pi-web 的 ui-state；

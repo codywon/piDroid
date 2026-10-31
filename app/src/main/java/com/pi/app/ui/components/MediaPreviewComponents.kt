@@ -40,7 +40,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import com.pi.app.ui.chat.widgetTokens
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -53,6 +55,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaKind
+import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -69,41 +72,135 @@ import java.util.concurrent.TimeUnit
 data class MediaGatewayConfig(
     val serverUrl: String = "",
     val authToken: String = "",
-    val cwd: String = ""
+    val cwd: String = "",
+    /**
+     * 图片字节的磁盘池根目录（一般传 `context.cacheDir`）。
+     *
+     * 不传就是「只用内存池」——预览/测试场景够用，但真机上进程一结束就得全量重下，
+     * 所以 MainActivity 会显式带上。
+     */
+    val diskCacheDir: File? = null
 )
 
 val LocalMediaGatewayConfig = compositionLocalOf { MediaGatewayConfig() }
 
 private object MediaByteCache {
-    private val byteCache = LruCache<String, ByteArray>(32)
+    /** 内存池按**字节**计容量：旧实现按项数计（32 项 × 单张 15MB 最坏≈480MB）。 */
+    private val byteCache = object : LruCache<String, ByteArray>(MediaLoadPolicy.MEMORY_CACHE_MAX_BYTES) {
+        override fun sizeOf(key: String, value: ByteArray): Int = value.size
+    }
     val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
+    /** 磁盘池目录：`<cacheDir>/media-bytes/<sha1>`，系统可随时回收。 */
+    private fun diskDir(root: File?): File? {
+        root ?: return null
+        val dir = File(root, "media-bytes")
+        if (!dir.exists() && !dir.mkdirs()) return null
+        return dir
+    }
+
     fun get(key: String): ByteArray? = byteCache.get(key)
+
     fun put(key: String, bytes: ByteArray) {
-        if (bytes.isNotEmpty() && bytes.size <= 15 * 1024 * 1024) {
+        // 单张比整个池还大的图不入池（否则一放进去就把其他图全挤掉）
+        if (bytes.isNotEmpty() && bytes.size <= MediaLoadPolicy.MEMORY_CACHE_MAX_BYTES) {
             byteCache.put(key, bytes)
+        }
+    }
+
+    /** 命中磁盘时刷新 mtime，让淘汰策略近似 LRU。 */
+    fun getDisk(root: File?, diskKey: String): ByteArray? {
+        if (diskKey.isEmpty()) return null
+        val dir = diskDir(root) ?: return null
+        val file = File(dir, diskKey)
+        if (!file.isFile || file.length() <= 0L) return null
+        return runCatching {
+            val bytes = file.readBytes()
+            if (bytes.isEmpty()) {
+                file.delete()
+                null
+            } else {
+                file.setLastModified(System.currentTimeMillis())
+                bytes
+            }
+        }.getOrNull()
+    }
+
+    private val diskWriteCounter = java.util.concurrent.atomic.AtomicInteger()
+
+    fun putDisk(root: File?, diskKey: String, bytes: ByteArray) {
+        if (diskKey.isEmpty() || bytes.isEmpty()) return
+        if (bytes.size > MediaLoadPolicy.MAX_DISK_ENTRY_BYTES) return
+        val dir = diskDir(root) ?: return
+        runCatching {
+            val target = File(dir, diskKey)
+            // 同一张图可能被两张卡片并发拉取：tmp 名带纳秒，避免互相踩踏后把已存在的 target 删掉
+            val tmp = File(dir, "$diskKey.${System.nanoTime()}.tmp")
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(target)) {
+                tmp.delete()
+            }
+            // 每 8 次写入修剪一次，避免每次写盘都遍历目录
+            if (diskWriteCounter.incrementAndGet() % 8 == 0) prune(dir)
+        }
+    }
+
+    /** 超过池上限就按 mtime 从最旧开始删（`.tmp` 残留一并清）。 */
+    fun prune(dir: File) {
+        runCatching {
+            val files = dir.listFiles()?.filter { it.isFile } ?: return
+            files.filter { it.name.endsWith(".tmp") }.forEach { it.delete() }
+            var total = files.filter { !it.name.endsWith(".tmp") }.sumOf { it.length() }
+            if (total <= MediaLoadPolicy.DISK_CACHE_MAX_BYTES) return
+            for (file in files.filter { !it.name.endsWith(".tmp") }.sortedBy { it.lastModified() }) {
+                if (total <= MediaLoadPolicy.DISK_CACHE_MAX_BYTES) break
+                total -= file.length()
+                file.delete()
+            }
         }
     }
 }
 
 /**
- * 解析并加载 MediaAttachment 的原始字节（支持 Base64、data URI、HTTP URL、以及远程工作区相对/绝对文件路径）
+ * 解析并加载 MediaAttachment 的原始字节。
+ *
+ * 取数优先级：内存池 → 磁盘池 → Base64 内联 → data URI → 远端（工作区文件路径 / 延迟图 URL）。
+ * 拿到字节同时写回两层池，所以同一张图在一次会话里最多只下载一次。
  */
 suspend fun resolveMediaBytes(
     attachment: MediaAttachment,
     gateway: MediaGatewayConfig
 ): ByteArray? = withContext(Dispatchers.IO) {
-    val cacheKey = buildString {
+    val memoryKey = buildString {
         append(attachment.id)
         append("|")
         append(attachment.filePath ?: "")
         append("|")
         append(attachment.dataBase64?.take(64) ?: "")
     }
-    MediaByteCache.get(cacheKey)?.let { return@withContext it }
+    MediaByteCache.get(memoryKey)?.let { return@withContext it }
+
+    // 磁盘 key 按「内容位置」算，不按 attachment.id（后者是随机 UUID，每次解析快照都会变，
+    // 拿它当磁盘 key 等于每次冷启动全量重下）。
+    val diskKey = MediaLoadPolicy.diskKey(
+        attachmentId = attachment.id,
+        filePath = attachment.filePath,
+        url = attachment.url,
+        dataBase64 = attachment.dataBase64
+    )
+    MediaByteCache.getDisk(gateway.diskCacheDir, diskKey)?.let { cached ->
+        MediaByteCache.put(memoryKey, cached)
+        return@withContext cached
+    }
+
+    fun deliver(bytes: ByteArray): ByteArray {
+        MediaByteCache.put(memoryKey, bytes)
+        MediaByteCache.putDisk(gateway.diskCacheDir, diskKey, bytes)
+        return bytes
+    }
 
     // 1. Base64 数据直接解码
     val b64 = attachment.dataBase64?.trim()
@@ -112,8 +209,7 @@ suspend fun resolveMediaBytes(
             val cleanB64 = b64.substringAfter("base64,", b64).replace("\n", "").replace("\r", "").trim()
             val decoded = Base64.decode(cleanB64, Base64.DEFAULT)
             if (decoded != null && decoded.isNotEmpty()) {
-                MediaByteCache.put(cacheKey, decoded)
-                return@withContext decoded
+                return@withContext deliver(decoded)
             }
         } catch (_: Exception) {}
     }
@@ -126,24 +222,23 @@ suspend fun resolveMediaBytes(
                 val clean = pathOrUrl.substringAfter(";base64,").trim()
                 val decoded = Base64.decode(clean, Base64.DEFAULT)
                 if (decoded != null && decoded.isNotEmpty()) {
-                    MediaByteCache.put(cacheKey, decoded)
-                    return@withContext decoded
+                    return@withContext deliver(decoded)
                 }
             } else {
                 val rawPayload = java.net.URLDecoder.decode(pathOrUrl.substringAfter(","), "UTF-8")
                 val bytes = rawPayload.toByteArray(Charsets.UTF_8)
-                MediaByteCache.put(cacheKey, bytes)
-                return@withContext bytes
+                return@withContext deliver(bytes)
             }
         } catch (_: Exception) {}
     }
 
-    // 3. 远程 URL 或工作区文件路径通过网关拉取
+    // 3. 远端：先试工作区文件路径（网关的 `/api/files/raw` 直接 sendFile，最便宜），
+    //    再试 pi-web 的延迟图 URL（`source.url`）——那条要整份读会话文件，只当傅底。
+    val candidateUrls = mutableListOf<String>()
     if (pathOrUrl.isNotBlank()) {
         // pi 在 Windows 上经常把路径写成 Git Bash 形态（`/d/...`），
         // 网关/pi-web 都不认，先还原成 `D:/...` 再请求。
         val resolvedPath = FileLinks.normalizeMsysDrivePath(pathOrUrl, gateway.cwd)
-        val candidateUrls = mutableListOf<String>()
         if (resolvedPath.startsWith("http://") || resolvedPath.startsWith("https://")) {
             candidateUrls.add(resolvedPath)
         } else if (gateway.serverUrl.isNotBlank()) {
@@ -156,27 +251,45 @@ suspend fun resolveMediaBytes(
                 candidateUrls.add("$base/$resolvedPath")
             }
         }
+    }
+    val deferredUrl = attachment.url?.trim()
+    if (!deferredUrl.isNullOrBlank()) {
+        MediaLoadPolicy.absoluteUrl(gateway.serverUrl, deferredUrl)?.let { candidateUrls.add(it) }
+    }
 
-        for (url in candidateUrls) {
-            try {
-                val reqBuilder = Request.Builder().url(url).get()
-                if (gateway.authToken.isNotBlank()) {
-                    reqBuilder.header("Authorization", "Bearer ${gateway.authToken.trim()}")
-                }
-                MediaByteCache.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                    if (resp.isSuccessful) {
-                        val bytes = resp.body?.bytes()
-                        if (bytes != null && bytes.isNotEmpty()) {
-                            MediaByteCache.put(cacheKey, bytes)
-                            return@withContext bytes
-                        }
+    for (url in candidateUrls.distinct()) {
+        try {
+            val reqBuilder = Request.Builder().url(url).get()
+            if (gateway.authToken.isNotBlank()) {
+                reqBuilder.header("Authorization", "Bearer ${gateway.authToken.trim()}")
+            }
+            MediaByteCache.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    val bytes = resp.body?.bytes()
+                    if (bytes != null && bytes.isNotEmpty()) {
+                        return@withContext deliver(bytes)
                     }
                 }
-            } catch (_: Exception) {}
-        }
+            }
+        } catch (_: Exception) {}
     }
 
     null
+}
+
+/**
+ * 按目标长边降采样解码：`inSampleSize` 取 2 的幂，解码后长边不超过目标值。
+ * 旧实现是全尺寸 `decodeByteArray`：一张 4000×3000 的 CAD 出图要占≈48MB 堆内存，
+ * 而卡片最大只显示 260dp。
+ */
+private fun decodeSampledImage(bytes: ByteArray, maxLongEdgePx: Int): Pair<ImageBitmap, String>? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    val options = BitmapFactory.Options().apply {
+        inSampleSize = MediaLoadPolicy.sampleSizeFor(bounds.outWidth, bounds.outHeight, maxLongEdgePx)
+    }
+    val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
+    return bitmap.asImageBitmap() to "${bitmap.width}×${bitmap.height}"
 }
 
 /**
@@ -254,22 +367,33 @@ private fun ImageThumbnailCard(
 ) {
     val theme = LocalAppTheme.current
     val gateway = LocalMediaGatewayConfig.current
-    var imageBitmap by remember(attachment.id, attachment.dataBase64, attachment.filePath, gateway) {
+    // 缩略图只在 ≤260dp 的框里显示，没必要按原图解码：目标长边取屏幕宽的 2 倍（2 倍屏仍清晰）。
+    val density = LocalDensity.current
+    val screenWidthDp = LocalConfiguration.current.screenWidthDp
+    val targetLongEdgePx = remember(density, screenWidthDp) {
+        if (screenWidthDp > 0) {
+            with(density) {
+                (screenWidthDp.dp.toPx() * MediaLoadPolicy.DECODE_TARGET_SCREEN_FACTOR).toInt()
+            }
+        } else {
+            MediaLoadPolicy.FALLBACK_DECODE_TARGET_PX
+        }
+    }
+    var imageBitmap by remember(attachment.id, attachment.dataBase64, attachment.filePath, attachment.url, gateway) {
         mutableStateOf<ImageBitmap?>(null)
     }
     var resolutionLabel by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var loadError by remember { mutableStateOf(false) }
 
-    LaunchedEffect(attachment.id, attachment.dataBase64, attachment.filePath, gateway) {
+    LaunchedEffect(attachment.id, attachment.dataBase64, attachment.filePath, attachment.url, gateway) {
         isLoading = true
         loadError = false
         val bytes = resolveMediaBytes(attachment, gateway)
         if (bytes != null && bytes.isNotEmpty()) {
             val decoded = withContext(Dispatchers.IO) {
                 try {
-                    val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    bmp?.let { it.asImageBitmap() to "${it.width}×${it.height}" }
+                    decodeSampledImage(bytes, targetLongEdgePx)
                 } catch (_: Exception) {
                     null
                 }
