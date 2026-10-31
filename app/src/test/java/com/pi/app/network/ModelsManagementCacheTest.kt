@@ -96,6 +96,20 @@ class ModelsManagementCacheTest {
     }
 
     @Test
+    fun `gateway paths that differ by case have isolated caches`() {
+        val upperKey = modelsManagementConnectionKey(" http://gateway.local/TeamA/ ")
+        val lowerKey = modelsManagementConnectionKey("http://gateway.local/teama")
+        assertEquals("http://gateway.local/TeamA", upperKey)
+        val dir = File(tmp.root, "cache")
+        val store = ModelsManagementCacheStore(dir)
+        runBlocking { store.store(snapshot(upperKey)) }
+
+        assertNull(store.peek(lowerKey))
+        assertNull(runBlocking { ModelsManagementCacheStore(dir).load(lowerKey) })
+        assertNotNull(runBlocking { ModelsManagementCacheStore(dir).load(upperKey) })
+    }
+
+    @Test
     fun `cold start restores full snapshot from disk including catalog models`() {
         val dir = File(tmp.root, "cache")
         runBlocking { ModelsManagementCacheStore(dir).store(snapshot()) }

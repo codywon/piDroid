@@ -4050,7 +4050,7 @@ data class CatalogPreset(
 
     /** 连接身份：缓存与请求结果都按它隔离，切换网关后不会读到上一台机器的配置。 */
     fun connectionKey(baseUrl: String = prefs.serverUrl): String =
-        baseUrl.trim().trimEnd('/')
+        modelsManagementConnectionKey(baseUrl)
 
     /** 当前连接的内存快照（不碰磁盘，可放心在 Compose 初始化里调用）。 */
     fun peekCachedModelsManagementData(): ModelsManagementData? =

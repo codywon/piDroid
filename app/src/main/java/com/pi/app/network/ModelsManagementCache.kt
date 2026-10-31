@@ -15,6 +15,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** URL 路径区分大小写；只移除首尾空白与末尾斜杠，避免不同网关共享配置缓存。 */
+internal fun modelsManagementConnectionKey(baseUrl: String): String =
+    baseUrl.trim().trimEnd('/')
+
 /**
  * 模型管理页的完整展示快照。
  *

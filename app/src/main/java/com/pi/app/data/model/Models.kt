@@ -1193,17 +1193,15 @@ object ModelConfigConverter {
             val provModels = catalogModels
                 ?.filter { it.provider.equals(state.providerId, ignoreCase = true) }
                 ?.map { mi ->
+                    // ModelInfo 只带 /api/models 提供的元数据（supportsThinking / supportsVision），
+                    // 它没有 cost* 字段，所以代价一律用默认值，不能凭空取不存在的属性
                     ModelConfigItem(
                         id = mi.id,
                         name = mi.displayName.ifBlank { mi.id },
-                        reasoning = mi.reasoning,
-                        hasVision = mi.vision,
+                        reasoning = mi.supportsThinking,
+                        hasVision = mi.hasVision,
                         contextWindow = mi.contextWindow.takeIf { it > 0 } ?: 128000L,
-                        maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L,
-                        costInput = mi.costInput,
-                        costOutput = mi.costOutput,
-                        costCacheRead = mi.costCacheRead,
-                        costCacheWrite = mi.costCacheWrite
+                        maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L
                     )
                 } ?: emptyList()
 
