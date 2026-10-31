@@ -577,6 +577,18 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     // ── 会话快照磁盘缓存：再次打开会话时先回放上次的正文，不必等网络 ──
+
+    /**
+     * 快照落盘的「按会话串行化」锁。
+     *
+     * [persistSessionSnapshot] 会被多个 IO 协程同时调用（首屏、轮询、SSE 对账），
+     * 而「查时间戳 → 写 .tmp → rename → 记时间戳」必须是一段临界区：不加锁时同一会话
+     * 可能同时写同一个 `.tmp`，后开始写的把先写的覆盖掉或读到半个文件。
+     * 用固定 16 把锁（按会话 id 哈希取模，不随会话数增长），不同会话之间仍然并行。
+     */
+    private val snapshotWriteLocks = Array(16) { Any() }
+
+    /** 上次成功落盘时间；只在持有对应 [snapshotWriteLocks] 时读写。 */
     private val snapshotLastWriteAt = mutableMapOf<String, Long>()
 
     private fun snapshotDir(): File {
@@ -593,24 +605,29 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     private fun persistSessionSnapshot(sessionId: String, body: String) {
         if (body.length < 64) return
-        val now = System.currentTimeMillis()
-        val last = snapshotLastWriteAt[sessionId] ?: 0L
-        if (now - last < 10_000L) return
-        snapshotLastWriteAt[sessionId] = now
-        runCatching {
-            val dir = snapshotDir()
-            val target = snapshotFile(sessionId)
-            val tmp = File(dir, "$sessionId.json.tmp")
-            tmp.writeText(body)
-            if (!tmp.renameTo(target)) {
-                target.writeText(body)
-                tmp.delete()
-            }
-            dir.listFiles()
-                ?.filter { it.isFile && it.name.endsWith(".json") }
-                ?.sortedByDescending { it.lastModified() }
-                ?.drop(8)
-                ?.forEach { it.delete() }
+        val lock = snapshotWriteLocks[(sessionId.hashCode() and Int.MAX_VALUE) % snapshotWriteLocks.size]
+        synchronized(lock) {
+            val now = System.currentTimeMillis()
+            val last = snapshotLastWriteAt[sessionId] ?: 0L
+            if (now - last < 10_000L) return
+            val written = runCatching {
+                val dir = snapshotDir()
+                val target = snapshotFile(sessionId)
+                val tmp = File(dir, "$sessionId.json.tmp")
+                tmp.writeText(body)
+                if (!tmp.renameTo(target)) {
+                    target.writeText(body)
+                    tmp.delete()
+                }
+                dir.listFiles()
+                    ?.filter { it.isFile && it.name.endsWith(".json") }
+                    ?.sortedByDescending { it.lastModified() }
+                    ?.drop(8)
+                    ?.forEach { it.delete() }
+            }.isSuccess
+            // 只有真的写成了才记时间戳：写失败也记的话，失败会被当成「刚写过」，
+            // 接下来 10 秒内不再重试，离线启动就一直是空的。
+            if (written) snapshotLastWriteAt[sessionId] = now
         }
     }
 
@@ -2137,7 +2154,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (!dir.exists() && !dir.mkdirs()) {
             return@withContext Result.failure(IOException("无法创建缓存目录"))
         }
-        val target = File(dir, name)
+        // 缓存键带「连接身份 + 完整路径」的哈希：不同目录、不同网关下的同名文件
+        // （README.md、image.png）以前会互相覆盖，后下载的静默替掉前一个。
+        val target = File(dir, "${MediaLoadPolicy.sha1Hex("${connectionKey()}\u0000$absPath").take(12)}_$name")
         try {
             val req = Request.Builder().url(fileApiUrl(absPath, "download", sessionId)).get().build()
             client.newCall(req).execute().use { resp ->

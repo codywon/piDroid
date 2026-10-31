@@ -576,11 +576,20 @@ object AppUpdateManager {
                 return false
             }
             val apkCerts = archiveSigningFingerprints(archive)
-            @Suppress("DEPRECATION")
-            val installedCerts = pm
-                .getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
-                .signatures
-                .signingFingerprints()
+            // 已安装包的签名要与解析 APK 时用同一套 flag：Android 9+ 一律用
+            // GET_SIGNING_CERTIFICATES（密钥轮换/多签名者下才有正确结果），
+            // 低版本才退回 GET_SIGNATURES。两边的数据源对齐后，比较才有意义。
+            val installedFlags = signingFlags()
+            val installed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                pm.getPackageInfo(
+                    context.packageName,
+                    PackageManager.PackageInfoFlags.of(installedFlags.toLong())
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                pm.getPackageInfo(context.packageName, installedFlags)
+            }
+            val installedCerts = archiveSigningFingerprints(installed)
             if (apkCerts.isEmpty() || installedCerts.isEmpty()) {
                 Log.e(TAG, "verifyApkSignature: no signing certificates available")
                 return false
@@ -592,13 +601,16 @@ object AppUpdateManager {
         }
     }
 
+    /** 读取包签名用的 flag：Android 9+ 用 GET_SIGNING_CERTIFICATES，更低版本只能 GET_SIGNATURES。 */
+    private fun signingFlags(): Int = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        PackageManager.GET_SIGNING_CERTIFICATES
+    } else {
+        @Suppress("DEPRECATION")
+        PackageManager.GET_SIGNATURES
+    }
+
     private fun readPackageArchiveInfo(pm: PackageManager, apkFile: File): PackageInfo? {
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            PackageManager.GET_SIGNING_CERTIFICATES
-        } else {
-            @Suppress("DEPRECATION")
-            PackageManager.GET_SIGNATURES
-        }
+        val flags = signingFlags()
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             pm.getPackageArchiveInfo(apkFile.absolutePath, PackageManager.PackageInfoFlags.of(flags.toLong()))
         } else {

@@ -730,15 +730,20 @@ private fun GitFileDetailView(
                                 modifier = Modifier.fillMaxSize()
                             ) {
                                 val scrollState = rememberScrollState()
+                                // 按行分块，让 LazyColumn 真正懒加载：整份源码放进单个 Text 时，
+                                // 列表无法按行复用，首帧要一次性排版整份文本。
+                                val sourceChunks = remember(sourceText) {
+                                    SourceTextChunker.chunk(sourceText.orEmpty())
+                                }
                                 LazyColumn(
                                     modifier = Modifier
                                         .fillMaxSize()
                                         .then(if (!softWrap) Modifier.horizontalScroll(scrollState) else Modifier)
                                         .padding(10.dp)
                                 ) {
-                                    item {
+                                    items(sourceChunks) { chunk ->
                                         Text(
-                                            text = sourceText!!,
+                                            text = chunk,
                                             fontFamily = FontFamily.Monospace,
                                             fontSize = 11.sp,
                                             lineHeight = 15.sp,
