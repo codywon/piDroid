@@ -94,6 +94,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             "(?i)(operation was aborted|request was aborted|operation aborted|request aborted)"
         )
 
+        /** 非 2xx 时随异常带出的正文长度：足够判断是 HTML 还是 JSON，又不至于把日志撑爆。 */
+        private const val BODY_PREVIEW_CHARS = 512
+
         /** 候选 Key 联网自检时使用的一次性 provider 名后缀（避开已保存凭据的遮蔽）。 */
         private const val VERIFY_PROVIDER_SUFFIX = "-key-verify"
 
@@ -212,6 +215,16 @@ class PiApiClient(private val prefs: AppPreferences) {
         throw lastError ?: IOException("读取失败")
     }
 
+    /**
+     * 非 2xx 的统一失败：把状态码 + 路径 + 正文片段一起带出去。
+     *
+     * 必须带上正文：隧道掉线时 frp 用自己的 404 HTML 页面应答，而接口真不存在时
+     * pi-web 回的是 JSON。只看状态码会把“隧道还没连回来”误判成“地址写错”。
+     * 归类逻辑见 [GatewayErrorClassifier]。
+     */
+    private fun readFailure(payload: ReadPayload, path: String): IOException =
+        GatewayHttpException(payload.code, path, payload.body.take(BODY_PREVIEW_CHARS))
+
     suspend fun ping(targetUrl: String? = null, token: String? = null): Result<String> = withContext(Dispatchers.IO) {
         val baseUrl = targetUrl ?: prefs.serverUrl
         val authToken = token ?: prefs.authToken
@@ -228,7 +241,14 @@ class PiApiClient(private val prefs: AppPreferences) {
                 if (response.isSuccessful) {
                     Result.success(response.body?.string() ?: "OK")
                 } else {
-                    Result.failure(IOException("Server error: ${response.code} ${response.message}"))
+                    // 配对/试连也走同一套语义：这里的 404 代表“隧道没起来”，不是密钥问题
+                    Result.failure(
+                        GatewayHttpException(
+                            response.code,
+                            "/api/ping",
+                            runCatching { response.peekBody(BODY_PREVIEW_CHARS.toLong()).string() }.getOrNull()
+                        )
+                    )
                 }
             }
         } catch (e: Exception) {
@@ -249,7 +269,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             // 只读轮询：走 readGet（单次 12s 硬超时 + 传输失败换新连接重试一次）
             val payload = readGet(req)
             if (payload.code !in 200..299) {
-                return@withContext Result.failure(IOException("Failed to load sessions: ${payload.code}"))
+                return@withContext Result.failure(readFailure(payload, "/api/sessions"))
             }
             val jsonElement = JsonParser.parseString(payload.body)
             val type = object : TypeToken<List<Session>>() {}.type
@@ -304,7 +324,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             val req = Request.Builder().url("$baseUrl/api/agent/running").get().build()
             val payload = readGet(req)
             if (payload.code !in 200..299) {
-                return@withContext Result.failure(IOException("读取运行态失败 (${payload.code})"))
+                return@withContext Result.failure(readFailure(payload, "/api/agent/running"))
             }
             val root = runCatching {
                 JsonParser.parseString(payload.body).asJsonObject
@@ -543,7 +563,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             val payload = readGet(req, snapshotClient)
             if (payload.code !in 200..299) {
-                return@withContext Result.failure(IOException("Failed to load session details: ${payload.code}"))
+                return@withContext Result.failure(readFailure(payload, "/api/sessions/{id}"))
             }
             val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
             sessionHistoryCache[sessionId] = historyData
@@ -632,7 +652,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    return@withContext Result.failure(IOException("加载更早记录失败 (${resp.code})"))
+                    return@withContext Result.failure(
+                        GatewayHttpException(
+                            resp.code,
+                            "/api/sessions/{id}/context",
+                            runCatching { resp.peekBody(BODY_PREVIEW_CHARS.toLong()).string() }.getOrNull()
+                        )
+                    )
                 }
                 val body = resp.body?.string() ?: "{}"
                 val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
@@ -1399,7 +1425,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             val req = Request.Builder().url("$baseUrl/api/models").get().build()
             val payload = readGet(req)
             if (payload.code !in 200..299) {
-                return@withContext Result.failure(IOException("读取模型目录失败 (${payload.code})"))
+                return@withContext Result.failure(readFailure(payload, "/api/models"))
             }
             val body = payload.body
             val json = JsonParser.parseString(body).asJsonObject

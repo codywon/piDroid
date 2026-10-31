@@ -24,11 +24,13 @@ import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.keepalive.PiForegroundService
 import com.pi.app.network.AgentCommandException
 import com.pi.app.network.DynamicModelCatalog
+import com.pi.app.network.GatewayErrorClassifier
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
 import com.pi.app.network.RecalledPrompts
 import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
+import com.pi.app.ui.ErrorToastGate
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
 import com.pi.app.ui.chat.ThinkingLevelBottomSheet
@@ -79,6 +81,9 @@ class MainActivity : ComponentActivity() {
     private lateinit var sseClient: PiSseClient
     private lateinit var hapticsAndNotify: PiHapticsAndNotify
     private lateinit var keepAliveManager: KeepAliveManager
+
+    /** 同一类错误一分钟内只提示一次：隧道重连时一轮会同时失败十几个请求。 */
+    private val errorToastGate = ErrorToastGate()
 
     private var sseJob: Job? = null
     private var cachedSessions: List<Session> = emptyList()
@@ -213,27 +218,13 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 把网关/网络层的原始错误翻译成能指导操作的一句话。
-     * 轮换 Token 后最常见的就是 401：本地存的还是旧密钥，唯一出路是重新扫码。
+     *
+     * 归类见 [GatewayErrorClassifier]：隧道掉线（frp 在没客户端时回的是 404 HTML）、
+     * 本机 pi-web 未启动、密钥失效、接口真不存在，四种情况的下一步动作完全不同；
+     * 以前统一靠字符串猜，于是“隧道重连”被当成“地址写错”。
      */
-    private fun connectErrorMessage(error: Throwable?): String {
-        val raw = error?.message.orEmpty()
-        val lower = raw.lowercase()
-        val name = error?.javaClass?.simpleName.orEmpty()
-        return when {
-            raw.contains("401") -> "密钥已失效，请重新扫码配对"
-            raw.contains("403") -> "访问被拒绝（可能是 Cloudflare Access 或防火墙策略）"
-            raw.contains("502") -> "网关连不上本机 pi-web，请确认 pi-web 已启动"
-            // 传输层失败（读超时 / callTimeout / 连接被重置）都归到同一句：
-            // 已自动重试过一次还失败，说明这条链路现在真不通。
-            name.contains("Timeout") || name.contains("InterruptedIOException") ||
-                lower.contains("timeout") || lower.contains("connectexception") ||
-                lower.contains("failed to connect") || lower.contains("unable to resolve host") ||
-                lower.contains("stream reset") || lower.contains("unexpected end of stream") ->
-                "网络超时或中断（已自动重试一次），请检查网络或网关地址"
-            raw.isBlank() -> "连接失败，请重试"
-            else -> "连接失败：$raw"
-        }
-    }
+    private fun connectErrorMessage(error: Throwable?): String =
+        GatewayErrorClassifier.classify(error).userMessage
 
     /**
      * 提示词增强的「连接身份」：服务器地址 + token 指纹。
@@ -561,15 +552,19 @@ class MainActivity : ComponentActivity() {
                         customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                         isGatewayOnline = true
                         syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
-                    }.onFailure {
+                    }.onFailure { err ->
                         isGatewayOnline = false
-                        // 原来直接把 OkHttp 的原文案（“timeout”/“Stream Reset”）砸给用户，
-                        // 既看不懂也不知道该做什么。这里换成可执行的说法，再带上原文便于排查。
-                        android.util.Log.w("PiNet", "loadSessions failed: ${it.javaClass.simpleName}: ${it.message}")
-                        if (!silent) {
+                        // 隧道重连的那一两秒里，一轮请求会同时失败；原文案（“timeout”/“404”）
+                        // 既看不懂也看不出该等还是该改配置，所以先归类再决定说什么、要不要说。
+                        val failure = GatewayErrorClassifier.classify(err)
+                        android.util.Log.w(
+                            "PiNet",
+                            "loadSessions failed: ${err.javaClass.simpleName}: ${err.message} -> ${failure.kind}"
+                        )
+                        if (!silent && errorToastGate.shouldShow(failure.toastKey)) {
                             Toast.makeText(
                                 this@MainActivity,
-                                connectErrorMessage(it),
+                                failure.userMessage,
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
@@ -683,7 +678,12 @@ class MainActivity : ComponentActivity() {
                         }
                         .onFailure { err ->
                             if (!silent) {
-                                Toast.makeText(this@MainActivity, "加载更早记录失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                                // 与列表页同一套语义：隧道掉线时这里也只会拿到 404，
+                                // 不该把“HTTP 404 /api/...”这种字串丢给用户。
+                                val failure = GatewayErrorClassifier.classify(err)
+                                if (errorToastGate.shouldShow(failure.toastKey)) {
+                                    Toast.makeText(this@MainActivity, "加载更早记录失败：${failure.userMessage}", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         }
                 } finally {
