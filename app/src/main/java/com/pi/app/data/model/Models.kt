@@ -169,7 +169,11 @@ data class AgentRuntimeState(
     val runtimeAlive: Boolean = false,
     /** pi 的自动上下文压缩开关（agent get_state.autoCompactionEnabled） */
     val autoCompactionEnabled: Boolean = false,
-    /** pi 的自动重试开关（agent get_state.autoRetryEnabled） */
+    /**
+     * pi 的自动重试开关（agent get_state.autoRetryEnabled）。
+     * 只解析不展示：pi-web 同样不在界面上暴露它（连 slash 命令都没接），
+     * 保留字段是为了与 agent 状态协议对齐。
+     */
     val autoRetryEnabled: Boolean = false,
     /** 正在排队等待下发的引导消息（pi 的 queuedMessages.steering） */
     val steering: List<String> = emptyList(),
@@ -236,7 +240,7 @@ data class SessionSearchHit(
 data class SlashCommand(
     val name: String,
     val description: String = "",
-    /** extension | prompt | skill */
+    /** extension | prompt | skill | builtin */
     val source: String = ""
 ) {
     val sourceLabel: String
@@ -244,6 +248,7 @@ data class SlashCommand(
             "extension" -> "扩展"
             "prompt" -> "模板"
             "skill" -> "技能"
+            "builtin" -> "内置"
             else -> source
         }
 }

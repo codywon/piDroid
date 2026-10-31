@@ -2203,6 +2203,23 @@ class PiApiClient(private val prefs: AppPreferences) {
     suspend fun setAutoCompaction(sessionId: String, enabled: Boolean): Result<Boolean> =
         sendAgentAction(sessionId, mapOf("type" to "set_auto_compaction", "enabled" to enabled))
 
+    /**
+     * 读 pi 当前的自动压缩开关（`get_state` RPC，`POST /api/agent/{id}`）。
+     *
+     * 为什么不用 [getAgentState]：那条走 `GET /api/agent/{id}?systemPrompt=0`，**不会启动 wrapper**，
+     * 没有活跃运行时就根本不返回 `autoCompactionEnabled`。而 `/auto-compact` 是「读当前值 → 取反 →
+     * 回写」，读不到就必须算失败：把「读不到」当成「已关闭」会把开关每次执行都往关的方向扫，
+     * 而且写的是全局 settings。这里与 pi-web 的 `/auto-compact` 走同一条 RPC 通道（`get_state`）。
+     *
+     * 返回 `null` = 服务器返回了状态但没有这个字段（旧网关）；调用侧按内核默认 `true` 兜底。
+     */
+    suspend fun getAutoCompactionEnabled(sessionId: String): Result<Boolean?> =
+        sendAgentCommandData(sessionId, mapOf("type" to "get_state")).map { data ->
+            data?.takeIf { it.isJsonObject }
+                ?.asJsonObject?.get("autoCompactionEnabled")
+                ?.takeIf { !it.isJsonNull }?.asBoolean
+        }
+
     /** 开关 pi 的自动重试（agent {"type":"set_auto_retry","enabled":bool}） */
     suspend fun setAutoRetry(sessionId: String, enabled: Boolean): Result<Boolean> =
         sendAgentAction(sessionId, mapOf("type" to "set_auto_retry", "enabled" to enabled))

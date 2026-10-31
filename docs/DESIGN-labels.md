@@ -73,4 +73,5 @@
 - 拖动排序与菜单里的 `↑` / `↓` 共用 `ProjectMovePlanner` 的单步相邻移动，
   因此依赖与服务端 ui-state 的往返；若 `serverWorkspaceOrder` 非空，
   本地 `wsOrder` 镜像可能不立即生效（与箭头按钮同一行为，非新引入的问题）。
-- `GlobalSettingsScreen` 尚有 13 条合规 subtitle；后续新增功能若继续填 `subtitle`，按 §5.2 触发 `ⓘ` 改造。
+- `GlobalSettingsScreen` 尚有 12 条合规 subtitle（v1.7.75 删掉「自动压缩上下文」一条，
+  它的可调性改由 `/auto-compact` 命令承担）；后续新增功能若继续填 `subtitle`，按 §5.2 触发 `ⓘ` 改造。

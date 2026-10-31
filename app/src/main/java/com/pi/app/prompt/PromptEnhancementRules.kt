@@ -113,8 +113,8 @@ object PromptEnhancementCapabilityParser {
 object PromptEnhancementRules {
     const val MAX_DRAFT_CHARS = 6000
     const val MAX_CONTEXT_MESSAGES = 10
-    const val MAX_CONTEXT_MESSAGE_CHARS = 800
-    const val MAX_CONTEXT_TOTAL_CHARS = 4000
+    const val MAX_CONTEXT_MESSAGE_CHARS = 2500
+    const val MAX_CONTEXT_TOTAL_CHARS = 12000
 
     fun modelKey(provider: String, modelId: String): String = "${provider.trim()}:${modelId.trim()}"
 
@@ -211,7 +211,8 @@ object PromptEnhancementRules {
         if (maxChars <= 0) return ""
         val count = text.codePointCount(0, text.length)
         if (count <= maxChars) return text
-        val end = text.offsetByCodePoints(0, maxChars)
+        // 预留 1 个位置给省略号，确保裁剪后字符总数严格 <= maxChars
+        val end = text.offsetByCodePoints(0, maxChars - 1)
         return text.substring(0, end) + "…"
     }
 }

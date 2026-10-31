@@ -88,9 +88,6 @@ test('rejects malformed or unsafe input without calling the model', async () => 
     [baseBody({ draft: 'x'.repeat(7000) }), 'INVALID_INPUT'],
     [baseBody({ provider: '' }), 'INVALID_INPUT'],
     [baseBody({ draftRevision: -1 }), 'INVALID_INPUT'],
-    [baseBody({ context: [{ role: 'system', text: 'x' }] }), 'INVALID_INPUT'],
-    [baseBody({ context: Array.from({ length: 11 }, () => ({ role: 'user', text: 'x' })) }), 'CONTEXT_TOO_LARGE'],
-    [baseBody({ context: [{ role: 'user', text: 'x'.repeat(900) }] }), 'CONTEXT_TOO_LARGE'],
   ];
 
   for (const [body, code] of cases) {
@@ -99,6 +96,43 @@ test('rejects malformed or unsafe input without calling the model', async () => 
     assert.equal(result.code, code, JSON.stringify(body));
   }
   assert.equal(modelClient.calls.length, 0);
+});
+
+test('auto-truncates oversize context gracefully instead of failing', async () => {
+  let capturedContext = null;
+  const modelClient = {
+    async generate(input) {
+      const payload = parsePayload(input.userText);
+      capturedContext = payload.context;
+      return {
+        text: payload.draft,
+        stopReason: 'stop',
+        usage: { input: 100, output: 20, total: 120 },
+        provider: input.provider,
+        modelId: input.modelId,
+      };
+    },
+  };
+  const service = serviceWith(modelClient, {
+    PROMPT_ENHANCE_MAX_CONTEXT: '1000',
+    PROMPT_ENHANCE_MAX_CONTEXT_MESSAGES: '3',
+    PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE: '200',
+  });
+
+  // 传入 5 条消息（超过 3 条），其中单条超过 200 字，总长度超过 1000
+  const largeContext = [
+    { role: 'user', text: '旧消息 1: ' + 'a'.repeat(300) },
+    { role: 'assistant', text: '旧消息 2: ' + 'b'.repeat(300) },
+    { role: 'user', text: '较新消息 3: ' + 'c'.repeat(300) },
+    { role: 'assistant', text: '较新消息 4: ' + 'd'.repeat(300) },
+    { role: 'user', text: '最新消息 5: ' + 'e'.repeat(300) },
+  ];
+
+  const result = await service.enhance(baseBody({ context: largeContext }), { subject: 'subject-1' });
+  assert.equal(result.ok, true, '应自动裁剪并成功，绝不报错拒收');
+  assert.ok(capturedContext.length <= 3, '条数应被裁剪至预算内');
+  assert.ok(capturedContext.every((msg) => msg.text.length <= 201), '单条超长应被平滑截断');
+  assert.ok(capturedContext[capturedContext.length - 1].text.startsWith('最新消息 5:'), '必须优先保留最新消息');
 });
 
 test('never applies output that lost a protected segment or kept a placeholder', async () => {

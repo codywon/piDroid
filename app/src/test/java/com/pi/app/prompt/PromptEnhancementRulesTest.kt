@@ -124,7 +124,7 @@ class PromptEnhancementRulesTest {
         PromptEnhancementContextMessage("user", "第一轮的需求"),
         PromptEnhancementContextMessage("assistant", "第一轮的回答"),
         PromptEnhancementContextMessage("user", "   "),
-        PromptEnhancementContextMessage("assistant", "y".repeat(900)),
+        PromptEnhancementContextMessage("assistant", "y".repeat(3000)),
         PromptEnhancementContextMessage("user", "最后一轮的需求")
     )
 
@@ -134,7 +134,7 @@ class PromptEnhancementRulesTest {
         assertEquals("最后一轮的需求", picked.last().text)
         assertTrue(picked.none { it.text.isBlank() })
         assertTrue(picked.all { it.role == "user" || it.role == "assistant" })
-        assertTrue(picked.any { it.text.length in 1..801 && it.text.endsWith("…") })
+        assertTrue(picked.any { it.text.length in 1..2500 && it.text.endsWith("…") })
     }
 
     @Test

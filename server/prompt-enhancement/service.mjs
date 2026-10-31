@@ -45,6 +45,60 @@ function asRevision(value) {
   return Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : null;
 }
 
+function clipCodePoints(text, maxChars) {
+  if (maxChars <= 0) return '';
+  const points = Array.from(text);
+  if (points.length <= maxChars) return text;
+  return points.slice(0, Math.max(0, maxChars - 1)).join('') + '…';
+}
+
+/**
+ * 社区最佳实践（Roo Code / Claude / Cursor）：
+ * 上下文仅作为消解代词（指代）的参考背景，绝对不能因为“历史消息太长”而阻断用户主任务！
+ * 无论传入多长、多少条上下文，服务端自动平滑滑动裁剪（Rolling Window & Auto-truncation），
+ * 永远不向客户端抛出 CONTEXT_TOO_LARGE 错误。
+ */
+function fitContextBudget(rawContext, config) {
+  if (!Array.isArray(rawContext) || config.maxContextChars <= 0 || config.maxContextMessages <= 0) {
+    return [];
+  }
+  // 1. 过滤有效角色与非空文本
+  const valid = [];
+  for (const item of rawContext) {
+    if (!isPlainObject(item)) continue;
+    const role = item.role === 'user' || item.role === 'assistant' ? item.role : null;
+    if (!role || typeof item.text !== 'string') continue;
+    const text = item.text.trim();
+    if (!text) continue;
+    valid.push({ role, text });
+  }
+
+  // 2. 最多取最近的 maxContextMessages 条（尾部保留）
+  const recent = valid.slice(-config.maxContextMessages);
+
+  // 3. 从最新往最早累计预算（最近的对话最关键，优先保留）
+  const picked = [];
+  let totalChars = 0;
+  for (let i = recent.length - 1; i >= 0; i--) {
+    const item = recent[i];
+    // 单条超长自动平滑截断，绝不报错
+    const clippedText = clipCodePoints(item.text, config.maxContextMessageChars);
+    const chars = codePoints(clippedText);
+    if (totalChars + chars > config.maxContextChars) {
+      // 若当前未纳入任何消息但单条超总预算，按总预算截取一次保证至少有最新线索
+      if (picked.length === 0 && config.maxContextChars > 20) {
+        const fitText = clipCodePoints(clippedText, config.maxContextChars);
+        picked.unshift({ role: item.role, text: fitText });
+      }
+      break;
+    }
+    totalChars += chars;
+    picked.unshift({ role: item.role, text: clippedText });
+  }
+
+  return picked;
+}
+
 /**
  * @param {{
  *   modelClient: { generate: (input: any) => Promise<any> },
@@ -116,30 +170,7 @@ export function createEnhancementService({ modelClient, config = readEnhancement
       return failure('INVALID_INPUT', '草稿含未闭合的代码围栏，无法安全增强');
     }
 
-    const rawContext = body.context ?? [];
-    if (!Array.isArray(rawContext)) return failure('INVALID_INPUT', 'context 必须是数组');
-    if (rawContext.length > config.maxContextMessages) {
-      return failure('CONTEXT_TOO_LARGE', `上下文条数超过 ${config.maxContextMessages} 条上限`);
-    }
-
-    const context = [];
-    let contextChars = 0;
-    for (const item of rawContext) {
-      if (!isPlainObject(item)) return failure('INVALID_INPUT', 'context 条目格式错误');
-      const role = item.role === 'user' || item.role === 'assistant' ? item.role : null;
-      if (!role) return failure('INVALID_INPUT', 'context 角色必须是 user 或 assistant');
-      if (typeof item.text !== 'string') return failure('INVALID_INPUT', 'context 文本必须是字符串');
-      const text = item.text.trim();
-      if (!text) continue;
-      if (codePoints(text) > config.maxContextMessageChars) {
-        return failure('CONTEXT_TOO_LARGE', `单条上下文超过 ${config.maxContextMessageChars} 字上限`);
-      }
-      contextChars += codePoints(text);
-      if (contextChars > config.maxContextChars) {
-        return failure('CONTEXT_TOO_LARGE', `上下文超过 ${config.maxContextChars} 字上限`);
-      }
-      context.push({ role, text });
-    }
+    const context = fitContextBudget(body.context, config);
 
     return {
       ok: true,

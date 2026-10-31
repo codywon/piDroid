@@ -124,10 +124,6 @@ fun GlobalSettingsScreen(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
-    autoCompactionEnabled: Boolean = true,
-    onToggleAutoCompaction: (Boolean) -> Unit = {},
-    autoRetryEnabled: Boolean = true,
-    onToggleAutoRetry: (Boolean) -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -329,10 +325,6 @@ fun GlobalSettingsScreen(
                     completionSoundEnabled = completionSoundEnabled,
                     onToggleCompletionSound = onToggleCompletionSound,
                     onTestCompletionSound = onTestCompletionSound,
-                    autoCompactionEnabled = autoCompactionEnabled,
-                    onToggleAutoCompaction = onToggleAutoCompaction,
-                    autoRetryEnabled = autoRetryEnabled,
-                    onToggleAutoRetry = onToggleAutoRetry,
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
@@ -3107,10 +3099,6 @@ fun GlobalSystemSettingsTab(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
-    autoCompactionEnabled: Boolean = true,
-    onToggleAutoCompaction: (Boolean) -> Unit = {},
-    autoRetryEnabled: Boolean = true,
-    onToggleAutoRetry: (Boolean) -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -3248,35 +3236,6 @@ fun GlobalSystemSettingsTab(
                                     }
                                 }
                             }
-                        }
-                    )
-                    SettingsRow(
-                        title = "CPU 唤醒锁与断线自愈",
-                        value = "已就绪",
-                        valueColor = Color(0xFF2EA043),
-                        topDivider = true
-                    )
-                }
-            }
-        }
-
-        // ── 会话行为 ─────────────────────────────────────────────────
-        item(key = "session") {
-            Column {
-                SettingsGroupLabel(text = "会话行为")
-                SettingsGroup {
-                    SettingsRow(
-                        title = "自动压缩上下文",
-                        subtitle = "接近窗口上限时压缩，不打断当前请求",
-                        trailing = {
-                            SettingsSwitch(checked = autoCompactionEnabled, onCheckedChange = onToggleAutoCompaction)
-                        }
-                    )
-                    SettingsRow(
-                        title = "自动重试",
-                        topDivider = true,
-                        trailing = {
-                            SettingsSwitch(checked = autoRetryEnabled, onCheckedChange = onToggleAutoRetry)
                         }
                     )
                 }

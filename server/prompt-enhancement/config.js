@@ -11,9 +11,9 @@ const DEFAULTS = {
   // 手机端入口随之隐藏，原有聊天与标题功能不受影响。
   disableEnv: 'PROMPT_ENHANCE_DISABLED',
   maxDraftChars: 6000,
-  maxContextChars: 4000,
+  maxContextChars: 12000,
   maxContextMessages: 10,
-  maxContextMessageChars: 800,
+  maxContextMessageChars: 2500,
   maxOutputChars: 10000,
   outputTokens: 4096,
   timeoutMs: 45000,
@@ -36,9 +36,9 @@ function readEnhancementConfig(env = process.env) {
   return {
     enabled: String(env[ DEFAULTS.disableEnv ] || '') !== '1',
     maxDraftChars: readInt(env, 'PROMPT_ENHANCE_MAX_DRAFT', DEFAULTS.maxDraftChars, 200, 20000),
-    maxContextChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT', DEFAULTS.maxContextChars, 0, 20000),
+    maxContextChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT', DEFAULTS.maxContextChars, 0, 60000),
     maxContextMessages: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_MESSAGES', DEFAULTS.maxContextMessages, 0, 50),
-    maxContextMessageChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE', DEFAULTS.maxContextMessageChars, 100, 4000),
+    maxContextMessageChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE', DEFAULTS.maxContextMessageChars, 100, 10000),
     maxOutputChars: readInt(env, 'PROMPT_ENHANCE_MAX_OUTPUT', DEFAULTS.maxOutputChars, 200, 40000),
     outputTokens: readInt(env, 'PROMPT_ENHANCE_OUTPUT_TOKENS', DEFAULTS.outputTokens, 128, 32000),
     timeoutMs: readInt(env, 'PROMPT_ENHANCE_TIMEOUT_MS', DEFAULTS.timeoutMs, 5000, 180000),

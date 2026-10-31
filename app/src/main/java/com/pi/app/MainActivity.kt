@@ -64,6 +64,14 @@ private const val LIST_AUTO_REFRESH_MIN_INTERVAL_MS = 15_000L
  */
 private const val RECONNECT_NOTICE_DELAY_MS = 20_000L
 
+/**
+ * 斜杠命令解析：与 pi-web 的 dispatcher 同一正则（`^\/([^\s]+)(?:\s+([\s\S]+))?$`）。
+ *
+ * 只用于 App 侧自己实现的内置命令（目前只有 /auto-compact）。其余命令（技能 / 模板 /
+ * 扩展命令）本来就是交给 agent 解析的，不在这里拦。
+ */
+private val SLASH_COMMAND_PATTERN = Regex("^/([^\\s]+)(?:\\s+([\\s\\S]+))?$")
+
 class MainActivity : ComponentActivity() {
 
     private lateinit var prefs: AppPreferences
@@ -436,9 +444,6 @@ class MainActivity : ComponentActivity() {
         var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
         // 追踪上一轮轻量快照中的运行中会话，用于感知后台任务何时完成以自动标为未读
         var previousRunningSessionIds by remember { mutableStateOf<Set<String>>(emptySet()) }
-        // pi 的智能体行为开关（真源在 PC，读 get_state、写 set_auto_*）
-        var autoCompactionEnabled by remember { mutableStateOf(true) }
-        var autoRetryEnabled by remember { mutableStateOf(true) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
         // Stop / 撤回退回的提示词：交给 ChatScreen 回填一次后清空（见 RecallToComposerRequest）
         var recallRequest by remember { mutableStateOf<RecallToComposerRequest?>(null) }
@@ -1126,8 +1131,6 @@ class MainActivity : ComponentActivity() {
                             maxContextWindow = window
                         )
                     }
-                    autoCompactionEnabled = st.autoCompactionEnabled
-                    autoRetryEnabled = st.autoRetryEnabled
                 }
                 // 不再由 App 在阈值处自动 POST {"type":"compact"}：pi 的 manual compact
                 // 内部第一步就是 await this.abort()，会把正在执行的回合直接打断成
@@ -2310,36 +2313,6 @@ class MainActivity : ComponentActivity() {
                         hapticsAndNotify.playTaskCompletedSound(force = true)
                         Toast.makeText(this@MainActivity, "已播放任务完成提示音", Toast.LENGTH_SHORT).show()
                     },
-                    autoCompactionEnabled = autoCompactionEnabled,
-                    onToggleAutoCompaction = { enabled ->
-                        autoCompactionEnabled = enabled
-                        val sid = currentSession?.id
-                        if (sid.isNullOrBlank()) {
-                            Toast.makeText(this@MainActivity, "请先进入一个会话再切换（写入的是当前会话运行时）", Toast.LENGTH_SHORT).show()
-                        } else {
-                            lifecycleScope.launch {
-                                apiClient.setAutoCompaction(sid, enabled).onFailure { err ->
-                                    autoCompactionEnabled = !enabled
-                                    Toast.makeText(this@MainActivity, "切换失败: ${err.message}", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    },
-                    autoRetryEnabled = autoRetryEnabled,
-                    onToggleAutoRetry = { enabled ->
-                        autoRetryEnabled = enabled
-                        val sid = currentSession?.id
-                        if (sid.isNullOrBlank()) {
-                            Toast.makeText(this@MainActivity, "请先进入一个会话再切换（写入的是当前会话运行时）", Toast.LENGTH_SHORT).show()
-                        } else {
-                            lifecycleScope.launch {
-                                apiClient.setAutoRetry(sid, enabled).onFailure { err ->
-                                    autoRetryEnabled = !enabled
-                                    Toast.makeText(this@MainActivity, "切换失败: ${err.message}", Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        }
-                    },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
@@ -2592,6 +2565,54 @@ class MainActivity : ComponentActivity() {
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
                     },
                     onSendMessage = { prompt, images, editEntryId, onSubmissionRestore ->
+                        // 斜杠命令：客户端拦截执行，与 pi-web 的 slash dispatcher 同构。
+                        // pi 内核里没有 /auto-compact（它只存在于 pi-web 客户端），直接发上去
+                        // 会变成一条普通用户消息。pi-web 的做法是 get_state → 取反 →
+                        // set_auto_compaction → 回一条提示，这里亦然；唯一差异是失败时把
+                        // 草稿还回输入框（pi-web 只弹报错，正文就丢了）。
+                        val builtin = SLASH_COMMAND_PATTERN.find(prompt.trim())
+                        if (builtin != null && builtin.groupValues[1] == "auto-compact") {
+                            val cmdSessionId = activeSessionId
+                            lifecycleScope.launch {
+                                if (cmdSessionId.isBlank()) {
+                                    onSubmissionRestore?.invoke()
+                                    Toast.makeText(this@MainActivity, "没有活跃会话", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                // 必须走 get_state RPC（与 pi-web 同一通道）：GET /api/agent/{id} 不启 wrapper，
+                                // 空闲会话根本读不到这个字段，读不到而默认「已开启」→ 每次都往关的方向扫。
+                                val read = apiClient.getAutoCompactionEnabled(cmdSessionId)
+                                val readError = read.exceptionOrNull()
+                                if (readError != null) {
+                                    onSubmissionRestore?.invoke()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "读取自动压缩状态失败: ${readError.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                    return@launch
+                                }
+                                // 返回了状态但没有该字段（旧网关）→ 按内核默认 true 兜底，同 pi-web 的 `?? true`
+                                val next = !(read.getOrNull() ?: true)
+                                apiClient.setAutoCompaction(cmdSessionId, next)
+                                    .onSuccess {
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            if (next) "自动压缩已开启" else "自动压缩已关闭",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    }
+                                    .onFailure { err ->
+                                        onSubmissionRestore?.invoke()
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "切换自动压缩失败: ${err.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                            }
+                            return@ChatScreen
+                        }
                         // 绑定到「这条输入框所属的会话」：带附件要先上传/编码，
                         // 若期间用户切了会话，旧代码会在 await 后重新读 currentSession，
                         // 把正文发到另一个会话里 —— 这里改成编译期捕获的 activeSessionId。

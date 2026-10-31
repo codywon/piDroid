@@ -1708,12 +1708,14 @@ fun ChatScreen(
                             .takeIf { it.startsWith("/") && !it.contains('\n') }
                             ?.drop(1)
                         val showSlashMenu = slashQuery != null && !slashQuery.contains(' ')
-                        val matchedCommands = remember(commands, slashQuery) {
+                        // 内置命令永远排在服务端命令前面：它们不依赖网关，离线也能看见
+                        val paletteCommands = remember(commands) { BUILTIN_SLASH_COMMANDS + commands }
+                        val matchedCommands = remember(paletteCommands, slashQuery) {
                             val q = slashQuery?.trim().orEmpty()
                             if (q.isEmpty()) {
-                                commands.take(8)
+                                paletteCommands.take(8)
                             } else {
-                                commands.filter {
+                                paletteCommands.filter {
                                     it.name.contains(q, ignoreCase = true) ||
                                         it.description.contains(q, ignoreCase = true)
                                 }.take(8)
@@ -1736,7 +1738,7 @@ fun ChatScreen(
                                     .padding(horizontal = 12.dp, vertical = 2.dp)
                             ) {
                                 Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                                    if (isLoadingCommands && commands.isEmpty()) {
+                                    if (isLoadingCommands && matchedCommands.isEmpty()) {
                                         Row(
                                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                                             verticalAlignment = Alignment.CenterVertically
@@ -3593,6 +3595,17 @@ private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
  * 手机上没有任何一个能白拿，所以要各自落地成原生实现。
  */
 internal enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO }
+
+/**
+ * App 侧内置的斜杠命令（对标 pi-web 的 `source:"builtin"` 命令表）。
+ *
+ * 它们不来自网关：pi 内核没有这些命令，发上去只会变成一条普通用户消息，
+ * 所以由客户端拦截执行（/auto-compact → get_state → set_auto_compaction）。
+ * 仍然放进面板，是为了手机上也能发现；描述文案直接沿用 pi-web 的 zh-CN。
+ */
+private val BUILTIN_SLASH_COMMANDS = listOf(
+    SlashCommand(name = "auto-compact", description = "切换自动上下文压缩（全局设置）", source = "builtin")
+)
 
 private val IMAGE_FILE_EXTS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
 private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "amr")
