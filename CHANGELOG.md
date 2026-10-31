@@ -2,6 +2,25 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.6] - 2026-11-01
+
+### 🔧 修 CI：`PromptEnhancementRulesTest` 断言参数顺序写反，导致 1.8.4 / 1.8.5 都没出包
+
+1.8.4 与 1.8.5 的 tag 流水线都停在「Run Unit Tests」：
+
+```
+PromptEnhancementRulesTest.kt:149: argument type mismatch: 'kotlin.Boolean' but 'kotlin.String?' expected
+```
+
+JUnit 4 的多参签名是 `assertTrue(String message, boolean condition)`，
+而测试里写成了 `assertTrue(condition, message)` —— **编译期就挂了**，APK 自然没构建。
+改为正确的参数顺序（两处），语义不变。
+
+> ⚠️ 因此：**1.8.4 的 P0 修复（模型管理保存时不再清空 codywon 的 models 数组）从本版才开始真正生效**。
+> 之前若升级到 1.8.4/1.8.5 失败，属正常 —— 那两个版本没有产物。
+
+另外：`server/.diag-*.mjs` 这类本地诊断脚本加入 `.gitignore` 并取消跟踪（文件仍留在磁盘）。
+
 ## [1.8.5] - 2026-11-01
 
 ### 🐛 修复提示词增强「转圈很久、内容不变」（真实根因三连）

@@ -146,11 +146,11 @@ class PromptEnhancementRulesTest {
             listOf(userRule, longReply),
             maxTotalChars = 800
         )
-        assertTrue(picked.any { it.role == "user" && it.text == "先给建议别改代码" }, picked.toString())
+        assertTrue(picked.toString(), picked.any { it.role == "user" && it.text == "先给建议别改代码" })
         val assistant = picked.first { it.role == "assistant" }
         assertTrue(
-            assistant.text.length <= PromptEnhancementRules.MAX_CONTEXT_ASSISTANT_CHARS + 1,
-            "assistant clipped to ${assistant.text.length}"
+            "assistant clipped to ${assistant.text.length}",
+            assistant.text.length <= PromptEnhancementRules.MAX_CONTEXT_ASSISTANT_CHARS + 1
         )
     }
 
