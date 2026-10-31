@@ -375,6 +375,7 @@ fun ChatScreen(
         if (!PromptEnhancementRules.canApply(ticket, result, environment)) return
         if (result.enhancedText == inputText) {
             enhancementUndo = null
+            android.widget.Toast.makeText(context, "提示词已足够清晰，无需优化", android.widget.Toast.LENGTH_SHORT).show()
             return
         }
         enhancementUndo = PromptEnhancementUndoState(
@@ -383,6 +384,7 @@ fun ChatScreen(
             enhanced = result.enhancedText
         )
         updateDraft(result.enhancedText)
+        android.widget.Toast.makeText(context, "✨ 提示词已增强", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     fun startPromptEnhancement() {
@@ -1473,6 +1475,7 @@ fun ChatScreen(
                                         if (PromptEnhancementRules.canUndo(undo, inputText, enhancementConnectionKey ?: "")) {
                                             enhancementUndo = null
                                             updateDraft(undo.original)
+                                            android.widget.Toast.makeText(context, "已恢复原始输入", android.widget.Toast.LENGTH_SHORT).show()
                                         }
                                     }
                             ) {
