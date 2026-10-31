@@ -105,9 +105,11 @@ data class RunningSessionsSnapshot(
  */
 data class ProviderAuthState(
     val providerId: String,
+    val displayName: String = "",
     val configured: Boolean = false,
     val source: String? = null,
-    val modelCount: Int = 0
+    val modelCount: Int = 0,
+    val supportsOAuth: Boolean = false
 ) {
     /** 给 UI 看的中文来源说明 */
     val sourceLabel: String
@@ -851,11 +853,13 @@ data class ModelConfigItem(
  */
 data class ProviderConfigItem(
     val name: String,
+    val displayName: String = "",
     val baseUrl: String = "",
     val apiKey: String = "",
     val api: String = "openai-completions",
     val headers: List<HeaderEntry> = emptyList(),
-    val models: List<ModelConfigItem> = emptyList()
+    val models: List<ModelConfigItem> = emptyList(),
+    val isBuiltIn: Boolean = false
 )
 
 /**
@@ -999,11 +1003,13 @@ object ModelConfigConverter {
             resultList.add(
                 ProviderConfigItem(
                     name = providerKey,
+                    displayName = providerKey,
                     baseUrl = baseUrl,
                     apiKey = apiKey,
                     api = api,
                     headers = pHeaders,
-                    models = modelsList
+                    models = modelsList,
+                    isBuiltIn = false
                 )
             )
         }
@@ -1017,6 +1023,48 @@ object ModelConfigConverter {
         for (provider in providers) {
             val pKey = provider.name.trim()
             if (pKey.isEmpty()) continue
+
+            if (provider.isBuiltIn) {
+                // 内置提供商（如 deepseek、openai 等）：
+                // 严禁将 models 数组或空 baseUrl 写入 models.json，防止破坏 pi 核心对官方模型的内置解析；
+                // 若用户对某个模型做了参数微调（如 contextWindow/maxTokens），无损记录在 modelOverrides 中。
+                val existingP = if (existingRoot != null && existingRoot.has("providers") &&
+                    existingRoot.getAsJsonObject("providers").has(pKey) &&
+                    existingRoot.getAsJsonObject("providers").get(pKey).isJsonObject
+                ) {
+                    existingRoot.getAsJsonObject("providers").getAsJsonObject(pKey).deepCopy()
+                } else {
+                    JsonObject()
+                }
+
+                val overridesObj = if (existingP.has("modelOverrides") && existingP.get("modelOverrides").isJsonObject) {
+                    existingP.getAsJsonObject("modelOverrides")
+                } else {
+                    JsonObject()
+                }
+
+                for (m in provider.models) {
+                    val mId = m.id.trim()
+                    if (mId.isEmpty()) continue
+                    val mOverride = if (overridesObj.has(mId) && overridesObj.get(mId).isJsonObject) {
+                        overridesObj.getAsJsonObject(mId)
+                    } else {
+                        JsonObject()
+                    }
+                    if (m.contextWindow > 0) mOverride.addProperty("contextWindow", m.contextWindow)
+                    if (m.maxTokens > 0) mOverride.addProperty("maxTokens", m.maxTokens)
+                    if (mOverride.size() > 0) {
+                        overridesObj.add(mId, mOverride)
+                    }
+                }
+
+                existingP.remove("models")
+                if (overridesObj.size() > 0) {
+                    existingP.add("modelOverrides", overridesObj)
+                    providersObj.add(pKey, existingP)
+                }
+                continue
+            }
 
             val pObj = JsonObject()
             if (provider.baseUrl.isNotBlank()) pObj.addProperty("baseUrl", provider.baseUrl.trim())

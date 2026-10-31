@@ -3293,11 +3293,15 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val o = el.asJsonObject
                         val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
                         if (id.isBlank()) continue
+                        val displayName = o.get("displayName")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: id
+                        val supportsOAuth = o.get("supportsOAuth")?.takeIf { !it.isJsonNull }?.asBoolean == true
                         result[id.lowercase()] = ProviderAuthState(
                             providerId = id,
+                            displayName = displayName,
                             configured = o.get("configured")?.takeIf { !it.isJsonNull }?.asBoolean == true,
                             source = o.get("source")?.takeIf { !it.isJsonNull }?.asString,
-                            modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                            modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                            supportsOAuth = supportsOAuth
                         )
                     }
                 }

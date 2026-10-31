@@ -2,6 +2,23 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.69] - 2026-10-31
+
+### 🚀 1:1 对标 pi-web：打通官方内置 Provider 凭据管理与模型合并展示
+
+- **核心根因修复**：修复设置页「模型管理」此前仅孤立读取 `models.json` 磁盘文件，导致在 `auth.json` 中配置了有效 API Key 的官方托管提供商（如 DeepSeek、OpenAI、Anthropic 等）在模型管理界面彻底隐形的问题；
+- **全量模型与提供商合并呈现**：`GlobalModelsConfigTab` 严格对齐 `pi-web` 架构，并行加载 `GET /api/models-config`、`GET /api/auth/providers` 与 `GET /api/models`，将已激活凭据的官方内置 Provider（如 `deepseek`）与自定义 Provider（如 `codywon`）统一合并展示，提供商总数与模型总数（2 个提供商，共 9 个可用模型）与会话切换面板 100% 对齐；
+- **内置 Provider 专属运维交互**：
+  - 为官方内置提供商增加「官方内置」专属标签，Base URL 自动显示为托管端点；
+  - 隐藏针对内置 Provider 无意义的 Base URL 编辑与 API 发现按钮，支持直接管理/清除其在 `auth.json` 中的 API Key；
+  - 单模型调校参数（如上下文窗口、最大输出等）采用官方标准的 `modelOverrides` 记录，绝不写入破坏性的单模型 `models` 数组，杜绝丢失官方模型目录的风险；
+- **添加 Provider 面板体验对标 pi-web**：
+  - 点击「+ 添加 Provider」支持「官方内置」与「自定义端点」双模式；
+  - 官方内置模式自动列出 42 个已支持但未配置的厂商（Anthropic、Google、OpenAI、Groq、Moonshot 等），支持即时搜索，点击即可一键输入 API Key 快速激活；
+- **单元测试保障**：在 `ProviderConfigMergeTest` 中补充对内置提供商 modelOverrides 无损转换、禁止写入裸 models 数组以及自定义提供商序列化的全量断言用例。
+
+---
+
 ## [1.7.68] - 2026-10-31
 
 ### 🐛 修复用户提问带图乐观上屏缺失与快照对账丢图问题

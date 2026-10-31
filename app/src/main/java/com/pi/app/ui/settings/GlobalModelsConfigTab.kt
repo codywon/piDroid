@@ -116,16 +116,64 @@ fun GlobalModelsConfigTab(
     fun loadConfigFromServer() {
         isLoading = true
         coroutineScope.launch {
-            val result = apiClient.getModelsConfigObject()
-            result.onSuccess { rootObj ->
+            try {
+                val configResult = apiClient.getModelsConfigObject()
+                val rootObj = configResult.getOrNull() ?: JsonObject()
                 rawConfigRoot = rootObj
-                val parsed = ModelConfigConverter.parseProvidersConfig(rootObj)
-                providers = parsed
-                if (parsed.isNotEmpty()) {
-                    val currentProv = parsed.firstOrNull { it.name == selectedProviderName } ?: parsed.first()
+
+                val customProviders = ModelConfigConverter.parseProvidersConfig(rootObj)
+
+                val authResult = apiClient.getProviderAuthStates().getOrNull() ?: emptyMap()
+                authStates = authResult
+
+                val dynamicCatalog = apiClient.getDynamicModels().getOrNull()
+
+                // 将已配置凭据且未在 models.json 中重复定义的官方内置 Provider（如 deepseek）合并进来
+                val builtInProviders = mutableListOf<ProviderConfigItem>()
+                for ((_, state) in authResult) {
+                    if (!state.configured) continue
+                    if (customProviders.any { it.name.equals(state.providerId, ignoreCase = true) }) continue
+
+                    val provModels = dynamicCatalog?.models
+                        ?.filter { it.provider.equals(state.providerId, ignoreCase = true) }
+                        ?.map { mi ->
+                            ModelConfigItem(
+                                id = mi.id,
+                                name = mi.displayName.ifBlank { mi.id },
+                                reasoning = mi.reasoning,
+                                hasVision = mi.vision,
+                                contextWindow = mi.contextWindow.takeIf { it > 0 } ?: 128000L,
+                                maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L,
+                                costInput = mi.costInput,
+                                costOutput = mi.costOutput,
+                                costCacheRead = mi.costCacheRead,
+                                costCacheWrite = mi.costCacheWrite
+                            )
+                        } ?: emptyList()
+
+                    builtInProviders.add(
+                        ProviderConfigItem(
+                            name = state.providerId,
+                            displayName = state.displayName.ifBlank { state.providerId },
+                            baseUrl = "",
+                            apiKey = "",
+                            api = "openai-completions",
+                            models = provModels,
+                            isBuiltIn = true
+                        )
+                    )
+                }
+
+                val combined = customProviders + builtInProviders
+                providers = combined
+
+                if (combined.isNotEmpty()) {
+                    val currentProv = combined.firstOrNull { it.name.equals(selectedProviderName, ignoreCase = true) }
+                        ?: combined.first()
                     selectedProviderName = currentProv.name
                     if (currentProv.models.isNotEmpty()) {
-                        val currentM = currentProv.models.firstOrNull { it.id == selectedModelId } ?: currentProv.models.first()
+                        val currentM = currentProv.models.firstOrNull { it.id == selectedModelId }
+                            ?: currentProv.models.first()
                         selectedModelId = currentM.id
                     } else {
                         selectedModelId = null
@@ -134,16 +182,16 @@ fun GlobalModelsConfigTab(
                     selectedProviderName = null
                     selectedModelId = null
                 }
-            }.onFailure { err ->
-                Toast.makeText(context, "读取模型配置失败: ${err.message}", Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(context, "读取模型配置失败: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                isLoading = false
             }
-            isLoading = false
         }
     }
 
     LaunchedEffect(Unit) {
         loadConfigFromServer()
-        loadAuthStates()
     }
 
     // 获取当前选中的 Provider 和 Model
@@ -472,7 +520,7 @@ fun GlobalModelsConfigTab(
                                         )
                                         Spacer(modifier = Modifier.width(6.dp))
                                         Text(
-                                            text = currentProvider.name,
+                                            text = currentProvider.displayName.ifBlank { currentProvider.name },
                                             fontWeight = FontWeight.Bold,
                                             fontSize = 14.5.sp,
                                             color = theme.textPrimary,
@@ -480,19 +528,35 @@ fun GlobalModelsConfigTab(
                                             overflow = TextOverflow.Ellipsis,
                                             modifier = Modifier.weight(1f)
                                         )
-                                        MiniIconAction(
-                                            icon = Icons.Default.Edit,
-                                            tint = theme.textSecondary,
-                                            borderColor = theme.outline.copy(alpha = 0.55f),
-                                            contentDescription = "编辑 Provider",
-                                            onClick = { showEditProviderDialog = true }
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
+                                        if (currentProvider.isBuiltIn) {
+                                            Surface(
+                                                shape = RoundedCornerShape(4.dp),
+                                                color = theme.primary.copy(alpha = 0.12f),
+                                                modifier = Modifier.padding(end = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "官方内置",
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = theme.primary,
+                                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp)
+                                                )
+                                            }
+                                        } else {
+                                            MiniIconAction(
+                                                icon = Icons.Default.Edit,
+                                                tint = theme.textSecondary,
+                                                borderColor = theme.outline.copy(alpha = 0.55f),
+                                                contentDescription = "编辑 Provider",
+                                                onClick = { showEditProviderDialog = true }
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                        }
                                         MiniIconAction(
                                             icon = Icons.Default.DeleteOutline,
                                             tint = dangerColor,
                                             borderColor = dangerColor.copy(alpha = 0.35f),
-                                            contentDescription = "删除 Provider",
+                                            contentDescription = if (currentProvider.isBuiltIn) "断开 Provider" else "删除 Provider",
                                             onClick = { showDeleteProviderDialog = true }
                                         )
                                     }
@@ -598,7 +662,7 @@ fun GlobalModelsConfigTab(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clickable {
-                                                if (currentProvider.baseUrl.isNotBlank()) {
+                                                if (!currentProvider.isBuiltIn && currentProvider.baseUrl.isNotBlank()) {
                                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                                     clipboard.setPrimaryClip(ClipData.newPlainText("Base URL", currentProvider.baseUrl))
                                                     Toast.makeText(context, "已复制 Base URL", Toast.LENGTH_SHORT).show()
@@ -617,93 +681,101 @@ fun GlobalModelsConfigTab(
                                                 modifier = Modifier.padding(end = 6.dp)
                                             )
                                             Text(
-                                                text = currentProvider.baseUrl.ifBlank { "(采用接口默认端点)" },
+                                                text = if (currentProvider.isBuiltIn) {
+                                                    "(官方托管端点，免配 Base URL)"
+                                                } else {
+                                                    currentProvider.baseUrl.ifBlank { "(采用接口默认端点)" }
+                                                },
                                                 fontFamily = FontFamily.Monospace,
                                                 fontSize = 11.sp,
-                                                color = if (currentProvider.baseUrl.isNotBlank()) theme.textPrimary else theme.textMuted,
+                                                color = if (currentProvider.baseUrl.isNotBlank() && !currentProvider.isBuiltIn) theme.textPrimary else theme.textMuted,
                                                 maxLines = 1,
                                                 overflow = TextOverflow.Ellipsis,
                                                 modifier = Modifier.weight(1f)
                                             )
-                                            Icon(
-                                                imageVector = Icons.Default.ContentCopy,
-                                                contentDescription = "复制",
-                                                modifier = Modifier.size(12.dp),
-                                                tint = theme.textMuted
-                                            )
+                                            if (!currentProvider.isBuiltIn && currentProvider.baseUrl.isNotBlank()) {
+                                                Icon(
+                                                    imageVector = Icons.Default.ContentCopy,
+                                                    contentDescription = "复制",
+                                                    modifier = Modifier.size(12.dp),
+                                                    tint = theme.textMuted
+                                                )
+                                            }
                                         }
                                     }
 
                                     // API Key 入口已上提到协议元信息行；这里只保留「主体信息 + 双列操作」
 
-                                    Row(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Surface(
-                                            shape = RoundedCornerShape(7.dp),
-                                            color = theme.primary.copy(alpha = 0.12f),
-                                            border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.4f)),
-                                            modifier = Modifier
-                                                .weight(1.15f)
-                                                .clickable {
-                                                    showDiscoverDialog = true
-                                                    isDiscovering = true
-                                                    discoverError = null
-                                                    selectedDiscoverIds = emptySet()
-                                                    coroutineScope.launch {
-                                                        apiClient.discoverProviderModels(
-                                                            providerName = currentProvider.name,
-                                                            baseUrl = currentProvider.baseUrl,
-                                                            apiKey = currentProvider.apiKey,
-                                                            api = currentProvider.api
-                                                        ).onSuccess { res ->
-                                                            discoveredModels = res.models
-                                                            isDiscovering = false
-                                                        }.onFailure { err ->
-                                                            discoverError = err.message
-                                                            isDiscovering = false
+                                    if (!currentProvider.isBuiltIn) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Surface(
+                                                shape = RoundedCornerShape(7.dp),
+                                                color = theme.primary.copy(alpha = 0.12f),
+                                                border = BorderStroke(0.6.dp, theme.primary.copy(alpha = 0.4f)),
+                                                modifier = Modifier
+                                                    .weight(1.15f)
+                                                    .clickable {
+                                                        showDiscoverDialog = true
+                                                        isDiscovering = true
+                                                        discoverError = null
+                                                        selectedDiscoverIds = emptySet()
+                                                        coroutineScope.launch {
+                                                            apiClient.discoverProviderModels(
+                                                                providerName = currentProvider.name,
+                                                                baseUrl = currentProvider.baseUrl,
+                                                                apiKey = currentProvider.apiKey,
+                                                                api = currentProvider.api
+                                                            ).onSuccess { res ->
+                                                                discoveredModels = res.models
+                                                                isDiscovering = false
+                                                            }.onFailure { err ->
+                                                                discoverError = err.message
+                                                                isDiscovering = false
+                                                            }
                                                         }
                                                     }
-                                                }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Text("从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.Center
+                                                ) {
+                                                    Text("从 API 发现模型", fontSize = 11.sp, color = theme.primary, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+                                                }
                                             }
-                                        }
 
-                                        Surface(
-                                            shape = RoundedCornerShape(7.dp),
-                                            color = theme.surfaceContainerHigh,
-                                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
-                                            modifier = Modifier
-                                                .weight(1f)
-                                                .clickable {
-                                                    var newId = "custom-model"
-                                                    var idx = 1
-                                                    while (currentProvider.models.any { it.id == newId }) {
-                                                        newId = "custom-model-$idx"
-                                                        idx++
+                                            Surface(
+                                                shape = RoundedCornerShape(7.dp),
+                                                color = theme.surfaceContainerHigh,
+                                                border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clickable {
+                                                        var newId = "custom-model"
+                                                        var idx = 1
+                                                        while (currentProvider.models.any { it.id == newId }) {
+                                                            newId = "custom-model-$idx"
+                                                            idx++
+                                                        }
+                                                        val newModel = ModelConfigItem(id = newId, name = newId, reasoning = true)
+                                                        val updatedProv = currentProvider.copy(models = currentProvider.models + newModel)
+                                                        providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
+                                                        selectedModelId = newId
+                                                        testResultText = null
+                                                        isTestSuccess = null
                                                     }
-                                                    val newModel = ModelConfigItem(id = newId, name = newId, reasoning = true)
-                                                    val updatedProv = currentProvider.copy(models = currentProvider.models + newModel)
-                                                    providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
-                                                    selectedModelId = newId
-                                                    testResultText = null
-                                                    isTestSuccess = null
-                                                }
-                                        ) {
-                                            Row(
-                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.Center
                                             ) {
-                                                Text("新增模型", fontSize = 11.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                                Row(
+                                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.Center
+                                                ) {
+                                                    Text("新增模型", fontSize = 11.sp, color = theme.textPrimary, fontWeight = FontWeight.Medium, maxLines = 1, softWrap = false)
+                                                }
                                             }
                                         }
                                     }
@@ -907,13 +979,15 @@ fun GlobalModelsConfigTab(
                                         }
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    MiniIconAction(
-                                        icon = Icons.Default.DeleteOutline,
-                                        tint = dangerColor,
-                                        borderColor = dangerColor.copy(alpha = 0.35f),
-                                        contentDescription = "移除模型",
-                                        onClick = { showDeleteModelDialog = true }
-                                    )
+                                    if (!currentProvider.isBuiltIn) {
+                                        MiniIconAction(
+                                            icon = Icons.Default.DeleteOutline,
+                                            tint = dangerColor,
+                                            borderColor = dangerColor.copy(alpha = 0.35f),
+                                            contentDescription = "移除模型",
+                                            onClick = { showDeleteModelDialog = true }
+                                        )
+                                    }
                                 }
 
                                 // 当前编辑对象：单独一行、等宽字体、单行省略，不再挤进标题行
@@ -1238,81 +1312,272 @@ fun GlobalModelsConfigTab(
         }
     }
     if (showAddProviderDialog) {
+        var addMode by remember { mutableStateOf(0) } // 0: 官方内置, 1: 自定义端点
+        var builtInSearch by remember { mutableStateOf("") }
+        var selectedBuiltIn by remember { mutableStateOf<ProviderAuthState?>(null) }
+        var builtInApiKeyInput by remember { mutableStateOf("") }
+        var isActivatingBuiltIn by remember { mutableStateOf(false) }
+
         var newProvName by remember { mutableStateOf("") }
         var newProvBaseUrl by remember { mutableStateOf("") }
         var newProvApiKey by remember { mutableStateOf("") }
         var newProvApi by remember { mutableStateOf("openai-completions") }
 
         AlertDialog(
-            onDismissRequest = { showAddProviderDialog = false },
+            onDismissRequest = {
+                if (!isActivatingBuiltIn) {
+                    showAddProviderDialog = false
+                    selectedBuiltIn = null
+                }
+            },
             containerColor = theme.surfaceContainerLow,
-            title = { Text("添加 Provider", fontWeight = FontWeight.Bold, color = theme.textPrimary, fontSize = 15.sp) },
+            title = {
+                Text(
+                    text = if (selectedBuiltIn != null) "接入 ${selectedBuiltIn!!.displayName}" else "添加 Provider",
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary,
+                    fontSize = 15.sp
+                )
+            },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        value = newProvName,
-                        onValueChange = { newProvName = it.trim() },
-                        label = { Text("Provider 标识 *") },
-                        placeholder = { Text("如 deepseek / codywon") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = newProvBaseUrl,
-                        onValueChange = { newProvBaseUrl = it.trim() },
-                        label = { Text("Base URL") },
-                        placeholder = { Text("https://api.example.com/v1") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = newProvApiKey,
-                        onValueChange = { newProvApiKey = it.trim() },
-                        label = { Text("API Key") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    OutlinedTextField(
-                        value = newProvApi,
-                        onValueChange = { newProvApi = it.trim() },
-                        label = { Text("API 协议") },
-                        placeholder = { Text("openai-completions / anthropic-messages") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (selectedBuiltIn != null) {
+                        Text(
+                            text = "请输入 ${selectedBuiltIn!!.displayName} 的 API Key，将写入凭据库并立即启用其 ${selectedBuiltIn!!.modelCount} 个可用模型：",
+                            fontSize = 12.sp,
+                            color = theme.textSecondary,
+                            lineHeight = 17.sp
+                        )
+                        OutlinedTextField(
+                            value = builtInApiKeyInput,
+                            onValueChange = { builtInApiKeyInput = it.trim() },
+                            label = { Text("API Key") },
+                            placeholder = { Text("sk-…") },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (addMode == 0) theme.primary.copy(alpha = 0.14f) else theme.surfaceContainer,
+                                border = BorderStroke(if (addMode == 0) 1.dp else 0.5.dp, if (addMode == 0) theme.primary else theme.outline),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { addMode = 0 }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 7.dp)) {
+                                    Text("官方内置", fontSize = 11.5.sp, fontWeight = if (addMode == 0) FontWeight.Bold else FontWeight.Normal, color = if (addMode == 0) theme.primary else theme.textSecondary)
+                                }
+                            }
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = if (addMode == 1) theme.primary.copy(alpha = 0.14f) else theme.surfaceContainer,
+                                border = BorderStroke(if (addMode == 1) 1.dp else 0.5.dp, if (addMode == 1) theme.primary else theme.outline),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable { addMode = 1 }
+                            ) {
+                                Box(contentAlignment = Alignment.Center, modifier = Modifier.padding(vertical = 7.dp)) {
+                                    Text("自定义端点", fontSize = 11.5.sp, fontWeight = if (addMode == 1) FontWeight.Bold else FontWeight.Normal, color = if (addMode == 1) theme.primary else theme.textSecondary)
+                                }
+                            }
+                        }
+
+                        if (addMode == 0) {
+                            OutlinedTextField(
+                                value = builtInSearch,
+                                onValueChange = { builtInSearch = it.trim() },
+                                placeholder = { Text("搜索内置提供商，如 anthropic / openai...") },
+                                singleLine = true,
+                                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            val unconfiguredList = authStates.values
+                                .filter { !it.configured && !providers.any { p -> p.name.equals(it.providerId, ignoreCase = true) } }
+                                .filter {
+                                    builtInSearch.isBlank() ||
+                                        it.displayName.contains(builtInSearch, ignoreCase = true) ||
+                                        it.providerId.contains(builtInSearch, ignoreCase = true)
+                                }
+                                .sortedBy { it.displayName }
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 240.dp)
+                                    .verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                if (unconfiguredList.isEmpty()) {
+                                    Text(
+                                        text = if (builtInSearch.isBlank()) "无更多未接入的内置提供商" else "未匹配到任何提供商",
+                                        fontSize = 11.sp,
+                                        color = theme.textMuted,
+                                        modifier = Modifier.padding(vertical = 12.dp)
+                                    )
+                                } else {
+                                    unconfiguredList.forEach { pAuth ->
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = theme.surfaceContainer,
+                                            border = BorderStroke(0.5.dp, theme.outline.copy(alpha = 0.5f)),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    selectedBuiltIn = pAuth
+                                                    builtInApiKeyInput = ""
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Icon(
+                                                    Icons.Default.CloudQueue,
+                                                    contentDescription = null,
+                                                    tint = theme.primary,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    text = pAuth.displayName.ifBlank { pAuth.providerId },
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Medium,
+                                                    color = theme.textPrimary,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Text(
+                                                    text = "· ${pAuth.modelCount} 模型",
+                                                    fontSize = 10.5.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = theme.textMuted
+                                                )
+                                                Spacer(modifier = Modifier.width(4.dp))
+                                                Icon(
+                                                    Icons.Default.ChevronRight,
+                                                    contentDescription = null,
+                                                    tint = theme.textMuted,
+                                                    modifier = Modifier.size(14.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            OutlinedTextField(
+                                value = newProvName,
+                                onValueChange = { newProvName = it.trim() },
+                                label = { Text("Provider 标识 *") },
+                                placeholder = { Text("如 my-endpoint") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = newProvBaseUrl,
+                                onValueChange = { newProvBaseUrl = it.trim() },
+                                label = { Text("Base URL") },
+                                placeholder = { Text("https://api.example.com/v1") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = newProvApiKey,
+                                onValueChange = { newProvApiKey = it.trim() },
+                                label = { Text("API Key") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            OutlinedTextField(
+                                value = newProvApi,
+                                onValueChange = { newProvApi = it.trim() },
+                                label = { Text("API 协议") },
+                                placeholder = { Text("openai-completions / anthropic-messages") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
-                Button(
-                    onClick = {
-                        if (newProvName.isBlank()) {
-                            Toast.makeText(context, "Provider 标识不能为空", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        if (providers.any { it.name.equals(newProvName, ignoreCase = true) }) {
-                            Toast.makeText(context, "已存在同名 Provider", Toast.LENGTH_SHORT).show()
-                            return@Button
-                        }
-                        val created = ProviderConfigItem(
-                            name = newProvName,
-                            baseUrl = newProvBaseUrl,
-                            apiKey = newProvApiKey,
-                            api = newProvApi,
-                            models = listOf(ModelConfigItem(id = "$newProvName-default", name = "$newProvName-default", reasoning = true))
-                        )
-                        providers = providers + created
-                        selectedProviderName = created.name
-                        selectedModelId = created.models.first().id
-                        showAddProviderDialog = false
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
-                ) {
-                    Text("添加", color = Color.White)
+                if (selectedBuiltIn != null) {
+                    Button(
+                        onClick = {
+                            val key = builtInApiKeyInput.trim()
+                            if (key.isBlank() || isActivatingBuiltIn) return@Button
+                            isActivatingBuiltIn = true
+                            val pAuth = selectedBuiltIn!!
+                            coroutineScope.launch {
+                                apiClient.setProviderApiKey(pAuth.providerId, key)
+                                    .onSuccess {
+                                        Toast.makeText(context, "已成功接入 ${pAuth.displayName}！", Toast.LENGTH_SHORT).show()
+                                        selectedProviderName = pAuth.providerId
+                                        showAddProviderDialog = false
+                                        selectedBuiltIn = null
+                                        loadConfigFromServer()
+                                        onModelsConfigChanged()
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(context, "接入失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                isActivatingBuiltIn = false
+                            }
+                        },
+                        enabled = builtInApiKeyInput.isNotBlank() && !isActivatingBuiltIn,
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
+                    ) {
+                        Text(if (isActivatingBuiltIn) "激活中…" else "激活并接入", color = Color.White)
+                    }
+                } else if (addMode == 1) {
+                    Button(
+                        onClick = {
+                            if (newProvName.isBlank()) {
+                                Toast.makeText(context, "Provider 标识不能为空", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            if (providers.any { it.name.equals(newProvName, ignoreCase = true) }) {
+                                Toast.makeText(context, "已存在同名 Provider", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            val created = ProviderConfigItem(
+                                name = newProvName,
+                                displayName = newProvName,
+                                baseUrl = newProvBaseUrl,
+                                apiKey = newProvApiKey,
+                                api = newProvApi,
+                                models = listOf(ModelConfigItem(id = "$newProvName-default", name = "$newProvName-default", reasoning = true)),
+                                isBuiltIn = false
+                            )
+                            providers = providers + created
+                            selectedProviderName = created.name
+                            selectedModelId = created.models.first().id
+                            showAddProviderDialog = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
+                    ) {
+                        Text("添加", color = Color.White)
+                    }
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showAddProviderDialog = false }) {
-                    Text("取消", color = theme.textSecondary)
+                TextButton(onClick = {
+                    if (selectedBuiltIn != null) {
+                        selectedBuiltIn = null
+                    } else {
+                        showAddProviderDialog = false
+                    }
+                }) {
+                    Text(if (selectedBuiltIn != null) "返回" else "取消", color = theme.textSecondary)
                 }
             }
         )
@@ -1500,7 +1765,7 @@ fun GlobalModelsConfigTab(
                                         allowUnverifiedSave = false
                                         showApiKeyDialog = false
                                         loadConfigFromServer()
-                                        loadAuthStates()
+                                        onModelsConfigChanged()
                                     }
                                     .onFailure { err ->
                                         apiKeyInputError = "保存失败: ${err.message ?: "未知错误"}"
@@ -1535,25 +1800,54 @@ fun GlobalModelsConfigTab(
         )
     }
 
-    // 弹窗 3：删除 Provider 确认
+    // 弹窗 3：删除/断开 Provider 确认
     if (showDeleteProviderDialog && currentProvider != null) {
+        val isBuiltIn = currentProvider.isBuiltIn
         AlertDialog(
             onDismissRequest = { showDeleteProviderDialog = false },
             containerColor = theme.surfaceContainerLow,
-            title = { Text("确认删除 Provider？", fontWeight = FontWeight.Bold, color = theme.textPrimary) },
-            text = { Text("将删除 ${currentProvider.name} 及其全部模型，保存后生效", color = theme.textSecondary) },
+            title = {
+                Text(
+                    if (isBuiltIn) "确认断开 ${currentProvider.displayName.ifBlank { currentProvider.name }}？"
+                    else "确认删除 Provider？",
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary
+                )
+            },
+            text = {
+                Text(
+                    if (isBuiltIn) "将清除已保存在凭据库中的 API Key，断开后该内置提供商将被停用。"
+                    else "将删除 ${currentProvider.name} 及其全部模型，保存后生效。",
+                    color = theme.textSecondary
+                )
+            },
             confirmButton = {
                 Button(
                     onClick = {
-                        val remaining = providers.filterNot { it.name == currentProvider.name }
-                        providers = remaining
-                        selectedProviderName = remaining.firstOrNull()?.name
-                        selectedModelId = remaining.firstOrNull()?.models?.firstOrNull()?.id
-                        showDeleteProviderDialog = false
+                        if (isBuiltIn) {
+                            coroutineScope.launch {
+                                apiClient.deleteProviderApiKey(currentProvider.name)
+                                    .onSuccess {
+                                        Toast.makeText(context, "已断开 ${currentProvider.name}", Toast.LENGTH_SHORT).show()
+                                        loadConfigFromServer()
+                                        onModelsConfigChanged()
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(context, "断开失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                showDeleteProviderDialog = false
+                            }
+                        } else {
+                            val remaining = providers.filterNot { it.name == currentProvider.name }
+                            providers = remaining
+                            selectedProviderName = remaining.firstOrNull()?.name
+                            selectedModelId = remaining.firstOrNull()?.models?.firstOrNull()?.id
+                            showDeleteProviderDialog = false
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
                 ) {
-                    Text("确认删除", color = Color.White)
+                    Text(if (isBuiltIn) "确认断开" else "确认删除", color = Color.White)
                 }
             },
             dismissButton = {
