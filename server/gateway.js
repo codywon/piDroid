@@ -237,6 +237,12 @@ function getOrCreateToken() {
 
 const AUTH_TOKEN = getOrCreateToken();
 
+// 模型运行时预热：
+// 以前 SDK 是「第一次点魔棒才加载」，而 ModelRuntime.create() 从盘上读模型目录
+// 本身要几十毫秒到 1 秒，叠加在用户第一次点击的等待上。现在网关启动后异步预热，
+// 用户点的时候直接命中缓存。预热失败不阻塞启动（用户可能还没配模型）。
+let promptEnhancementWarmUp = null;
+
 /** 恒定时间比较，避免通过响应耗时逐字节猜出 token。 */
 function safeTokenEquals(provided, expected) {
   if (typeof provided !== 'string' || typeof expected !== 'string') return false;
@@ -454,6 +460,20 @@ app.get('/api/ping', authMiddleware, (req, res) => {
   });
 });
 
+// 启动后异步预热（不阻塞监听端口）
+if (PROMPT_ENHANCE_CONFIG.enabled) {
+  promptEnhancementWarmUp = (async () => {
+    const startedAt = Date.now();
+    try {
+      const { service } = await loadPromptEnhancement();
+      await service.prewarm?.();
+      console.log(`[prompt-enhance] 已预热，耗时 ${Date.now() - startedAt}ms`);
+    } catch (error) {
+      console.warn(`[prompt-enhance] 预热失败（不影响网关其他功能）: ${error && error.message}`);
+    }
+  })();
+}
+
 // POST /api/mobile/prompt-enhance：必须是网关自有路由，且必须挂在反向代理之前
 // （pi-web 没有这个路径，落到代理会得到 404）。鉴权沿用网关 Bearer Token。
 app.post(
@@ -465,6 +485,16 @@ app.post(
       res.status(503).json({ requestId: null, code: 'ENHANCEMENT_UNAVAILABLE', message: '当前网关未启用提示词增强' });
       return;
     }
+    const startedAt = Date.now();
+    const provider = typeof req.body?.provider === 'string' ? req.body.provider : '?';
+    const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : '?';
+    // 为响应头提供延时信息（客户端不依赖，但排障时一眼能看出是「模型慢」还是「网络慢」）
+    res.setHeader('X-Prompt-Enhance-Started-At', String(startedAt));
+    res.on('finish', () => {
+      // 只记元信息，绝不打印草稿或增强结果（可能含用户代码与密钥）
+      const elapsed = Date.now() - startedAt;
+      console.log(`[prompt-enhance] ${provider}/${modelId} -> ${res.statusCode} ${elapsed}ms`);
+    });
     try {
       const { handler } = await loadPromptEnhancement();
       await handler(req, res);

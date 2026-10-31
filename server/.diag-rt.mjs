@@ -1,0 +1,11 @@
+import { ModelRuntime } from '@earendil-works/pi-coding-agent';
+const t0 = Date.now();
+const rt = await ModelRuntime.create();
+console.log('ModelRuntime.create() 耗时:', Date.now() - t0, 'ms');
+console.log('getError:', rt.getError());
+const ids = rt.getProviders().map(p => p.id);
+console.log('providers count:', ids.length);
+console.log('cody 相关:', ids.filter(i => /cody/i.test(i)));
+const models = rt.getModels();
+console.log('models total:', models.length);
+console.log('codywon 的模型:', models.filter(m => /cody/i.test(m.provider)).map(m => m.provider + '/' + m.id).slice(0, 20));

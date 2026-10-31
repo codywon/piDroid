@@ -39,3 +39,66 @@ test('maps provider errors to stable codes without swallowing real failures', ()
     'MODEL_REQUEST_FAILED',
   );
 });
+
+// ── 模型解析回退（回归：models.json 用 modelOverrides 新格式、模型目录缓存为空）──
+// 现场故障：models.json 里 codywon 声明了 baseUrl + 7 个 modelOverrides，但
+// models-store.json 没有该 provider 的目录缓存，runtime.getModel() 返回 undefined，
+// 增强请求被误判为 UNSUPPORTED_MODEL，手机端表现是「点魔棒转很久，内容没变」。
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { readProviderDeclaration, synthesizeModel } from '../prompt-enhancement/model-client.mjs';
+
+test('synthesizes a usable model from a modelOverrides-only provider declaration', () => {
+  const declaration = {
+    baseUrl: 'https://dl.example.top:8317/v1',
+    api: 'openai-completions',
+    apiKey: 'redacted',
+    modelOverrides: {
+      'deepseek-flash': { contextWindow: 1000000, maxTokens: 384000 },
+    },
+  };
+  const model = synthesizeModel({ provider: 'codywon', modelId: 'deepseek-flash', declaration });
+  assert.equal(model.provider, 'codywon');
+  assert.equal(model.id, 'deepseek-flash');
+  assert.equal(model.api, 'openai-completions');
+  assert.equal(model.baseUrl, 'https://dl.example.top:8317/v1');
+  assert.equal(model.contextWindow, 1000000);
+  assert.equal(model.maxTokens, 384000);
+  // 刻意不声明 reasoning：自定义 provider 的档位约定不明，冒然传会被上游 400 拒
+  assert.equal(model.reasoning, false);
+});
+
+test('refuses to synthesize when the provider has no baseUrl', () => {
+  // 内置 provider（只有 modelOverrides）应由官方模型目录提供，不能凭空合成
+  assert.equal(synthesizeModel({ provider: 'deepseek', modelId: 'deepseek-flash', declaration: { modelOverrides: {} } }), null);
+  assert.equal(synthesizeModel({ provider: 'x', modelId: 'y', declaration: null }), null);
+  assert.equal(synthesizeModel({ provider: 'x', modelId: 'y', declaration: { baseUrl: '' } }), null);
+});
+
+test('unknown model id still synthesizes with safe defaults', () => {
+  const model = synthesizeModel({
+    provider: 'codywon',
+    modelId: 'brand-new-model',
+    declaration: { baseUrl: 'https://x/v1', api: 'openai-completions' },
+  });
+  assert.equal(model.id, 'brand-new-model');
+  assert.ok(model.contextWindow > 0);
+  assert.ok(model.maxTokens > 0);
+});
+
+test('reads a provider declaration from models.json and tolerates a missing file', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pe-decl-'));
+  try {
+    writeFileSync(join(dir, 'models.json'), JSON.stringify({
+      providers: { codywon: { baseUrl: 'https://x/v1', api: 'openai-completions', modelOverrides: {} } },
+    }));
+    const decl = readProviderDeclaration('codywon', () => dir);
+    assert.equal(decl.baseUrl, 'https://x/v1');
+    assert.equal(readProviderDeclaration('missing-provider', () => dir), null);
+    // 目录里没有 models.json 时返回 null 而不是抛错
+    assert.equal(readProviderDeclaration('codywon', () => join(dir, 'nope')), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

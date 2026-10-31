@@ -437,16 +437,19 @@ fun ChatScreen(
                 result.onSuccess { applyPromptEnhancementResult(ticket, it) }
                     .onFailure { error ->
                         if (error is kotlinx.coroutines.CancellationException) return@launch
+                        // 优先用服务端给的精准原因（例如「models.json 缺少 baseUrl」），
+                        // 否则用户只会看到一句无用的「不支持」，没法自己修配置。
+                        val serverMessage = (error as? PromptEnhancementException)?.message?.takeIf { it.isNotBlank() }
                         val message = when ((error as? PromptEnhancementException)?.code) {
                             "RATE_LIMITED" -> "增强请求过于频繁，请稍后再试"
                             "TIMEOUT" -> "增强超时，已保留原稿"
                             "MODEL_AUTH_FAILED" -> "当前模型凭据不可用，请检查 PC 端配置"
-                            "UNSUPPORTED_MODEL" -> "该模型暂不支持增强"
-                            "ENHANCEMENT_UNAVAILABLE" -> "当前网关不支持提示词增强"
+                            "UNSUPPORTED_MODEL" -> serverMessage ?: "该模型暂不支持增强"
+                            "ENHANCEMENT_UNAVAILABLE" -> serverMessage ?: "当前网关不支持提示词增强"
                             "INVALID_OUTPUT" -> "增强结果不可用，已保留原稿"
-                            else -> error.message ?: "增强失败，已保留原稿"
+                            else -> serverMessage ?: "增强失败，已保留原稿"
                         }
-                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
                     }
             } finally {
                 // 新请求已接管时（requestId 已换）不要重置它的状态

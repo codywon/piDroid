@@ -156,7 +156,9 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 不能复用 [readClient]（12s 会先于模型返回把请求掐断），也不能无限等。
      */
     private val enhanceClient = client.newBuilder()
-        .callTimeout(50, TimeUnit.SECONDS)
+        // 服务端硬超时 25s（实测正常 4~7s）。客户端 30s 仅作为「服务端没回话」的兵底，
+        // 不能设成 50s：那会让用户盯着转圈等上一分钟才看到失败。
+        .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -1584,6 +1586,20 @@ class PiApiClient(private val prefs: AppPreferences) {
         return fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = true)?.config
     }
 
+    /** 每次写 models.json 前落一份本机快照（cacheDir/models-config-backups，保留最近 10 份）。 */
+    private fun persistModelsConfigBackup(payload: JsonObject) {
+        val dir = java.io.File(prefs.cacheDir, "models-config-backups")
+        if (!dir.exists() && !dir.mkdirs()) return
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss-SSS", java.util.Locale.US)
+            .format(java.util.Date())
+        java.io.File(dir, "models-$stamp.json").writeText(gson.toJson(payload))
+        dir.listFiles()
+            ?.filter { it.isFile && it.name.endsWith(".json") }
+            ?.sortedByDescending { it.lastModified() }
+            ?.drop(10)
+            ?.forEach { it.delete() }
+    }
+
     /**
      * 自动检测并无损修复损坏的 models.json：
      * 1. 若顶层意外残留了 "config" 递归包装，抢救其中的 providers 后移除顶层 "config"（修复 schema 校验报错）
@@ -1683,6 +1699,9 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     private fun putModelsConfigToServer(baseUrl: String, cleanRootConfig: JsonObject): Result<Unit> {
         val payload = ModelsConfigWriteContract.payloadOf(cleanRootConfig)
+        // 写盘前先在本机留一份快照：models.json 是不可逆的整体覆写，一旦算错（例如 2026-11-01
+        // 那次把 codywon 的 models 数组整家抹掉）就只能去猜历史值。保留最近 10 份便于手动找回。
+        runCatching { persistModelsConfigBackup(payload) }
         val req = Request.Builder()
             .url("$baseUrl/api/models-config")
             .put(gson.toJson(payload).toRequestBody(jsonMediaType))

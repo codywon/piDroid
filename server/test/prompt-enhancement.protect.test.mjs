@@ -72,6 +72,26 @@ test('rejects outputs that lost a protected segment or kept a placeholder', () =
   assert.equal(leftover.reason, 'leftover_placeholder');
 });
 
+// 回归：模型常在小节里反复提及同一个引用（【目标】与【输入】各写一次 @ChatScreen.kt）。
+// 旧实现只替换首次出现，第二次残留的占位符会把一次正确的增强判成 INVALID_OUTPUT，
+// 手机端表现就是「转了半天，内容没变」。
+test('restores a placeholder that the model repeated in several sections', () => {
+  const draft = '帮我看看 @ChatScreen.kt 这个报错，先给建议别改代码';
+  const { masked, protections } = maskProtectedSegments(draft);
+  const placeholder = protections[0].placeholder;
+  // 模拟模型的真实输出：同一占位符出现在三个小节里
+  const modelOutput = [
+    `【目标】定位 ${placeholder} 的成因`,
+    `【输入】报错来自 ${placeholder}`,
+    `【动作】先读 ${placeholder}，再给建议`,
+  ].join('\n');
+
+  const restored = restoreProtectedSegments(modelOutput, protections);
+  assert.equal(restored.ok, true, JSON.stringify(restored));
+  assert.equal(restored.text.split('@ChatScreen.kt').length - 1, 3);
+  assert.doesNotMatch(restored.text, /\[\[PE_/);
+});
+
 test('detects unclosed fences and normalizes output without destroying markdown', () => {
   assert.equal(hasUnclosedFence('```kotlin\nval a = 1'), true);
   assert.equal(hasUnclosedFence('```kotlin\nval a = 1\n```'), false);

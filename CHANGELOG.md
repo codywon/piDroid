@@ -2,6 +2,51 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.4] - 2026-11-01
+
+### 🚨 P0：模型管理里改 deepseek 参数，把 codywon 整家的模型清空了
+
+**现场**：在 App 的「模型管理」里改 deepseek 的上下文窗口/最大输出并保存后，
+`~/.pi/agent/models.json` 里 `providers.codywon.models` **整个数组消失**，
+`/api/models` 只剩 deepseek 的 2 个内置模型，codywon 的 7 个模型在模型面板里全部不见
+（`baseUrl` / `api` / `apiKey` 还在，API Key 也在 `auth.json`，所以只是「模型定义」被抹掉）。
+
+**根因（不是保存时算错了模型，而是供应商被认成了内置）**
+
+- `combineProviders()` 把「凭据库里有 key 的 provider」一律当成内置 provider。
+  `codywon` 是 models.json 里的自定义端点（有自己的 `baseUrl` + `models` 数组），
+  但它在 `auth.json` 里也存了 key，于是 `apiKeyProviders` 里 `configured=true` → 被判成内置；
+  `pureCustom` 又把真正的自定义条目过滤掉，界面上 `codywon` 只剩「内置」这一份。
+- 保存时 `serializeProvidersConfig()` 走内置分支：`existingP.remove("models")` + 只写
+  `modelOverrides`（只带 contextWindow/maxTokens，名字/vision 一并丢失）。
+  pi 的模型注册表里没有这些自定义模型，`models` 一删就彻底解析不到了。
+
+**修法**
+
+1. **`combineProviders`**：models.json 里自己声明了 `models` 数组的 provider 一律按自定义处理，
+   不再因为「auth 里有 key」被判成内置；`pureCustom` 也改成按「是否真的合并成内置」过滤。
+2. **`serializeProvidersConfig`（防御）**：内置分支**绝不删除已存在的 `models` 数组**
+   （只有 `baseUrl` 为空的内置 provider 才允许清，这正是 `sanitizeAndHealModelsConfig` 管的那种坏结构）。
+3. **每次写 models.json 前自动备份**：落到 `cacheDir/models-config-backups/models-<时间>.json`，
+   保留最近 10 份。这类整文件覆写一旦算错就是不可逆的，先留证据再动手。
+
+**已经帮你恢复的数据**（本机 `~/.pi/agent/models.json`，恢复前已另存 `models.json.bak-p0-*`）
+
+- codywon：`baseUrl` / `api` / `apiKey` 原样，`models` 数组按 7 个模型重建
+  （`deepseek-flash`、`gpt-6-sol`、`gpt-6.1-sol`、`gpt-6-luna`、`qwen3.8-flash`、
+  `claude-opus-4-6-thinking`、`gemini-3.8-flash-high`）。
+- `contextWindow` / `maxTokens` 取自残留的 `modelOverrides`（没丢）；`name` 取自事故前的
+  `/api/models`；`reasoning` 与 `input: [text, image]` 按事故前模型列表里的图标恢复
+  —— **这两项是重建值，若某个模型其实不支持图片/思考，在模型管理里关掉即可**。
+- deepseek 的 `modelOverrides`（你刚编辑的 1048576 / 393216）原样保留。
+- 复核：`/api/models` 已回到 9 个模型，默认模型仍是 `codywon/deepseek-flash`。
+
+**工程**
+
+- 新增 3 条 P0 回归用例（`ProviderConfigMergeTest`）：声明了 models 的自定义 provider 不被判内置、
+  编辑内置 provider 后保存不丢自定义模型、误判为内置时也不许删 `models`；
+  另用真实 `models.json` 跑了一遍 combine → serialize 往返（7 个模型、baseUrl、apiKey 全部保留）。
+
 ## [1.8.3] - 2026-11-01
 
 ### 🐛 修「会话模型在 gemini-3.8 与 deepseek-flash 之间来回横跳」（1.7.62 探针的回归）

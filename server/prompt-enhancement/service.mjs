@@ -77,12 +77,17 @@ function fitContextBudget(rawContext, config) {
   const recent = valid.slice(-config.maxContextMessages);
 
   // 3. 从最新往最早累计预算（最近的对话最关键，优先保留）
+  // 按角色分档：用户写的是意图与约束，助手长回答只需开头结论。
+  // 与客户端 PromptEnhancementRules.selectContext 保持一致的口径。
   const picked = [];
   let totalChars = 0;
   for (let i = recent.length - 1; i >= 0; i--) {
     const item = recent[i];
+    const budget = item.role === 'assistant'
+      ? Math.min(config.maxContextMessageChars, config.maxContextAssistantChars)
+      : config.maxContextMessageChars;
     // 单条超长自动平滑截断，绝不报错
-    const clippedText = clipCodePoints(item.text, config.maxContextMessageChars);
+    const clippedText = clipCodePoints(item.text, budget);
     const chars = codePoints(clippedText);
     if (totalChars + chars > config.maxContextChars) {
       // 若当前未纳入任何消息但单条超总预算，按总预算截取一次保证至少有最新线索
@@ -298,8 +303,14 @@ export function createEnhancementService({ modelClient, config = readEnhancement
     }
   }
 
+  // 预热：只加载 SDK 与模型目录，不发起模型请求、不花钱。
+  async function prewarm() {
+    if (!config.enabled || !modelClient) return;
+    await modelClient.warmUp?.();
+  }
+
   // 供测试与诊断使用，不对外暴露
-  return { capability, enhance, _internals: { validate, codePoints } };
+  return { capability, enhance, prewarm, _internals: { validate, codePoints } };
 }
 
 export { EnhancementFailure };

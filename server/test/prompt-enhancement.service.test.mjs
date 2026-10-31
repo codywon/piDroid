@@ -233,3 +233,33 @@ test('reports unavailable when disabled', async () => {
   const result = await disabled.enhance(baseBody(), { subject: 's' });
   assert.equal(result.code, 'ENHANCEMENT_UNAVAILABLE');
 });
+
+test('clips assistant replies harder so user constraints survive the budget', async () => {
+  let captured = null;
+  const modelClient = {
+    async generate(input) {
+      const payload = parsePayload(input.userText);
+      captured = payload.context;
+      // 必须原样带回 draft（含受保护占位符），否则会被判 INVALID_OUTPUT
+      return { text: payload.draft, stopReason: 'stop', usage: null, provider: input.provider, modelId: input.modelId };
+    },
+  };
+  const service = serviceWith(modelClient, {
+    PROMPT_ENHANCE_MAX_CONTEXT: '900',
+    PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE: '1200',
+    PROMPT_ENHANCE_MAX_CONTEXT_ASSISTANT: '400',
+  });
+
+  const result = await service.enhance(baseBody({
+    context: [
+      { role: 'user', text: '先给建议别改代码' },
+      { role: 'assistant', text: 'y'.repeat(5000) },
+    ],
+  }), { subject: 'subject-1' });
+
+  assert.equal(result.ok, true);
+  // 用户那句约束必须还在（不能被助手的长回答挤掉）
+  assert.ok(captured.some((m) => m.role === 'user' && m.text === '先给建议别改代码'), JSON.stringify(captured));
+  const assistant = captured.find((m) => m.role === 'assistant');
+  assert.ok(assistant.text.length <= 401, `assistant clipped to ${assistant.text.length}`);
+});

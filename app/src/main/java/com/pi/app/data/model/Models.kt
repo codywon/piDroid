@@ -1143,7 +1143,13 @@ object ModelConfigConverter {
                     }
                 }
 
-                existingP.remove("models")
+                // 防御：绝不因为「内置」就把 models.json 里声明的 models 数组删掉。
+                // 有 baseUrl + models 数组就是 models.json 里的自定义声明（即使 auth.json 里也有同名 key，
+                // 例如 codywon）；删了 pi 就解析不到这些模型，模型管理里整家供应商看起来被清空。
+                // pi 只在「没有 baseUrl 却有 models 数组」时才需要清理，那一步由 sanitizeAndHealModelsConfig 负责。
+                if (existingP.get("baseUrl").asSafeString().isBlank()) {
+                    existingP.remove("models")
+                }
                 if (overridesObj.size() > 0) {
                     existingP.add("modelOverrides", overridesObj)
                 }
@@ -1300,9 +1306,27 @@ object ModelConfigConverter {
         }
         val customProviders = rootObj?.let { parseProvidersConfig(it) } ?: emptyList()
 
+        /**
+         * models.json 里自己声明了 `models` 数组的 provider = **自定义 provider**。
+         *
+         * 关键：`apiKeyProviders` 把「在 auth.json 里存了 key 的 provider」也算进 configured，
+         * 于是 codywon 这类自定义端点（models.json 里声明了 baseUrl + models，同时 auth.json 也有 key）
+         * 以前会被判成内置 provider；内置保存路径会把 `models` 数组删掉，pi 就再也解析不到它的模型。
+         * 2026-11-01 的 P0（改 deepseek 参数后 codywon 全系模型消失）就是这么发生的。
+         */
+        fun declaresModelsArray(name: String): Boolean {
+            val entry = rootProviders?.entrySet()
+                ?.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
+                ?.takeIf { it.isJsonObject }?.asJsonObject ?: return false
+            val arr = entry.get("models")?.takeIf { it.isJsonArray }?.asJsonArray ?: return false
+            return arr.size() > 0
+        }
+
         val builtInProviders = mutableListOf<ProviderConfigItem>()
         for ((_, state) in authStates) {
             if (!state.configured) continue
+            // 自己声明了 models 数组的 provider 一律按自定义处理（见 declaresModelsArray）
+            if (declaresModelsArray(state.providerId)) continue
 
             // 检查 models.json 里是否已存在该内置提供商的配置（例如配置了自定义 baseUrl、headers 或 modelOverrides）
             val existingCustom = customProviders.firstOrNull { it.name.equals(state.providerId, ignoreCase = true) }
@@ -1355,9 +1379,9 @@ object ModelConfigConverter {
             )
         }
 
-        // 过滤掉已被内置提供商合并项替换的自定义条目
+        // 过滤掉已被内置提供商合并项替换的自定义条目（只删真正合并成内置的那些，不能按 auth 状态一刀切）
         val pureCustom = customProviders.filter { cp ->
-            authStates.values.none { it.configured && it.providerId.equals(cp.name, ignoreCase = true) }
+            builtInProviders.none { it.name.equals(cp.name, ignoreCase = true) }
         }
 
         return pureCustom + builtInProviders

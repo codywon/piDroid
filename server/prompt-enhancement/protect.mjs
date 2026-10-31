@@ -117,6 +117,12 @@ export function stripWrappingFence(text) {
 
 /**
  * 把占位符恢复成原文，并做完整性校验。
+ *
+ * 必须替换**所有**出现位置而不是只替换第一处：实测模型很容易在小节里反复提及
+ * 同一个引用（例如【目标】与【输入】各写一次 `@ChatScreen.kt`）。旧实现只替换首次
+ * 出现，第二次残留的占位符会触发 leftover_placeholder，把一次本来正确的增强判成
+ * 失败 —— 手机端看到的就是「转了半天，内容没变」。
+ *
  * @param {string} output
  * @param {Array<{placeholder: string, original: string}>} protections
  * @returns {{ ok: true, text: string } | { ok: false, reason: string }}
@@ -124,11 +130,11 @@ export function stripWrappingFence(text) {
 export function restoreProtectedSegments(output, protections) {
   let restored = output;
   for (const item of protections) {
-    const index = restored.indexOf(item.placeholder);
-    if (index < 0) {
+    if (!restored.includes(item.placeholder)) {
       return { ok: false, reason: 'missing_protected_segment' };
     }
-    restored = restored.slice(0, index) + item.original + restored.slice(index + item.placeholder.length);
+    // split/join 替换全部出现；占位符是每次请求唯一的随机串，不会误伤正文。
+    restored = restored.split(item.placeholder).join(item.original);
   }
   PLACEHOLDER_RE.lastIndex = 0;
   if (PLACEHOLDER_RE.test(restored)) {

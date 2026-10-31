@@ -138,6 +138,23 @@ class PromptEnhancementRulesTest {
     }
 
     @Test
+    fun `assistant replies are clipped harder so user constraints survive`() {
+        // 一条几千字的助手回答 + 一条短的用户约束：用户那句不能被挤出预算
+        val longReply = PromptEnhancementContextMessage("assistant", "z".repeat(5000))
+        val userRule = PromptEnhancementContextMessage("user", "先给建议别改代码")
+        val picked = PromptEnhancementRules.selectContext(
+            listOf(userRule, longReply),
+            maxTotalChars = 800
+        )
+        assertTrue(picked.any { it.role == "user" && it.text == "先给建议别改代码" }, picked.toString())
+        val assistant = picked.first { it.role == "assistant" }
+        assertTrue(
+            assistant.text.length <= PromptEnhancementRules.MAX_CONTEXT_ASSISTANT_CHARS + 1,
+            "assistant clipped to ${assistant.text.length}"
+        )
+    }
+
+    @Test
     fun `respects message count and total character budgets`() {
         assertEquals(2, PromptEnhancementRules.selectContext(context(), maxMessages = 2).size)
         assertTrue(

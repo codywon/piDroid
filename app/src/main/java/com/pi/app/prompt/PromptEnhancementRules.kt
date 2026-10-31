@@ -112,9 +112,13 @@ object PromptEnhancementCapabilityParser {
 
 object PromptEnhancementRules {
     const val MAX_DRAFT_CHARS = 6000
-    const val MAX_CONTEXT_MESSAGES = 10
-    const val MAX_CONTEXT_MESSAGE_CHARS = 2500
-    const val MAX_CONTEXT_TOTAL_CHARS = 12000
+    // 上下文只用来消解「它 / 那个接口 / 刚才那个报错」这类指代，不是让模型重读整段对话：
+    // 预算越大延迟越高（实测 12000 字比 6000 字慢 1~2 秒），而消解指代并不需要那么多。
+    const val MAX_CONTEXT_MESSAGES = 8
+    const val MAX_CONTEXT_MESSAGE_CHARS = 1200
+    const val MAX_CONTEXT_TOTAL_CHARS = 6000
+    /** 助手的长回答只取开头（结论/结论性描述），把预算留给用户写下的约束。 */
+    const val MAX_CONTEXT_ASSISTANT_CHARS = 400
 
     fun modelKey(provider: String, modelId: String): String = "${provider.trim()}:${modelId.trim()}"
 
@@ -181,13 +185,18 @@ object PromptEnhancementRules {
      * 从最近的对话里挑上下文：从最新往前取，超预算就停；单条过长保留开头。
      *
      * 只保留用户/助手正文，避免把工具日志、思考或附件体积带进提示词。
+     *
+     * 按角色分档裁剪（参考 pi-web 生成会话标题的做法：给用户指令 800 字、助手输出 300 字）：
+     * 用户写的是「意图与约束」，必须完整保留；助手的长回答里真正有用的是开头的结论，
+     * 不限额时一条几千字的回复会把预算吃光，把用户的「先给建议别改代码」挤出去。
      * @param candidates 按时间正序（旧 → 新）
      */
     fun selectContext(
         candidates: List<PromptEnhancementContextMessage>,
         maxMessages: Int = MAX_CONTEXT_MESSAGES,
         maxTotalChars: Int = MAX_CONTEXT_TOTAL_CHARS,
-        maxPerMessageChars: Int = MAX_CONTEXT_MESSAGE_CHARS
+        maxPerMessageChars: Int = MAX_CONTEXT_MESSAGE_CHARS,
+        maxAssistantChars: Int = MAX_CONTEXT_ASSISTANT_CHARS
     ): List<PromptEnhancementContextMessage> {
         if (maxMessages <= 0 || maxTotalChars <= 0) return emptyList()
         val picked = ArrayDeque<PromptEnhancementContextMessage>()
@@ -197,7 +206,12 @@ object PromptEnhancementRules {
             val text = candidate.text.trim()
             if (text.isEmpty()) continue
             if (candidate.role != "user" && candidate.role != "assistant") continue
-            val clipped = clip(text, maxPerMessageChars)
+            val budget = if (candidate.role == "assistant") {
+                minOf(maxPerMessageChars, maxAssistantChars)
+            } else {
+                maxPerMessageChars
+            }
+            val clipped = clip(text, budget)
             val cost = clipped.codePointCount(0, clipped.length)
             if (used + cost > maxTotalChars) break
             used += cost

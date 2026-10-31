@@ -12,6 +12,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const SDK_PACKAGE = '@earendil-works/pi-coding-agent';
 
@@ -79,6 +81,69 @@ function lowestMatch(haystack, needles) {
 }
 
 /**
+ * 读取 ~/.pi/agent/models.json 中某个 provider 的声明（baseUrl / api / modelOverrides）。
+ *
+ * 为什么需要这一步：
+ * pi 1.4 起 models.json 的新格式用 `modelOverrides` 声明自定义 provider 的模型参数，
+ * 而真正的模型目录来自网络拉取的 `models-store.json`。当该 provider 的目录缓存为空
+ * （首次使用 / 网络拉取失败）时，`runtime.getModel()` 直接返回 undefined ——
+ * 明明 models.json 里写清了 baseUrl 与 7 个模型 id，却被当成「不支持」。
+ * 这里把声明读出来，用于就地合成一个可用的 Model。
+ *
+ * @param {string} providerId
+ * @param {(dir: string) => string} [resolveAgentDir]
+ * @returns {{ baseUrl?: string, api?: string, modelOverrides?: Record<string, any>, models?: any[] } | null}
+ */
+export function readProviderDeclaration(providerId, resolveAgentDir) {
+  try {
+    // 注意：本文件是 ESM（.mjs），不能用 require() —— 那会抛错并被 catch 吞成「未配置」，
+    // 表现为「models.json 明明有 baseUrl 却说无法解析模型」。必须用顶层 import。
+    const agentDir = resolveAgentDir ? resolveAgentDir('.') : null;
+    if (!agentDir) return null;
+    const modelsPath = join(agentDir, 'models.json');
+    if (!existsSync(modelsPath)) return null;
+    const parsed = JSON.parse(readFileSync(modelsPath, 'utf8'));
+    const entry = parsed?.providers?.[providerId];
+    return entry && typeof entry === 'object' ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 把 provider 声明合成为 pi SDK 能直接使用的 Model 对象。
+ *
+ * 刻意不声明 `reasoning`：自定义 provider 的思考档位约定不明，冒然传 reasoning
+ * 会被上游 400 拒（实测 codywon 只接受 low/medium/high），交给 provider 默认最安全。
+ *
+ * @param {{ provider: string, modelId: string, declaration: any }} input
+ * @returns {any | null}
+ */
+export function synthesizeModel({ provider, modelId, declaration }) {
+  if (!declaration || typeof declaration !== 'object') return null;
+  const baseUrl = typeof declaration.baseUrl === 'string' ? declaration.baseUrl : undefined;
+  const api = typeof declaration.api === 'string' ? declaration.api : 'openai-completions';
+  // 没有 baseUrl 就不是可用的自定义 provider（内置 provider 的模型应由目录提供）
+  if (!baseUrl) return null;
+  const override = declaration.modelOverrides?.[modelId] ?? {};
+  const fromArray = Array.isArray(declaration.models)
+    ? declaration.models.find((m) => m && m.id === modelId)
+    : undefined;
+  return {
+    id: modelId,
+    name: typeof fromArray?.name === 'string' ? fromArray.name : modelId,
+    provider,
+    api,
+    baseUrl,
+    input: ['text'],
+    contextWindow: Number(override.contextWindow) > 0 ? Number(override.contextWindow) : 200000,
+    maxTokens: Number(override.maxTokens) > 0 ? Number(override.maxTokens) : 8192,
+    reasoning: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+}
+
+/**
  * @param {{
  *   sdkPackage?: string,
  *   importModule?: (specifier: string) => Promise<any>,
@@ -106,12 +171,19 @@ export function createSdkModelClient(options = {}) {
         if (typeof sdk?.ModelRuntime?.create !== 'function') {
           throw new EnhancementFailure('ENHANCEMENT_UNAVAILABLE', 'pi SDK 版本不支持独立模型调用');
         }
-        const runtime = await sdk.ModelRuntime.create();
+        // 关键：不打网络模型目录刷新。实测 allowModelNetwork 默认值会让首帧
+        // 卡在拉取 provider 的 /v1/models 上十几秒（失败后还是空目录），而手机端
+        // 看到的就是「点一下魔棒一直转圈」。模型目录用盘上的 models-store.json 即可。
+        const runtime = await sdk.ModelRuntime.create({
+          allowModelNetwork: false,
+          refreshOnCreate: false,
+        });
         const loadError = runtime.getError?.();
         if (loadError) {
           throw new EnhancementFailure('ENHANCEMENT_UNAVAILABLE', `模型配置加载失败: ${loadError}`);
         }
-        return { runtime };
+        const resolveAgentDir = typeof sdk.getAgentDir === 'function' ? sdk.getAgentDir : null;
+        return { runtime, resolveAgentDir };
       })().catch((error) => {
         // 失败不缓存：用户装好依赖 / 修好配置后无需重启网关
         runtimePromise = null;
@@ -136,10 +208,23 @@ export function createSdkModelClient(options = {}) {
      * }} input
      */
     async generate(input) {
-      const { runtime } = await loadRuntime();
-      const model = runtime.getModel(input.provider, input.modelId);
+      const { runtime, resolveAgentDir } = await loadRuntime();
+      let model = runtime.getModel(input.provider, input.modelId);
+      // 目录里没有（缓存为空 / 自定义 provider 未拉目录）就按 models.json 的声明合成，
+      // 而不是把用户明明配置好的模型判成「不支持」。
       if (!model) {
-        throw new EnhancementFailure('UNSUPPORTED_MODEL', '当前模型无法通过伴侣网关独立调用');
+        const declaration = readProviderDeclaration(input.provider, resolveAgentDir);
+        model = synthesizeModel({
+          provider: input.provider,
+          modelId: input.modelId,
+          declaration,
+        });
+      }
+      if (!model) {
+        throw new EnhancementFailure(
+          'UNSUPPORTED_MODEL',
+          `网关无法解析模型 ${input.provider}/${input.modelId}（models.json 缺少 baseUrl 或模型定义）`,
+        );
       }
 
       const reasoning = pickThinkingLevel(model);

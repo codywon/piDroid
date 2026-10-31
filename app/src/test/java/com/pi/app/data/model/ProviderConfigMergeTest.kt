@@ -332,4 +332,86 @@ class ProviderConfigMergeTest {
         Assert.assertEquals(128000L, reasoner.contextWindow)
         Assert.assertEquals(8192L, reasoner.maxTokens)
     }
+    // ── P0 回归（2026-11-01）：改 deepseek 参数把 codywon 的 models 数组整家删掉 ──
+
+    private val p0Root = JsonParser.parseString("""
+        {
+          "providers": {
+            "deepseek": {
+              "modelOverrides": { "deepseek-flash": { "contextWindow": 1048576, "maxTokens": 393216 } }
+            },
+            "codywon": {
+              "baseUrl": "https://dl.codywon.top:8317/v1",
+              "api": "openai-completions",
+              "apiKey": "codywon",
+              "models": [
+                { "id": "deepseek-flash", "name": "deepseek-flash", "contextWindow": 1000000, "maxTokens": 384000,
+                  "reasoning": true, "input": ["text", "image"] },
+                { "id": "gemini-3.8-flash-high", "name": "Gemini 3.8 Flash High", "contextWindow": 1000000,
+                  "maxTokens": 65536, "reasoning": true, "input": ["text", "image"] }
+              ]
+            }
+          }
+        }
+    """.trimIndent()).asJsonObject
+
+    private fun p0Auth() = mapOf(
+        "deepseek" to ProviderAuthState(providerId = "deepseek", configured = true, source = "stored", modelCount = 2),
+        "codywon" to ProviderAuthState(providerId = "codywon", configured = true, source = "stored", modelCount = 2)
+    )
+
+    @Test
+    fun `provider that declares models in models json stays custom even with a stored api key`() {
+        val combined = ModelConfigConverter.combineProviders(p0Root, p0Auth(), null)
+        val codywon = combined.first { it.name == "codywon" }
+        Assert.assertFalse("models.json 里声明了 models 的 provider 不能当成内置", codywon.isBuiltIn)
+        Assert.assertEquals(listOf("deepseek-flash", "gemini-3.8-flash-high"), codywon.models.map { it.id })
+
+        val deepseek = combined.first { it.name == "deepseek" }
+        Assert.assertTrue("没有 models 数组的内置 provider 保持内置", deepseek.isBuiltIn)
+    }
+
+    @Test
+    fun `saving after editing a built-in provider keeps every custom model`() {
+        val combined = ModelConfigConverter.combineProviders(p0Root, p0Auth(), null)
+        // 模拟用户在模型管理里改了 deepseek 的上下文窗口后保存
+        val edited = combined.map { prov ->
+            if (prov.name == "deepseek") {
+                prov.copy(models = prov.models + ModelConfigItem(id = "deepseek-flash", name = "x", contextWindow = 1048576L, maxTokens = 393216L))
+            } else prov
+        }
+        val serialized = ModelConfigConverter.serializeProvidersConfig(edited, p0Root)
+        val providers = serialized.getAsJsonObject("providers")
+        val codywon = providers.getAsJsonObject("codywon")
+        Assert.assertTrue("codywon 必须保留 models 数组", codywon.has("models"))
+        Assert.assertEquals(
+            listOf("deepseek-flash", "gemini-3.8-flash-high"),
+            codywon.getAsJsonArray("models").map { it.asJsonObject.get("id").asString }
+        )
+        // 名字/vision 也不能被抹掉
+        val gemini = codywon.getAsJsonArray("models").map { it.asJsonObject }.first { it.get("id").asString == "gemini-3.8-flash-high" }
+        Assert.assertEquals("Gemini 3.8 Flash High", gemini.get("name").asString)
+        Assert.assertEquals(2, gemini.getAsJsonArray("input").size())
+        // deepseek（真内置）仍然是 modelOverrides
+        val deepseek = providers.getAsJsonObject("deepseek")
+        Assert.assertFalse(deepseek.has("models"))
+        Assert.assertTrue(deepseek.getAsJsonObject("modelOverrides").has("deepseek-flash"))
+    }
+
+    @Test
+    fun `built-in branch never deletes an existing models array`() {
+        // 防御：即便上层误把 codywon 判成内置，序列化也不许删它的 models 数组
+        val misclassified = ProviderConfigItem(
+            name = "codywon",
+            displayName = "codywon",
+            baseUrl = "https://dl.codywon.top:8317/v1",
+            api = "openai-completions",
+            models = listOf(ModelConfigItem(id = "deepseek-flash", name = "deepseek-flash", contextWindow = 1000000L, maxTokens = 384000L)),
+            isBuiltIn = true
+        )
+        val serialized = ModelConfigConverter.serializeProvidersConfig(listOf(misclassified), p0Root)
+        val codywon = serialized.getAsJsonObject("providers").getAsJsonObject("codywon")
+        Assert.assertTrue("误判为内置也不许删 models", codywon.has("models"))
+        Assert.assertEquals(2, codywon.getAsJsonArray("models").size())
+    }
 }
