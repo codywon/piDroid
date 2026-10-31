@@ -74,6 +74,19 @@ schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
 
 日志：`server\logs\gateway.log`（超过 5 MB 时轮转为 `.log.1`）。
 
+### 无窗口模式下怎么拿配对二维码
+
+网关自启后没有窗口，启动横幅与二维码只写进了日志（而且被 ANSI 转义搅花）。
+需要重新配对时（Token 轮换、App 重装）执行：
+
+```bat
+server\show-pairing.cmd
+```
+
+它会读出 `server\.token` 与 frpc 配置里的 `customDomains`，现场打印**公网地址**与
+**局域网地址**两个二维码 + 明文 Token，**不重启、不打断**正在运行的服务。
+（脚本调用时加 `--no-pause` 可避免停在"按任意键继续"。）
+
 ### 三个坑（都是实测踩出来的）
 
 1. **`schtasks /End` 停不干净**：Task Scheduler 只结束动作进程（wscript），
