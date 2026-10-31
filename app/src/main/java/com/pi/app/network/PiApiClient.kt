@@ -1521,7 +1521,6 @@ class PiApiClient(private val prefs: AppPreferences) {
                         defaultModel = effectiveDefault
                     )
                 )
-            }
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -1902,7 +1901,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         submitPrompt(sessionId, text, images, streamingBehavior = "followUp")
     }
 
-    private fun submitPrompt(
+    private suspend fun submitPrompt(
         sessionId: String,
         prompt: String,
         images: List<ChatImageInput>,

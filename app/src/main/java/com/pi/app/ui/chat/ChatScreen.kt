@@ -218,11 +218,6 @@ fun ChatScreen(
     onSendMessage: (String, List<ChatImageInput>, String?, (() -> Unit)?) -> Unit,
     onSendSteer: (String, List<ChatImageInput>) -> Unit,
     onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
-    /**
-     * 把 Stop / 撤回退回的排队消息还给输入框（pi-web 的 restoreRecalledPrompts）：
-     * 输入框已有内容时拼在它前面，绝不覆盖用户正在写的东西。
-     */
-    onRecallToComposer: (String, List<ChatImageInput>) -> Unit = { _, _ -> },
     onClearQueue: () -> Unit,
     /**
      * 被 Stop / 撤回退回的排队消息：ChatScreen 消费一次后调 [onRecallConsumed] 清空。
@@ -458,6 +453,18 @@ fun ChatScreen(
         enhanceJobHolder.value = startedJob
     }
 
+    /** 把 base64 图片落成缓存文件，供输入框重新预览/重发（失败则不挂）。 */
+    fun attachmentFromBase64(ctx: android.content.Context, image: ChatImageInput): ChatAttachment? = runCatching {
+        val ext = image.mimeType.substringAfter('/', "png").substringBefore('+').ifBlank { "png" }
+        val file = java.io.File(ctx.cacheDir, "recalled_${System.currentTimeMillis()}_${image.base64Data.hashCode()}.$ext")
+        file.writeBytes(android.util.Base64.decode(image.base64Data, android.util.Base64.DEFAULT))
+        ChatAttachment(
+            name = image.name.ifBlank { file.name },
+            uri = android.net.Uri.fromFile(file),
+            isImage = true
+        )
+    }.getOrNull()
+
     /**
      * 一次提交被拒（服务端明确拒绝、分支切换失败、或对账确认未送达）时把内容还回输入框。
      *
@@ -486,18 +493,6 @@ fun ChatScreen(
             }
         }
     }
-
-    /** 把 base64 图片落成缓存文件，供输入框重新预览/重发（失败则不挂）。 */
-    fun attachmentFromBase64(ctx: android.content.Context, image: ChatImageInput): ChatAttachment? = runCatching {
-        val ext = image.mimeType.substringAfter('/', "png").substringBefore('+').ifBlank { "png" }
-        val file = java.io.File(ctx.cacheDir, "recalled_${System.currentTimeMillis()}_${image.base64Data.hashCode()}.$ext")
-        file.writeBytes(android.util.Base64.decode(image.base64Data, android.util.Base64.DEFAULT))
-        ChatAttachment(
-            name = image.name.ifBlank { file.name },
-            uri = android.net.Uri.fromFile(file),
-            isImage = true
-        )
-    }.getOrNull()
 
     // Stop / 撤回退回的排队消息：消费一次后把请求清掉，避免重组时重复回填
     LaunchedEffect(recallRequest?.id) {

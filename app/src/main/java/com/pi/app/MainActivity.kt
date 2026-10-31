@@ -22,9 +22,11 @@ import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
 import com.pi.app.keepalive.KeepAliveManager
 import com.pi.app.keepalive.PiForegroundService
+import com.pi.app.network.AgentCommandException
 import com.pi.app.network.DynamicModelCatalog
 import com.pi.app.network.PiApiClient
 import com.pi.app.network.PiSseClient
+import com.pi.app.network.RecalledPrompts
 import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
 import com.pi.app.ui.chat.ChatScreen
@@ -53,6 +55,14 @@ import java.util.Locale
  * 弱网下就直接表现为「获取会话列表失败：timeout」。
  */
 private const val LIST_AUTO_REFRESH_MIN_INTERVAL_MS = 15_000L
+
+/**
+ * 断流持续多久才提示「连不上网关」。
+ *
+ * SSE 自带退避重连，短暂抖动应自己恢复；只有持续连不上（通常意味着 PC 端网关/隧道
+ * 根本没在跑）才值得打断用户一次。
+ */
+private const val RECONNECT_NOTICE_DELAY_MS = 20_000L
 
 class MainActivity : ComponentActivity() {
 
@@ -449,6 +459,9 @@ class MainActivity : ComponentActivity() {
         var isCompacting by remember { mutableStateOf(false) }
         var isGatewayOnline by remember { mutableStateOf(true) }
         var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
+        // 断流起点（0 表示当前是连着的）/ 是否已提示过一次：用于“连不上网关”的一次性诊断，不刷屏
+        var sseDownSince by remember { mutableStateOf(0L) }
+        var reconnectNoticeShown by remember { mutableStateOf(false) }
 
         // 启动时静默检查更新
         LaunchedEffect(Unit) {
@@ -1212,9 +1225,27 @@ class MainActivity : ComponentActivity() {
                             sseConnectionState = when (event.connectionState) {
                                 "CONNECTED" -> {
                                     isGatewayOnline = true
+                                    sseDownSince = 0L
+                                    reconnectNoticeShown = false
                                     SseConnectionState.CONNECTED
                                 }
-                                "RECONNECTING" -> SseConnectionState.RECONNECTING
+                                "RECONNECTING" -> {
+                                    // 一直“自动重连中”通常不是 App 的问题：PC 端网关（4100）
+                                    // 或隧道没起来。给一次可执行的诊断，不再让用户对着转圈猜。
+                                    if (sseDownSince == 0L) sseDownSince = System.currentTimeMillis()
+                                    if (!reconnectNoticeShown &&
+                                        System.currentTimeMillis() - sseDownSince > RECONNECT_NOTICE_DELAY_MS
+                                    ) {
+                                        reconnectNoticeShown = true
+                                        isGatewayOnline = false
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "连不上网关：请确认 PC 端已运行 start-server-tunnel.bat，或重新扫码配对",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                    SseConnectionState.RECONNECTING
+                                }
                                 "CONNECTING" -> SseConnectionState.CONNECTING
                                 else -> SseConnectionState.DISCONNECTED
                             }
@@ -2666,7 +2697,8 @@ class MainActivity : ComponentActivity() {
                                             agentPhaseLabel = null
                                             keepAliveManager.releaseWakeLock()
                                             syncPersistentForegroundService(isBusy = false, project = currentProject)
-                                        }                                        Toast.makeText(
+                                        }
+                                        Toast.makeText(
                                             this@MainActivity,
                                             "发送失败，已退回输入框：${err.message ?: "未知错误"}",
                                             Toast.LENGTH_LONG

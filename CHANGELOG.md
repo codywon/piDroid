@@ -2,6 +2,26 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.73] - 2026-10-31
+
+### 🔧 修复 1.7.72 构建失败 + 网关失联诊断（上一版功能随本版全量发布）
+
+- **修复 CI 编译失败（阻断发版）**：`PiApiClient.kt` 在重构模型目录读取时多留了一个右括号，导致整个文件解析失败，连带 `GlobalModelsConfigTab` / `GlobalSettingsScreen` 出现上百条「unresolved reference」级联报错；另修复 `ChatScreen` 中局部函数声明顺序与一个不存在的图标引用。本版已通过全量源码语法检查与 24 个纯 JVM 单元测试；
+- **修复「一直自动重连中」无诊断**：SSE 自带退避重连，但网关（4100）或隧道未启动时，界面会永远转圈而不说原因。现在断流持续 20 秒且仍未恢复时，会一次性提示「请确认 PC 端已运行 start-server-tunnel.bat，或重新扫码配对」，连通后自动复位（不重复打扰）；
+
+随本版一并发布的能力（v1.7.72 未成功产出 APK）：
+
+- **模型配置保存安全**：移除「保存失败后换 `{config: …}` 包装重试」的危险逻辑（在 pi-web 0.13.0 下会绕过服务端校验并写坏 models.json）；错误文案优先透出服务端精准原因；
+- **models.json 无损往返**：未在移动端建模的官方字段（单模型 `baseUrl`、`compat.forceAdaptiveThinking`、`inputLimits.images.resize.maxBytes`、provider 级 `oauth`/`authHeader` 等）保存时完整保留，删除项正常清理；
+- **状态轮询瘦身**：切到 `GET /api/agent/{id}?systemPrompt=0`，大 `AGENTS.md` 项目单次轮询体积大幅下降；本地运行态判定补齐 `isCompacting`；
+- **提交确认与草稿保护**：支持压缩期间发送（`{queued:true}` 转队列）、服务端拒收时正文与附件自动退回输入框、网络歧义走对账不重发、`cwd-missing` 明确提示目录已不存在；
+- **Stop / 撤回退回消息**：服务端退回的正文与图片自动回填输入框（不覆盖用户新输入）；
+- **会话生命周期**：每 30 秒 `POST /api/agent/{id}/lease` 续租，避免选中会话被 10 分钟空闲回收；实时解析 `queue_update` 与异步 `prompt_error`；
+- **任务族完成判定**：主代理结束但子代理仍运行时（`subagentsActive`）不震动/不推送/不标未读，直到整组代理彻底结束；
+- **内容展示**：HTML 块按原文呈现、纯二进制文件改为下载提示（不再显示「空文件」）、Markdown 音视频链接提供播放入口、工具执行中不被覆盖为「正在等待模型」。
+
+---
+
 ## [1.7.72] - 2026-10-31
 
 ### 🚀 1:1 对标 pi-web 0.13.0：配置无损防坏、生命周期续租、提交与队列恢复闭环

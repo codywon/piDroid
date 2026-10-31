@@ -851,7 +851,7 @@ private fun MediaPlaybackChip(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Icon(
-                imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.PlayArrow,
+                imageVector = Icons.Default.PlayArrow,
                 contentDescription = if (isVideo) "播放视频" else "播放音频",
                 tint = theme.primary,
                 modifier = Modifier.size(16.dp)
