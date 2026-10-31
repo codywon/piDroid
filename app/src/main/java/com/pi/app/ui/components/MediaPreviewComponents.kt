@@ -34,12 +34,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -58,6 +61,8 @@ import com.pi.app.data.model.MediaKind
 import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -84,6 +89,20 @@ data class MediaGatewayConfig(
 
 val LocalMediaGatewayConfig = compositionLocalOf { MediaGatewayConfig() }
 
+/**
+ * 聊天页列表区域的可见视口（窗口坐标）。
+ *
+ * 卡片用它判断自己有没有「进过屏幕」：没进过就只画一个文件名占位、不发请求。
+ * 一个回合的过程组在列表里是**单个 item**，展开时组内几十张图会在同一帧全部组合出来，
+ * 光靠 LazyColumn 的可见性涋不住——必须让卡片自己看坐标。
+ */
+class MediaViewportState {
+    var rect: Rect? by mutableStateOf(null)
+        internal set
+}
+
+val LocalMediaViewport = compositionLocalOf { null as MediaViewportState? }
+
 private object MediaByteCache {
     /** 内存池按**字节**计容量：旧实现按项数计（32 项 × 单张 15MB 最坏≈480MB）。 */
     private val byteCache = object : LruCache<String, ByteArray>(MediaLoadPolicy.MEMORY_CACHE_MAX_BYTES) {
@@ -93,6 +112,35 @@ private object MediaByteCache {
         .connectTimeout(10, TimeUnit.SECONDS)
         .readTimeout(25, TimeUnit.SECONDS)
         .build()
+
+    /**
+     * 同时在飞的图片请求上限。
+     *
+     * 网关大多经 Cloudflare 隧道，一屏十几张同时拉只会互相拖慢、把正文与事件流也排到后面；
+     * OkHttp 默认每 host 允许 5，这里再收紧到 3。
+     */
+    private val networkPermits = Semaphore(3)
+
+    /** 真正发请求取字节（受并发闸门约束）。 */
+    suspend fun fetchBytes(url: String, authToken: String): ByteArray? =
+        networkPermits.withPermit {
+            try {
+                val reqBuilder = Request.Builder().url(url).get()
+                if (authToken.isNotBlank()) {
+                    reqBuilder.header("Authorization", "Bearer ${authToken.trim()}")
+                }
+                httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bytes = resp.body?.bytes()
+                        if (bytes != null && bytes.isNotEmpty()) bytes else null
+                    } else {
+                        null
+                    }
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
 
     /** 磁盘池目录：`<cacheDir>/media-bytes/<sha1>`，系统可随时回收。 */
     private fun diskDir(root: File?): File? {
@@ -258,23 +306,55 @@ suspend fun resolveMediaBytes(
     }
 
     for (url in candidateUrls.distinct()) {
-        try {
-            val reqBuilder = Request.Builder().url(url).get()
-            if (gateway.authToken.isNotBlank()) {
-                reqBuilder.header("Authorization", "Bearer ${gateway.authToken.trim()}")
-            }
-            MediaByteCache.httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-                if (resp.isSuccessful) {
-                    val bytes = resp.body?.bytes()
-                    if (bytes != null && bytes.isNotEmpty()) {
-                        return@withContext deliver(bytes)
-                    }
-                }
-            }
-        } catch (_: Exception) {}
+        val bytes = MediaByteCache.fetchBytes(url, gateway.authToken)
+        if (bytes != null && bytes.isNotEmpty()) {
+            return@withContext deliver(bytes)
+        }
     }
 
     null
+}
+
+/**
+ * 「这张卡片是否已经进过视口」。一旦进过就永久为真（滚动来回不会反复取消/重发请求）。
+ *
+ * 返回的 Modifier 必须挂在这张卡片最外层的可测量节点上，否则拿不到坐标。
+ * 未提供 [LocalMediaViewport]（单独预览 / 全屏查看器 / 测试）时一律视为可见。
+ */
+@Composable
+private fun rememberMediaVisibility(): Pair<Boolean, Modifier> {
+    val viewport = LocalMediaViewport.current
+    // everVisible 一旦为真就不再回退（滚动来回不反复取消/重发请求）
+    var everVisible by remember(viewport) { mutableStateOf(viewport == null) }
+    var myBounds by remember(viewport) { mutableStateOf<Rect?>(null) }
+    val viewportRect = viewport?.rect
+
+    val density = LocalDensity.current
+    val screenHeightDp = LocalConfiguration.current.screenHeightDp
+    // 上下各预留约 0.6 屏：滚动手感优先，进屏前就开始拉
+    val prefetchPx = remember(density, screenHeightDp) {
+        with(density) { (screenHeightDp.coerceAtLeast(600) * 0.6f).dp.toPx() }
+    }
+
+    // 不能只靠 onGloballyPositioned 里一次性判断：首帧里列表视口（viewport.rect）往往还没写给卡片，
+    // 那一次回调就白过了，卡片会永远停在占位。所以两边都当状态，任一变化就重新判一次。
+    LaunchedEffect(viewportRect, myBounds) {
+        if (everVisible) return@LaunchedEffect
+        val rect = viewportRect ?: return@LaunchedEffect
+        val bounds = myBounds ?: return@LaunchedEffect
+        if (bounds.bottom >= rect.top - prefetchPx && bounds.top <= rect.bottom + prefetchPx) {
+            everVisible = true
+        }
+    }
+
+    val gate = if (everVisible) {
+        Modifier
+    } else {
+        Modifier.onGloballyPositioned { coordinates ->
+            myBounds = coordinates.boundsInWindow()
+        }
+    }
+    return everVisible to gate
 }
 
 /**
@@ -379,16 +459,18 @@ private fun ImageThumbnailCard(
             MediaLoadPolicy.FALLBACK_DECODE_TARGET_PX
         }
     }
+    // 只有「进过视口」才真的去取字节：一个回合展开时组内几十张图会同时组合，
+    // 不拦的话它们会在同一帧全部排队请求（详见 rememberMediaVisibility）。
+    val (visible, gateModifier) = rememberMediaVisibility()
     var imageBitmap by remember(attachment.id, attachment.dataBase64, attachment.filePath, attachment.url, gateway) {
         mutableStateOf<ImageBitmap?>(null)
     }
     var resolutionLabel by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
-    var loadError by remember { mutableStateOf(false) }
+    var isLoading by remember { mutableStateOf(false) }
 
-    LaunchedEffect(attachment.id, attachment.dataBase64, attachment.filePath, attachment.url, gateway) {
+    LaunchedEffect(visible, attachment.id, attachment.dataBase64, attachment.filePath, attachment.url, gateway) {
+        if (!visible) return@LaunchedEffect
         isLoading = true
-        loadError = false
         val bytes = resolveMediaBytes(attachment, gateway)
         if (bytes != null && bytes.isNotEmpty()) {
             val decoded = withContext(Dispatchers.IO) {
@@ -401,11 +483,7 @@ private fun ImageThumbnailCard(
             if (decoded != null) {
                 imageBitmap = decoded.first
                 resolutionLabel = decoded.second
-            } else {
-                loadError = true
             }
-        } else {
-            loadError = true
         }
         isLoading = false
     }
@@ -423,6 +501,7 @@ private fun ImageThumbnailCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
+            .then(gateModifier)
             .clickable(enabled = imageBitmap != null) { onClick() }
     ) {
         Box(
@@ -467,7 +546,8 @@ private fun ImageThumbnailCard(
                         )
                     }
                 }
-                loadError -> {
+                // 未进视口 / 取不到字节：都退化成一行文件名占位（不转圈、不发请求）
+                else -> {
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -735,13 +815,16 @@ private fun PdfThumbnailCard(
     val context = LocalContext.current
     val gateway = LocalMediaGatewayConfig.current
 
+    val (visible, gateModifier) = rememberMediaVisibility()
     var firstPageBitmap by remember(attachment.id, attachment.filePath, attachment.dataBase64) {
         mutableStateOf<ImageBitmap?>(null)
     }
     var pageCount by remember { mutableIntStateOf(0) }
-    var isLoading by remember { mutableStateOf(true) }
+    var isLoading by remember { mutableStateOf(false) }
 
-    LaunchedEffect(attachment.id, attachment.filePath, attachment.dataBase64, gateway) {
+    LaunchedEffect(visible, attachment.id, attachment.filePath, attachment.dataBase64, gateway) {
+        // PDF 首页渲染（PdfRenderer）比取字节还重，同样等到进视口再做
+        if (!visible) return@LaunchedEffect
         isLoading = true
         val bytes = resolveMediaBytes(attachment, gateway)
         if (bytes != null && bytes.isNotEmpty()) {
@@ -783,6 +866,7 @@ private fun PdfThumbnailCard(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
+            .then(gateModifier)
             .clickable { onOpenFullscreen() }
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {

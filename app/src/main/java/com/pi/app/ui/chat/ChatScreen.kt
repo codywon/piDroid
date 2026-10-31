@@ -64,6 +64,8 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
@@ -78,6 +80,8 @@ import androidx.core.content.FileProvider
 import com.pi.app.data.model.*
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.LocalMediaGatewayConfig
+import com.pi.app.ui.components.LocalMediaViewport
+import com.pi.app.ui.components.MediaViewportState
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
@@ -282,6 +286,9 @@ fun ChatScreen(
     // 滚动位置也必须按会话隔离：否则切到新会话时会沿用上一个会话的滚动偏移，
     // 看起来像“打开了一个不从头也不到底的会话”。
     val listState = remember(sessionId) { LazyListState() }
+    // 列表区域的可见视口：图片/PDF 卡片只有在落进这块矩形之后才会真去取字节，
+    // 否则一个回合的过程组展开时（组内所有卡片同时组合）会把整回合的图一次性拉下来。
+    val mediaViewport = remember { MediaViewportState() }
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
@@ -2105,158 +2112,83 @@ fun ChatScreen(
                     )
                 }
             }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(start = 12.dp, end = if (allTurns.isNotEmpty()) 32.dp else 12.dp),
-                contentPadding = PaddingValues(vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                // 顶部加载哨兵：只占一行。触顶即自动向 PC 续批，加载中显示一枚细圆圈
-                // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，已按大厂 App 惯例移除）
-                if (hasEarlierOnServer || isLoadingOlder) {
-                    item(key = "history_top_loader") {
-                        HistoryTopLoader(
-                            isLoading = isLoadingOlder,
-                            hiddenCount = earlierTurnCount,
-                            onClick = {
-                                captureViewportAnchor()
-                                onLoadOlder()
-                            }
-                        )
-                    }
-                } else if (conversation.size > 6) {
-                    item(key = "history_origin_banner") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            HorizontalDivider(
-                                modifier = Modifier.weight(1f),
-                                color = theme.outline.copy(alpha = 0.35f),
-                                thickness = 0.6.dp
+            CompositionLocalProvider(LocalMediaViewport provides mediaViewport) {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .onGloballyPositioned { mediaViewport.rect = it.boundsInWindow() }
+                        .padding(start = 12.dp, end = if (allTurns.isNotEmpty()) 32.dp else 12.dp),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 顶部加载哨兵：只占一行。触顶即自动向 PC 续批，加载中显示一枚细圆圈
+                    // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，已按大厂 App 惯例移除）
+                    if (hasEarlierOnServer || isLoadingOlder) {
+                        item(key = "history_top_loader") {
+                            HistoryTopLoader(
+                                isLoading = isLoadingOlder,
+                                hiddenCount = earlierTurnCount,
+                                onClick = {
+                                    captureViewportAnchor()
+                                    onLoadOlder()
+                                }
                             )
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = theme.surfaceContainerLow,
-                                border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.55f)),
-                                modifier = Modifier.padding(horizontal = 10.dp)
+                        }
+                    } else if (conversation.size > 6) {
+                        item(key = "history_origin_banner") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
                             ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.5.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                HorizontalDivider(
+                                    modifier = Modifier.weight(1f),
+                                    color = theme.outline.copy(alpha = 0.35f),
+                                    thickness = 0.6.dp
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(16.dp),
+                                    color = theme.surfaceContainerLow,
+                                    border = BorderStroke(0.7.dp, theme.outline.copy(alpha = 0.55f)),
+                                    modifier = Modifier.padding(horizontal = 10.dp)
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.Flag,
-                                        contentDescription = null,
-                                        tint = theme.primary.copy(alpha = 0.85f),
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Text(
-                                        text = "本次已加载的起点 · 共 ${conversation.size} 条记录",
-                                        fontSize = 10.5.sp,
-                                        color = theme.textMuted
-                                    )
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.5.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Flag,
+                                            contentDescription = null,
+                                            tint = theme.primary.copy(alpha = 0.85f),
+                                            modifier = Modifier.size(11.dp)
+                                        )
+                                        Text(
+                                            text = "本次已加载的起点 · 共 ${conversation.size} 条记录",
+                                            fontSize = 10.5.sp,
+                                            color = theme.textMuted
+                                        )
+                                    }
                                 }
-                            }
-                            HorizontalDivider(
-                                modifier = Modifier.weight(1f),
-                                color = theme.outline.copy(alpha = 0.35f),
-                                thickness = 0.6.dp
-                            )
-                        }
-                    }
-                }
-
-                // 若首个提问前有系统前置消息 (例如欢饮语)
-                val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: conversation.size
-                if (firstUserIdx > 0) {
-                    val leadingSlice = conversation.subList(0, firstUserIdx.coerceAtMost(conversation.size))
-                    items(leadingSlice, key = { it.id }) { item ->
-                        ChatMessageItem(
-                            item = item,
-                            showModelHeader = false,
-                            defaultModelName = selectedModel.displayName,
-                            onApproveTool = onApproveTool,
-                            onEditFromHere = editFromMessage,
-                            onForkFromHere = onForkFromMessage,
-                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                            onOpenFilePreview = { p -> openFilePreview(p) },
-                            onOpenWidget = { w -> widgetOverlay = w },
-                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
-                            isEditing = !editingEntryId.isNullOrBlank() && item.entryId == editingEntryId,
-                            onCancelEdit = { editingEntryId = null },
-                            isLiveStreamingTail = item.id == liveStreamingItemId
-                        )
-                    }
-                }
-
-                // 遍历渲染每个回合（对标 pi-web ProcessDetailsGroup 与最终回答）。
-                // 全量渲染：LazyColumn 本身只组合可见项，无需再自己维护窗口 —— 之前那套
-                // 「按条数切窗口 / 行数补偿锚定」正是各种空白与停半路的来源。
-                allTurns.forEach { turn ->
-                    // 1. 用户提问
-                    item(key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}") {
-                        ChatMessageItem(
-                            item = turn.userMessage,
-                            showModelHeader = false,
-                            defaultModelName = selectedModel.displayName,
-                            onApproveTool = onApproveTool,
-                            onEditFromHere = editFromMessage,
-                            // 对标 pi-web：编辑目标条目高亮，工具条换成「取消」
-                            isEditing = !editingEntryId.isNullOrBlank() && turn.userMessage.entryId == editingEntryId,
-                            onCancelEdit = { editingEntryId = null },
-                            onForkFromHere = { userItem ->
-                                onForkFromMessage?.invoke(userItem)
-                            },
-                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                            onOpenFilePreview = { p -> openFilePreview(p) },
-                            onOpenWidget = { w -> widgetOverlay = w },
-                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) }
-                        )
-                    }
-
-                    // 2. 过程折叠组 (ProcessDetailsGroup: > 4 条消息 · 4 次工具调用 · 耗时 2m 13s)
-                    if (turn.processItems.isNotEmpty()) {
-                        item(key = "turn_${turn.turnNumber}_process") {
-                            ProcessDetailsGroup(
-                                messageCount = turn.processItems.size,
-                                toolCallCount = turn.toolCount,
-                                durationMs = turn.durationMs,
-                                defaultExpanded = turn.isRunning || turn.finalAnswerItem == null
-                            ) {
-                                turn.processItems.forEach { procItem ->
-                                    ChatMessageItem(
-                                        item = procItem,
-                                        showModelHeader = false,
-                                        defaultModelName = selectedModel.displayName,
-                                        onApproveTool = onApproveTool,
-                                        onEditFromHere = editFromMessage,
-                                        onForkFromHere = onForkFromMessage,
-                                        onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                                        onOpenFilePreview = { p -> openFilePreview(p) },
-                                        onOpenWidget = { w -> widgetOverlay = w },
-                                        onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
-                                        isLiveStreamingTail = procItem.id == liveStreamingItemId
-                                    )
-                                }
+                                HorizontalDivider(
+                                    modifier = Modifier.weight(1f),
+                                    color = theme.outline.copy(alpha = 0.35f),
+                                    thickness = 0.6.dp
+                                )
                             }
                         }
                     }
 
-                    // 3. 生成式 UI 微组件（`show_widget`）
-                    //
-                    // 刻意放在过程组**之外**、最终答复之前：它是本回合的内容产出，
-                    // 跟着过程组收起就变成「要先展开才看得到」。
-                    turn.widgetItems.forEach { widgetItem ->
-                        item(key = "turn_${turn.turnNumber}_widget_${widgetItem.id}") {
+                    // 若首个提问前有系统前置消息 (例如欢饮语)
+                    val firstUserIdx = allTurns.firstOrNull()?.userIndex ?: conversation.size
+                    if (firstUserIdx > 0) {
+                        val leadingSlice = conversation.subList(0, firstUserIdx.coerceAtMost(conversation.size))
+                        items(leadingSlice, key = { it.id }) { item ->
                             ChatMessageItem(
-                                item = widgetItem,
+                                item = item,
                                 showModelHeader = false,
                                 defaultModelName = selectedModel.displayName,
                                 onApproveTool = onApproveTool,
@@ -2266,65 +2198,156 @@ fun ChatScreen(
                                 onOpenFilePreview = { p -> openFilePreview(p) },
                                 onOpenWidget = { w -> widgetOverlay = w },
                                 onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
-                                isLiveStreamingTail = widgetItem.id == liveStreamingItemId
+                                isEditing = !editingEntryId.isNullOrBlank() && item.entryId == editingEntryId,
+                                onCancelEdit = { editingEntryId = null },
+                                isLiveStreamingTail = item.id == liveStreamingItemId
                             )
                         }
                     }
 
-                    // 4. 助手最终答复 (Final Answer)
-                    if (turn.finalAnswerItem != null) {
-                        val ans = turn.finalAnswerItem
-                        val showModelHeader = !ans.modelName.isNullOrBlank()
-                        item(key = "turn_${turn.turnNumber}_ans_${ans.id}") {
+                    // 遍历渲染每个回合（对标 pi-web ProcessDetailsGroup 与最终回答）。
+                    // 全量渲染：LazyColumn 本身只组合可见项，无需再自己维护窗口 —— 之前那套
+                    // 「按条数切窗口 / 行数补偿锚定」正是各种空白与停半路的来源。
+                    allTurns.forEach { turn ->
+                        // 1. 用户提问
+                        item(key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}") {
                             ChatMessageItem(
-                                item = ans,
-                                showModelHeader = showModelHeader,
+                                item = turn.userMessage,
+                                showModelHeader = false,
                                 defaultModelName = selectedModel.displayName,
                                 onApproveTool = onApproveTool,
                                 onEditFromHere = editFromMessage,
-                                onForkFromHere = onForkFromMessage,
+                                // 对标 pi-web：编辑目标条目高亮，工具条换成「取消」
+                                isEditing = !editingEntryId.isNullOrBlank() && turn.userMessage.entryId == editingEntryId,
+                                onCancelEdit = { editingEntryId = null },
+                                onForkFromHere = { userItem ->
+                                    onForkFromMessage?.invoke(userItem)
+                                },
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
                                 onOpenFilePreview = { p -> openFilePreview(p) },
                                 onOpenWidget = { w -> widgetOverlay = w },
-                                onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
-                                isLiveStreamingTail = ans.id == liveStreamingItemId
+                                onOpenLink = { href -> openLinkTarget(href, sessionCwd) }
                             )
                         }
-                    }
-                }
 
-                // 历史尚未到达时只画一条静默骨架（对齐 pi-web：不显示「正在同步历史…」类文案）
-                if (conversation.isEmpty()) {
-                    item(key = "chat_empty_hint") {
-                        // 加载中不再放任何文案（居中加载圈在上一层 Box 里），
-                        // 只有「确实没有对话」时才提示开始。
-                        if (!isFirstScreenLoading) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 48.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "还没有对话，发送指令开始",
-                                    fontSize = 12.sp,
-                                    color = theme.textMuted
+                        // 2. 过程折叠组 (ProcessDetailsGroup: > 4 条消息 · 4 次工具调用 · 耗时 2m 13s)
+                        if (turn.processItems.isNotEmpty()) {
+                            item(key = "turn_${turn.turnNumber}_process") {
+                                ProcessDetailsGroup(
+                                    messageCount = turn.processItems.size,
+                                    toolCallCount = turn.toolCount,
+                                    durationMs = turn.durationMs,
+                                    defaultExpanded = turn.isRunning || turn.finalAnswerItem == null
+                                ) {
+                                    // 长回合只渲染最近 N 条（ProcessWindowPolicy）：组内是普通 Column，
+                                    // 展开时全部同时组合，上百次工具调用的回合会一次性铺满几十张卡片。
+                                    val processTotal = turn.processItems.size
+                                    var processLimit by remember(turn.turnNumber) {
+                                        mutableIntStateOf(ProcessWindowPolicy.initialLimit(processTotal))
+                                    }
+                                    val hiddenProcessCount =
+                                        ProcessWindowPolicy.hiddenCount(processTotal, processLimit)
+                                    if (hiddenProcessCount > 0) {
+                                        ProcessWindowExpandRow(hiddenCount = hiddenProcessCount) {
+                                            processLimit = ProcessWindowPolicy.nextLimit(processLimit, processTotal)
+                                        }
+                                    }
+                                    turn.processItems.takeLast(processLimit).forEach { procItem ->
+                                        ChatMessageItem(
+                                            item = procItem,
+                                            showModelHeader = false,
+                                            defaultModelName = selectedModel.displayName,
+                                            onApproveTool = onApproveTool,
+                                            onEditFromHere = editFromMessage,
+                                            onForkFromHere = onForkFromMessage,
+                                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                            onOpenFilePreview = { p -> openFilePreview(p) },
+                                            onOpenWidget = { w -> widgetOverlay = w },
+                                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                                            isLiveStreamingTail = procItem.id == liveStreamingItemId
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. 生成式 UI 微组件（`show_widget`）
+                        //
+                        // 刻意放在过程组**之外**、最终答复之前：它是本回合的内容产出，
+                        // 跟着过程组收起就变成「要先展开才看得到」。
+                        turn.widgetItems.forEach { widgetItem ->
+                            item(key = "turn_${turn.turnNumber}_widget_${widgetItem.id}") {
+                                ChatMessageItem(
+                                    item = widgetItem,
+                                    showModelHeader = false,
+                                    defaultModelName = selectedModel.displayName,
+                                    onApproveTool = onApproveTool,
+                                    onEditFromHere = editFromMessage,
+                                    onForkFromHere = onForkFromMessage,
+                                    onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                    onOpenFilePreview = { p -> openFilePreview(p) },
+                                    onOpenWidget = { w -> widgetOverlay = w },
+                                    onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                                    isLiveStreamingTail = widgetItem.id == liveStreamingItemId
+                                )
+                            }
+                        }
+
+                        // 4. 助手最终答复 (Final Answer)
+                        if (turn.finalAnswerItem != null) {
+                            val ans = turn.finalAnswerItem
+                            val showModelHeader = !ans.modelName.isNullOrBlank()
+                            item(key = "turn_${turn.turnNumber}_ans_${ans.id}") {
+                                ChatMessageItem(
+                                    item = ans,
+                                    showModelHeader = showModelHeader,
+                                    defaultModelName = selectedModel.displayName,
+                                    onApproveTool = onApproveTool,
+                                    onEditFromHere = editFromMessage,
+                                    onForkFromHere = onForkFromMessage,
+                                    onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                    onOpenFilePreview = { p -> openFilePreview(p) },
+                                    onOpenWidget = { w -> widgetOverlay = w },
+                                    onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                                    isLiveStreamingTail = ans.id == liveStreamingItemId
                                 )
                             }
                         }
                     }
-                }
 
-                // 对标 pi-web：底部脉冲状态只在「已经有正文」时展示，首屏空白不再刷「正在等待模型...」
-                if ((isAgentBusy || isCompacting) && conversation.isNotEmpty()) {
-                    item(key = "pi_web_agent_phase_indicator") {
-                        PiWebPhaseIndicator(
-                            text = when {
-                                isCompacting -> "正在压缩上下文..."
-                                !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
-                                else -> "正在等待模型..."
+                    // 历史尚未到达时只画一条静默骨架（对齐 pi-web：不显示「正在同步历史…」类文案）
+                    if (conversation.isEmpty()) {
+                        item(key = "chat_empty_hint") {
+                            // 加载中不再放任何文案（居中加载圈在上一层 Box 里），
+                            // 只有「确实没有对话」时才提示开始。
+                            if (!isFirstScreenLoading) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 48.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "还没有对话，发送指令开始",
+                                        fontSize = 12.sp,
+                                        color = theme.textMuted
+                                    )
+                                }
                             }
-                        )
+                        }
+                    }
+
+                    // 对标 pi-web：底部脉冲状态只在「已经有正文」时展示，首屏空白不再刷「正在等待模型...」
+                    if ((isAgentBusy || isCompacting) && conversation.isNotEmpty()) {
+                        item(key = "pi_web_agent_phase_indicator") {
+                            PiWebPhaseIndicator(
+                                text = when {
+                                    isCompacting -> "正在压缩上下文..."
+                                    !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
+                                    else -> "正在等待模型..."
+                                }
+                            )
+                        }
                     }
                 }
             }
