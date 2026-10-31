@@ -15,71 +15,140 @@ let TARGET = DEFAULT_TARGET;
 const TOKEN_FILE = path.join(__dirname, '.token');
 
 // 固定域名隧道（Cloudflare Named Tunnel）：
-// 同时设置 PI_TUNNEL_NAME + PI_TUNNEL_HOSTNAME 后，网关不再启动临时 trycloudflare
-// 隧道，而是直接拉起已绑定自有域名的命名隧道。公网地址每次重启都相同，
-// 手机只需扫码/手动填写一次即可长期复用。
+// 设置 PI_TUNNEL_NAME + PI_TUNNEL_HOSTNAME，或让 detectStableTunnelFromConfig()
+// 从 `~/.cloudflared/config.yml` 自动识别。两者都拿到时，网关不再启动临时
+// trycloudflare 隧道，而是直接拉起已绑定自有域名的命名隧道，公网地址每次重启都相同。
 //
-// 未设环境变量时，再尝试从 `~/.cloudflared/config.yml` 自动识别：只要做过
-// `cloudflared tunnel create/route dns`，配置里就有 tunnel 名与 hostname。
-// 这很重要——Quick Tunnel 每次重启都换随机域名，手机里存的旧地址会永久失效，
-// 表现就是「一直自动重连中」而且App 自己无法自愈（它无从得知新域名）。
-function detectStableTunnelFromConfig(expectedPort) {
-  const home = process.env.USERPROFILE || process.env.HOME || '';
-  if (!home) return null;
-  for (const fileName of ['config.yml', 'config.yaml']) {
-    const file = path.join(home, '.cloudflared', fileName);
-    let text;
-    try {
-      text = fs.readFileSync(file, 'utf8');
-    } catch {
+// 为什么值得自动识别：Quick Tunnel 每次重启都换随机域名，手机里存的旧地址会永久
+// 失效，表现就是「一直自动重连中」，而 App 无从得知新域名、无法自愈。
+//
+// 安全约束：隧道名最终会进入 `spawn(..., { shell: true })` 的命令行，所以必须按
+// 白名单校验。config.yml 是本地文件，但它的内容仍不该被当成 shell 片段执行。
+const TUNNEL_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const HOSTNAME_PATTERN = /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,}$/;
+
+function isSafeTunnelName(value) {
+  return typeof value === 'string' && TUNNEL_NAME_PATTERN.test(value);
+}
+
+function isSafeHostname(value) {
+  return typeof value === 'string' && HOSTNAME_PATTERN.test(value);
+}
+
+/** 去掉 YAML 行尾注释（`service: … # x`），否则带注释的 ingress 会被误判为不匹配。 */
+function stripYamlComment(line) {
+  const idx = line.search(/\s#/);
+  return idx === -1 ? line : line.slice(0, idx);
+}
+/**
+ * 从 cloudflared 配置文本里取出（隧道名, 指向目标端口的 hostname）。
+ * 纯函数：不读磁盘，便于单测。
+ *
+ * ingress 是「- hostname: X」紧跟「service: http://127.0.0.1:PORT」的列表，
+ * 按行配对，只接受 service 端口等于 expectedPort 的那一条 —— 指向别的服务的
+ * 域名即使配上也会连不上。
+ */
+function parseStableTunnelConfig(text, expectedPort) {
+  if (typeof text !== 'string' || !text) return null;
+  const lines = text
+    .split(/\r?\n/)
+    .map((raw) => stripYamlComment(raw).trim())
+    .filter(Boolean);
+
+  let tunnelName = null;
+  for (const line of lines) {
+    const match = line.match(/^tunnel:\s*["']?([^"'\s]+)/);
+    if (match) {
+      tunnelName = match[1];
+      break;
+    }
+  }
+  if (!tunnelName) return null;
+
+  let pendingHost = null;
+  for (const line of lines) {
+    const hostMatch = line.match(/^-?\s*hostname:\s*["']?([^"'\s]+)/);
+    if (hostMatch) {
+      pendingHost = hostMatch[1];
       continue;
     }
-    const tunnelName = (text.match(/^\s*tunnel:\s*["']?([^\s"'#]+)/m) || [])[1];
-    if (!tunnelName) continue;
-    // ingress 是「- hostname: X」紧跟「service: http://127.0.0.1:PORT」的列表，
-    // 按行配对，取第一个指向本网关端口的条目。
-    let pendingHost = null;
-    let hostname = null;
-    let targetPort = null;
-    for (const rawLine of text.split(/\r?\n/)) {
-      const line = rawLine.trim();
-      const hostMatch = line.match(/^-?\s*hostname:\s*["']?([^\s"'#]+)/);
-      if (hostMatch) {
-        pendingHost = hostMatch[1];
-        continue;
-      }
-      const portMatch = line.match(/^service:\s*\S*?:(\d{2,5})\s*$/);
-      if (portMatch && pendingHost) {
-        if (Number(portMatch[1]) === expectedPort) {
-          hostname = pendingHost;
-          targetPort = Number(portMatch[1]);
-          break;
-        }
-        pendingHost = null;
-      }
+    const portMatch = line.match(/^service:\s*\S*?:(\d{1,5})$/);
+    if (!portMatch || !pendingHost) continue;
+    if (Number(portMatch[1]) === expectedPort) {
+      return { tunnelName, hostname: pendingHost, targetPort: expectedPort };
     }
-    if (!hostname) continue;
-    return { tunnelName, hostname, targetPort, file: fileName };
+    pendingHost = null;
   }
   return null;
 }
 
-// 网关端口先算出来：自动识别命名隧道时要用它做匹配，避免把指向别的服务的域名配上去。
-const EXPECTED_GATEWAY_PORT = (() => {
-  const fromEnv = Number(process.env.GATEWAY_PORT);
-  if (Number.isFinite(fromEnv) && fromEnv > 0) return fromEnv;
-  const idx = process.argv.indexOf('--port');
-  const fromArg = idx !== -1 ? Number(process.argv[idx + 1]) : NaN;
-  return Number.isFinite(fromArg) && fromArg > 0 ? fromArg : 4100;
-})();
+/**
+ * 扫描 `~/.cloudflared/config.yml`（或 .yaml）。
+ * 返回 `{ tunnel, notes }`：notes 记录「有配置但没匹配上」的原因，由调用方提示用户，
+ * 避免静默回退到 Quick Tunnel 后又是一轮无从排查的「自动重连中」。
+ */
+function detectStableTunnelFromConfig(expectedPort) {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  if (!home) return { tunnel: null, notes: [] };
 
-const detectedTunnel = detectStableTunnelFromConfig(EXPECTED_GATEWAY_PORT);
-const STABLE_TUNNEL_NAME = (process.env.PI_TUNNEL_NAME || detectedTunnel?.tunnelName || '').trim();
-const STABLE_TUNNEL_HOSTNAME = (process.env.PI_TUNNEL_HOSTNAME || detectedTunnel?.hostname || '')
-  .trim()
-  .replace(/^https?:\/\//i, '')
-  .replace(/\/+$/, '');
-const hasStableTunnel = Boolean(STABLE_TUNNEL_NAME && STABLE_TUNNEL_HOSTNAME);
+  for (const fileName of ['config.yml', 'config.yaml']) {
+    const filePath = path.join(home, '.cloudflared', fileName);
+    let text;
+    try {
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      continue;
+    }
+    const parsed = parseStableTunnelConfig(text, expectedPort);
+    if (parsed) return { tunnel: { ...parsed, filePath }, notes: [] };
+
+    const usedPort = (text.match(/^\s*service:\s*\S*?:(\d{1,5})\s*$/m) || [])[1];
+    return {
+      tunnel: null,
+      notes: [
+        usedPort
+          ? `${filePath} 的 ingress 指向端口 ${usedPort}，不是网关端口 ${expectedPort}`
+          : `${filePath} 里没有可用的 tunnel / hostname（或缺少指向 ${expectedPort} 的 ingress）`,
+      ],
+    };
+  }
+  return { tunnel: null, notes: [] };
+}
+
+/**
+ * 本次要用的固定域名隧道：环境变量优先，其次配置文件；拿到后统一白名单校验。
+ * 端口由调用方传入实际的监听端口，避免与 `--port` / `start({port})` 出现第二份真值。
+ */
+function resolveStableTunnel(expectedPort) {
+  let name = (process.env.PI_TUNNEL_NAME || '').trim();
+  let hostname = (process.env.PI_TUNNEL_HOSTNAME || '')
+    .trim()
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/+$/, '');
+  let source = name && hostname ? 'env' : null;
+  const notes = [];
+
+  if (!source) {
+    const detected = detectStableTunnelFromConfig(expectedPort);
+    notes.push(...detected.notes);
+    if (detected.tunnel) {
+      name = detected.tunnel.tunnelName;
+      hostname = detected.tunnel.hostname;
+      source = 'config';
+    }
+  }
+  if (!source) return { tunnel: null, notes };
+
+  if (!isSafeTunnelName(name)) {
+    notes.push(`隧道名 "${name}" 含不允许的字符（只接受字母/数字/下划线/连字符），已忽略固定域名隧道`);
+    return { tunnel: null, notes };
+  }
+  if (!isSafeHostname(hostname)) {
+    notes.push(`hostname "${hostname}" 不是合法域名，已忽略固定域名隧道`);
+    return { tunnel: null, notes };
+  }
+  return { tunnel: { name, hostname, source }, notes };
+}
 
 // 命令行参数解析
 const args = process.argv.slice(2);
@@ -612,6 +681,8 @@ async function start(options = {}) {
   const listenPort = options.port || PORT;
   const targetOverride = options.target || customUrlArg || null;
   const isTunnelEnabled = options.autoTunnel !== undefined ? options.autoTunnel : autoTunnel;
+  // 固定隧道按「实际监听端口」解析，避免与 `--port` / start({port}) 形成第二份真值。
+  const stable = resolveStableTunnel(listenPort);
 
   // 先检查指定目标或 30141，再检查 3000
   let isAlive = false;
@@ -636,13 +707,24 @@ async function start(options = {}) {
       const localIp = getLocalIp();
       const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${listenPort}`;
 
-      if (isTunnelEnabled && hasStableTunnel) {
+      // 有固定隧道配置但没采用（端口不符 / 名字非法）：必须说出来，
+      // 否则用户会静默掉回 Quick Tunnel，又一次陷入「自动重连中」且无从排查。
+      if (isTunnelEnabled && stable.notes.length) {
+        for (const note of stable.notes) {
+          console.warn(`[tunnel] ⚠️ ${note}`);
+        }
+        console.warn('[tunnel] 已回退到 Quick Tunnel：本次公网地址是随机域名，重启后旧地址即失效。');
+      }
+
+      if (isTunnelEnabled && stable.tunnel) {
+        // 取出到局部常量：下面的事件回调里不必再写「stable.tunnel.」这层可空路径。
+        const stableTunnel = stable.tunnel;
         // 固定域名隧道：地址由 Cloudflare 配置决定，无需再监听输出解析临时域名
-        const publicUrl = `https://${STABLE_TUNNEL_HOSTNAME}`;
-        console.log(`\n🌐 正在启动固定域名隧道 "${STABLE_TUNNEL_NAME}" -> ${publicUrl} ...`);
+        const publicUrl = `https://${stableTunnel.hostname}`;
+        console.log(`\n🌐 正在启动固定域名隧道 "${stableTunnel.name}" -> ${publicUrl} ...`);
         const tunnelProcess = spawn(
           'cloudflared',
-          ['tunnel', 'run', STABLE_TUNNEL_NAME],
+          ['tunnel', 'run', stableTunnel.name],
           { shell: true }
         );
 
@@ -670,7 +752,7 @@ async function start(options = {}) {
         pipeTunnelLogs(tunnelProcess.stderr, process.stderr);
 
         tunnelProcess.on('error', (err) => {
-          console.error(`\n[tunnel] 启动 ${STABLE_TUNNEL_NAME} 失败: ${err.message}`);
+          console.error(`\n[tunnel] 启动 ${stableTunnel.name} 失败: ${err.message}`);
           console.error('[tunnel] 请确认 cloudflared 已安装且已完成 cloudflared tunnel login / create / route dns');
           printBannerAndQr(publicUrl, isAlive);
         });
@@ -763,5 +845,9 @@ module.exports = {
   getLocalIp,
   checkServerAlive,
   printBannerAndQr,
-  AUTH_TOKEN
+  AUTH_TOKEN,
+  // 导出给单测：纯函数（不读磁盘、不启动进程）
+  parseStableTunnelConfig,
+  isSafeTunnelName,
+  isSafeHostname
 };

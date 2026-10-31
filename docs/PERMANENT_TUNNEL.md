@@ -1,8 +1,12 @@
 # 固定公网地址（一次扫码，长期可用）
 
-## 为什么现在每次重启都要重新扫码
+## 为什么以前每次重启都要重新扫码
 
-`start-server-tunnel.bat` 默认走的是 **Cloudflare Quick Tunnel**：
+> 现状：只要能读到 `~/.cloudflared/config.yml` 里指向网关端口的 ingress，
+> `start-server-tunnel.bat` 就会直接走**固定域名隧道**（见下面第 0 节），
+> 不再需要每次重扫。下面这段解释「为什么过去做不到」，排查时仍有用。
+
+没有配置命名隧道时，`start-server-tunnel.bat` 会退到 **Cloudflare Quick Tunnel**：
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:4100
