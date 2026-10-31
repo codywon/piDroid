@@ -462,6 +462,8 @@ private fun RenderAstBlockNode(
 
         is Paragraph -> {
             val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
+            // 音频/视频不归相册管：交给已有的全屏查看器（那里有真正的播放器）
+            val playbackLinks = remember(node) { extractPlaybackLinksFromNode(node) }
             val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink)
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
@@ -477,6 +479,17 @@ private fun RenderAstBlockNode(
                             letterSpacing = 0.1.sp
                         )
                     )
+                }
+                if (playbackLinks.isNotEmpty()) {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        playbackLinks.forEach { (href, label, isVideo) ->
+                            MediaPlaybackChip(
+                                label = label,
+                                isVideo = isVideo,
+                                onOpen = { onOpenLink?.invoke(href) }
+                            )
+                        }
+                    }
                 }
                 if (inlineMedia.isNotEmpty()) {
                     MediaAttachmentGallery(mediaList = inlineMedia)
@@ -499,6 +512,14 @@ private fun RenderAstBlockNode(
                     )
                 }
                 MediaAttachmentGallery(mediaList = svgMedia)
+            } else if (rawHtml.isNotBlank()) {
+                // 其余 HTML 按原文展示（pi-web #1444）：用户贴的 `<Component … />`、
+                // 模型回显的一小段 HTML 以前会直接消失，看着就像“内容丢了”。
+                // 不当富文本渲染 —— 不执行、不解释，只当代码看。
+                CodeBlockCard(
+                    code = rawHtml,
+                    language = "html"
+                )
             }
         }
 
@@ -767,6 +788,93 @@ private fun isLikelyMermaidCode(code: String): Boolean {
         firstLine.startsWith("gantt")
 }
 
+private val AUDIO_EXTS = setOf("wav", "mp3", "m4a", "aac", "ogg", "flac", "opus")
+private val VIDEO_EXTS = setOf("mp4", "webm", "mkv", "mov", "avi")
+
+private data class PlaybackLink(val href: String, val label: String, val isVideo: Boolean)
+
+private fun extractPlaybackLinksFromNode(parentNode: Node): List<PlaybackLink> {
+    val list = mutableListOf<PlaybackLink>()
+    fun checkHref(dest: String, labelCandidate: String?) {
+        val clean = dest.trim()
+        if (clean.isBlank()) return
+        val ext = clean.substringBefore('?').substringAfterLast('.', "").lowercase(Locale.ROOT)
+        val isAudio = ext in AUDIO_EXTS
+        val isVideo = ext in VIDEO_EXTS
+        if (isAudio || isVideo) {
+            val label = labelCandidate?.ifBlank { null }
+                ?: clean.substringAfterLast('/').substringBefore('?').ifBlank { if (isVideo) "视频媒体" else "音频媒体" }
+            list.add(PlaybackLink(clean, label, isVideo))
+        }
+    }
+    fun walk(n: Node) {
+        var c = n.firstChild
+        while (c != null) {
+            when (c) {
+                is MdImage -> {
+                    val dest = c.destination?.trim().orEmpty()
+                    val alt = c.title?.ifBlank { null } ?: (c.firstChild as? MdText)?.literal?.ifBlank { null }
+                    checkHref(dest, alt)
+                }
+                is Link -> {
+                    val href = c.destination?.trim().orEmpty()
+                    val text = (c.firstChild as? MdText)?.literal?.ifBlank { null }
+                    checkHref(href, text)
+                }
+                else -> walk(c)
+            }
+            c = c.next
+        }
+    }
+    walk(parentNode)
+    return list
+}
+
+@Composable
+private fun MediaPlaybackChip(
+    label: String,
+    isVideo: Boolean,
+    onOpen: () -> Unit
+) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = theme.surfaceContainerLow,
+        border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.5f)),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onOpen() }
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Icon(
+                imageVector = if (isVideo) Icons.Default.Videocam else Icons.Default.PlayArrow,
+                contentDescription = if (isVideo) "播放视频" else "播放音频",
+                tint = theme.primary,
+                modifier = Modifier.size(16.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = label,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = theme.textPrimary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (isVideo) "点击在内置播放器中打开视频" else "点击在内置播放器中播放音频",
+                    fontSize = 10.5.sp,
+                    color = theme.textMuted
+                )
+            }
+        }
+    }
+}
+
 private fun extractInlineMediaFromNode(parentNode: Node): List<MediaAttachment> {
     val list = mutableListOf<MediaAttachment>()
     fun walk(n: Node) {
@@ -779,6 +887,13 @@ private fun extractInlineMediaFromNode(parentNode: Node): List<MediaAttachment> 
                         ?: (c.firstChild as? MdText)?.literal?.ifBlank { null }
                         ?: dest.substringAfterLast('/').substringBefore('?').ifBlank { "图像预览" }
                     val lower = dest.lowercase(Locale.ROOT).substringBefore('?')
+                    val ext = lower.substringAfterLast('.', "")
+                    // 音频与视频有专门的播放入口（见 extractPlaybackLinksFromNode），不当静态图片塞进画廊
+                    if (ext in AUDIO_EXTS || ext in VIDEO_EXTS) {
+                        walk(c)
+                        c = c.next
+                        continue
+                    }
                     val kind = when {
                         lower.endsWith(".svg") || lower.startsWith("data:image/svg") -> MediaKind.SVG
                         lower.endsWith(".pdf") || lower.startsWith("data:application/pdf") -> MediaKind.PDF

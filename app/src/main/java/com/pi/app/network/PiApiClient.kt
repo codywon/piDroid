@@ -3,24 +3,34 @@ package com.pi.app.network
 import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import com.pi.app.data.model.*
 import com.pi.app.data.storage.AppPreferences
+import com.pi.app.prompt.PromptEnhancementCapability
+import com.pi.app.prompt.PromptEnhancementContextMessage
+import com.pi.app.prompt.PromptEnhancementException
+import com.pi.app.prompt.PromptEnhancementResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.File
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 data class SessionHistoryData(
     val messages: List<ChatItem>,
@@ -139,6 +149,14 @@ class PiApiClient(private val prefs: AppPreferences) {
         .build()
 
     /**
+     * 提示词增强专用客户端：服务端硬超时 45s，这里留 5s 余量。
+     * 不能复用 [readClient]（12s 会先于模型返回把请求掐断），也不能无限等。
+     */
+    private val enhanceClient = client.newBuilder()
+        .callTimeout(50, TimeUnit.SECONDS)
+        .build()
+
+    /**
      * 首屏会话快照专用：同样带重试，但给更长预算。
      *
      * 单个会话可能很大（本机实测最大的会话文件 64MB，首屏快照要解完整个 jsonl：直连 1.1s /
@@ -188,7 +206,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         "${e.javaClass.simpleName}: ${e.message}"
                 )
                 if (attempt == 2) break
-                readClient.connectionPool.evictAll()
+                httpClient.connectionPool.evictAll()
             }
         }
         throw lastError ?: IOException("读取失败")
@@ -301,7 +319,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                     sessionListVersion = root.get("sessionListVersion")
                         ?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
                     runningIds = idSet("runningSessionIds"),
-                    awaitingInputIds = idSet("awaitingInputSessionIds")
+                    awaitingInputIds = idSet("awaitingInputSessionIds"),
+                    subagentsActiveIds = idSet("subagentsActiveSessionIds"),
+                    completionSuppressedIds = idSet("completionNotificationSuppressedSessionIds")
                 )
             )
         } catch (e: Exception) {
@@ -1377,12 +1397,12 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/models").get().build()
-            client.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@use Result.failure(IOException("读取模型目录失败 (${response.code})"))
-                }
-                val body = response.body?.string() ?: "{}"
-                val json = JsonParser.parseString(body).asJsonObject
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取模型目录失败 (${payload.code})"))
+            }
+            val body = payload.body
+            val json = JsonParser.parseString(body).asJsonObject
 
                 val models = mutableListOf<ModelInfo>()
                 if (json.has("modelList") && json.get("modelList").isJsonArray) {
@@ -1509,54 +1529,53 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private data class ModelsConfigFetchResult(
         val config: JsonObject,
-        val wrappedInConfigKey: Boolean,
         val wasHealed: Boolean
     )
 
+    /**
+     * 读 models.json。**读**可以宽容（旧版本可能写过 `{config: …}` / `{content: …}` / `{raw: …}` 包装，
+     * 这里负责拆开并抢救），但**写**只有一种结构（见 [putModelsConfigToServer]）：
+     * 不再因为读到过包装就给写请求也套上包装。
+     */
     private fun fetchServerModelsConfigWithEnvelope(baseUrl: String, autoPushHeal: Boolean = true): ModelsConfigFetchResult? {
         if (baseUrl.isBlank()) return null
         return runCatching {
             val req = Request.Builder().url("$baseUrl/api/models-config").get().build()
-            val fetched = client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@use null
-                val str = resp.body?.string()?.trim() ?: return@use null
-                if (str.isEmpty()) return@use ModelsConfigFetchResult(JsonObject().apply { add("providers", JsonObject()) }, false, false)
-                val parsed = runCatching { JsonParser.parseString(str) }.getOrNull() ?: return@use null
-                if (!parsed.isJsonObject) return@use null
-                val root = parsed.asJsonObject
-                var wrappedInConfig = false
-                val targetObj: JsonObject = when {
-                    root.has("providers") && root.get("providers").isJsonObject -> {
-                        // 如果同时存在残留的顶层 config 字段，说明曾被旧版写入污染，后续由 sanitizeAndHealModelsConfig 清理
-                        root.deepCopy()
-                    }
-                    root.has("config") && root.get("config").isJsonObject -> {
-                        wrappedInConfig = true
-                        root.getAsJsonObject("config").deepCopy()
-                    }
-                    root.has("config") && root.get("config").isJsonPrimitive -> {
-                        wrappedInConfig = true
-                        val innerStr = root.get("config").asString
-                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
-                    }
-                    root.has("content") && root.get("content").isJsonPrimitive -> {
-                        val innerStr = root.get("content").asString
-                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
-                    }
-                    root.has("raw") && root.get("raw").isJsonPrimitive -> {
-                        val innerStr = root.get("raw").asString
-                        runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
-                    }
-                    else -> root.deepCopy()
+            val payload = readGet(req)
+            if (payload.code !in 200..299) return@runCatching null
+            val str = payload.body.trim()
+            if (str.isEmpty()) return@runCatching ModelsConfigFetchResult(JsonObject().apply { add("providers", JsonObject()) }, false)
+            val parsed = runCatching { JsonParser.parseString(str) }.getOrNull() ?: return@runCatching null
+            if (!parsed.isJsonObject) return@runCatching null
+            val root = parsed.asJsonObject
+            val targetObj: JsonObject = when {
+                root.has("providers") && root.get("providers").isJsonObject -> {
+                    // 如果同时存在残留的顶层 config 字段，说明曾被旧版写入污染，后续由 sanitizeAndHealModelsConfig 清理
+                    root.deepCopy()
                 }
-                val healed = sanitizeAndHealModelsConfig(targetObj)
-                ModelsConfigFetchResult(targetObj, wrappedInConfig, healed)
-            } ?: return@runCatching null
+                root.has("config") && root.get("config").isJsonObject -> {
+                    root.getAsJsonObject("config").deepCopy()
+                }
+                root.has("config") && root.get("config").isJsonPrimitive -> {
+                    val innerStr = root.get("config").asString
+                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                }
+                root.has("content") && root.get("content").isJsonPrimitive -> {
+                    val innerStr = root.get("content").asString
+                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                }
+                root.has("raw") && root.get("raw").isJsonPrimitive -> {
+                    val innerStr = root.get("raw").asString
+                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                }
+                else -> root.deepCopy()
+            }
+            val healed = sanitizeAndHealModelsConfig(targetObj)
+            val fetched = ModelsConfigFetchResult(targetObj, healed)
 
             if (fetched.wasHealed && autoPushHeal) {
-                runCatching {
-                    putModelsConfigToServer(baseUrl, fetched.config, fetched.wrappedInConfigKey)
-                }
+                // 自愈推送是顺手修的：失败不能影响本次读取（错误文案已经在 put 里落到 Result 上）。
+                runCatching { putModelsConfigToServer(baseUrl, fetched.config) }
             }
             fetched
         }.getOrNull()
@@ -1652,43 +1671,40 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 将纯净的 models.json 配置写回网关并触发模型目录刷新
+     * 将纯净的 models.json 配置写回网关并触发模型目录刷新。
+     *
+     * 契约以 pi-web 为准（`app/api/models-config/route.ts`）：PUT 的 body 就是 models.json 本身，
+     * 服务端直接读顶层 `providers` 做校验后写盘，**不识别任何包装**。因此这里只发一种结构，
+     * 绝不在失败后换成 `{config: …}` 再试一次：`{config: …}` 在 0.13.0 里读不到 `providers`，
+     * 服务端的 provider / 图片上限校验会整体跳过（实测同一份无效配置直发被拒、包一层却被放行），
+     * 结果是把本该被拒绝的配置写成 pi 无法加载的结构。
+     *
+     * 失败一律把服务端的 `error` 文案带出（如 `Provider new-provider needs a Base URL or at least one model`），
+     * 界面才能指出是哪一项不合格。网络异常也不自动重放写请求：结果未知时重放只会掩盖真实状态。
      */
-    private fun putModelsConfigToServer(
-        baseUrl: String,
-        cleanRootConfig: JsonObject,
-        wrappedInConfigKey: Boolean
-    ): Boolean {
-        cleanRootConfig.remove("config")
-        val primaryPayload = if (wrappedInConfigKey) {
-            JsonObject().apply { add("config", cleanRootConfig) }
-        } else {
-            cleanRootConfig
-        }
-        val req1 = Request.Builder()
+    private fun putModelsConfigToServer(baseUrl: String, cleanRootConfig: JsonObject): Result<Unit> {
+        val payload = ModelsConfigWriteContract.payloadOf(cleanRootConfig)
+        val req = Request.Builder()
             .url("$baseUrl/api/models-config")
-            .put(gson.toJson(primaryPayload).toRequestBody(jsonMediaType))
+            .put(gson.toJson(payload).toRequestBody(jsonMediaType))
             .build()
-        val ok1 = runCatching {
-            client.newCall(req1).execute().use { it.isSuccessful }
-        }.getOrDefault(false)
-
-        if (!ok1) {
-            val fallbackPayload = if (wrappedInConfigKey) {
-                cleanRootConfig
-            } else {
-                JsonObject().apply { add("config", cleanRootConfig) }
+        val failureMessage: String? = try {
+            client.newCall(req).execute().use { resp ->
+                if (resp.isSuccessful) {
+                    null
+                } else {
+                    val text = runCatching { resp.body?.string() }.getOrNull()
+                    ModelsConfigWriteContract.errorMessage(text, resp.code)
+                }
             }
-            val req2 = Request.Builder()
-                .url("$baseUrl/api/models-config")
-                .put(gson.toJson(fallbackPayload).toRequestBody(jsonMediaType))
-                .build()
-            val ok2 = runCatching {
-                client.newCall(req2).execute().use { it.isSuccessful }
-            }.getOrDefault(false)
-            if (!ok2) return false
+        } catch (e: Exception) {
+            return Result.failure(
+                IOException("网络异常，保存结果未知，请刷新后确认：${e.message ?: e.javaClass.simpleName}")
+            )
         }
+        if (failureMessage != null) return Result.failure(IOException(failureMessage))
 
+        // 目录刷新是尽力而为：配置已经写盘，刷新失败不能反过来报「保存失败」。
         runCatching {
             val refreshReq = Request.Builder()
                 .url("$baseUrl/api/models/refresh")
@@ -1696,7 +1712,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(refreshReq).execute().close()
         }
-        return true
+        return Result.success(Unit)
     }
 
     /**
@@ -1855,54 +1871,57 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 4. 命令发送与交互动作 (1:1 匹配 pi-web)
     // ==========================================
 
+    /**
+     * 提交一条普通提示词。
+     *
+     * 不在客户端预判「忙不忙」：pi 的 `AgentSession.prompt()` 自己决定是排队给当前回合，
+     * 还是（回合已结束时）开新一轮；压缩期间则由 pi-web 的 wrapper park 住并回 `queued:true`。
+     * 客户端预判反而会把消息拦在外面（旧实现就是一句「任务执行中不能回退分支」的误导提示）。
+     */
     suspend fun sendCommand(
         sessionId: String,
         prompt: String,
         images: List<ChatImageInput> = emptyList()
-    ): Result<Boolean> = withContext(Dispatchers.IO) {
-        val payload = mutableMapOf<String, Any>(
-            "type" to "prompt",
-            "message" to prompt,
-            "text" to prompt
-        )
-        if (images.isNotEmpty()) {
-            payload["images"] = imagesToJson(images)
-        }
-        sendAgentAction(sessionId, payload)
+    ): Result<PromptSubmitAck> = withContext(Dispatchers.IO) {
+        submitPrompt(sessionId, prompt, images, streamingBehavior = null)
     }
 
     suspend fun sendSteer(
         sessionId: String,
         text: String,
         images: List<ChatImageInput> = emptyList()
-    ): Result<Boolean> = withContext(Dispatchers.IO) {
-        val payload = mutableMapOf<String, Any>(
-            "type" to "prompt",
-            "streamingBehavior" to "steer",
-            "message" to text,
-            "text" to text
-        )
-        if (images.isNotEmpty()) {
-            payload["images"] = imagesToJson(images)
-        }
-        sendAgentAction(sessionId, payload)
+    ): Result<PromptSubmitAck> = withContext(Dispatchers.IO) {
+        submitPrompt(sessionId, text, images, streamingBehavior = "steer")
     }
 
     suspend fun sendFollowUp(
         sessionId: String,
         text: String,
         images: List<ChatImageInput> = emptyList()
-    ): Result<Boolean> = withContext(Dispatchers.IO) {
+    ): Result<PromptSubmitAck> = withContext(Dispatchers.IO) {
+        submitPrompt(sessionId, text, images, streamingBehavior = "followUp")
+    }
+
+    private fun submitPrompt(
+        sessionId: String,
+        prompt: String,
+        images: List<ChatImageInput>,
+        streamingBehavior: String?
+    ): Result<PromptSubmitAck> {
         val payload = mutableMapOf<String, Any>(
             "type" to "prompt",
-            "streamingBehavior" to "followUp",
-            "message" to text,
-            "text" to text
+            "message" to prompt,
+            "text" to prompt
         )
+        if (streamingBehavior != null) {
+            payload["streamingBehavior"] = streamingBehavior
+        }
         if (images.isNotEmpty()) {
             payload["images"] = imagesToJson(images)
         }
-        sendAgentAction(sessionId, payload)
+        return sendAgentCommandData(sessionId, payload).map { data ->
+            AgentCommandPayload.ackOf(data)
+        }
     }
 
     /**
@@ -2005,13 +2024,17 @@ class PiApiClient(private val prefs: AppPreferences) {
                         return@withContext Result.failure(IOException(err))
                     }
                     val content = root.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val isBinary = root.get("binary")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asBoolean == true
+                    val mtime = root.get("mtime")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
                     Result.success(
                         FileTextChunk(
                             content = content,
                             nextOffset = root.get("nextOffset")?.takeIf { !it.isJsonNull }?.asLong
                                 ?: (offset + content.toByteArray(Charsets.UTF_8).size),
                             truncated = root.get("truncated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
-                            size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                            size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                            binary = isBinary,
+                            mtime = mtime
                         )
                     )
                 }
@@ -2371,12 +2394,19 @@ class PiApiClient(private val prefs: AppPreferences) {
         return arr
     }
 
-    suspend fun stopAgent(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "abort"))
+    /**
+     * 停止本轮。服务端会把压缩期间被 park 住的提示词一并退回（`{steering, followUp, images}`），
+     * 这些内容必须还给输入框 —— 与 pi 的 TUI、pi-web 的 handleAbort 一致。
+     */
+    suspend fun stopAgent(sessionId: String): Result<RecalledPrompts> = withContext(Dispatchers.IO) {
+        sendAgentCommandData(sessionId, mapOf("type" to "abort"))
+            .map { data -> AgentCommandPayload.recalledOf(data) }
     }
 
-    suspend fun clearQueue(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "clear_queue"))
+    /** 撤回排队消息（含压缩期间 park 住的）。返回被退回的正文与图片，由界面还给输入框。 */
+    suspend fun clearQueue(sessionId: String): Result<RecalledPrompts> = withContext(Dispatchers.IO) {
+        sendAgentCommandData(sessionId, mapOf("type" to "clear_queue"))
+            .map { data -> AgentCommandPayload.recalledOf(data) }
     }
 
     suspend fun compactContext(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -2418,11 +2448,16 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     /**
-     * 读取会话运行时的权威状态 (GET /api/sessions/{id}/state)。
+     * 读取会话运行时的权威状态 (`GET /api/agent/{id}?systemPrompt=0`)。
      *
-     * 一次调用同时解决三件事，取代原先三个各自为政的来源：
-     * 1. **是否在跑**：`running`（等价 `/api/sessions` 里 runningSessionIds 的判定）。原先每次
-     *    GET `/api/sessions` 实测 **273 KB / 390 条会话**，现在 39 KB 且不用遍历全表；
+     * 为什么改了路由 (对齐 pi-web 0.13 的 `agentStatusUrl()`，#1306)：`get_state` 的
+     * `systemPrompt` 几乎就是整个回包（大 AGENTS.md / 技能 / 工具说明，上游实测 300 KB → <2 KB），
+     * 而我们每 1.5–3s 拉一次。`?systemPrompt=0` 是同一路由的官方精简参数；
+     * `GET /api/sessions/{id}/state` 没有这个参数，之前那点字节全靠白花。
+     * 两个路由都不启动 wrapper（无活运行时一律 `{running:false}`），语义一致。
+     *
+     * 一次调用同时解决三件事：
+     * 1. **是否在跑**：`running`（等价 `/api/sessions` 里 runningSessionIds 的判定）；
      * 2. **上下文占用**：`contextUsage {percent, contextWindow, tokens}`，contextWindow 是模型
      *    真实窗口（如 1,000,000），不再用 20 万硬默认值算出「恒为 100%」；
      * 3. **排队消息**：`queuedMessages {steering, followUp}` + `pendingMessageCount`，
@@ -2434,7 +2469,10 @@ class PiApiClient(private val prefs: AppPreferences) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/state").get().build()
+            val req = Request.Builder()
+                .url("$baseUrl/api/agent/$sessionId?systemPrompt=0")
+                .get()
+                .build()
             val payload = readGet(req)
             if (payload.code !in 200..299) {
                 return@withContext Result.failure(IOException("读取 agent 状态失败 (${payload.code})"))
@@ -2481,8 +2519,12 @@ class PiApiClient(private val prefs: AppPreferences) {
                     isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
                     isBashRunning = isBashRunning,
                     pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                    // 与 pi-web 前端同一口径：运行态 = 有活跃运行时 且（流式生成 / 提示词在跑 / bash 在跑）
-                    running = runtimeAlive && (isStreaming || isPromptRunning || isBashRunning),
+                    // 与 pi-web 同一口径（rpc-manager 的 `isRunning()`）：流式生成 / 提示词在跑 /
+                    // bash 在跑 / **正在压缩上下文**。之前漏了压缩：手动 compact 期间服务端算「在跑」，
+                    // 本地却算「空闲」，于是压缩刚开就被判完成（通知 / 唤醒锁 / 排队消息都对不上）。
+                    running = runtimeAlive &&
+                        (isStreaming || isPromptRunning || isBashRunning ||
+                            data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true),
                     runtimeAlive = runtimeAlive,
                     autoCompactionEnabled =
                         data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
@@ -2742,23 +2784,61 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
 
-    private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> = withContext(Dispatchers.IO) {
+    /**
+     * `POST /api/agent/{id}` 的唯一出口：所有命令都走这里，保证错误类型与回执解析只有一份。
+     *
+     * 成功时返回响应体的 `data`（可能不存在，如 `abort` 没有东西可退回时为 null）；
+     * 失败时返回 [AgentCommandException]（带 `code` / `accepted` / `missingCwd`），
+     * 传输层异常原样上抛 —— 调用方据此区分「确定没收到」与「回执丢了」。
+     */
+    private suspend fun sendAgentCommandData(sessionId: String, payload: Map<String, Any>): Result<JsonElement?> =
+        withContext(Dispatchers.IO) {
+            val baseUrl = prefs.serverUrl
+            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+            try {
+                val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+                val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+                client.newCall(req).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        val errBody = runCatching { response.body?.string() }.getOrNull()
+                        return@withContext Result.failure(
+                            AgentCommandPayload.failureOf(errBody, response.code)
+                        )
+                    }
+                    val bodyStr = runCatching { response.body?.string() }.getOrNull().orEmpty()
+                    val root = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    Result.success(root?.get("data")?.takeIf { !it.isJsonNull })
+                }
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
+
+    private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> =
+        sendAgentCommandData(sessionId, payload).map { true }
+
+    /**
+     * 续租会话（`POST /api/agent/{id}/lease`）：重置服务端的空闲倒计时，并回报脚下在干什么。
+     *
+     * pi-web 0.13 起只有这个请求能挡空闲回收（10 分钟）；持着 SSE 流不再保活。
+     * 旧网关没有该路由（404/405）时返回 `supported=false`，调用方应停止循环、不报错。
+     */
+    suspend fun renewSessionLease(sessionId: String): Result<SessionLeaseReply> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
-            client.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val errBody = response.body?.string() ?: ""
-                    // 优先用服务端的人类可读错误（如 "Model not found: CloseAI/deepseek-flash"），
-                    // 否则原样显示 {error:…} 的 JSON 片段
-                    val msg = runCatching {
-                        JsonParser.parseString(errBody).asJsonObject.get("error")
-                            ?.takeIf { !it.isJsonNull }?.asString
-                    }.getOrNull() ?: "HTTP ${response.code}: $errBody"
-                    Result.failure(IOException(msg))
-                } else {
-                    Result.success(true)
+            val req = Request.Builder()
+                .url("$baseUrl/api/agent/$sessionId/lease")
+                .post("".toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                when {
+                    resp.isSuccessful -> Result.success(
+                        SessionLeasePayload.of(runCatching { resp.body?.string() }.getOrNull())
+                    )
+                    // 旧网关：没有这个路由。不是错误，只是不支持。
+                    resp.code == 404 || resp.code == 405 -> Result.success(SessionLeaseReply(supported = false))
+                    else -> Result.failure(IOException("续租失败 (HTTP ${resp.code})"))
                 }
             }
         } catch (e: Exception) {
@@ -3312,15 +3392,13 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/auth/providers").get().build()
-            client.newCall(req).execute().use { response ->
-                if (!response.isSuccessful) {
-                    return@withContext Result.failure(IOException("读取凭据状态失败 (${response.code})"))
-                }
-                val body = response.body?.string() ?: "{}"
-                val result = ProviderAuthStateSerializer.parse(body)
-                    ?: return@withContext Result.failure(IOException("凭据状态响应无法解析"))
-                Result.success(result)
+            val payload = readGet(req)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(IOException("读取凭据状态失败 (${payload.code})"))
             }
+            val result = ProviderAuthStateSerializer.parse(payload.body)
+                ?: return@withContext Result.failure(IOException("凭据状态响应无法解析"))
+            Result.success(result)
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -3579,9 +3657,11 @@ class PiApiClient(private val prefs: AppPreferences) {
             // 写入前再次执行自愈校验，确保生成 100% 合法的 models.json
             sanitizeAndHealModelsConfig(rootConfig)
 
-            val savedOk = putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
-            if (!savedOk) {
-                return@withContext Result.failure(IOException("保存模型配置至网关失败"))
+            val saved = putModelsConfigToServer(baseUrl, rootConfig)
+            if (saved.isFailure) {
+                return@withContext Result.failure(
+                    IOException("保存模型配置失败：${saved.exceptionOrNull()?.message ?: "未知错误"}")
+                )
             }
 
             Result.success(true)
@@ -4183,11 +4263,11 @@ data class CatalogPreset(
         try {
             val cloned = configObj.deepCopy()
             sanitizeAndHealModelsConfig(cloned)
-            val existingEnvelope = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
-            val wrapped = existingEnvelope?.wrappedInConfigKey ?: false
-            val ok = putModelsConfigToServer(baseUrl, cloned, wrapped)
-            if (!ok) {
-                return@withContext Result.failure(IOException("保存 models.json 失败"))
+            val saved = putModelsConfigToServer(baseUrl, cloned)
+            if (saved.isFailure) {
+                return@withContext Result.failure(
+                    IOException("保存 models.json 失败：${saved.exceptionOrNull()?.message ?: "未知错误"}")
+                )
             }
             writeThroughLocalConfig(baseUrl, cloned)
             Result.success(true)
@@ -4327,11 +4407,11 @@ data class CatalogPreset(
         try {
             val configObj = JsonParser.parseString(rawJson).asJsonObject
             sanitizeAndHealModelsConfig(configObj)
-            val existingEnvelope = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
-            val wrapped = existingEnvelope?.wrappedInConfigKey ?: false
-            val ok = putModelsConfigToServer(baseUrl, configObj, wrapped)
-            if (!ok) {
-                return@withContext Result.failure(IOException("保存 models.json 失败"))
+            val saved = putModelsConfigToServer(baseUrl, configObj)
+            if (saved.isFailure) {
+                return@withContext Result.failure(
+                    IOException("保存 models.json 失败：${saved.exceptionOrNull()?.message ?: "未知错误"}")
+                )
             }
             writeThroughLocalConfig(baseUrl, configObj)
             Result.success(true)
@@ -4383,10 +4463,12 @@ data class CatalogPreset(
                 }
             }
             sanitizeAndHealModelsConfig(rootConfig)
-            val ok = putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
+            val saved = putModelsConfigToServer(baseUrl, rootConfig)
             // 服务端没写成功就不能报成功：否则界面显示「已删除」，下次同步模型又回来了
-            if (!ok) {
-                return@withContext Result.failure(IOException("网关上删除未生效，本地缓存未改动"))
+            if (saved.isFailure) {
+                return@withContext Result.failure(
+                    IOException("网关上删除未生效，本地缓存未改动：${saved.exceptionOrNull()?.message ?: "未知错误"}")
+                )
             }
             writeThroughLocalConfig(baseUrl, rootConfig)
             Result.success(true)
@@ -4946,6 +5028,106 @@ data class CatalogPreset(
             }
         } catch (e: Exception) {
             Result.failure(e)
+        }
+    }
+
+    // ==========================================
+    // 3.0.1 输入框提示词增强（伴侣网关自有能力，不是 pi-web 协议）
+    // ==========================================
+
+    /**
+     * 读取网关能力探测结果。旧网关没有 `capabilities` 字段，返回 null 表示「不支持」。
+     * 这里复用 `/api/ping`，不额外制造一个探测请求。
+     */
+    suspend fun getPromptEnhancementCapability(): Result<PromptEnhancementCapability?> = withContext(Dispatchers.IO) {
+        // 旧网关 / 直连 pi-web：没有 capabilities 字段 → null（入口隐藏）
+        Result.success(
+            com.pi.app.prompt.PromptEnhancementCapabilityParser.parse(ping().getOrNull())
+        )
+    }
+
+    /**
+     * 发起一次增强。
+     *
+     * 用 `enqueue` + `suspendCancellableCoroutine` 而不是 `execute()`：用户在增强期间
+     * 继续输入/切会话时，[kotlinx.coroutines.Job] 取消必须真正 cancel 掉这条连接，
+     * 否则服务端会一直占着生成名额。
+     */
+    suspend fun enhancePrompt(
+        requestId: String,
+        sessionId: String,
+        draftRevision: Long,
+        branchRevision: Long,
+        provider: String,
+        modelId: String,
+        draft: String,
+        context: List<PromptEnhancementContextMessage>
+    ): Result<PromptEnhancementResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val payload = JsonObject().apply {
+            addProperty("requestId", requestId)
+            addProperty("sessionId", sessionId)
+            addProperty("draftRevision", draftRevision)
+            addProperty("branchRevision", branchRevision)
+            addProperty("provider", provider)
+            addProperty("modelId", modelId)
+            addProperty("draft", draft)
+            add("context", JsonArray().apply {
+                context.forEach { item ->
+                    add(JsonObject().apply {
+                        addProperty("role", item.role)
+                        addProperty("text", item.text)
+                    })
+                }
+            })
+        }
+        val httpRequest = Request.Builder()
+            .url("$baseUrl/api/mobile/prompt-enhance")
+            .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+            .build()
+
+        suspendCancellableCoroutine { cont ->
+            val call = enhanceClient.newCall(httpRequest)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!cont.isActive) return
+                    cont.resume(Result.failure(e))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val result = response.use { resp ->
+                        val body = resp.body?.string() ?: ""
+                        val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                        if (resp.isSuccessful && json != null) {
+                            val text = json.get("enhancedText")?.takeIf { !it.isJsonNull }?.asString
+                            if (!text.isNullOrBlank()) {
+                                Result.success(
+                                    PromptEnhancementResult(
+                                        requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString ?: requestId,
+                                        draftRevision = json.get("draftRevision")?.takeIf { !it.isJsonNull }?.asLong ?: draftRevision,
+                                        branchRevision = json.get("branchRevision")?.takeIf { !it.isJsonNull }?.asLong ?: branchRevision,
+                                        enhancedText = text,
+                                        changed = json.get("changed")?.takeIf { !it.isJsonNull }?.asBoolean ?: true,
+                                        provider = json.getAsJsonObject("model")?.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: provider,
+                                        modelId = json.getAsJsonObject("model")?.get("modelId")?.takeIf { !it.isJsonNull }?.asString ?: modelId,
+                                        contextUsed = json.get("contextUsed")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                    )
+                                )
+                            } else {
+                                Result.failure(PromptEnhancementException("INVALID_OUTPUT", "增强结果为空"))
+                            }
+                        } else {
+                            val code = json?.get("code")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP_${resp.code}"
+                            val message = json?.get("message")?.takeIf { !it.isJsonNull }?.asString
+                                ?: "增强失败 (HTTP ${resp.code})"
+                            Result.failure(PromptEnhancementException(code, message))
+                        }
+                    }
+                    if (cont.isActive) cont.resume(result)
+                }
+            })
         }
     }
 

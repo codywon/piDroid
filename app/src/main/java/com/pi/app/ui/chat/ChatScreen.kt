@@ -83,9 +83,20 @@ import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.data.model.ToolPreset
+import com.pi.app.prompt.PromptEnhancementCapability
+import com.pi.app.prompt.PromptEnhancementContextMessage
+import com.pi.app.prompt.PromptEnhancementEnvironment
+import com.pi.app.prompt.PromptEnhancementException
+import com.pi.app.prompt.PromptEnhancementRequest
+import com.pi.app.prompt.PromptEnhancementResult
+import com.pi.app.prompt.PromptEnhancementRules
+import com.pi.app.prompt.PromptEnhancementTarget
+import com.pi.app.prompt.PromptEnhancementTicket
+import com.pi.app.prompt.PromptEnhancementUndoState
 import com.pi.app.ui.git.GitChangesFullScreen
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -160,6 +171,18 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    /**
+     * 提示词增强：当前网关能力 + 目标连接/模型。
+     *
+     * `target` 为 null（旧网关或直连 pi-web）时入口整体隐藏 —— 不给一个点下去
+     * 必然失败的按钮。
+     */
+    promptEnhancementTarget: PromptEnhancementTarget? = null,
+    promptEnhancementCapability: PromptEnhancementCapability? = null,
+    /** 发起一次增强；网络调用在 Activity 侧，协程取消会真正断掉连接 */
+    onEnhancePrompt: suspend (PromptEnhancementRequest) -> Result<PromptEnhancementResult> = {
+        Result.failure(PromptEnhancementException("ENHANCEMENT_UNAVAILABLE", "未接入提示词增强"))
+    },
     /** 读取一次 bash 的完整输出（GET /api/agent/{id}/bash-output?path=） */
     onLoadBashOutput: suspend (String) -> Result<String> = { Result.success("") },
     /** 文件元信息 + 文本内容 + 原始字节（图片预览） */
@@ -189,13 +212,24 @@ fun ChatScreen(
      * 发送消息。
      * @param editEntryId 非空时表示「从此处编辑」待回退的条目 ID（对标 pi-web 的 editEntryId）：
      *        发送前会先 navigate_tree 切换会话树分支，再发 prompt。
-     * @param onEditRejected 分支切换失败时回调，供输入框恢复正文并重新进入编辑态
-     *        （对标 pi-web 的 restoreSubmission + setEdit(entryId)）。
+     * @param onSubmissionRejected 服务端明确拒收、或对账确认没送达时回调：
+     *        把这次提交的正文、附件与编辑态原样还给输入框（对标 pi-web 的 restoreSubmission）。
      */
     onSendMessage: (String, List<ChatImageInput>, String?, (() -> Unit)?) -> Unit,
     onSendSteer: (String, List<ChatImageInput>) -> Unit,
     onSendFollowUp: (String, List<ChatImageInput>) -> Unit,
+    /**
+     * 把 Stop / 撤回退回的排队消息还给输入框（pi-web 的 restoreRecalledPrompts）：
+     * 输入框已有内容时拼在它前面，绝不覆盖用户正在写的东西。
+     */
+    onRecallToComposer: (String, List<ChatImageInput>) -> Unit = { _, _ -> },
     onClearQueue: () -> Unit,
+    /**
+     * 被 Stop / 撤回退回的排队消息：ChatScreen 消费一次后调 [onRecallConsumed] 清空。
+     * 消费即清的单向数据流，避开回调注册那套时序坑。
+     */
+    recallRequest: RecallToComposerRequest? = null,
+    onRecallConsumed: () -> Unit = {},
     onApproveTool: (approved: Boolean) -> Unit,
     currentToolPreset: ToolPreset = ToolPreset.FULL,
     onToolPresetChange: (ToolPreset) -> Unit = {},
@@ -215,13 +249,40 @@ fun ChatScreen(
     var inputText by remember(sessionId) {
         mutableStateOf(if (sessionId.isBlank()) "" else draftPrefs.getSessionDraft(sessionId))
     }
+
+    // ── 提示词增强状态 ───────────────────────────────────────────────
+    // 目标/能力任一缺失就不展示入口（旧网关、直连 pi-web、服务端关闭）。
+    val enhancementConnectionKey = promptEnhancementTarget?.connectionKey
+    val enhancementEnabled = promptEnhancementTarget != null &&
+        promptEnhancementCapability?.available == true
+    val enhancementModelKey = promptEnhancementTarget?.modelKey ?: ""
+    // 修订号只用于「请求是否过期」判定，不是业务数据。
+    var draftRevision by remember(sessionId, enhancementConnectionKey) { mutableStateOf(0L) }
+    var branchRevision by remember(sessionId, enhancementConnectionKey) { mutableStateOf(0L) }
+    var isEnhancing by remember(sessionId, enhancementConnectionKey) { mutableStateOf(false) }
+    var activeEnhanceRequestId by remember(sessionId, enhancementConnectionKey) { mutableStateOf<String?>(null) }
+    var enhancementUndo by remember(sessionId, enhancementConnectionKey) {
+        mutableStateOf(
+            draftPrefs.getSessionDraftUndo(sessionId)
+                ?.takeIf { it.connectionKey == enhancementConnectionKey }
+        )
+    }
+    // Job 故意**不**按会话重建：切会话时要能取消上一个会话遗留的在飞请求，
+    // 否则旧请求会继续占用服务端生成名额（回填本身已被修订号拦住）。
+    val enhanceJobHolder = remember { mutableStateOf<Job?>(null) }
     /** 当前待从此处编辑并切分支的消息条目 ID（对标 pi-web 的 editEntryId）：发送时切分支 */
     var editingEntryId by remember(sessionId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(sessionId, inputText) {
+    // 切会话 / 切连接：上一个会话的在飞增强必须真正取消，而不是只靠「回填被拦」。
+    LaunchedEffect(sessionId, enhancementConnectionKey) {
+        enhanceJobHolder.value?.cancel()
+        enhanceJobHolder.value = null
+    }
+    LaunchedEffect(sessionId, inputText, enhancementUndo) {
         if (sessionId.isBlank()) return@LaunchedEffect
         // 防抖：连续打字时不要每个字符都写一次 SharedPreferences
         delay(400)
-        draftPrefs.saveSessionDraft(sessionId, inputText)
+        // 草稿与撤销快照写进同一次提交，避免两条写互相覆盖
+        draftPrefs.saveSessionDraftWithUndo(sessionId, inputText, enhancementUndo)
     }
     // 滚动位置也必须按会话隔离：否则切到新会话时会沿用上一个会话的滚动偏移，
     // 看起来像“打开了一个不从头也不到底的会话”。
@@ -285,6 +346,166 @@ fun ChatScreen(
         }
     }
 
+    /**
+     * 唯一改动草稿正文的入口：同步推进修订号，让在飞的增强请求自动过期。
+     * 用户在增强期间继续输入、或编辑后改回原文，都不会被旧结果覆盖。
+     */
+    fun updateDraft(newText: String) {
+        if (newText != inputText) {
+            inputText = newText
+            draftRevision += 1
+        }
+    }
+
+    /** 取消在飞的增强：同时断掉 HTTP 请求，避免服务端一直占着生成名额。 */
+    fun cancelEnhancement() {
+        enhanceJobHolder.value?.cancel()
+        enhanceJobHolder.value = null
+        activeEnhanceRequestId = null
+        isEnhancing = false
+    }
+
+    /**
+     * 只有「请求身份 + 草稿修订 + 分支修订 + 连接 + 模型」全部仍匹配才回填。
+     * 任何一项变了都当作过期响应丢弃，绝不碰用户当前草稿。
+     */
+    fun applyPromptEnhancementResult(ticket: PromptEnhancementTicket, result: PromptEnhancementResult) {
+        val environment = PromptEnhancementEnvironment(
+            connectionKey = enhancementConnectionKey ?: "",
+            sessionId = sessionId,
+            draftRevision = draftRevision,
+            branchRevision = branchRevision,
+            modelKey = enhancementModelKey
+        )
+        if (!PromptEnhancementRules.canApply(ticket, result, environment)) return
+        if (result.enhancedText == inputText) {
+            enhancementUndo = null
+            return
+        }
+        enhancementUndo = PromptEnhancementUndoState(
+            connectionKey = enhancementConnectionKey ?: "",
+            original = inputText,
+            enhanced = result.enhancedText
+        )
+        updateDraft(result.enhancedText)
+    }
+
+    fun startPromptEnhancement() {
+        val target = promptEnhancementTarget ?: return
+        val blocked = PromptEnhancementRules.blockedReason(
+            inputText,
+            promptEnhancementCapability?.maxDraftChars ?: PromptEnhancementRules.MAX_DRAFT_CHARS
+        )
+        if (blocked != null) {
+            android.widget.Toast.makeText(context, blocked, android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+        val draftSnapshot = inputText
+        val requestId = UUID.randomUUID().toString()
+        val ticket = PromptEnhancementTicket(
+            requestId = requestId,
+            connectionKey = target.connectionKey,
+            sessionId = sessionId,
+            draftRevision = draftRevision,
+            branchRevision = branchRevision,
+            modelKey = target.modelKey
+        )
+        activeEnhanceRequestId = requestId
+        isEnhancing = true
+        enhanceJobHolder.value?.cancel()
+        // 用局部引用做身份判断：旧请求取消后它的 finally 晚于新请求执行时，
+        // 不能把新请求的 Job 清成 null（否则「取消」按钮会失效）。
+        var startedJob: Job? = null
+        startedJob = coroutineScope.launch {
+            try {
+                val contextMessages = buildPromptEnhancementContext(messages)
+                val result = onEnhancePrompt(
+                    PromptEnhancementRequest(
+                        requestId = requestId,
+                        sessionId = sessionId,
+                        draftRevision = ticket.draftRevision,
+                        branchRevision = ticket.branchRevision,
+                        target = target,
+                        draft = draftSnapshot,
+                        context = contextMessages
+                    )
+                )
+                result.onSuccess { applyPromptEnhancementResult(ticket, it) }
+                    .onFailure { error ->
+                        if (error is kotlinx.coroutines.CancellationException) return@launch
+                        val message = when ((error as? PromptEnhancementException)?.code) {
+                            "RATE_LIMITED" -> "增强请求过于频繁，请稍后再试"
+                            "TIMEOUT" -> "增强超时，已保留原稿"
+                            "MODEL_AUTH_FAILED" -> "当前模型凭据不可用，请检查 PC 端配置"
+                            "UNSUPPORTED_MODEL" -> "该模型暂不支持增强"
+                            "ENHANCEMENT_UNAVAILABLE" -> "当前网关不支持提示词增强"
+                            "INVALID_OUTPUT" -> "增强结果不可用，已保留原稿"
+                            else -> error.message ?: "增强失败，已保留原稿"
+                        }
+                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+                    }
+            } finally {
+                // 新请求已接管时（requestId 已换）不要重置它的状态
+                if (activeEnhanceRequestId == requestId) {
+                    activeEnhanceRequestId = null
+                    isEnhancing = false
+                }
+                if (enhanceJobHolder.value === startedJob) {
+                    enhanceJobHolder.value = null
+                }
+            }
+        }
+        enhanceJobHolder.value = startedJob
+    }
+
+    /**
+     * 一次提交被拒（服务端明确拒绝、分支切换失败、或对账确认未送达）时把内容还回输入框。
+     *
+     * 三条硬约束：
+     * 1. **不丢**：正文与本次提交的附件都要回来；
+     * 2. **不覆盖**：输入框已有新内容时把它接在后面，用户后来打的字永不被他自己的旧草稿冲掉；
+     * 3. **恢复编辑态**：从“从此处编辑”发起的那次提交，还回后仍停在同一处。
+     */
+    fun restoreSubmission(text: String, images: List<ChatImageInput>, editId: String?) {
+        if (editId != null) editingEntryId = editId
+        val current = inputText
+        when {
+            current.isBlank() -> updateDraft(text)
+            text.isBlank() || current.trim() == text.trim() -> Unit
+            else -> updateDraft(text + "\n\n" + current)
+        }
+        if (images.isNotEmpty()) {
+            // 队列里退回的图片只有 base64：拷进临时文件后按普通附件挂回去
+            coroutineScope.launch {
+                val restored = withContext(Dispatchers.IO) {
+                    images.mapNotNull { img -> attachmentFromBase64(context, img) }
+                }
+                if (restored.isNotEmpty()) {
+                    attachments.addAll(restored.filter { candidate -> attachments.none { it.name == candidate.name } })
+                }
+            }
+        }
+    }
+
+    /** 把 base64 图片落成缓存文件，供输入框重新预览/重发（失败则不挂）。 */
+    fun attachmentFromBase64(ctx: android.content.Context, image: ChatImageInput): ChatAttachment? = runCatching {
+        val ext = image.mimeType.substringAfter('/', "png").substringBefore('+').ifBlank { "png" }
+        val file = java.io.File(ctx.cacheDir, "recalled_${System.currentTimeMillis()}_${image.base64Data.hashCode()}.$ext")
+        file.writeBytes(android.util.Base64.decode(image.base64Data, android.util.Base64.DEFAULT))
+        ChatAttachment(
+            name = image.name.ifBlank { file.name },
+            uri = android.net.Uri.fromFile(file),
+            isImage = true
+        )
+    }.getOrNull()
+
+    // Stop / 撤回退回的排队消息：消费一次后把请求清掉，避免重组时重复回填
+    LaunchedEffect(recallRequest?.id) {
+        val request = recallRequest ?: return@LaunchedEffect
+        restoreSubmission(request.text, request.images, null)
+        onRecallConsumed()
+    }
+
     // 统一发送入口：图片真的读成 base64 走 pi 的 images 字段；非图片文件目前只能按名字引用
     // （pi 的图片通道只收 image/*，文件要走 /api/files?type=upload 的 multipart 上传，后续补）
     fun dispatchSend(
@@ -304,22 +525,24 @@ fun ChatScreen(
     fun submitMessage(rawText: String, kind: SendKind) {
         val currentEditId = editingEntryId
         editingEntryId = null
+        // 发送就把「本次增强」的撤销点作废：后面用户改的是新内容，不能被旧撤销覆盖。
+        enhancementUndo = null
+        branchRevision += 1
+        cancelEnhancement()
         val picked = attachments.toList()
-        // 对标 pi-web 的 restoreSubmission(text, images)：分支切换失败（服务端还在跑、条目已不存在）时
-        // 把正文、编辑态与本次提交的附件原样恢复回去，绝不让用户丢掉刚改好的内容。
-        val rejectedEdit: (() -> Unit)?
-        if (currentEditId.isNullOrBlank()) {
-            rejectedEdit = null
-        } else {
-            rejectedEdit = {
-                editingEntryId = currentEditId
-                inputText = rawText
-                if (picked.isNotEmpty() && attachments.isEmpty()) attachments.addAll(picked)
+        // 对标 pi-web 的 restoreSubmission(text, images)：服务端拒收或对账确认没送达时，
+        // 把正文、附件与编辑态原样还回去，绝不让用户丢掉刚改好的内容。
+        // 普通发送也要能还（以前只给“从此处编辑”装了恢复，于是发送失败只能靠一条报错气泡收场）。
+        val restore: () -> Unit = {
+            if (!currentEditId.isNullOrBlank()) editingEntryId = currentEditId
+            restoreSubmission(rawText, emptyList(), currentEditId)
+            if (picked.isNotEmpty()) {
+                attachments.addAll(picked.filter { candidate -> attachments.none { it.name == candidate.name } })
             }
         }
         attachments.clear()
         if (picked.isEmpty()) {
-            dispatchSend(rawText, emptyList(), kind, currentEditId, rejectedEdit)
+            dispatchSend(rawText, emptyList(), kind, currentEditId, restore)
             return
         }
         coroutineScope.launch {
@@ -366,7 +589,7 @@ fun ChatScreen(
             val text = listOf(rawText, uploadedNote).filter { it.isNotBlank() }.joinToString("\n\n")
             // 纯图片消息也必须给 pi 一句可见文本，避免空 message 被拒
             val finalText = if (text.isBlank() && images.isNotEmpty()) "（图片）" else text
-            dispatchSend(finalText, images, kind, currentEditId, rejectedEdit)
+            dispatchSend(finalText, images, kind, currentEditId, restore)
         }
     }
 
@@ -499,7 +722,12 @@ fun ChatScreen(
                 else -> {
                     onLoadFileTextChunk(absPath, 0L)
                         .onSuccess { chunk ->
-                            artifactText = chunk.content.ifBlank { "（空文件）" }
+                            if (chunk.binary) {
+                                artifactText = null
+                                artifactMessage = "此文件为二进制文件（${formatBytes(chunk.size)}），不支持文本预览。可点击下方「用其他应用打开」调用外部工具查看。"
+                            } else {
+                                artifactText = chunk.content.ifBlank { "（空文件）" }
+                            }
                             artifactNextOffset = chunk.nextOffset
                             artifactTruncated = chunk.truncated
                             artifactSizeBytes = chunk.size
@@ -804,7 +1032,10 @@ fun ChatScreen(
             // 避免把用户正在写的草稿冲掉；但编辑态无论如何都会武装。
             val composerIsEmpty = inputText.isBlank() && attachments.isEmpty()
             if (composerIsEmpty) {
-                inputText = msg.content
+                // 进入编辑态等于换了一条历史起点：在飞增强结果必须作废
+                branchRevision += 1
+                cancelEnhancement()
+                updateDraft(msg.content)
                 // 同 pi-web 的 getUserMessageDraftImages：把该条提问当时附带的图片一并回填
                 val msgImages = msg.mediaList
                     .filter { it.kind == MediaKind.IMAGE && !it.dataBase64.isNullOrBlank() }
@@ -1009,7 +1240,7 @@ fun ChatScreen(
                                     .clip(RoundedCornerShape(6.dp))
                                     .clickable {
                                         val recalled = queuedMessages.joinToString("\n\n") { it.text }
-                                        inputText = if (inputText.isBlank()) recalled else "$recalled\n\n$inputText"
+                                        updateDraft(if (inputText.isBlank()) recalled else "$recalled\n\n$inputText")
                                         onClearQueue()
                                     }
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -1228,6 +1459,48 @@ fun ChatScreen(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
+                        // 0. 撤销增强：只在「当前文本仍是本次增强结果」时出现，
+                        //    用户后续改动后自动消失，绝不覆盖新写的内容。
+                        val canUndoEnhancement = PromptEnhancementRules.canUndo(
+                            enhancementUndo,
+                            inputText,
+                            enhancementConnectionKey ?: ""
+                        )
+                        if (canUndoEnhancement) {
+                            Surface(
+                                shape = CircleShape,
+                                color = theme.primary.copy(alpha = 0.12f),
+                                border = BorderStroke(1.dp, theme.primary.copy(alpha = 0.35f)),
+                                modifier = Modifier
+                                    .height(28.dp)
+                                    .clickable {
+                                        val undo = enhancementUndo ?: return@clickable
+                                        if (PromptEnhancementRules.canUndo(undo, inputText, enhancementConnectionKey ?: "")) {
+                                            enhancementUndo = null
+                                            updateDraft(undo.original)
+                                        }
+                                    }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Undo,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(12.dp),
+                                        tint = theme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        text = "撤销增强",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = theme.primary
+                                    )
+                                }
+                            }
+                        }
                         // 1. 圆圈 + 压缩图标按钮
                         Surface(
                             shape = CircleShape,
@@ -1270,7 +1543,7 @@ fun ChatScreen(
                                     .clickable(enabled = canSend) {
                                         userJumpedToHistory = false
                                         submitMessage(inputText.trim(), SendKind.STEER)
-                                        inputText = ""
+                                        updateDraft("")
                                     }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -1296,7 +1569,7 @@ fun ChatScreen(
                                     .clickable(enabled = canSend) {
                                         userJumpedToHistory = false
                                         submitMessage(inputText.trim(), SendKind.FOLLOW_UP)
-                                        inputText = ""
+                                        updateDraft("")
                                     }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
@@ -1496,7 +1769,7 @@ fun ChatScreen(
                                                         .fillMaxWidth()
                                                         .clickable {
                                                             // 选中即填入输入框；尾部空格会让菜单自然收起，光标在命令后
-                                                            inputText = "/${cmd.name} "
+                                                            updateDraft("/${cmd.name} ")
                                                         }
                                                         .padding(horizontal = 12.dp, vertical = 7.dp),
                                                     verticalAlignment = Alignment.CenterVertically
@@ -1581,7 +1854,7 @@ fun ChatScreen(
                                 }
                                 BasicTextField(
                                     value = inputText,
-                                    onValueChange = { inputText = it },
+                                    onValueChange = { updateDraft(it) },
                                     modifier = Modifier.fillMaxWidth(),
                                     maxLines = 5,
                                     textStyle = TextStyle(
@@ -1591,6 +1864,61 @@ fun ChatScreen(
                                     ),
                                     cursorBrush = SolidColor(theme.primary)
                                 )
+                            }
+
+                            // 提示词增强：把草稿交给当前模型改写成更清晰的指令。
+                            // 只回填输入框，绝不自动发送（用户必须自己确认后才会发出）。
+                            if (enhancementEnabled) {
+                                val enhanceBlocked = PromptEnhancementRules.blockedReason(
+                                    inputText,
+                                    promptEnhancementCapability?.maxDraftChars
+                                        ?: PromptEnhancementRules.MAX_DRAFT_CHARS
+                                )
+                                val canEnhance = !isEnhancing &&
+                                    enhanceBlocked == null &&
+                                    editingEntryId.isNullOrBlank()
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .semantics {
+                                            contentDescription = when {
+                                                isEnhancing -> "取消提示词增强"
+                                                enhanceBlocked != null -> "提示词增强不可用：$enhanceBlocked"
+                                                else -> "增强提示词"
+                                            }
+                                        }
+                                        .clickable(enabled = isEnhancing || canEnhance) {
+                                            if (isEnhancing) cancelEnhancement() else startPromptEnhancement()
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Surface(
+                                        shape = CircleShape,
+                                        color = when {
+                                            isEnhancing -> theme.primary.copy(alpha = 0.15f)
+                                            canEnhance -> theme.surfaceContainerHigh
+                                            else -> theme.surfaceContainer
+                                        },
+                                        modifier = Modifier.size(32.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            if (isEnhancing) {
+                                                CircularProgressIndicator(
+                                                    modifier = Modifier.size(15.dp),
+                                                    strokeWidth = 1.6.dp,
+                                                    color = theme.primary
+                                                )
+                                            } else {
+                                                Icon(
+                                                    imageVector = Icons.Default.AutoFixHigh,
+                                                    contentDescription = null,
+                                                    tint = if (canEnhance) theme.primary else theme.textMuted,
+                                                    modifier = Modifier.size(17.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
                             }
 
                             // 右侧：行业标准主动作按钮
@@ -1604,7 +1932,7 @@ fun ChatScreen(
                                         .clickable(enabled = canSend) {
                                             userJumpedToHistory = false
                                             submitMessage(inputText.trim(), SendKind.SEND)
-                                            inputText = ""
+                                            updateDraft("")
                                         }
                                 ) {
                                     Box(contentAlignment = Alignment.Center) {
@@ -3527,4 +3855,26 @@ private fun openFileWithOtherApp(context: Context, file: File, mime: String): Bo
     true
 } catch (e: Exception) {
     false
+}
+
+/**
+ * 为提示词增强挑选上下文：只取用户/助手正文，剔除思考、工具调用、附件与流式空壳。
+ *
+ * 只给「最近一段」而不是整段历史：增强是改写当前这句，历史只用来消解指代。
+ * 裁剪预算由 [PromptEnhancementRules.selectContext] 统一决定（纯 JVM 可单测）。
+ */
+private fun buildPromptEnhancementContext(messages: List<ChatItem>): List<PromptEnhancementContextMessage> {
+    val candidates = messages
+        .asSequence()
+        .filter { it.role == MessageRole.USER || it.role == MessageRole.AGENT }
+        .filter { it.content.isNotBlank() }
+        .takeLast(20)
+        .map { item ->
+            PromptEnhancementContextMessage(
+                role = if (item.role == MessageRole.USER) "user" else "assistant",
+                text = item.content
+            )
+        }
+        .toList()
+    return PromptEnhancementRules.selectContext(candidates)
 }

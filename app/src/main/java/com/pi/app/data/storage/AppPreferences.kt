@@ -75,11 +75,48 @@ class AppPreferences(context: Context) {
         return prefs.getString("draft_$sessionId", "") ?: ""
     }
 
-    fun saveSessionDraft(sessionId: String, text: String) {
+    /**
+     * 读回「可撤销的提示词增强」快照。
+     *
+     * 三个字段分键存储、同一次提交写入，避免用分隔符拼一个字符串（原文可能包含任何字符）。
+     */
+    fun getSessionDraftUndo(sessionId: String): com.pi.app.prompt.PromptEnhancementUndoState? {
+        if (sessionId.isBlank()) return null
+        val connectionKey = prefs.getString("pe_undo_ck_$sessionId", null) ?: return null
+        val enhanced = prefs.getString("pe_undo_enhanced_$sessionId", null) ?: return null
+        val original = prefs.getString("pe_undo_original_$sessionId", null) ?: return null
+        return com.pi.app.prompt.PromptEnhancementUndoState(
+            connectionKey = connectionKey,
+            original = original,
+            enhanced = enhanced
+        )
+    }
+
+    /**
+     * 草稿与撤销快照必须**原子**写入：
+     * 分两次提交时，进程被杀在中间会留下「已回填的草稿 + 已失效的撤销点」或反向的不一致状态。
+     */
+    fun saveSessionDraftWithUndo(
+        sessionId: String,
+        text: String,
+        undo: com.pi.app.prompt.PromptEnhancementUndoState?
+    ) {
         if (sessionId.isBlank()) return
-        val key = "draft_$sessionId"
+        val draftKey = "draft_$sessionId"
+        val ckKey = "pe_undo_ck_$sessionId"
+        val enhancedKey = "pe_undo_enhanced_$sessionId"
+        val originalKey = "pe_undo_original_$sessionId"
         prefs.edit().apply {
-            if (text.isBlank()) remove(key) else putString(key, text)
+            if (text.isBlank()) remove(draftKey) else putString(draftKey, text)
+            if (undo == null) {
+                remove(ckKey)
+                remove(enhancedKey)
+                remove(originalKey)
+            } else {
+                putString(ckKey, undo.connectionKey)
+                putString(enhancedKey, undo.enhanced)
+                putString(originalKey, undo.original)
+            }
         }.apply()
     }
 

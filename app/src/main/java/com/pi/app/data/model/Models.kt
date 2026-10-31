@@ -1,6 +1,7 @@
 package com.pi.app.data.model
 
 import com.google.gson.JsonArray
+import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.google.gson.JsonPrimitive
@@ -95,8 +96,19 @@ data class Session(
 data class RunningSessionsSnapshot(
     val sessionListVersion: Long = 0L,
     val runningIds: Set<String> = emptySet(),
-    val awaitingInputIds: Set<String> = emptySet()
-)
+    val awaitingInputIds: Set<String> = emptySet(),
+    /**
+     * 子代理还能在这条会话里开新回合的会话（pi-web 的 `subagentsActiveSessionIds`，#1437）：
+     * 主代理本轮已结束，但「一整组代理」还没干完，不能当完成处理（不标未读/不推送）。
+     */
+    val subagentsActiveIds: Set<String> = emptySet(),
+    /** pi-web 标记「不推送完成」的会话（如靠扩展命令驱动的状态按钮，#1361）。 */
+    val completionSuppressedIds: Set<String> = emptySet()
+) {
+    /** 真正“还在干活”的会话：运行中 或 子代理仍在跑（与 pi-web 侧边栏的 active 集合同口径）。 */
+    val activeIds: Set<String>
+        get() = runningIds + subagentsActiveIds
+}
 
 /**
  * pi 凭据库中某个 Provider 的真实配置状态（GET /api/auth/providers → apiKeyProviders）。
@@ -259,7 +271,14 @@ data class FileTextChunk(
     val content: String = "",
     val nextOffset: Long = 0L,
     val truncated: Boolean = false,
-    val size: Long = 0L
+    val size: Long = 0L,
+    /**
+     * 服务端识别为纯二进制文件（.zip/.exe 等，pi-web #1401）：
+     * 此时 content 恒为空，前端应提示「这是二进制文件，请用其他应用打开或下载」，
+     * 而不能把空串当成「空文本文件」展示。
+     */
+    val binary: Boolean = false,
+    val mtime: String? = null
 )
 
 /** 人类可读体积（B / KB / MB） */
@@ -681,6 +700,19 @@ data class ChatItem(
     val streamMessageId: String? = null
 )
 
+/**
+ * 把被 Stop / 撤回（或压缩期间被 park）的排队消息还给输入框的一次请求。
+ *
+ * 为什么不用回调：`stopAgent` / `clearQueue` 的结果落在 MainActivity 的协程里，
+ * 而输入框状态属于 ChatScreen；一个“请求状态 + 消费即清”的单向数据流比回调注册表
+ * 更不会漏、也不会在会话切换后把内容塞进错会话的输入框。
+ */
+data class RecallToComposerRequest(
+    val text: String = "",
+    val images: List<ChatImageInput> = emptyList(),
+    val id: String = java.util.UUID.randomUUID().toString()
+)
+
 enum class MessageRole {
     USER,
     AGENT,
@@ -779,7 +811,15 @@ data class AgentSseEvent(
     val tokenStats: TokenStats? = null,
     val connectionState: String? = null,
     /** pi assistant message 的身份（message.timestamp / id），用于把正文写回同一条气泡。 */
-    val messageId: String? = null
+    val messageId: String? = null,
+    /**
+     * 主代理本轮结束了，但还有子代理在跑（pi-web 给 `agent_settled` / `prompt_done` 打的标记，#1437）。
+     * 此时只能收尾正文，不能震动/推送/标未读：“一整组代理干完”才算完成。
+     */
+    val subagentsActive: Boolean = false,
+    /** SSE `queue_update`：服务端当前真实的排队消息（含压缩期间被 park 的） */
+    val steering: List<String> = emptyList(),
+    val followUp: List<String> = emptyList()
 ) {
     val effectiveText: String
         get() = delta ?: text ?: content ?: ""
@@ -814,6 +854,43 @@ data class HeaderEntry(
     val key: String = "",
     val value: String = ""
 )
+
+private val STANDARD_LEVELS = listOf("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+private fun JsonElement?.asSafeString(fallback: String = ""): String {
+    if (this == null || isJsonNull) return fallback
+    if (!isJsonPrimitive) throw IllegalArgumentException("Expected string primitive but found: $this")
+    return asString
+}
+
+private fun JsonElement?.asSafeBoolean(fallback: Boolean = false): Boolean {
+    if (this == null || isJsonNull) return fallback
+    if (!isJsonPrimitive) throw IllegalArgumentException("Expected boolean primitive but found: $this")
+    return runCatching { asBoolean }.getOrDefault(fallback)
+}
+
+private fun JsonElement?.asSafeLong(fallback: Long = 0L): Long {
+    if (this == null || isJsonNull) return fallback
+    if (!isJsonPrimitive) throw IllegalArgumentException("Expected long primitive but found: $this")
+    return runCatching { asLong }.getOrDefault(fallback)
+}
+
+private fun JsonElement?.asSafeInt(fallback: Int = 0): Int {
+    if (this == null || isJsonNull) return fallback
+    if (!isJsonPrimitive) throw IllegalArgumentException("Expected int primitive but found: $this")
+    return runCatching { asInt }.getOrDefault(fallback)
+}
+
+private fun JsonElement?.asSafeDouble(fallback: Double = 0.0): Double {
+    if (this == null || isJsonNull) return fallback
+    if (!isJsonPrimitive) throw IllegalArgumentException("Expected double primitive but found: $this")
+    return runCatching { asDouble }.getOrDefault(fallback)
+}
+
+private fun JsonObject.setOrRemove(key: String, value: String?) {
+    val trimmed = value?.trim().orEmpty()
+    if (trimmed.isEmpty()) remove(key) else addProperty(key, trimmed)
+}
 
 /**
  * 1:1 对标 pi-web 的单个模型配置实体
@@ -883,16 +960,16 @@ object ModelConfigConverter {
             if (!pElement.isJsonObject) continue
             val pObj = pElement.asJsonObject
 
-            val baseUrl = pObj.get("baseUrl")?.asString ?: ""
-            val apiKey = pObj.get("apiKey")?.asString ?: ""
-            val api = pObj.get("api")?.asString ?: "openai-completions"
+            val baseUrl = pObj.get("baseUrl").asSafeString()
+            val apiKey = pObj.get("apiKey").asSafeString()
+            val api = pObj.get("api").asSafeString("openai-completions")
 
             // 解析 Provider 级别的 headers
             val pHeaders = mutableListOf<HeaderEntry>()
             if (pObj.has("headers") && pObj.get("headers").isJsonObject) {
                 val hObj = pObj.getAsJsonObject("headers")
                 for (hKey in hObj.keySet()) {
-                    pHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey)?.asString ?: ""))
+                    pHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey).asSafeString()))
                 }
             }
 
@@ -903,18 +980,18 @@ object ModelConfigConverter {
                 for (mElement in modelsArr) {
                     if (!mElement.isJsonObject) continue
                     val mObj = mElement.asJsonObject
-                    val mId = mObj.get("id")?.asString?.trim() ?: continue
+                    val mId = mObj.get("id").asSafeString().trim()
                     if (mId.isEmpty()) continue
 
-                    val mName = mObj.get("name")?.asString ?: ""
-                    val reasoning = mObj.get("reasoning")?.asBoolean ?: false
+                    val mName = mObj.get("name").asSafeString()
+                    val reasoning = mObj.get("reasoning").asSafeBoolean()
 
                     val hasVision = if (mObj.has("input") && mObj.get("input").isJsonArray) {
                         mObj.getAsJsonArray("input").any { it.isJsonPrimitive && it.asString == "image" }
                     } else false
 
-                    val contextWindow = mObj.get("contextWindow")?.asLong ?: 200000L
-                    val maxTokens = mObj.get("maxTokens")?.asLong ?: 8192L
+                    val contextWindow = mObj.get("contextWindow").asSafeLong(200000L).takeIf { it > 0 } ?: 200000L
+                    val maxTokens = mObj.get("maxTokens").asSafeLong(8192L).takeIf { it > 0 } ?: 8192L
 
                     // 价格
                     var costInput = 0.0
@@ -923,21 +1000,21 @@ object ModelConfigConverter {
                     var costCacheWrite = 0.0
                     if (mObj.has("cost") && mObj.get("cost").isJsonObject) {
                         val costObj = mObj.getAsJsonObject("cost")
-                        costInput = costObj.get("input")?.asDouble ?: 0.0
-                        costOutput = costObj.get("output")?.asDouble ?: 0.0
-                        costCacheRead = costObj.get("cacheRead")?.asDouble ?: 0.0
-                        costCacheWrite = costObj.get("cacheWrite")?.asDouble ?: 0.0
+                        costInput = costObj.get("input").asSafeDouble()
+                        costOutput = costObj.get("output").asSafeDouble()
+                        costCacheRead = costObj.get("cacheRead").asSafeDouble()
+                        costCacheWrite = costObj.get("cacheWrite").asSafeDouble()
                     }
 
                     // api override
-                    val apiOverride = mObj.get("api")?.asString ?: ""
+                    val apiOverride = mObj.get("api").asSafeString()
 
                     // headers
                     val mHeaders = mutableListOf<HeaderEntry>()
                     if (mObj.has("headers") && mObj.get("headers").isJsonObject) {
                         val hObj = mObj.getAsJsonObject("headers")
                         for (hKey in hObj.keySet()) {
-                            mHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey)?.asString ?: ""))
+                            mHeaders.add(HeaderEntry(key = hKey, value = hObj.get(hKey).asSafeString()))
                         }
                     }
 
@@ -946,11 +1023,11 @@ object ModelConfigConverter {
                     var developerRole = false
                     if (mObj.has("compat") && mObj.get("compat").isJsonObject) {
                         val compatObj = mObj.getAsJsonObject("compat")
-                        deepSeekThinking = compatObj.get("supportsThinking")?.asBoolean ?: false
-                        developerRole = compatObj.get("developerRole")?.asBoolean ?: false
+                        deepSeekThinking = compatObj.get("supportsThinking").asSafeBoolean()
+                        developerRole = compatObj.get("developerRole").asSafeBoolean()
                     }
 
-                    val thinkingLevel = mObj.get("thinkingLevel")?.asString ?: ""
+                    val thinkingLevel = mObj.get("thinkingLevel").asSafeString()
 
                     // 思考等级映射
                     val levelMapItems = mutableListOf<ThinkingLevelItem>()
@@ -1017,41 +1094,43 @@ object ModelConfigConverter {
         return resultList
     }
 
+    /**
+     * 把界面上的 Provider 列表写回 models.json。
+     *
+     * 关键约束：**没建模的字段也必须原样留着**。pi 的 models.json 还有本 App 不画的字段——
+     * 单模型 `baseUrl`、`compat.forceAdaptiveThinking`、`inputLimits.images.resize.maxBytes`、
+     * provider 级 `compat`/`oauth`/`authHeader`、`modelOverrides` 里的其他键……以前的实现
+     * 对自定义 provider 是「整段重建」，用户用手机改一个上下文窗口并保存，就把 PC 上配的
+     * 这些字段全部抹掉了。
+     *
+     * 删除与改名不需要特殊处理：输出里的 providers/models 完全由本次列表重建，
+     * 列表里不再存在的 provider 或 model 自然消失；新建的同名条目会从既有条目继承字段。
+     */
     fun serializeProvidersConfig(providers: List<ProviderConfigItem>, existingRoot: JsonObject? = null): JsonObject {
         val root = existingRoot?.deepCopy() ?: JsonObject()
+        val existingProviders = root.get("providers")?.takeIf { it.isJsonObject }?.asJsonObject
         val providersObj = JsonObject()
 
         for (provider in providers) {
             val pKey = provider.name.trim()
             if (pKey.isEmpty()) continue
 
+            // 以磁盘上同 id 的既有条目为底，而不是从空对象开始重建
+            val existingP = existingProviders?.get(pKey)?.takeIf { it.isJsonObject }?.asJsonObject?.deepCopy()
+                ?: JsonObject()
+
             if (provider.isBuiltIn) {
                 // 内置提供商（如 deepseek、openai 等）：
                 // 严禁将 models 数组或空 baseUrl 写入 models.json，防止破坏 pi 核心对官方模型的内置解析；
                 // 若用户对某个模型做了参数微调（如 contextWindow/maxTokens），无损记录在 modelOverrides 中。
-                val existingP = if (existingRoot != null && existingRoot.has("providers") &&
-                    existingRoot.getAsJsonObject("providers").has(pKey) &&
-                    existingRoot.getAsJsonObject("providers").get(pKey).isJsonObject
-                ) {
-                    existingRoot.getAsJsonObject("providers").getAsJsonObject(pKey).deepCopy()
-                } else {
-                    JsonObject()
-                }
-
-                val overridesObj = if (existingP.has("modelOverrides") && existingP.get("modelOverrides").isJsonObject) {
-                    existingP.getAsJsonObject("modelOverrides")
-                } else {
-                    JsonObject()
-                }
+                val overridesObj = existingP.get("modelOverrides")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: JsonObject()
 
                 for (m in provider.models) {
                     val mId = m.id.trim()
                     if (mId.isEmpty()) continue
-                    val mOverride = if (overridesObj.has(mId) && overridesObj.get(mId).isJsonObject) {
-                        overridesObj.getAsJsonObject(mId)
-                    } else {
-                        JsonObject()
-                    }
+                    val mOverride = overridesObj.get(mId)?.takeIf { it.isJsonObject }?.asJsonObject
+                        ?: JsonObject()
                     if (m.contextWindow > 0) mOverride.addProperty("contextWindow", m.contextWindow)
                     if (m.maxTokens > 0) mOverride.addProperty("maxTokens", m.maxTokens)
                     if (mOverride.size() > 0) {
@@ -1062,15 +1141,19 @@ object ModelConfigConverter {
                 existingP.remove("models")
                 if (overridesObj.size() > 0) {
                     existingP.add("modelOverrides", overridesObj)
+                }
+                // 既有条目里的 baseUrl / headers / compat 等（代理配置）必须原样保留：
+                // 以前只在 overrides 非空时才写回，改一个模型参数前会顺手删掉用户的代理地址。
+                if (existingP.size() > 0) {
                     providersObj.add(pKey, existingP)
                 }
                 continue
             }
 
-            val pObj = JsonObject()
-            if (provider.baseUrl.isNotBlank()) pObj.addProperty("baseUrl", provider.baseUrl.trim())
-            if (provider.apiKey.isNotBlank()) pObj.addProperty("apiKey", provider.apiKey.trim())
-            if (provider.api.isNotBlank()) pObj.addProperty("api", provider.api.trim())
+            val pObj = existingP
+            pObj.setOrRemove("baseUrl", provider.baseUrl)
+            pObj.setOrRemove("apiKey", provider.apiKey)
+            pObj.setOrRemove("api", provider.api)
 
             // Provider 级别 headers
             val validPHeaders = provider.headers.filter { it.key.isNotBlank() }
@@ -1080,18 +1163,28 @@ object ModelConfigConverter {
                     hObj.addProperty(h.key.trim(), h.value)
                 }
                 pObj.add("headers", hObj)
+            } else {
+                pObj.remove("headers")
             }
 
-            // models
+            // models：按 id 与既有条目合并（保留未建模字段），列表里没有的模型即删除
+            val existingModelsById = existingP.get("models")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?.mapNotNull { el ->
+                    val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: return@mapNotNull null
+                    val id = obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                        ?.lowercase(Locale.ROOT) ?: return@mapNotNull null
+                    id to obj
+                }?.toMap().orEmpty()
+
             val modelsArr = JsonArray()
             for (m in provider.models) {
                 val mId = m.id.trim()
                 if (mId.isEmpty()) continue
 
-                val mObj = JsonObject()
+                val mObj = existingModelsById[mId.lowercase(Locale.ROOT)]?.deepCopy() ?: JsonObject()
                 mObj.addProperty("id", mId)
-                if (m.name.isNotBlank()) mObj.addProperty("name", m.name.trim())
-                if (m.reasoning) mObj.addProperty("reasoning", true)
+                mObj.setOrRemove("name", m.name)
+                if (m.reasoning) mObj.addProperty("reasoning", true) else mObj.remove("reasoning")
 
                 // input
                 val inputArr = JsonArray()
@@ -1105,18 +1198,20 @@ object ModelConfigConverter {
                 mObj.addProperty("contextWindow", m.contextWindow)
                 mObj.addProperty("maxTokens", m.maxTokens)
 
-                // 价格 (cost)
-                val costObj = JsonObject().apply {
-                    addProperty("input", m.costInput)
-                    addProperty("output", m.costOutput)
-                    addProperty("cacheRead", m.costCacheRead)
-                    addProperty("cacheWrite", m.costCacheWrite)
-                }
+                // 价格 (cost)：沿用既有 cost 对象，保留上游可能写入的其他键
+                val costObj = mObj.get("cost")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
+                costObj.addProperty("input", m.costInput)
+                costObj.addProperty("output", m.costOutput)
+                costObj.addProperty("cacheRead", m.costCacheRead)
+                costObj.addProperty("cacheWrite", m.costCacheWrite)
                 mObj.add("cost", costObj)
 
                 // api override
-                if (m.apiOverride.isNotBlank() && m.apiOverride != "none" && m.apiOverride != "— 默认 / none —") {
-                    mObj.addProperty("api", m.apiOverride.trim())
+                val apiOverride = m.apiOverride.trim()
+                if (apiOverride.isNotBlank() && apiOverride != "none" && apiOverride != "— 默认 / none —") {
+                    mObj.addProperty("api", apiOverride)
+                } else {
+                    mObj.remove("api")
                 }
 
                 // headers
@@ -1127,22 +1222,30 @@ object ModelConfigConverter {
                         hObj.addProperty(h.key.trim(), h.value)
                     }
                     mObj.add("headers", hObj)
+                } else {
+                    mObj.remove("headers")
                 }
 
-                // compat
-                val compatObj = JsonObject()
+                // compat：只改界面能表达的两个开关，其余键（如 forceAdaptiveThinking）原样保留
+                val compatObj = mObj.get("compat")?.takeIf { it.isJsonObject }?.asJsonObject ?: JsonObject()
                 if (m.deepSeekThinkingCompat) compatObj.addProperty("supportsThinking", true)
+                else compatObj.remove("supportsThinking")
                 if (m.developerRole) compatObj.addProperty("developerRole", true)
+                else compatObj.remove("developerRole")
                 if (compatObj.size() > 0) {
                     mObj.add("compat", compatObj)
+                } else {
+                    mObj.remove("compat")
                 }
 
-                if (m.thinkingLevel.isNotBlank()) {
-                    mObj.addProperty("thinkingLevel", m.thinkingLevel.trim())
-                }
+                mObj.setOrRemove("thinkingLevel", m.thinkingLevel)
 
-                // thinkingLevelMap
-                val levelMapObj = JsonObject()
+                // thinkingLevelMap：标准档位由界面决定，非标准键原样保留
+                val levelMapObj = mObj.get("thinkingLevelMap")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: JsonObject()
+                for (lvl in STANDARD_LEVELS) {
+                    levelMapObj.remove(lvl)
+                }
                 for (item in m.thinkingLevelMap) {
                     when (item.mode) {
                         ThinkingLevelMode.DISABLED -> levelMapObj.addProperty(item.levelKey, false)
@@ -1156,6 +1259,8 @@ object ModelConfigConverter {
                 }
                 if (levelMapObj.size() > 0) {
                     mObj.add("thinkingLevelMap", levelMapObj)
+                } else {
+                    mObj.remove("thinkingLevelMap")
                 }
 
                 modelsArr.add(mObj)
@@ -1183,42 +1288,74 @@ object ModelConfigConverter {
         authStates: Map<String, ProviderAuthState>,
         catalogModels: List<ModelInfo>?
     ): List<ProviderConfigItem> {
+        val rootProviders = if (rootObj != null && rootObj.has("providers") && rootObj.get("providers").isJsonObject) {
+            rootObj.getAsJsonObject("providers")
+        } else {
+            rootObj
+        }
         val customProviders = rootObj?.let { parseProvidersConfig(it) } ?: emptyList()
 
         val builtInProviders = mutableListOf<ProviderConfigItem>()
         for ((_, state) in authStates) {
             if (!state.configured) continue
-            if (customProviders.any { it.name.equals(state.providerId, ignoreCase = true) }) continue
+
+            // 检查 models.json 里是否已存在该内置提供商的配置（例如配置了自定义 baseUrl、headers 或 modelOverrides）
+            val existingCustom = customProviders.firstOrNull { it.name.equals(state.providerId, ignoreCase = true) }
+            val pObj = rootProviders?.get(state.providerId)?.takeIf { it.isJsonObject }?.asJsonObject
+                ?: rootProviders?.entrySet()?.firstOrNull { it.key.equals(state.providerId, ignoreCase = true) }?.value?.takeIf { it.isJsonObject }?.asJsonObject
+            val overridesObj = pObj?.get("modelOverrides")?.takeIf { it.isJsonObject }?.asJsonObject
 
             val provModels = catalogModels
                 ?.filter { it.provider.equals(state.providerId, ignoreCase = true) }
                 ?.map { mi ->
-                    // ModelInfo 只带 /api/models 提供的元数据（supportsThinking / supportsVision），
-                    // 它没有 cost* 字段，所以代价一律用默认值，不能凭空取不存在的属性
+                    val mOverride = overridesObj?.get(mi.id)?.takeIf { it.isJsonObject }?.asJsonObject
+                    val cw = mOverride?.get("contextWindow").asSafeLong().takeIf { it > 0 }
+                        ?: mi.contextWindow.takeIf { it > 0 }
+                        ?: 128000L
+                    val mt = mOverride?.get("maxTokens").asSafeLong().takeIf { it > 0 }
+                        ?: mi.maxTokens.takeIf { it > 0 }
+                        ?: 8192L
+                    val reasoning = mOverride?.get("reasoning")?.let { it.asSafeBoolean(mi.supportsThinking) }
+                        ?: mi.supportsThinking
+                    val name = mOverride?.get("name").asSafeString().takeIf { it.isNotBlank() }
+                        ?: mi.displayName.ifBlank { mi.id }
+
                     ModelConfigItem(
                         id = mi.id,
-                        name = mi.displayName.ifBlank { mi.id },
-                        reasoning = mi.supportsThinking,
+                        name = name,
+                        reasoning = reasoning,
                         hasVision = mi.hasVision,
-                        contextWindow = mi.contextWindow.takeIf { it > 0 } ?: 128000L,
-                        maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L
+                        contextWindow = cw,
+                        maxTokens = mt
                     )
                 } ?: emptyList()
+
+            // 如果用户在 models.json 里配置了该内置提供商的 baseUrl 或 headers（例如代理）：
+            // 保留其自定义的 baseUrl/headers，但标记为 isBuiltIn = true，并挂载官方目录模型
+            val baseUrl = existingCustom?.baseUrl ?: pObj?.get("baseUrl").asSafeString()
+            val headers = existingCustom?.headers ?: emptyList()
+            val api = existingCustom?.api?.ifBlank { "openai-completions" } ?: "openai-completions"
 
             builtInProviders.add(
                 ProviderConfigItem(
                     name = state.providerId,
                     displayName = state.displayName.ifBlank { state.providerId },
-                    baseUrl = "",
-                    apiKey = "",
-                    api = "openai-completions",
+                    baseUrl = baseUrl,
+                    apiKey = existingCustom?.apiKey ?: "",
+                    api = api,
+                    headers = headers,
                     models = provModels,
                     isBuiltIn = true
                 )
             )
         }
 
-        return customProviders + builtInProviders
+        // 过滤掉已被内置提供商合并项替换的自定义条目
+        val pureCustom = customProviders.filter { cp ->
+            authStates.values.none { it.configured && it.providerId.equals(cp.name, ignoreCase = true) }
+        }
+
+        return pureCustom + builtInProviders
     }
 }
 
@@ -1251,16 +1388,16 @@ object ProviderAuthStateSerializer {
         for (el in arr) {
             if (!el.isJsonObject) continue
             val o = el.asJsonObject
-            val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+            val id = o.get("id").asSafeString().trim()
             if (id.isBlank()) continue
-            val displayName = o.get("displayName")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: id
-            val supportsOAuth = o.get("supportsOAuth")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            val displayName = o.get("displayName").asSafeString().trim().ifBlank { id }
+            val supportsOAuth = o.get("supportsOAuth").asSafeBoolean()
             result[id.lowercase()] = ProviderAuthState(
                 providerId = id,
                 displayName = displayName,
-                configured = o.get("configured")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                source = o.get("source")?.takeIf { !it.isJsonNull }?.asString,
-                modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                configured = o.get("configured").asSafeBoolean(),
+                source = o.get("source")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString,
+                modelCount = o.get("modelCount").asSafeInt(),
                 supportsOAuth = supportsOAuth
             )
         }

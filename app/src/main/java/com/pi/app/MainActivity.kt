@@ -217,6 +217,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * 提示词增强的「连接身份」：服务器地址 + token 指纹。
+     *
+     * 用途是判定「这条增强/撤销是否属于当前连接」，因此不能用明文 token 当键；
+     * token 轮换后指纹变化，旧撤销点自然失效。
+     */
+    private fun buildPromptEnhancementConnectionKey(): String {
+        val token = prefs.authToken
+        return "${prefs.serverUrl}#${token.length}#${Integer.toHexString(token.hashCode())}"
+    }
+
     private fun handleDeepLink(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "pidroid" && data.host == "connect") {
@@ -290,6 +301,10 @@ class MainActivity : ComponentActivity() {
         var authRejectedBefore by remember { mutableStateOf(false) }
 
         var dynamicCatalog by remember { mutableStateOf(DynamicModelCatalog(emptyList(), emptyMap())) }
+        // 提示词增强：网关能力探测结果。null = 尚未探测/旧网关不支持（入口隐藏）。
+        var promptEnhancementCapability by remember {
+            mutableStateOf<com.pi.app.prompt.PromptEnhancementCapability?>(null)
+        }
         var currentDefaultModelId by remember { mutableStateOf(prefs.defaultModelId) }
         var currentDefaultProvider by remember { mutableStateOf(prefs.defaultProvider) }
         var selectedModel by remember {
@@ -415,6 +430,8 @@ class MainActivity : ComponentActivity() {
         var autoCompactionEnabled by remember { mutableStateOf(true) }
         var autoRetryEnabled by remember { mutableStateOf(true) }
         val queuedMessages = remember { mutableStateListOf<QueuedMessage>() }
+        // Stop / 撤回退回的提示词：交给 ChatScreen 回填一次后清空（见 RecallToComposerRequest）
+        var recallRequest by remember { mutableStateOf<RecallToComposerRequest?>(null) }
         var isAgentBusy by remember { mutableStateOf(false) }
         var agentPhaseLabel by remember { mutableStateOf<String?>(null) }
         var isAutoRetrying by remember { mutableStateOf(false) }
@@ -450,6 +467,12 @@ class MainActivity : ComponentActivity() {
         fun loadCapabilitiesAndModels(modelsOnly: Boolean = false) {
             if (!prefs.isConfigured) return
             lifecycleScope.launch {
+                // 能力探测与模型目录并行：探测失败只影响增强入口，不影响模型列表。
+                lifecycleScope.launch {
+                    promptEnhancementCapability = apiClient.getPromptEnhancementCapability()
+                        .getOrNull()
+                        ?.takeIf { it.available }
+                }
                 apiClient.getDynamicModels().onSuccess { catalog ->
                     dynamicCatalog = catalog
                     catalog.defaultModel?.let { def ->
@@ -560,18 +583,27 @@ class MainActivity : ComponentActivity() {
          */
         fun applyRunningSnapshot(snap: RunningSessionsSnapshot) {
             val runningIds = snap.runningIds.toSet()
+            // 「还在干活」= 运行中 或 子代理仍在跑（pi-web 侧边栏就是这么并的，,#1437）：
+            // 主代理本轮结束时子代理可能还在跑，用并集才能把「整组代理干完」当地标。
+            val activeIds = snap.activeIds
             // 对标 pi-web SessionSidebar：后台运行完成的会话自动标为未读；重新跑的会话移出未读
             val nextUnread = SessionUnreadState.reconcileRunningSnapshot(
                 currentUnread = unreadSessionIds,
                 previousRunning = previousRunningSessionIds,
-                currentRunning = runningIds,
+                currentRunning = activeIds,
                 activeSessionId = currentSession?.id
-            )
+            ).let { marked ->
+                // 扩展命令（如 command: 状态按钮）驱动的会话不发「会话完成」，
+                // 否则每次状态刷新都响一次。pi-web 用 completionNotificationSuppressedSessionIds 标记它。
+                // 只影响「本轮新标上的未读」，用户自己标的/已有的未读不能被清掉。
+                val newlyMarked = marked - unreadSessionIds
+                (marked - newlyMarked) + (newlyMarked - snap.completionSuppressedIds)
+            }
             if (nextUnread != unreadSessionIds) {
                 unreadSessionIds = nextUnread
                 prefs.setUnreadSessionIds(nextUnread)
             }
-            previousRunningSessionIds = runningIds
+            previousRunningSessionIds = activeIds
 
             fun merge(list: List<Session>): List<Session> = list.map { s ->
                 val running = snap.runningIds.contains(s.id)
@@ -834,6 +866,38 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /**
+         * 停止本轮。服务端会把压缩期间被 park 住的提示词一并退回（`{steering, followUp, images}`），
+         * 这些内容必须还给输入框 —— 与 pi TUI 的 abort、pi-web 的 handleAbort 一致。
+         */
+        fun recallPromptsToComposer(recalled: RecalledPrompts, sid: String) {
+            if (!recalled.hasAnything || currentSession?.id != sid) return
+            recallRequest = RecallToComposerRequest(text = recalled.text, images = recalled.images)
+        }
+
+        /**
+         * 传输失败后的对账（#1457）：服务端可能已经收下了那条提示词，只是回执丢了。
+         * 这里只核对、不重发：确认在跑、或历史里已经有这条提问，就当已发送；
+         * 确认没送达才把正文退回输入框。
+         */
+        fun settleUnconfirmedPrompt(
+            sessionId: String,
+            prompt: String,
+            onNotDelivered: () -> Unit
+        ) {
+            lifecycleScope.launch {
+                kotlinx.coroutines.delay(2_500L)
+                if (currentSession?.id != sessionId) return@launch
+                val state = apiClient.getAgentState(sessionId).getOrNull()
+                if (state?.running == true) return@launch
+                // 运行态可能刚好在中间结束：再对一次正文，避免把已经落盘的提问当失败
+                val lastUserText = apiClient.getSessionDetail(sessionId).getOrNull()?.messages
+                    ?.lastOrNull { it.role == MessageRole.USER }?.content?.trim()
+                if (lastUserText != null && lastUserText == prompt.trim()) return@launch
+                onNotDelivered()
+            }
+        }
+
         fun scheduleAgentCompletionSettle(sessionId: String, delayMs: Long = 800L) {
             completionSettleJob?.cancel()
             completionSettleJob = lifecycleScope.launch {
@@ -860,7 +924,7 @@ class MainActivity : ComponentActivity() {
             replaceHistory: Boolean = false
         ) {
             val requestedModelMetaRevision = modelMetaRevision
-            // 运行态改由 /api/sessions/{id}/state 判定（39KB，实测 9ms），
+            // 运行态改由 `GET /api/agent/{id}?systemPrompt=0` 判定（同理的轻量状态读，不带系统提示词），
             // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
             // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
             // 注意：状态与历史快照并行拉取（以前串行等待状态，多花一个 RTT 才出正文）。
@@ -1164,7 +1228,7 @@ class MainActivity : ComponentActivity() {
                             }
                             // isStreaming=false 时什么都不做（绝不能清 isAgentBusy）：
                             // pi 在工具执行/等 bash 时 isPromptRunning 仍为 true，只是没在产 token。
-                            // 运行态的收尾统一由 /api/sessions/{id}/state + agent_end 防抖判定。
+                            // 运行态的收尾统一由 /api/agent/{id}?systemPrompt=0 + agent_end 防抖判定。
                         }
                         "reconnected_sync" -> {
                             syncSessionSnapshot(sessionId, allowCompletionTransition = true)
@@ -1530,12 +1594,42 @@ class MainActivity : ComponentActivity() {
                                 )
                             )
                         }
+                        "prompt_error" -> {
+                            // 投递已受理、异步失败（如压缩结束后的重申被拒）：必须让用户看见错误。
+                            // 收尾交给紧随其后的 prompt_done / agent_end，不在这里强行判完成。
+                            lastSseActivityAt = System.currentTimeMillis()
+                            val reason = event.error ?: event.output ?: "消息发送失败"
+                            Toast.makeText(
+                                this@MainActivity,
+                                "发送失败：$reason",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        "queue_update" -> {
+                            // 服务端当前真实的排队消息（含压缩期间被 park 的）。
+                            // 以前只能等 3s 一轮的状态轮询，撤回/停止后本地队列会先残留一拍。
+                            lastSseActivityAt = System.currentTimeMillis()
+                            val next = event.steering.map { QueuedMessage("steer", it) } +
+                                event.followUp.map { QueuedMessage("followUp", it) }
+                            if (next.map { it.kind to it.text } != queuedMessages.map { it.kind to it.text }) {
+                                queuedMessages.clear()
+                                queuedMessages.addAll(next)
+                                lastQueueMutationAt = System.currentTimeMillis()
+                            }
+                        }
                         "agent_end" -> {
                             // 仅当整个 Agent 会话执行链结束（且未处于自动重试等待期）时，经防抖确认后触发震动与提示音
                             isToolExecuting = false
                             // 本轮彻底结束：在途消息身份作废（对齐 pi-web 的 finishRun 清 streamingMessage）
                             streamingMessageId = null
                             settleStaleStreamingAgents()
+                            if (event.subagentsActive) {
+                                // 主代理本轮结束了，但子代理还在跑（pi-web 的 subagentsActive，#1437）：
+                                // 正文可以收尾，“整组代理干完”的震动/推送/未读要等最后一个子代理。
+                                // 它结束后会开新回合，那时再来一条不带该标记的 agent_end。
+                                markAgentRunActive(phase = "子代理执行中...")
+                                return@collect
+                            }
                             if (event.aborted) {
                                 // 任务被中断（如 PC 端或用户 Stop），严格对齐 pi-web：抑制完成提示音与震动
                                 hasNotifiedCompletionForCurrentRun = true
@@ -1586,7 +1680,7 @@ class MainActivity : ComponentActivity() {
          * **只不写模型身份**：缓存快照（内存/磁盘）里的 `provider/modelId` 是**切换之前**的旧元数据，
          * 拿它刷新界面就会把供应商显示回上一家 —— 用户看到的就是「回到会话又从 deepseek
          * 变回 codywon」。模型身份只认两条来源：本机刚切的选择（[prefs] 里按会话记的那份）
-         * 与服务端网络快照（`/api/sessions/{id}`、`/api/sessions/{id}/state`）。
+         * 与服务端网络快照（`/api/sessions/{id}`、`/api/agent/{id}?systemPrompt=0`）。
          * 思考档位只有单值、不存在「选错供应商」，仍按快照回放。
          */
         fun applyHistoryMeta(hist: SessionHistoryData) {
@@ -1626,7 +1720,9 @@ class MainActivity : ComponentActivity() {
             consecutiveIdlePolls = 0
             hasNotifiedCompletionForCurrentRun = !session.isRunning
             isAgentBusy = session.isRunning
-            agentPhaseLabel = if (session.isRunning) "正在等待模型..." else null
+            // 工具在跑时不要盖成「正在等待模型」（pi-web #1348，runStatePhase 规则）：
+            // 否则工具明明在执行，顶部却先闪一下等待模型。
+            agentPhaseLabel = if (session.isRunning && !isToolExecuting) "正在等待模型..." else null
 
             // 切换会话必须清空上一场的「更早记录」，否则会把别人的历史拼进来
             olderMessages = emptyList()
@@ -1814,6 +1910,30 @@ class MainActivity : ComponentActivity() {
                         // 单轮失败不能停掉同步循环，下一轮接着来。
                     }
                 }
+            }
+        }
+
+        /**
+         * 会话保活：每 30s 续租当前选中的会话（pi-web `SESSION_LEASE_RENEW_INTERVAL_MS`）。
+         *
+         * 0.13 把「持着 SSE 流就保活」改成了「页面的续租保活」：只开流不续租，
+         * 选中的空闲会话会在 10 分钟空闲超时后被回收，下次发消息得重新起 wrapper、
+         * 扩展状态也跟着丢。绑定会话 id 的 LaunchedEffect 保证切会话时旧会话不再被续租。
+         * 旧网关没有这个路由（supported=false）：直接结束循环，不刷屏。
+         */
+        LaunchedEffect(prefs.isConfigured, currentSession?.id, authRejected) {
+            if (!prefs.isConfigured || authRejected) return@LaunchedEffect
+            val sid = currentSession?.id ?: return@LaunchedEffect
+            while (true) {
+                val reply = apiClient.renewSessionLease(sid).getOrNull()
+                if (reply != null && !reply.supported) return@LaunchedEffect
+                if (reply != null && currentSession?.id == sid) {
+                    // 页面不在前台时让掉流是为了省连接；这里只补一个“在干活就要有流”。
+                    if (reply.showsActivity && sseConnectionState != SseConnectionState.CONNECTED) {
+                        reattachSseCallback?.invoke(sid, true)
+                    }
+                }
+                kotlinx.coroutines.delay(30_000L)
             }
         }
 
@@ -2227,6 +2347,29 @@ class MainActivity : ComponentActivity() {
                         SessionModelSelection.isProviderAmbiguous(dynamicCatalog.models, selectedModel.id)
                     },
                     thinkingLevel = currentThinkingLevel,
+                    // 提示词增强：只有网关报告可用时才给 target（否则入口整体隐藏）。
+                    // connectionKey 把「同一台 PC + 同一个 token」绑定起来：换连接或 token
+                    // 轮换后，旧会话的增强结果与撤销点都会自动失效。
+                    promptEnhancementCapability = promptEnhancementCapability,
+                    promptEnhancementTarget = promptEnhancementCapability?.let {
+                        com.pi.app.prompt.PromptEnhancementTarget(
+                            connectionKey = buildPromptEnhancementConnectionKey(),
+                            provider = selectedModel.provider,
+                            modelId = selectedModel.id
+                        )
+                    },
+                    onEnhancePrompt = { request ->
+                        apiClient.enhancePrompt(
+                            requestId = request.requestId,
+                            sessionId = request.sessionId,
+                            draftRevision = request.draftRevision,
+                            branchRevision = request.branchRevision,
+                            provider = request.target.provider,
+                            modelId = request.target.modelId,
+                            draft = request.draft,
+                            context = request.context
+                        )
+                    },
                     tokenStats = tokenStats,
                     messages = messages,
                     olderMessages = olderMessages,
@@ -2350,7 +2493,7 @@ class MainActivity : ComponentActivity() {
                     onStopAgent = {
                         val sid = activeSessionId
                         lifecycleScope.launch {
-                            apiClient.stopAgent(sid).onSuccess {
+                            apiClient.stopAgent(sid).onSuccess { recalled ->
                                 completionSettleJob?.cancel()
                                 completionSettleJob = null
                                 hasNotifiedCompletionForCurrentRun = true
@@ -2359,11 +2502,20 @@ class MainActivity : ComponentActivity() {
                                     isAutoRetrying = false
                                     isToolExecuting = false
                                     agentPhaseLabel = null
+                                    queuedMessages.clear()
+                                    lastQueueMutationAt = System.currentTimeMillis()
                                     keepAliveManager.releaseWakeLock()
                                     syncPersistentForegroundService(isBusy = false, project = currentProject)
                                 }
                                 markSessionNotRunning(sid)
-                                Toast.makeText(this@MainActivity, "已停止 Agent 执行", Toast.LENGTH_SHORT).show()
+                                // 压缩期间排队的那几条随 Stop 一起退回输入框，不能静静消失
+                                recallPromptsToComposer(recalled, sid)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (recalled.hasAnything) "已停止 Agent 执行，排队消息已退回输入框"
+                                    else "已停止 Agent 执行",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                                 // 停止后立即拉取一次权威快照，使服务端中断落盘后的 entries 与 entryId 立即同步到本地列表
                                 syncSessionSnapshot(sid, allowCompletionTransition = true)
                             }
@@ -2408,14 +2560,17 @@ class MainActivity : ComponentActivity() {
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
                     },
-                    onSendMessage = { prompt, images, editEntryId, onEditRejected ->
+                    onSendMessage = { prompt, images, editEntryId, onSubmissionRestore ->
                         // 绑定到「这条输入框所属的会话」：带附件要先上传/编码，
                         // 若期间用户切了会话，旧代码会在 await 后重新读 currentSession，
                         // 把正文发到另一个会话里 —— 这里改成编译期捕获的 activeSessionId。
                         val sid = activeSessionId
-                        // 对标 pi-web 的 handleSend：忙时直接退还提交（restoreSubmission）。
-                        if (isAgentBusy || isToolExecuting) {
-                            onEditRejected?.invoke()
+                        // 只有「从此处编辑」需要忙时拒绝：它要先 navigate_tree 切分支，忙时切分支
+                        // 就是 pi-web 也会拒的那种回退。普通发送不拦：pi 的 AgentSession.prompt()
+                        // 自己决定是排队给当前回合还是开新一轮，压缩期间则由 pi-web 的 wrapper
+                        // park 住并回 {queued:true}（旧实现把消息拦在外面，还配了句误导的提示）。
+                        if (!editEntryId.isNullOrBlank() && (isAgentBusy || isToolExecuting)) {
+                            onSubmissionRestore?.invoke()
                             Toast.makeText(
                                 this@MainActivity,
                                 "任务执行中不能回退分支（同 pi-web），请先等本轮结束或点停止",
@@ -2430,7 +2585,7 @@ class MainActivity : ComponentActivity() {
                                 val navResult = apiClient.navigateTree(sid, editEntryId)
                                 if (navResult.isFailure) {
                                     // pi-web：导航失败就回滚到编辑态并把正文退还输入框，绝不丢草稿
-                                    onEditRejected?.invoke()
+                                    onSubmissionRestore?.invoke()
                                     val err = navResult.exceptionOrNull()?.message ?: "未知错误"
                                     Toast.makeText(this@MainActivity, "回退分支失败: $err", Toast.LENGTH_LONG).show()
                                     return@launch
@@ -2454,15 +2609,17 @@ class MainActivity : ComponentActivity() {
                                     customTitles = customTitles + (sid to autoTitle)
                                 }
                             }
+                            // 乐观气泡：被排队（`queued:true`）或被拒时按 id 撤销，绝不误删别的气泡
+                            var optimisticId: String? = null
                             if (stillHere) {
                                 val userMedia = images.toMediaAttachments()
-                                messages.add(
-                                    ChatItem(
-                                        role = MessageRole.USER,
-                                        content = prompt,
-                                        mediaList = userMedia
-                                    )
+                                val optimistic = ChatItem(
+                                    role = MessageRole.USER,
+                                    content = prompt,
+                                    mediaList = userMedia
                                 )
+                                optimisticId = optimistic.id
+                                messages.add(optimistic)
                                 // 新一轮开始：上一条在途消息的身份作废
                                 streamingMessageId = null
                                 isAutoRetrying = false
@@ -2474,23 +2631,68 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            apiClient.sendCommand(sid, prompt, images).onFailure { err ->
-                                val errText = err.message ?: "网络或服务端异常"
-                                if (currentSession?.id == sid) {
-                                    isAgentBusy = false
-                                    agentPhaseLabel = null
-                                    keepAliveManager.releaseWakeLock()
-                                    syncPersistentForegroundService(isBusy = false, project = currentProject)
-                                    messages.add(
-                                        ChatItem(
-                                            role = MessageRole.AGENT,
-                                            content = "⚠️ 指令发送失败: $errText",
-                                            isStreaming = false
-                                        )
+                            apiClient.sendCommand(sid, prompt, images)
+                                .onSuccess { ack ->
+                                    if (!ack.queued) return@onSuccess
+                                    // 压缩期间被 park：还不是一条已发送消息，撒回气泡交给队列行显示
+                                    messages.removeAll { it.id == optimisticId }
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "已排队，压缩结束后自动发送",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    syncSessionSnapshot(sid, allowCompletionTransition = false)
+                                }
+                                .onFailure { err ->
+                                    // 区分「确定没收到」与「回执丢了」：
+                                    // 前者退还草稿，后者只标记未确认并等对账，绝不自动重发（#1432）。
+                                    val missingCwd = (err as? AgentCommandException)?.missingCwd
+                                    if (missingCwd != null) {
+                                        messages.removeAll { it.id == optimisticId }
+                                        onSubmissionRestore?.invoke()
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "文件夹已不存在，无法发送：$missingCwd",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        return@onFailure
+                                    }
+                                    if (err is AgentCommandException) {
+                                        // 服务端明确拒收：消息没进去，正文与附件原样退还输入框
+                                        messages.removeAll { it.id == optimisticId }
+                                        onSubmissionRestore?.invoke()
+                                        if (currentSession?.id == sid) {
+                                            isAgentBusy = messages.isNotEmpty() && messages.last().isStreaming
+                                            agentPhaseLabel = null
+                                            keepAliveManager.releaseWakeLock()
+                                            syncPersistentForegroundService(isBusy = false, project = currentProject)
+                                        }                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "发送失败，已退回输入框：${err.message ?: "未知错误"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        return@onFailure
+                                    }
+                                    // 传输层异常（超时 / 连接断 / 代理回了非 JSON）：服务端可能已收了。
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "发送结果未确认，正在核对…",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    settleUnconfirmedPrompt(
+                                        sessionId = sid,
+                                        prompt = prompt,
+                                        onNotDelivered = {
+                                            messages.removeAll { it.id == optimisticId }
+                                            onSubmissionRestore?.invoke()
+                                            Toast.makeText(
+                                                this@MainActivity,
+                                                "未能送达，已退回输入框（未自动重发）",
+                                                Toast.LENGTH_LONG
+                                            ).show()
+                                        }
                                     )
                                 }
-                                Toast.makeText(this@MainActivity, "指令发送失败: $errText", Toast.LENGTH_LONG).show()
-                            }
                         }
                     },
                     onSendSteer = { steerText, steerImages ->
@@ -2506,8 +2708,12 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         lifecycleScope.launch {
-                            apiClient.sendSteer(sid, steerText, steerImages).onSuccess {
-                                Toast.makeText(this@MainActivity, "已下发引导指令", Toast.LENGTH_SHORT).show()
+                            apiClient.sendSteer(sid, steerText, steerImages).onSuccess { ack ->
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (ack.queued) "已排队，压缩结束后自动发送" else "已下发引导指令",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }.onFailure { err ->
                                 Toast.makeText(this@MainActivity, "引导下发失败: ${err.message}", Toast.LENGTH_LONG).show()
                             }
@@ -2520,8 +2726,12 @@ class MainActivity : ComponentActivity() {
                             lastQueueMutationAt = System.currentTimeMillis()
                         }
                         lifecycleScope.launch {
-                            apiClient.sendFollowUp(sid, followText, followImages).onSuccess {
-                                Toast.makeText(this@MainActivity, "已排入后续任务队列", Toast.LENGTH_SHORT).show()
+                            apiClient.sendFollowUp(sid, followText, followImages).onSuccess { ack ->
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (ack.queued) "已排队，压缩结束后自动发送" else "已排入后续任务队列",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }.onFailure { err ->
                                 if (currentSession?.id == sid) queuedMessages.removeAll { it.text == followText }
                                 Toast.makeText(this@MainActivity, "排入队列失败: ${err.message}", Toast.LENGTH_LONG).show()
@@ -2531,13 +2741,23 @@ class MainActivity : ComponentActivity() {
                     onClearQueue = {
                         val sid = activeSessionId
                         lifecycleScope.launch {
-                            apiClient.clearQueue(sid).onSuccess {
+                            apiClient.clearQueue(sid).onSuccess { recalled ->
                                 if (currentSession?.id == sid) queuedMessages.clear()
                                 lastQueueMutationAt = System.currentTimeMillis()
-                                Toast.makeText(this@MainActivity, "已撤回排队消息", Toast.LENGTH_SHORT).show()
+                                // 撤回的内容（含压缩期间被 park 的正文与图片）回到输入框
+                                recallPromptsToComposer(recalled, sid)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    if (recalled.hasAnything) "已撤回排队消息，内容已退回输入框"
+                                    else "已撤回排队消息",
+                                    Toast.LENGTH_SHORT
+                                ).show()
                             }
                         }
                     },
+                    // Stop / 撤回退回的排队消息：交给 ChatScreen 回填后清空请求
+                    recallRequest = recallRequest,
+                    onRecallConsumed = { recallRequest = null },
                     onApproveTool = { approved ->
                         val sid = activeSessionId
                         lifecycleScope.launch {

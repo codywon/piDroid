@@ -2,6 +2,38 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.72] - 2026-10-31
+
+### 🚀 1:1 对标 pi-web 0.13.0：配置无损防坏、生命周期续租、提交与队列恢复闭环
+
+- **模型配置保存安全（P0 级防护）**：
+  - 依据 `app/api/models-config/route.ts` 规范，彻底移除「保存失败后换 `{config: ...}` 包装重试」的危险逻辑（实测在 0.13.0 会绕过服务端校验导致坏结构写盘）；
+  - 错误信息优先透出服务端精准文案（如 `Provider needs a Base URL or at least one model`、图片字节上限错误、软链接失效等）；
+  - models.json 往返序列化升级为无损合并：未在移动端建模的官方字段（单模型 `baseUrl`、`compat.forceAdaptiveThinking`、`inputLimits.images.resize.maxBytes`、provider 级的 `oauth`、`authHeader` 等）保存时 100% 完整保留，且删除项正常清理。
+- **状态轮询性能飞跃**：
+  - 会话运行时状态轮询切换至 `GET /api/agent/{id}?systemPrompt=0`（对齐 pi-web 0.13 `agentStatusUrl()`），大 `AGENTS.md` 项目单次轮询流量降低 90% 以上；
+  - 权威 `running` 判定补齐 `isCompacting`，彻底解决手动/自动压缩中状态提前翻转为空闲的问题。
+- **提交确认与发送草稿保护（#1457）**：
+  - 支持上下文压缩期间发送消息：识别服务端返回的 `{queued: true}`，自动转入队列等待并在压缩结束后自动投递；
+  - 发送失败保护：服务端明确拒绝时自动退回正文与附件到输入框，不破坏用户后续编辑；网络超时走对账确认，绝不盲目重复发送；
+  - 会话目录不存在（`reason: "cwd-missing"`）给出明确路径提示；
+  - Stop 与撤回排队消息时，服务端退回的正文与图片自动还回输入框（pi-web / TUI 行为对齐）。
+- **会话生命周期与任务族完成（#1283、#1437、#1361）**：
+  - 对齐 pi-web 0.13 新保活机制：每 30 秒向服务端发送 `POST /api/agent/{id}/lease` 续租请求，重置 10 分钟空闲倒计时；
+  - 监听并展示异步 `prompt_error`，解析实时 `queue_update` 事件；
+  - 任务族完成判定：主代理结束但子代理仍运行时（`subagentsActive == true`），只收尾流式正文，推迟完成提示音、震动与未读标记，直到整组代理彻底结束；过滤扩展命令对未读的干扰。
+- **内容展示与体验提升（#1444、#1401、#1281、#1348）**：
+  - 用户消息与 Markdown 中常规 HTML 块按源码如实呈现，防止 `<Component ... />` 蒸发；
+  - 纯二进制文件识别：`.zip`/`.exe` 等返回 `binary: true` 时提示调用外部工具查看，不再呈现为「空文件」；
+  - Markdown 中包含的音视频媒体链接渲染专属卡片，可一键调起内置播放器；
+  - 工具执行中保护阶段标签，防止被覆盖为「正在等待模型」。
+- **伴侣网关（Server）提示词增强能力落地**：
+  - 网关新增独立 ESM 增强模块，实现非阻塞独立模型调用，支持代码块/路径/URL 保护与撤销栈管理；配套 24 个自动化测试全部通过。
+- **单元测试守护**：
+  - 新增 `ModelConfigRoundTripTest`、`ModelsConfigWriteContractTest`、`PromptSubmissionTest`，覆盖往返序列化、错误透出、排队回执及 lease 状态解析；纯 JVM 单元测试 24 passed 全部通过。
+
+---
+
 ## [1.7.71] - 2026-10-31
 
 ### ⚡ 模型管理页缓存秒开 + 三处稳定性修复

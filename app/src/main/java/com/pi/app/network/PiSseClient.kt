@@ -447,10 +447,40 @@ class PiSseClient(private val prefs: AppPreferences) {
                     )
                 }
 
+                // 排队消息的真实状态（pi-web 的 `queue_update`，压缩期间被 park 的提示词也在里面）。
+                // 以前靠 3s 一次的状态轮询补，撤回/停止后本地队列会先残留一轮。
+                "queue_update" -> {
+                    listOf(
+                        AgentSseEvent(
+                            type = "queue_update",
+                            steering = stringList(obj.get("steering")),
+                            followUp = stringList(obj.get("followUp"))
+                        )
+                    )
+                }
+
+                // 投递已受理、但异步失败（压缩结束后的重申被拒等）：必须让用户看见错误。
+                "prompt_error" -> {
+                    val message = obj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
+                        ?: obj.get("error")?.takeIf { !it.isJsonNull }?.asString
+                        ?: "消息发送失败"
+                    listOf(AgentSseEvent(type = "prompt_error", error = message, isError = true))
+                }
+
                 "agent_end", "agent_settled", "prompt_done", "agent_idle" -> {
                     val isAborted = (obj.get("aborted")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
                         (obj.get("status")?.takeIf { !it.isJsonNull }?.asString.equals("aborted", ignoreCase = true))
-                    listOf(AgentSseEvent(type = "agent_end", done = true, isStreaming = false, aborted = isAborted))
+                    // 子代理还在跑时不能当“任务完成”处理（避免提前震动/推送）
+                    val subagentsActive = obj.get("subagentsActive")?.takeIf { !it.isJsonNull }?.asBoolean == true
+                    listOf(
+                        AgentSseEvent(
+                            type = "agent_end",
+                            done = true,
+                            isStreaming = false,
+                            aborted = isAborted,
+                            subagentsActive = subagentsActive
+                        )
+                    )
                 }
 
                 "turn_completed", "done", "message_stop" -> {
@@ -570,6 +600,19 @@ class PiSseClient(private val prefs: AppPreferences) {
         }
         val ts = msgObj.get("timestamp")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
         return ts?.asString?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    /** 队列类的字符串数组字段（`steering` / `followUp`）：元素可能是串，也可能是 `{message}` 对象。 */
+    private fun stringList(element: JsonElement?): List<String> {
+        val array = element?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+        return array.mapNotNull { el ->
+            when {
+                el.isJsonPrimitive -> el.asString
+                el.isJsonObject -> el.asJsonObject.get("message")?.takeIf { !it.isJsonNull }?.asString
+                    ?: el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
+                else -> null
+            }
+        }.filter { it.isNotBlank() }
     }
 
     private fun extractPreview(element: JsonElement?): String? {

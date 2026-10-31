@@ -7,9 +7,12 @@
     "start": "node launcher.js",
     "tunnel": "node launcher.js --tunnel",
     "gateway": "node gateway.js",
-    "gateway:tunnel": "node gateway.js --tunnel"
+    "gateway:tunnel": "node gateway.js --tunnel",
+    "test": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.3",
     "qrcode-terminal": "^0.12.0"

@@ -228,6 +228,35 @@ function readAppVersion() {
 
 const APP_VERSION = readAppVersion();
 
+// ── 提示词增强（伴侣网关自有能力，不代理给 pi-web）─────────────────────────
+// 懒加载 ESM 模块：只有客户端真的点击增强时才加载 SDK，避免拖慢每次 /api/ping。
+const { readEnhancementConfig } = require('./prompt-enhancement/config.js');
+const PROMPT_ENHANCE_CONFIG = readEnhancementConfig();
+let promptEnhancementModule = null;
+
+function loadPromptEnhancement() {
+  if (!promptEnhancementModule) {
+    promptEnhancementModule = (async () => {
+      const [{ createEnhancementService }, { createSdkModelClient }, { createPromptEnhancementHandler }] =
+        await Promise.all([
+          import('./prompt-enhancement/service.mjs'),
+          import('./prompt-enhancement/model-client.mjs'),
+          import('./prompt-enhancement/routes.mjs')
+        ]);
+      const service = createEnhancementService({
+        modelClient: createSdkModelClient(),
+        config: PROMPT_ENHANCE_CONFIG
+      });
+      return { service, handler: createPromptEnhancementHandler({ service }) };
+    })().catch((error) => {
+      // 加载失败不能把整个网关拖死：清空缓存，下次请求重试
+      promptEnhancementModule = null;
+      throw error;
+    });
+  }
+  return promptEnhancementModule;
+}
+
 app.get('/api/ping', authMiddleware, (req, res) => {
   res.json({
     status: 'ok',
@@ -235,9 +264,45 @@ app.get('/api/ping', authMiddleware, (req, res) => {
     platform: process.platform,
     version: APP_VERSION,
     target: TARGET,
-    timestamp: Date.now()
+    timestamp: Date.now(),
+    // 能力探测：旧客户端忽略；新客户端据此决定是否显示增强入口。
+    // 这里只报「模块与配置是否就绪」，不加载 SDK、不调用模型。
+    capabilities: {
+      promptEnhancement: {
+        version: 1,
+        available: PROMPT_ENHANCE_CONFIG.enabled,
+        maxDraftChars: PROMPT_ENHANCE_CONFIG.maxDraftChars,
+        maxContextChars: PROMPT_ENHANCE_CONFIG.maxContextChars
+      }
+    }
   });
 });
+
+// POST /api/mobile/prompt-enhance：必须是网关自有路由，且必须挂在反向代理之前
+// （pi-web 没有这个路径，落到代理会得到 404）。鉴权沿用网关 Bearer Token。
+app.post(
+  '/api/mobile/prompt-enhance',
+  authMiddleware,
+  express.json({ limit: '256kb' }),
+  async (req, res) => {
+    if (!PROMPT_ENHANCE_CONFIG.enabled) {
+      res.status(503).json({ requestId: null, code: 'ENHANCEMENT_UNAVAILABLE', message: '当前网关未启用提示词增强' });
+      return;
+    }
+    try {
+      const { handler } = await loadPromptEnhancement();
+      await handler(req, res);
+    } catch (error) {
+      if (!res.headersSent) {
+        res.status(503).json({
+          requestId: null,
+          code: 'ENHANCEMENT_UNAVAILABLE',
+          message: '提示词增强模块未就绪，请确认 server 目录已执行 npm install'
+        });
+      }
+    }
+  }
+);
 
 // 3.5 伴侣网关直接增强能力：支持读取/保存 SKILL.md 源码及在 PC 上创建远程项目工作区目录
 function resolveHomePath(p) {
