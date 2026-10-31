@@ -1107,7 +1107,7 @@ fun ChatScreen(
                                     modifier = Modifier
                                         .weight(1f, fill = false)
                                         .clickable { onOpenModelSheet() }
-                                        .padding(start = 8.dp, end = 6.dp, vertical = 5.dp),
+                                        .padding(start = 8.dp, top = 5.dp, end = 6.dp, bottom = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
@@ -1163,7 +1163,7 @@ fun ChatScreen(
                                                 onOpenThinkingSheet()
                                             }
                                         }
-                                        .padding(start = 6.dp, end = 8.dp, vertical = 5.dp),
+                                        .padding(start = 6.dp, top = 5.dp, end = 8.dp, bottom = 5.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
