@@ -102,3 +102,46 @@ test('reads a provider declaration from models.json and tolerates a missing file
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── compat：第三方中转端点不认 developer role ──
+// 现场故障：codywon 返回 422 `messages[0].role: unknown variant developer`。
+// pi 的 openai-completions 适配器默认把 system 构造成 role=developer 消息。
+import { CUSTOM_PROVIDER_COMPAT, normalizeModelCompat } from '../prompt-enhancement/model-client.mjs';
+
+test('synthesized models disable the developer role for custom providers', () => {
+  const model = synthesizeModel({
+    provider: 'codywon',
+    modelId: 'deepseek-flash',
+    declaration: { baseUrl: 'https://x/v1', api: 'openai-completions' },
+  });
+  assert.equal(model.compat.supportsDeveloperRole, false);
+  assert.equal(model.compat.supportsStore, false);
+  assert.equal(CUSTOM_PROVIDER_COMPAT.supportsDeveloperRole, false);
+});
+
+test('catalog-resolved models for a custom provider are normalized too', () => {
+  // 目录命中的模型常常没有 compat 字段，同样会撞 422
+  const fromCatalog = { provider: 'codywon', id: 'deepseek-flash', api: 'openai-completions' };
+  const normalized = normalizeModelCompat(fromCatalog, true);
+  assert.equal(normalized.compat.supportsDeveloperRole, false);
+
+  // 已有 compat 时保留其它开关，只强制关掉 developer role
+  const partial = normalizeModelCompat({ ...fromCatalog, compat: { supportsStore: true, maxTokensField: 'max_tokens' } }, true);
+  assert.equal(partial.compat.supportsDeveloperRole, false);
+  assert.equal(partial.compat.maxTokensField, 'max_tokens');
+
+  // 内置 provider 不动：官方 OpenAI 端点确实支持 developer role
+  const builtin = { provider: 'openai', id: 'gpt-4o' };
+  assert.equal(normalizeModelCompat(builtin, false), builtin);
+});
+
+test('upstream 4xx rejections surface the upstream reason instead of a generic message', () => {
+  const mapped = mapModelError(new Error(
+    '422: {"message":"messages[0].role: unknown variant `developer`","type":"invalid_request_error"}',
+  ));
+  assert.equal(mapped.code, 'MODEL_REQUEST_FAILED');
+  assert.match(mapped.message, /上游拒绝该请求/);
+  assert.match(mapped.message, /developer/);
+  // 普通网络抖动仍然给通用文案，不把无意义的堆栈抛给用户
+  assert.equal(mapModelError(new Error('socket hang up')).message, '模型请求失败，请稍后重试');
+});

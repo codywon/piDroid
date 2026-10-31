@@ -73,6 +73,13 @@ export function mapModelError(error) {
   if (lowestMatch(lower, ['rate limit', '429', 'too many requests', 'quota'])) {
     return new EnhancementFailure('RATE_LIMITED', '模型服务限流，请稍后重试');
   }
+  // 上游明确拒绝了请求（4xx / invalid_request_error 等）：不能吞成「请稍后重试」，
+  // 否则遇到 developer role、think 参数这类配置型错误时，永远查不出原因。
+  // 只截取一小段，避免把上游长正文或可能的密钥带出去。
+  if (/(^|\s)4\d\d\s*:|invalid_request_error|failed to deserialize|unknown variant|not supported/i.test(message)) {
+    const brief = message.replace(/\s+/g, ' ').trim().slice(0, 160);
+    return new EnhancementFailure('MODEL_REQUEST_FAILED', `上游拒绝该请求：${brief}`);
+  }
   return new EnhancementFailure('MODEL_REQUEST_FAILED', '模型请求失败，请稍后重试');
 }
 
@@ -140,6 +147,37 @@ export function synthesizeModel({ provider, modelId, declaration }) {
     maxTokens: Number(override.maxTokens) > 0 ? Number(override.maxTokens) : 8192,
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    compat: CUSTOM_PROVIDER_COMPAT,
+  };
+}
+
+/**
+ * 自定义（第三方兼容）provider 的兼容开关。
+ *
+ * `supportsDeveloperRole: false` 是实测必需的：pi 的 openai-completions 适配器
+ * 默认会把 system 提示构造成 `role: "developer"` 消息（新版 OpenAI 规范），
+ * 而 codywon 这类中转端点只认 `system`，直接返回：
+ *   422 unknown variant `developer`, expected one of `system`, `user`, ...
+ * 表现就是手机端「点魔棒转几秒，然后提示模型请求失败，内容没变」。
+ * 另外两个开关同样是为了不发送中转端点普遍不支持的字段。
+ */
+export const CUSTOM_PROVIDER_COMPAT = Object.freeze({
+  supportsDeveloperRole: false,
+  supportsStore: false,
+});
+
+/**
+ * 统一模型的 compat：models.json 里声明的自定义 provider（带 baseUrl）一律关掉
+ * developer role，否则目录命中的模型（modelOverrides 合并出来的）也会撞同一个 422。
+ * @param {any} model
+ * @param {boolean} isCustomProvider
+ * @returns {any}
+ */
+export function normalizeModelCompat(model, isCustomProvider) {
+  if (!model || !isCustomProvider) return model;
+  return {
+    ...model,
+    compat: { ...CUSTOM_PROVIDER_COMPAT, ...(model.compat ?? {}), supportsDeveloperRole: false },
   };
 }
 
@@ -209,11 +247,15 @@ export function createSdkModelClient(options = {}) {
      */
     async generate(input) {
       const { runtime, resolveAgentDir } = await loadRuntime();
+      // models.json 里声明了 baseUrl 的 provider 都是第三方兼容端点，
+      // 需要关掉 developer role 等新版 OpenAI 专有行为（否则 422）。
+      const declaration = readProviderDeclaration(input.provider, resolveAgentDir);
+      const isCustomProvider = Boolean(declaration && typeof declaration.baseUrl === 'string' && declaration.baseUrl);
+
       let model = runtime.getModel(input.provider, input.modelId);
       // 目录里没有（缓存为空 / 自定义 provider 未拉目录）就按 models.json 的声明合成，
       // 而不是把用户明明配置好的模型判成「不支持」。
       if (!model) {
-        const declaration = readProviderDeclaration(input.provider, resolveAgentDir);
         model = synthesizeModel({
           provider: input.provider,
           modelId: input.modelId,
@@ -226,6 +268,9 @@ export function createSdkModelClient(options = {}) {
           `网关无法解析模型 ${input.provider}/${input.modelId}（models.json 缺少 baseUrl 或模型定义）`,
         );
       }
+      // 目录命中的模型也要过一遍：modelOverrides 合并出来的模型可能没有 compat 字段，
+      // 同样会被上游以 422 unknown variant `developer` 拒掉。
+      model = normalizeModelCompat(model, isCustomProvider);
 
       const reasoning = pickThinkingLevel(model);
       const modelLimit = Number(model.maxTokens) > 0 ? Number(model.maxTokens) : 0;
