@@ -2,6 +2,15 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.74] - 2026-10-31
+
+### 🔧 修复提示词上下文选择导致的编译失败（最后一道阻断）
+
+- `buildPromptEnhancementContext` 里把 `asSequence()` 后再调 `takeLast()`：`takeLast` 是 `List/Iterable` 的扩展，`Sequence` 上没有，导致 `compileDebugKotlin` 直接失败。改为先裁剪再映射，并在注释里标明原因；
+- 本版同样包含 1.7.73 里列出的全部能力（0.13.0 协议对齐、配置无损保存、会话续租、提交与队列恢复、断流诊断）。
+
+---
+
 ## [1.7.73] - 2026-10-31
 
 ### 🔧 修复 1.7.72 构建失败 + 网关失联诊断（上一版功能随本版全量发布）

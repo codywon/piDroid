@@ -3859,8 +3859,9 @@ private fun openFileWithOtherApp(context: Context, file: File, mime: String): Bo
  * 裁剪预算由 [PromptEnhancementRules.selectContext] 统一决定（纯 JVM 可单测）。
  */
 private fun buildPromptEnhancementContext(messages: List<ChatItem>): List<PromptEnhancementContextMessage> {
+    // 注意：takeLast 是 List/Iterable 的扩展，Sequence 上没有；
+    // 先裁出最近一段再转成上下文，不要写成 asSequence().takeLast(..)。
     val candidates = messages
-        .asSequence()
         .filter { it.role == MessageRole.USER || it.role == MessageRole.AGENT }
         .filter { it.content.isNotBlank() }
         .takeLast(20)
@@ -3870,6 +3871,5 @@ private fun buildPromptEnhancementContext(messages: List<ChatItem>): List<Prompt
                 text = item.content
             )
         }
-        .toList()
     return PromptEnhancementRules.selectContext(candidates)
 }
