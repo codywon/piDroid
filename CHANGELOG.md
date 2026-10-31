@@ -2,6 +2,16 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.70] - 2026-10-31
+
+### 🐛 修复通用 SVG 附件卡片白屏与宽度塌陷（消灭 flex width:auto 0px 漏洞）
+
+- **白屏根因排查**：普通附件卡片 `SvgWebViewCanvas` 中使用 `display: flex; align-items: center; justify-content: center;`，但在子元素 `<svg>` 上指定了 `width: auto`。在 Chromium 内核下，若 SVG 自身带有 `width="100%"` 且无固定像素宽度，在 flex 容器中其固有宽度会被直接计算为 0，导致 SVG 尺寸彻底塌陷为 0px × 0px，直接呈现大白板；
+- **全量修复与撑开**：移除 `width: auto`，强制指定 `display: block; width: 100%; height: auto; max-height: 92vh;`，经无头 Chromium 模拟验证已完全恢复正常渲染（宽度与高度实测正常撑开）；
+- **全量注入设计系统令牌**：在通用 `SvgWebViewCanvas` 中同步注入 `widgetTokens(isDark)`，无论通用附件还是微组件，所有的 `c-teal`、`c-purple`、`box` 色阶类名均可正常命中，绝不再变黑块或白板。
+
+---
+
 ## [1.7.69] - 2026-10-31
 
 ### 🚀 1:1 对标 pi-web：打通官方内置 Provider 凭据管理与模型合并展示

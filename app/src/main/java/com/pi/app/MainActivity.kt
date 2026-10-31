@@ -409,6 +409,8 @@ class MainActivity : ComponentActivity() {
         var searchJob by remember { mutableStateOf<Job?>(null) }
         // 未读标记：与 pi-web 一致，属于「本设备」状态（它存在浏览器 localStorage）
         var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
+        // 追踪上一轮轻量快照中的运行中会话，用于感知后台任务何时完成以自动标为未读
+        var previousRunningSessionIds by remember { mutableStateOf<Set<String>>(emptySet()) }
         // pi 的智能体行为开关（真源在 PC，读 get_state、写 set_auto_*）
         var autoCompactionEnabled by remember { mutableStateOf(true) }
         var autoRetryEnabled by remember { mutableStateOf(true) }
@@ -508,6 +510,13 @@ class MainActivity : ComponentActivity() {
                             serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
                             serverWorkspaceOrder = ui.projectOrder
                         }
+                        // 清理已在服务端彻底删除的会话的本地未读残留（与 pi-web unreadEligibleIds 一致）
+                        val currentIds = it.map { s -> s.id }.toSet()
+                        val validUnread = SessionUnreadState.prune(unreadSessionIds, currentIds)
+                        if (validUnread.size != unreadSessionIds.size) {
+                            unreadSessionIds = validUnread
+                            prefs.setUnreadSessionIds(validUnread)
+                        }
                         customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
                         isGatewayOnline = true
                         syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
@@ -550,6 +559,20 @@ class MainActivity : ComponentActivity() {
          * `active` 字段服务端已经不再下发。
          */
         fun applyRunningSnapshot(snap: RunningSessionsSnapshot) {
+            val runningIds = snap.runningIds.toSet()
+            // 对标 pi-web SessionSidebar：后台运行完成的会话自动标为未读；重新跑的会话移出未读
+            val nextUnread = SessionUnreadState.reconcileRunningSnapshot(
+                currentUnread = unreadSessionIds,
+                previousRunning = previousRunningSessionIds,
+                currentRunning = runningIds,
+                activeSessionId = currentSession?.id
+            )
+            if (nextUnread != unreadSessionIds) {
+                unreadSessionIds = nextUnread
+                prefs.setUnreadSessionIds(nextUnread)
+            }
+            previousRunningSessionIds = runningIds
+
             fun merge(list: List<Session>): List<Session> = list.map { s ->
                 val running = snap.runningIds.contains(s.id)
                 val awaiting = snap.awaitingInputIds.contains(s.id)
@@ -757,6 +780,13 @@ class MainActivity : ComponentActivity() {
                 consecutiveIdlePolls = 0
                 keepAliveManager.releaseWakeLock()
                 syncPersistentForegroundService(isBusy = false, project = currentProject)
+            } else {
+                // 后台会话在此刻完成：自动标记为未读（对标 pi-web completedWithNotifications）
+                val nextUnread = SessionUnreadState.markUnread(unreadSessionIds, sessionId)
+                if (nextUnread != unreadSessionIds) {
+                    unreadSessionIds = nextUnread
+                    prefs.setUnreadSessionIds(nextUnread)
+                }
             }
             markSessionNotRunning(sessionId)
 
@@ -2750,6 +2780,11 @@ class MainActivity : ComponentActivity() {
                     searchHits = searchHits,
                     isSearching = isSearching,
                     unreadSessionIds = unreadSessionIds,
+                    onToggleUnreadSession = { sid ->
+                        val next = SessionUnreadState.toggle(unreadSessionIds, sid)
+                        unreadSessionIds = next
+                        prefs.setUnreadSessionIds(next)
+                    },
                     onSearchQueryChange = { q -> searchSessionsDebounced(q) },
                     onTogglePinWorkspace = { path, root ->
                         val key = path.replace('\\', '/').lowercase()
@@ -2837,6 +2872,7 @@ class MainActivity : ComponentActivity() {
                                 prefs.removeSessionLocalData(sid)
                                 pinnedSessionIds = prefs.getPinnedSessionIds()
                                 archivedSessionIds = prefs.getArchivedSessionIds()
+                                unreadSessionIds = prefs.getUnreadSessionIds()
                                 customTitles = customTitles - sid
                                 sessions = sessions.filter { it.id != sid }
                                 Toast.makeText(this@MainActivity, "会话已彻底删除", Toast.LENGTH_SHORT).show()

@@ -81,4 +81,136 @@ class ProviderConfigMergeTest {
         assertTrue(provObj.has("models"))
         assertEquals(1, provObj.getAsJsonArray("models").size())
     }
+
+    @Test
+    fun `combineProviders combines custom providers and configured auth states with dynamic catalog`() {
+        val root = JsonParser.parseString("""
+            {
+              "providers": {
+                "custom-ai": {
+                  "baseUrl": "https://custom.ai/v1",
+                  "models": [
+                    { "id": "custom-1", "name": "Custom 1" }
+                  ]
+                }
+              }
+            }
+        """.trimIndent()).asJsonObject
+
+        val authStates = mapOf(
+            "deepseek" to ProviderAuthState(
+                providerId = "deepseek",
+                displayName = "DeepSeek",
+                configured = true,
+                source = "stored"
+            ),
+            "unconfigured-prov" to ProviderAuthState(
+                providerId = "unconfigured-prov",
+                displayName = "Unconfigured",
+                configured = false
+            )
+        )
+
+        val catalogModels = listOf(
+            ModelInfo(
+                id = "deepseek-chat",
+                name = "DeepSeek V3",
+                provider = "deepseek",
+                contextWindow = 64000L,
+                maxTokens = 4096L,
+                supportsThinking = false,
+                supportsVision = false
+            ),
+            ModelInfo(
+                id = "other-model",
+                name = "Other",
+                provider = "other",
+                contextWindow = 32000L,
+                maxTokens = 2048L
+            )
+        )
+
+        val combined = ModelConfigConverter.combineProviders(root, authStates, catalogModels)
+        assertEquals(2, combined.size)
+
+        // 1. custom-ai
+        val customProv = combined.firstOrNull { it.name == "custom-ai" }
+        assertNotNull(customProv)
+        assertFalse(customProv!!.isBuiltIn)
+        assertEquals(1, customProv.models.size)
+        assertEquals("custom-1", customProv.models[0].id)
+
+        // 2. deepseek (configured built-in)
+        val deepseekProv = combined.firstOrNull { it.name == "deepseek" }
+        assertNotNull(deepseekProv)
+        assertTrue(deepseekProv!!.isBuiltIn)
+        assertEquals(1, deepseekProv.models.size)
+        assertEquals("deepseek-chat", deepseekProv.models[0].id)
+        assertEquals(64000L, deepseekProv.models[0].contextWindow)
+
+        // 3. unconfigured-prov should NOT be in combined list
+        assertNull(combined.firstOrNull { it.name == "unconfigured-prov" })
+    }
+
+    @Test
+    fun `ProviderAuthStateSerializer parses and serializes correctly`() {
+        val jsonStr = """
+            {
+              "apiKeyProviders": [
+                {
+                  "id": "deepseek",
+                  "displayName": "DeepSeek",
+                  "configured": true,
+                  "source": "stored",
+                  "modelCount": 3,
+                  "supportsOAuth": false
+                },
+                {
+                  "id": "openai",
+                  "displayName": "OpenAI",
+                  "configured": false,
+                  "source": null,
+                  "modelCount": 0,
+                  "supportsOAuth": true
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val parsed = ProviderAuthStateSerializer.parse(jsonStr)
+        assertNotNull(parsed)
+        assertEquals(2, parsed!!.size)
+
+        val deepseek = parsed["deepseek"]
+        assertNotNull(deepseek)
+        assertEquals("DeepSeek", deepseek!!.displayName)
+        assertTrue(deepseek.configured)
+        assertEquals("stored", deepseek.source)
+        assertEquals("已保存", deepseek.sourceLabel)
+        assertEquals(3, deepseek.modelCount)
+        assertFalse(deepseek.supportsOAuth)
+
+        val serialized = ProviderAuthStateSerializer.serialize(parsed)
+        val reparsed = ProviderAuthStateSerializer.parse(serialized)
+        assertNotNull(reparsed)
+        assertEquals(2, reparsed!!.size)
+        assertEquals(parsed["deepseek"]?.configured, reparsed["deepseek"]?.configured)
+        assertEquals(parsed["openai"]?.supportsOAuth, reparsed["openai"]?.supportsOAuth)
+    }
+
+    @Test
+    fun `combineProviders without catalog keeps configured built-in provider but does not fabricate models`() {
+        val root = JsonParser.parseString("""
+            { "providers": {} }
+        """.trimIndent()).asJsonObject
+
+        val authStates = mapOf(
+            "deepseek" to ProviderAuthState(providerId = "deepseek", displayName = "DeepSeek", configured = true)
+        )
+
+        val combined = ModelConfigConverter.combineProviders(root, authStates, null)
+        assertEquals(1, combined.size)
+        assertTrue(combined[0].isBuiltIn)
+        assertTrue("目录未知时不得凭空伪造模型", combined[0].models.isEmpty())
+    }
 }

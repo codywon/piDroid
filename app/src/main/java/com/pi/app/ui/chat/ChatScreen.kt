@@ -1118,8 +1118,7 @@ fun ChatScreen(
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text(
-                                        text = "${selectedModel.displayName}" +
-                                            (modelProviderLabel?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                                        text = selectedModel.displayName,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         fontSize = 11.sp,

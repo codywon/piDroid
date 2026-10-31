@@ -41,6 +41,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import com.pi.app.ui.chat.widgetTokens
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -541,11 +542,15 @@ internal fun SvgWebViewCanvas(
     val html = remember(svgContent, isDark) {
         val bgHex = if (isDark) "#14161F" else "#F8FAFC"
         val fgHex = if (isDark) "#E2E8F0" else "#1E293B"
+        val tokens = widgetTokens(isDark)
         """
         <!DOCTYPE html>
         <html>
         <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=${if (enableZoom) "yes" else "no"}">
+        <style>
+          $tokens
+        </style>
         <style>
           html, body {
             margin: 0; padding: 8px;
@@ -555,10 +560,10 @@ internal fun SvgWebViewCanvas(
             box-sizing: border-box;
           }
           svg {
-            max-width: 100%;
-            max-height: 92vh;
+            display: block;
+            width: 100%;
             height: auto;
-            width: auto;
+            max-height: 92vh;
           }
         </style>
         </head>

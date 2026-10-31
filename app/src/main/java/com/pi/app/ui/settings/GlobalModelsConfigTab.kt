@@ -39,7 +39,9 @@ import com.pi.app.data.model.*
 import com.pi.app.network.PiApiClient
 import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.theme.LocalAppTheme
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 1:1 对标 pi-web 原版的高级模型与提供商管理标签页
@@ -57,13 +59,30 @@ fun GlobalModelsConfigTab(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    var isLoading by remember { mutableStateOf(true) }
-    var isSaving by remember { mutableStateOf(false) }
-    var providers by remember { mutableStateOf<List<ProviderConfigItem>>(emptyList()) }
-    var rawConfigRoot by remember { mutableStateOf<JsonObject?>(null) }
+    // 先用内存快照秒开（不碰磁盘），磁盘缓存由 LaunchedEffect 在 IO 线程补齐
+    val initialCached = remember { apiClient.peekCachedModelsManagementData() }
 
-    var selectedProviderName by remember { mutableStateOf<String?>(null) }
-    var selectedModelId by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(initialCached == null) }
+    var isSyncing by remember { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
+    var providers by remember { mutableStateOf<List<ProviderConfigItem>>(initialCached?.providers ?: emptyList()) }
+    var rawConfigRoot by remember { mutableStateOf<JsonObject?>(initialCached?.rootConfig) }
+    // 内置 Provider 的模型来自网关目录；离线冷启动靠缓存里这份目录补齐，绝不用 null 重建列表
+    var catalogModels by remember { mutableStateOf<List<ModelInfo>?>(initialCached?.catalogModels) }
+
+    // 草稿保护：providers 与服务端基准不一致 = 有未保存修改
+    var serverProviders by remember { mutableStateOf(initialCached?.providers ?: emptyList()) }
+    // 同步序号与保存代号：丢弃过期/已被保存超越的同步结果
+    var syncSeq by remember { mutableStateOf(0) }
+    var saveEpoch by remember { mutableStateOf(0) }
+    var syncNotice by remember { mutableStateOf<String?>(null) }
+
+    var selectedProviderName by remember {
+        mutableStateOf<String?>(initialCached?.providers?.firstOrNull()?.name)
+    }
+    var selectedModelId by remember {
+        mutableStateOf<String?>(initialCached?.providers?.firstOrNull()?.models?.firstOrNull()?.id)
+    }
 
     // 弹窗状态
     var showAddProviderDialog by remember { mutableStateOf(false) }
@@ -104,95 +123,118 @@ fun GlobalModelsConfigTab(
 
     // pi 凭据库真实状态（GET /api/auth/providers）：models.json 里通常根本没 apiKey 字段，
     // 只看 models.json 会永远显示「未配置 Key」
-    var authStates by remember { mutableStateOf<Map<String, ProviderAuthState>>(emptyMap()) }
+    var authStates by remember { mutableStateOf<Map<String, ProviderAuthState>>(initialCached?.authStates ?: emptyMap()) }
 
-    // 辅助函数：加载服务端配置
+    /** 同步完成后保持当前查看的 Provider/模型不跳变。 */
+    fun restoreSelection(list: List<ProviderConfigItem>) {
+        if (list.isEmpty()) {
+            selectedProviderName = null
+            selectedModelId = null
+            return
+        }
+        val prov = list.firstOrNull { it.name.equals(selectedProviderName, ignoreCase = true) } ?: list.first()
+        selectedProviderName = prov.name
+        selectedModelId = if (prov.models.isEmpty()) null
+        else (prov.models.firstOrNull { it.id == selectedModelId } ?: prov.models.first()).id
+    }
+
+    // 辅助函数：只刷新凭据状态（清除/写入 Key 之后）。
+    // 有未保存修改时不重建列表，避免把草稿覆盖掉（并保留已知的模型目录）
     fun loadAuthStates() {
         coroutineScope.launch {
-            apiClient.getProviderAuthStates().onSuccess { authStates = it }
+            apiClient.getProviderAuthStates().onSuccess { states ->
+                authStates = states
+                if (providers == serverProviders) {
+                    rawConfigRoot?.let { root ->
+                        val rebuilt = ModelConfigConverter.combineProviders(root, states, catalogModels)
+                        providers = rebuilt
+                        serverProviders = rebuilt
+                        restoreSelection(rebuilt)
+                    }
+                }
+            }
         }
     }
 
-    fun loadConfigFromServer() {
-        isLoading = true
+    fun loadConfigFromServer(silent: Boolean = false, isManual: Boolean = false) {
+        if (!silent && providers.isEmpty()) {
+            isLoading = true
+        } else {
+            isSyncing = true
+        }
+        syncNotice = null
+        val seq = ++syncSeq
+        val epochAtStart = saveEpoch
         coroutineScope.launch {
             try {
-                val configResult = apiClient.getModelsConfigObject()
-                val rootObj = configResult.getOrNull() ?: JsonObject()
-                rawConfigRoot = rootObj
+                apiClient.syncModelsManagementData()
+                    .onSuccess { synced ->
+                        // 有更新的同步已接管，或期间保存过：这批数据已过期，直接丢弃，绝不回写
+                        if (seq != syncSeq) return@onSuccess
+                        if (epochAtStart != saveEpoch) return@onSuccess
 
-                val customProviders = ModelConfigConverter.parseProvidersConfig(rootObj)
+                        val data = synced.data
+                        // 先判定草稿：必须拿「旧基准」比，否则会把服务端变化误当成用户编辑
+                        val dirtyNow = providers != serverProviders
+                        rawConfigRoot = data.rootConfig
+                        authStates = data.authStates
+                        catalogModels = data.catalogModels
+                        serverProviders = data.providers
+                        syncNotice = if (synced.degraded) "部分数据未同步，已沿用上次结果" else null
 
-                val authResult = apiClient.getProviderAuthStates().getOrNull() ?: emptyMap()
-                authStates = authResult
+                        // 只有本地没有未保存修改时才替换列表，否则会抹掉用户刚改的内容
+                        if (!dirtyNow) {
+                            providers = data.providers
+                            restoreSelection(data.providers)
+                        } else if (synced.degraded) {
+                            syncNotice = "部分数据未同步，已保留本地修改"
+                        }
 
-                val dynamicCatalog = apiClient.getDynamicModels().getOrNull()
-
-                // 将已配置凭据且未在 models.json 中重复定义的官方内置 Provider（如 deepseek）合并进来
-                val builtInProviders = mutableListOf<ProviderConfigItem>()
-                for ((_, state) in authResult) {
-                    if (!state.configured) continue
-                    if (customProviders.any { it.name.equals(state.providerId, ignoreCase = true) }) continue
-
-                    val provModels = dynamicCatalog?.models
-                        ?.filter { it.provider.equals(state.providerId, ignoreCase = true) }
-                        ?.map { mi ->
-                            ModelConfigItem(
-                                id = mi.id,
-                                name = mi.displayName.ifBlank { mi.id },
-                                reasoning = mi.reasoning,
-                                hasVision = mi.vision,
-                                contextWindow = mi.contextWindow.takeIf { it > 0 } ?: 128000L,
-                                maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L,
-                                costInput = mi.costInput,
-                                costOutput = mi.costOutput,
-                                costCacheRead = mi.costCacheRead,
-                                costCacheWrite = mi.costCacheWrite
-                            )
-                        } ?: emptyList()
-
-                    builtInProviders.add(
-                        ProviderConfigItem(
-                            name = state.providerId,
-                            displayName = state.displayName.ifBlank { state.providerId },
-                            baseUrl = "",
-                            apiKey = "",
-                            api = "openai-completions",
-                            models = provModels,
-                            isBuiltIn = true
-                        )
-                    )
-                }
-
-                val combined = customProviders + builtInProviders
-                providers = combined
-
-                if (combined.isNotEmpty()) {
-                    val currentProv = combined.firstOrNull { it.name.equals(selectedProviderName, ignoreCase = true) }
-                        ?: combined.first()
-                    selectedProviderName = currentProv.name
-                    if (currentProv.models.isNotEmpty()) {
-                        val currentM = currentProv.models.firstOrNull { it.id == selectedModelId }
-                            ?: currentProv.models.first()
-                        selectedModelId = currentM.id
-                    } else {
-                        selectedModelId = null
+                        if (isManual) {
+                            Toast.makeText(
+                                context,
+                                if (synced.degraded) "已获取部分最新配置"
+                                else "已同步最新模型配置 (${data.providers.size} 个提供商)",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
                     }
-                } else {
-                    selectedProviderName = null
-                    selectedModelId = null
-                }
-            } catch (e: Exception) {
-                Toast.makeText(context, "读取模型配置失败: ${e.message}", Toast.LENGTH_LONG).show()
+                    .onFailure { err ->
+                        if (seq != syncSeq) return@onFailure
+                        if (providers.isEmpty()) {
+                            Toast.makeText(context, "读取模型配置失败: ${err.message}", Toast.LENGTH_LONG).show()
+                        } else if (isManual) {
+                            Toast.makeText(context, "同步失败: ${err.message}，已展示本地缓存", Toast.LENGTH_SHORT).show()
+                        }
+                    }
             } finally {
-                isLoading = false
+                if (seq == syncSeq) {
+                    isLoading = false
+                    isSyncing = false
+                }
             }
         }
     }
 
     LaunchedEffect(Unit) {
-        loadConfigFromServer()
+        // 冷启动时内存里还没有快照：先读磁盘缓存（阻塞操作放 IO），再静默对账
+        if (initialCached == null) {
+            val disk = withContext(Dispatchers.IO) { apiClient.loadCachedModelsManagementData() }
+            if (disk != null) {
+                providers = disk.providers
+                serverProviders = disk.providers
+                rawConfigRoot = disk.rootConfig
+                authStates = disk.authStates
+                catalogModels = disk.catalogModels
+                restoreSelection(disk.providers)
+                isLoading = false
+            }
+        }
+        loadConfigFromServer(silent = providers.isNotEmpty(), isManual = false)
     }
+
+    /** 有未保存修改：后台同步不会覆盖列表 */
+    val draftDirty = providers != serverProviders
 
     // 获取当前选中的 Provider 和 Model
     val currentProvider = remember(providers, selectedProviderName) {
@@ -231,6 +273,11 @@ fun GlobalModelsConfigTab(
                 val serialized = ModelConfigConverter.serializeProvidersConfig(providers, rawConfigRoot)
                 val saveResult = apiClient.saveModelsConfigObject(serialized)
                 saveResult.onSuccess {
+                    // 保存成功：本地列表即服务端当前基准（保留内置 Provider 标记，不重新解析），草稿保护随之解除
+                    saveEpoch++
+                    serverProviders = providers
+                    rawConfigRoot = serialized
+                    syncNotice = null
                     Toast.makeText(context, "已成功保存模型配置并刷新生效！", Toast.LENGTH_SHORT).show()
                     onModelsConfigChanged()
                 }.onFailure { err ->
@@ -293,11 +340,31 @@ fun GlobalModelsConfigTab(
                                 fontWeight = FontWeight.Bold,
                                 color = theme.textPrimary
                             )
-                            Text(
-                                text = "已接入 ${providers.size} 个提供商 · 共 ${providers.sumOf { it.models.size }} 个可用模型",
-                                fontSize = 11.5.sp,
-                                color = theme.textMuted
-                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text(
+                                    text = "已接入 ${providers.size} 个提供商 · 共 ${providers.sumOf { it.models.size }} 个可用模型",
+                                    fontSize = 11.5.sp,
+                                    color = theme.textMuted
+                                )
+                                val statusText = when {
+                                    isSyncing && providers.isNotEmpty() -> "正在同步…"
+                                    syncNotice != null -> syncNotice
+                                    draftDirty -> "有未保存修改"
+                                    else -> null
+                                }
+                                if (statusText != null) {
+                                    Text(
+                                        text = "· $statusText",
+                                        fontSize = 11.sp,
+                                        color = if (isSyncing) theme.primary else theme.textMuted,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
 
                         Row(
@@ -310,15 +377,25 @@ fun GlobalModelsConfigTab(
                                 border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.5f)),
                                 modifier = Modifier
                                     .size(32.dp)
-                                    .clickable { loadConfigFromServer() }
+                                    .clickable(enabled = !isSyncing) {
+                                        loadConfigFromServer(silent = providers.isNotEmpty(), isManual = true)
+                                    }
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.Refresh,
-                                        contentDescription = "刷新配置",
-                                        tint = theme.primary,
-                                        modifier = Modifier.size(15.dp)
-                                    )
+                                    if (isSyncing) {
+                                        CircularProgressIndicator(
+                                            color = theme.primary,
+                                            strokeWidth = 1.6.dp,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.Refresh,
+                                            contentDescription = "刷新配置",
+                                            tint = theme.primary,
+                                            modifier = Modifier.size(15.dp)
+                                        )
+                                    }
                                 }
                             }
 
@@ -1524,7 +1601,7 @@ fun GlobalModelsConfigTab(
                                         selectedProviderName = pAuth.providerId
                                         showAddProviderDialog = false
                                         selectedBuiltIn = null
-                                        loadConfigFromServer()
+                                        loadConfigFromServer(silent = true)
                                         onModelsConfigChanged()
                                     }
                                     .onFailure { err ->
@@ -1764,7 +1841,7 @@ fun GlobalModelsConfigTab(
                                         apiKeyInputError = null
                                         allowUnverifiedSave = false
                                         showApiKeyDialog = false
-                                        loadConfigFromServer()
+                                        loadConfigFromServer(silent = true)
                                         onModelsConfigChanged()
                                     }
                                     .onFailure { err ->
@@ -1829,7 +1906,7 @@ fun GlobalModelsConfigTab(
                                 apiClient.deleteProviderApiKey(currentProvider.name)
                                     .onSuccess {
                                         Toast.makeText(context, "已断开 ${currentProvider.name}", Toast.LENGTH_SHORT).show()
-                                        loadConfigFromServer()
+                                        loadConfigFromServer(silent = true)
                                         onModelsConfigChanged()
                                     }
                                     .onFailure { err ->

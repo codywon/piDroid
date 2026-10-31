@@ -249,7 +249,7 @@ private val RAMPS_LIGHT = listOf(
  *
  * 深色值逐字对齐 pi-generative-ui；浅色值按同一份规范推导（见 RAMPS_LIGHT）。
  */
-private fun widgetTokens(dark: Boolean): String {
+internal fun widgetTokens(dark: Boolean): String {
     val ramps = if (dark) RAMPS_DARK else RAMPS_LIGHT
     val vars = if (dark) {
         """

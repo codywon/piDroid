@@ -146,6 +146,10 @@ class AppPreferences(context: Context) {
         return prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()
     }
 
+    fun setUnreadSessionIds(ids: Set<String>) {
+        prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, ids).apply()
+    }
+
     fun markSessionRead(sessionId: String) {
         val current = getUnreadSessionIds().toMutableSet()
         if (current.remove(sessionId)) {
@@ -203,9 +207,12 @@ class AppPreferences(context: Context) {
         currentPinned.remove(sessionId)
         val currentArchived = getArchivedSessionIds().toMutableSet()
         currentArchived.remove(sessionId)
+        val currentUnread = getUnreadSessionIds().toMutableSet()
+        currentUnread.remove(sessionId)
         prefs.edit()
             .putStringSet(KEY_PINNED_SESSIONS, currentPinned)
             .putStringSet(KEY_ARCHIVED_SESSIONS, currentArchived)
+            .putStringSet(KEY_UNREAD_SESSIONS, currentUnread)
             .remove("session_title_$sessionId")
             .remove("draft_$sessionId")
             .apply()

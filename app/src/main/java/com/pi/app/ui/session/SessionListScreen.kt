@@ -20,6 +20,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.MarkChatRead
+import androidx.compose.material.icons.outlined.MarkChatUnread
 import androidx.compose.material.icons.outlined.PushPin
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -63,6 +65,7 @@ const val PINNED_WORKSPACE_KEY = "__global_pinned__"
 
 private enum class SessionStatusFilter {
     ALL,
+    UNREAD,
     RUNNING,
     COMPLETED
 }
@@ -135,6 +138,8 @@ fun SessionListScreen(
     onSearchQueryChange: (String) -> Unit = {},
     /** 本设备未读会话 id */
     unreadSessionIds: Set<String> = emptySet(),
+    /** 切换会话未读状态（标为未读 / 标为已读） */
+    onToggleUnreadSession: (String) -> Unit = {},
     /** pi-web 里的项目（工作区）置顶 key 集合（小写绝对路径） */
     serverPinnedWorkspaceKeys: Set<String> = emptySet(),
     /** pi-web 里的项目排序（小写绝对路径） */
@@ -204,7 +209,7 @@ fun SessionListScreen(
     }
 
     // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
-    val workspaces = remember(sessions, customWorkspaces) {
+    val workspaces = remember(sessions, customWorkspaces, unreadSessionIds) {
         val map = sessions.groupBy { it.workspacePath }.toMutableMap()
         customWorkspaces.forEach { customPath ->
             val trimmed = customPath.trim()
@@ -220,7 +225,8 @@ fun SessionListScreen(
                 name = name.ifBlank { "默认项目" },
                 sessionCount = list.size,
                 runningCount = list.count { it.isLive },
-                awaitingCount = list.count { it.awaitingInput }
+                awaitingCount = list.count { it.awaitingInput },
+                unreadCount = list.count { unreadSessionIds.contains(it.id) }
             )
         }.sortedWith(
             compareByDescending<WorkspaceInfo> { it.runningCount }
@@ -287,14 +293,18 @@ fun SessionListScreen(
     val runningInWorkspace = remember(visibleWorkspaceSessions) {
         visibleWorkspaceSessions.count { it.isLive || it.awaitingInput }
     }
+    val unreadInWorkspace = remember(visibleWorkspaceSessions, unreadSessionIds) {
+        visibleWorkspaceSessions.count { unreadSessionIds.contains(it.id) }
+    }
     val completedInWorkspace = remember(visibleWorkspaceSessions, runningInWorkspace) {
         (visibleWorkspaceSessions.size - runningInWorkspace).coerceAtLeast(0)
     }
 
-    val filteredSessions = remember(visibleWorkspaceSessions, statusFilter, searchQuery, customTitles) {
+    val filteredSessions = remember(visibleWorkspaceSessions, statusFilter, searchQuery, customTitles, unreadSessionIds) {
         visibleWorkspaceSessions.filter { s ->
             val matchesStatus = when (statusFilter) {
                 SessionStatusFilter.ALL -> true
+                SessionStatusFilter.UNREAD -> unreadSessionIds.contains(s.id)
                 SessionStatusFilter.RUNNING -> s.isLive || s.awaitingInput
                 SessionStatusFilter.COMPLETED -> !s.isLive && !s.awaitingInput
             }
@@ -864,6 +874,35 @@ fun SessionListScreen(
                                         Spacer(modifier = Modifier.width(4.dp))
                                     }
 
+                                    // 对标 pi-web SessionTree ActivitySummary：未读活动提示 (青蓝微光圆点 + 数量)
+                                    if (ws.unreadCount > 0) {
+                                        Surface(
+                                            shape = RoundedCornerShape(12.dp),
+                                            color = Color(0xFF0891B2).copy(alpha = 0.15f),
+                                            border = BorderStroke(0.8.dp, Color(0xFF0891B2).copy(alpha = 0.4f))
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                Surface(
+                                                    modifier = Modifier.size(6.dp),
+                                                    shape = CircleShape,
+                                                    color = Color(0xFF0891B2)
+                                                ) {}
+                                                Text(
+                                                    text = "${ws.unreadCount}",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = Color(0xFF0891B2)
+                                                )
+                                            }
+                                        }
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                    }
+
                                     Surface(
                                         shape = CircleShape,
                                         color = if (isSelected) theme.primary else theme.surfaceContainerHigh
@@ -1219,7 +1258,7 @@ fun SessionListScreen(
                             }
                         }
 
-                        // 状态过滤标签：全部 | 运行中 (带动态旋转 Spinner) | 已完成 (带完成图标)
+                        // 状态过滤标签：全部 | 未读 (带未读圆点) | 运行中 (带动态旋转 Spinner) | 已完成 (带完成图标)
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1230,6 +1269,21 @@ fun SessionListScreen(
                                 onClick = { statusFilter = SessionStatusFilter.ALL },
                                 label = "全部 (${visibleWorkspaceSessions.size})"
                             )
+                            if (unreadInWorkspace > 0) {
+                                FilterPill(
+                                    selected = statusFilter == SessionStatusFilter.UNREAD,
+                                    onClick = { statusFilter = SessionStatusFilter.UNREAD },
+                                    label = "未读 ($unreadInWorkspace)",
+                                    activeColor = Color(0xFF0891B2),
+                                    leadingIcon = {
+                                        Surface(
+                                            modifier = Modifier.size(6.dp),
+                                            shape = CircleShape,
+                                            color = if (statusFilter == SessionStatusFilter.UNREAD) Color(0xFF0891B2) else Color(0xFF0891B2).copy(alpha = 0.6f)
+                                        ) {}
+                                    }
+                                )
+                            }
                             FilterPill(
                                 selected = statusFilter == SessionStatusFilter.RUNNING,
                                 onClick = { statusFilter = SessionStatusFilter.RUNNING },
@@ -1322,6 +1376,7 @@ fun SessionListScreen(
                                         // 本工作区的任务全被置顶了：别让用户以为任务没了
                                         pinnedCountInWorkspace > 0 && statusFilter == SessionStatusFilter.ALL ->
                                             "本工作区的 $pinnedCountInWorkspace 个任务都已置顶，见「常用置顶」"
+                                        statusFilter == SessionStatusFilter.UNREAD -> "暂无未读任务"
                                         statusFilter == SessionStatusFilter.RUNNING -> "暂无运行中的任务"
                                         statusFilter == SessionStatusFilter.COMPLETED -> "暂无已完成的任务"
                                         else -> "当前工作区暂无任务"
@@ -1430,6 +1485,7 @@ fun SessionListScreen(
                                     },
                                     onFork = { onForkSession(session) },
                                     onToggleArchive = { onToggleArchiveSession(session.id) },
+                                    onToggleUnread = { onToggleUnreadSession(session.id) },
                                     onDelete = { deletingSession = session },
                                     onClick = { onSessionClick(session) }
                                 )
@@ -1485,6 +1541,7 @@ fun SessionListScreen(
                                             session = session,
                                             isPinned = pinnedSessionIds.contains(session.id),
                                             isArchived = true,
+                                            isUnread = unreadSessionIds.contains(session.id),
                                             customTitle = customTitles[session.id],
                                             onTogglePin = { onTogglePinSession(session.id) },
                                             onRename = {
@@ -1493,6 +1550,7 @@ fun SessionListScreen(
                                             },
                                             onFork = { onForkSession(session) },
                                             onToggleArchive = { onToggleArchiveSession(session.id) },
+                                            onToggleUnread = { onToggleUnreadSession(session.id) },
                                             onDelete = { deletingSession = session },
                                             onClick = { onSessionClick(session) }
                                         )
@@ -2543,6 +2601,7 @@ fun SessionCard(
     onRename: () -> Unit = {},
     onFork: () -> Unit = {},
     onToggleArchive: () -> Unit = {},
+    onToggleUnread: () -> Unit = {},
     onDelete: () -> Unit = {},
     onClick: () -> Unit
 ) {
@@ -2569,16 +2628,18 @@ fun SessionCard(
     val titleText = customTitle ?: session.displayTitle
 
     // 置顶不再用底色/描边强调（置顶本身已有「置顶」小徽章与图钉图标），
-    // 只有「等待确认 / 运行中」这类**需要立刻注意**的状态才着色。
+    // 只有「等待确认 / 运行中 / 未读」这类需要注意的状态才着色。
     val borderStroke = when {
         isAwaiting -> BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.55f))
         isRunning -> BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
+        isUnread -> BorderStroke(1.dp, Color(0xFF0891B2).copy(alpha = 0.45f))
         else -> BorderStroke(1.dp, theme.outline)
     }
 
     val cardBg = when {
         isAwaiting -> Color(0xFFF59E0B).copy(alpha = if (theme.isDark) 0.07f else 0.04f)
         isRunning -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.06f else 0.03f)
+        isUnread -> Color(0xFF0891B2).copy(alpha = if (theme.isDark) 0.08f else 0.04f)
         else -> theme.surfaceContainerLow
     }
 
@@ -2617,16 +2678,30 @@ fun SessionCard(
                                 strokeWidth = 2.dp
                             )
                         }
+                        isUnread -> {
+                            // 未读发光圆点 (1:1 对标 pi-web session-tree-unread)
+                            Box(
+                                modifier = Modifier.size(14.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Surface(
+                                    modifier = Modifier.size(14.dp),
+                                    shape = CircleShape,
+                                    color = Color(0xFF0891B2).copy(alpha = 0.22f)
+                                ) {}
+                                Surface(
+                                    modifier = Modifier.size(6.5.dp),
+                                    shape = CircleShape,
+                                    color = Color(0xFF0891B2)
+                                ) {}
+                            }
+                        }
                         else -> {
                             Icon(
-                                imageVector = if (isUnread) Icons.Default.FiberNew else Icons.Outlined.CheckCircle,
-                                contentDescription = if (isUnread) "未读" else "已完成",
+                                imageVector = Icons.Outlined.CheckCircle,
+                                contentDescription = "已完成",
                                 modifier = Modifier.size(15.dp),
-                                tint = when {
-                                    isUnread -> Color(0xFF2563EB)
-                                    theme.isDark -> Color(0xFF3FB950).copy(alpha = 0.75f)
-                                    else -> Color(0xFF16A34A).copy(alpha = 0.75f)
-                                }
+                                tint = if (theme.isDark) Color(0xFF3FB950).copy(alpha = 0.75f) else Color(0xFF16A34A).copy(alpha = 0.75f)
                             )
                         }
                     }
@@ -2686,6 +2761,24 @@ fun SessionCard(
                                         color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
                                     )
                                 }
+                            }
+                        }
+                        isUnread -> {
+                            Surface(
+                                shape = RoundedCornerShape(4.dp),
+                                color = Color(0xFF0891B2).copy(alpha = 0.15f),
+                                border = BorderStroke(0.5.dp, Color(0xFF0891B2).copy(alpha = 0.45f))
+                            ) {
+                                Text(
+                                    text = "未读",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    color = Color(0xFF0891B2),
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
                             }
                         }
                         else -> {
@@ -2771,6 +2864,22 @@ fun SessionCard(
                                 onClick = {
                                     showMenu = false
                                     onFork()
+                                }
+                            )
+
+                            DropdownMenuItem(
+                                text = { Text(if (isUnread) "标为已读" else "标为未读", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = if (isUnread) Icons.Outlined.MarkChatRead else Icons.Outlined.MarkChatUnread,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = if (isUnread) theme.textSecondary else Color(0xFF0891B2)
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onToggleUnread()
                                 }
                             )
 

@@ -17,6 +17,7 @@ data class WorkspaceInfo(
     val sessionCount: Int = 0,
     val runningCount: Int = 0,
     val awaitingCount: Int = 0,
+    val unreadCount: Int = 0,
     val isCurrent: Boolean = false
 ) {
     val displayName: String
@@ -1168,5 +1169,103 @@ object ModelConfigConverter {
         // 移除可能造成破坏的顶层残留
         root.remove("config")
         return root
+    }
+
+    /**
+     * 将 models.json (rootObj)、凭据库状态 (authStates) 以及动态目录模型 (catalogModels)
+     * 规范化合并为完整的 Provider 配置列表 (ProviderConfigItem 列表)。
+     *
+     * @param catalogModels 网关 `/api/models` 的模型列表；`null` 表示目录未知（例如离线冷启动
+     *   且从未成功同步过），此时内置 Provider 的模型列表为空，绝不凭空伪造模型。
+     */
+    fun combineProviders(
+        rootObj: JsonObject?,
+        authStates: Map<String, ProviderAuthState>,
+        catalogModels: List<ModelInfo>?
+    ): List<ProviderConfigItem> {
+        val customProviders = rootObj?.let { parseProvidersConfig(it) } ?: emptyList()
+
+        val builtInProviders = mutableListOf<ProviderConfigItem>()
+        for ((_, state) in authStates) {
+            if (!state.configured) continue
+            if (customProviders.any { it.name.equals(state.providerId, ignoreCase = true) }) continue
+
+            val provModels = catalogModels
+                ?.filter { it.provider.equals(state.providerId, ignoreCase = true) }
+                ?.map { mi ->
+                    ModelConfigItem(
+                        id = mi.id,
+                        name = mi.displayName.ifBlank { mi.id },
+                        reasoning = mi.reasoning,
+                        hasVision = mi.vision,
+                        contextWindow = mi.contextWindow.takeIf { it > 0 } ?: 128000L,
+                        maxTokens = mi.maxTokens.takeIf { it > 0 } ?: 8192L,
+                        costInput = mi.costInput,
+                        costOutput = mi.costOutput,
+                        costCacheRead = mi.costCacheRead,
+                        costCacheWrite = mi.costCacheWrite
+                    )
+                } ?: emptyList()
+
+            builtInProviders.add(
+                ProviderConfigItem(
+                    name = state.providerId,
+                    displayName = state.displayName.ifBlank { state.providerId },
+                    baseUrl = "",
+                    apiKey = "",
+                    api = "openai-completions",
+                    models = provModels,
+                    isBuiltIn = true
+                )
+            )
+        }
+
+        return customProviders + builtInProviders
+    }
+}
+
+/**
+ * 凭据库状态 (GET /api/auth/providers) 的编解码。
+ *
+ * 读取接口与本地磁盘缓存共用同一套字段定义，避免两处解析各写一份而悄悄走样。
+ */
+object ProviderAuthStateSerializer {
+    fun serialize(states: Map<String, ProviderAuthState>): String {
+        val arr = JsonArray()
+        for (state in states.values) {
+            val obj = JsonObject().apply {
+                addProperty("id", state.providerId)
+                addProperty("displayName", state.displayName)
+                addProperty("configured", state.configured)
+                state.source?.let { addProperty("source", it) }
+                addProperty("modelCount", state.modelCount)
+                addProperty("supportsOAuth", state.supportsOAuth)
+            }
+            arr.add(obj)
+        }
+        return JsonObject().apply { add("apiKeyProviders", arr) }.toString()
+    }
+
+    fun parse(jsonString: String): Map<String, ProviderAuthState>? {
+        val json = runCatching { JsonParser.parseString(jsonString).asJsonObject }.getOrNull() ?: return null
+        val arr = json.get("apiKeyProviders")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyMap()
+        val result = mutableMapOf<String, ProviderAuthState>()
+        for (el in arr) {
+            if (!el.isJsonObject) continue
+            val o = el.asJsonObject
+            val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+            if (id.isBlank()) continue
+            val displayName = o.get("displayName")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: id
+            val supportsOAuth = o.get("supportsOAuth")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            result[id.lowercase()] = ProviderAuthState(
+                providerId = id,
+                displayName = displayName,
+                configured = o.get("configured")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                source = o.get("source")?.takeIf { !it.isJsonNull }?.asString,
+                modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                supportsOAuth = supportsOAuth
+            )
+        }
+        return result
     }
 }

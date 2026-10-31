@@ -9,6 +9,8 @@ import com.google.gson.reflect.TypeToken
 import com.pi.app.data.model.*
 import com.pi.app.data.storage.AppPreferences
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -1346,13 +1348,32 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 杜绝任何硬编码！
     // ==========================================
 
+    /**
+     * 公开入口：拿不到目录时回退到内置默认目录（聊天侧选择器需要「总有东西可选」）。
+     */
     suspend fun getDynamicModels(): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
+        getDynamicModelsInternal(prefs.serverUrl, null, null)
+            .getOrElse { applyModelOverrides(getDefaultCatalog(), null) }
+            .let { Result.success(it) }
+    }
+
+    /**
+     * 拉取并解析 `/api/models` 目录；失败返回 [Result.failure]，不再把网络失败伪装成成功。
+     *
+     * @param preFetchedConfig 已获取的 models.json；null 时自行拉取，避免同一轮同步重复请求
+     * @param preFetchedAuth 已获取的凭据状态；null 时自行拉取
+     */
+    private suspend fun getDynamicModelsInternal(
+        baseUrl: String,
+        preFetchedConfig: JsonObject?,
+        preFetchedAuth: Map<String, ProviderAuthState>?
+    ): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/models").get().build()
             client.newCall(req).execute().use { response ->
                 if (!response.isSuccessful) {
-                    return@withContext Result.success(applyModelOverrides(getDefaultCatalog(), null))
+                    return@use Result.failure(IOException("读取模型目录失败 (${response.code})"))
                 }
                 val body = response.body?.string() ?: "{}"
                 val json = JsonParser.parseString(body).asJsonObject
@@ -1413,7 +1434,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
 
                 // 同时拉取 /api/models-config (models.json) 与本地保存的模型参数覆盖，确保用户修改的 contextWindow 等参数100%生效且不回退
-                val serverModelsConfig = fetchServerModelsConfigObject(baseUrl)
+                val serverModelsConfig = preFetchedConfig ?: fetchServerModelsConfigObject(baseUrl)
                 val baseCatalog = DynamicModelCatalog(
                     models = models.ifEmpty { getDefaultCatalog().models },
                     thinkingLevelsMap = levelsMap,
@@ -1429,7 +1450,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val liveProviders = mutableSetOf<String>()
                 serverModelsConfig?.get("providers")?.takeIf { it.isJsonObject }?.asJsonObject
                     ?.keySet()?.forEach { liveProviders.add(it.lowercase()) }
-                val authStates = getProviderAuthStates().getOrNull()
+                val authStates = preFetchedAuth ?: getProviderAuthStates().getOrNull()
                 authStates?.forEach { (id, st) -> if (st.configured) liveProviders.add(id.lowercase()) }
                 val finalModels = if (liveProviders.isEmpty()) {
                     merged.models
@@ -1468,7 +1489,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 )
             }
         } catch (e: Exception) {
-            Result.success(applyModelOverrides(getDefaultCatalog(), null))
+            Result.failure(e)
         }
     }
 
@@ -3273,8 +3294,7 @@ class PiApiClient(private val prefs: AppPreferences) {
      *
      * 返回 map：providerId(小写) -> ProviderAuthState。
      */
-    suspend fun getProviderAuthStates(): Result<Map<String, ProviderAuthState>> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
+    suspend fun getProviderAuthStates(baseUrl: String = prefs.serverUrl): Result<Map<String, ProviderAuthState>> = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder().url("$baseUrl/api/auth/providers").get().build()
@@ -3283,28 +3303,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.failure(IOException("读取凭据状态失败 (${response.code})"))
                 }
                 val body = response.body?.string() ?: "{}"
-                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val result = ProviderAuthStateSerializer.parse(body)
                     ?: return@withContext Result.failure(IOException("凭据状态响应无法解析"))
-                val result = mutableMapOf<String, ProviderAuthState>()
-                val arr = json.get("apiKeyProviders")?.takeIf { it.isJsonArray }?.asJsonArray
-                if (arr != null) {
-                    for (el in arr) {
-                        if (!el.isJsonObject) continue
-                        val o = el.asJsonObject
-                        val id = o.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
-                        if (id.isBlank()) continue
-                        val displayName = o.get("displayName")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: id
-                        val supportsOAuth = o.get("supportsOAuth")?.takeIf { !it.isJsonNull }?.asBoolean == true
-                        result[id.lowercase()] = ProviderAuthState(
-                            providerId = id,
-                            displayName = displayName,
-                            configured = o.get("configured")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                            source = o.get("source")?.takeIf { !it.isJsonNull }?.asString,
-                            modelCount = o.get("modelCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                            supportsOAuth = supportsOAuth
-                        )
-                    }
-                }
                 Result.success(result)
             }
         } catch (e: Exception) {
@@ -4044,11 +4044,89 @@ data class CatalogPreset(
     val costCacheWrite: Double? = null
 )
 
+    // ── 模型管理配置缓存 (models.json + 凭据状态 + 模型目录) ──
+    // 页面先渲染缓存，网络同步回来再平滑替换；缓存按连接身份隔离。
+    private val modelsManagementCache = ModelsManagementCacheStore(File(prefs.cacheDir, "models-management"))
+
+    /** 连接身份：缓存与请求结果都按它隔离，切换网关后不会读到上一台机器的配置。 */
+    fun connectionKey(baseUrl: String = prefs.serverUrl): String =
+        baseUrl.trim().trimEnd('/')
+
+    /** 当前连接的内存快照（不碰磁盘，可放心在 Compose 初始化里调用）。 */
+    fun peekCachedModelsManagementData(): ModelsManagementData? =
+        modelsManagementCache.peek(connectionKey())
+
+    /** 读取当前连接的历史快照：内存未命中才读磁盘，需在协程里调用。 */
+    suspend fun loadCachedModelsManagementData(): ModelsManagementData? =
+        modelsManagementCache.load(connectionKey())
+
+    /**
+     * 一轮完整同步：并发拉 models.json 与凭据状态，再用两者拉模型目录（共 3 次请求，
+     * 目录不再重复拉配置与凭据）。
+     *
+     * 部分接口失败时保留上一次成功的结果（见 [mergeModelsManagementSnapshot]）；
+     * 请求期间切换了网关则丢弃结果，绝不写进另一台机器的缓存。
+     */
+    suspend fun syncModelsManagementData(): Result<ModelsManagementSyncResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val key = connectionKey(baseUrl)
+        val previous = modelsManagementCache.load(key)
+
+        val (configResult, authResult) = coroutineScope {
+            val configDeferred = async { getModelsConfigObject(baseUrl) }
+            val authDeferred = async { getProviderAuthStates(baseUrl) }
+            configDeferred.await() to authDeferred.await()
+        }
+
+        val rootObj = configResult.getOrNull()
+            ?: return@withContext Result.failure(
+                configResult.exceptionOrNull() ?: IOException("读取 models.json 失败")
+            )
+
+        val freshAuth = authResult.getOrNull()
+        // 目录要判断「provider 是否还活着」，凭据拉取失败时用上次的有效值，避免多请求一次
+        val effectiveAuth = freshAuth ?: previous?.authStates ?: emptyMap()
+        val catalogResult = getDynamicModelsInternal(baseUrl, rootObj, effectiveAuth)
+
+        // 请求期间用户切了网关：这批结果属于上一台机器
+        if (connectionKey() != key) {
+            return@withContext Result.failure(IOException("连接已变更，已丢弃过期同步结果"))
+        }
+
+        val merged = mergeModelsManagementSnapshot(
+            connectionKey = key,
+            previous = previous,
+            rootConfig = rootObj,
+            authStates = freshAuth,
+            catalogModels = catalogResult.getOrNull()?.models
+        )
+        modelsManagementCache.store(merged.data)
+        Result.success(merged)
+    }
+
+    /**
+     * 保存类操作成功后把新配置写回本地快照（沿用已知的凭据状态与模型目录），
+     * 让「保存 → 再次打开」直接命中新数据。
+     */
+    private suspend fun writeThroughLocalConfig(baseUrl: String, config: JsonObject) {
+        // 保存请求属于发起时的网关；切换连接后也只能更新原网关的快照。
+        val key = connectionKey(baseUrl)
+        val base = modelsManagementCache.load(key)
+        val merged = mergeModelsManagementSnapshot(
+            connectionKey = key,
+            previous = base,
+            rootConfig = config,
+            authStates = base?.authStates,
+            catalogModels = base?.catalogModels
+        )
+        modelsManagementCache.store(merged.data)
+    }
+
     /**
      * 直接获取 models.json 顶层 JsonObject（包含 providers 映射，1:1 对标 pi-web models-config）
      */
-    suspend fun getModelsConfigObject(): Result<JsonObject> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
+    suspend fun getModelsConfigObject(baseUrl: String = prefs.serverUrl): Result<JsonObject> = withContext(Dispatchers.IO) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = true)
@@ -4074,6 +4152,7 @@ data class CatalogPreset(
             if (!ok) {
                 return@withContext Result.failure(IOException("保存 models.json 失败"))
             }
+            writeThroughLocalConfig(baseUrl, cloned)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
@@ -4217,6 +4296,7 @@ data class CatalogPreset(
             if (!ok) {
                 return@withContext Result.failure(IOException("保存 models.json 失败"))
             }
+            writeThroughLocalConfig(baseUrl, configObj)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
@@ -4266,7 +4346,9 @@ data class CatalogPreset(
                 }
             }
             sanitizeAndHealModelsConfig(rootConfig)
-            putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
+            val ok = putModelsConfigToServer(baseUrl, rootConfig, fetched.wrappedInConfigKey)
+            // 只有服务端确实写入成功才更新本地缓存；否则下次同步又会把「删掉的」模型带回来
+            if (ok) writeThroughLocalConfig(baseUrl, rootConfig)
             Result.success(true)
         } catch (e: Exception) {
             Result.failure(e)
