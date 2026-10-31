@@ -7,6 +7,7 @@ const path = require('path');
 const os = require('os');
 const http = require('http');
 const { spawn } = require('child_process');
+const frpClient = require('./frp-client');
 
 const PORT = parseInt(process.env.GATEWAY_PORT || '4100', 10);
 // pi-web 官方默认端口为 30141 (取自 π ≈ 3.141)
@@ -177,9 +178,32 @@ function resolveStableTunnel(expectedPort) {
   return { tunnel: { name, hostname, source }, notes };
 }
 
+/**
+ * 公网通道模式：frp（默认）/ cloudflare（--tunnel）/ none（--local）。
+ *
+ * 默认改为 frp 的原因：Cloudflare 的入口 IP 由 Anycast 决定，国内直连常绕到
+ * 美国西海岸并被 QoS 丢包，手机端表现为「获取会话列表失败」「一直自动重连中」；
+ * 自建服务器 + frp 走 TCP 直连（100~200ms）明显更稳。
+ *
+ * 优先级：options.tunnelMode（launcher 传入） > 命令行 flag > 旧字段 autoTunnel > 默认 frp。
+ */
+function resolveTunnelMode({ explicit, autoTunnel, argv = [] } = {}) {
+  const value = typeof explicit === 'string' ? explicit.trim().toLowerCase() : '';
+  if (value === 'frp' || value === 'cloudflare' || value === 'none') return value;
+
+  const list = Array.isArray(argv) ? argv : [];
+  if (list.includes('--local') || list.includes('--no-tunnel')) return 'none';
+  if (list.includes('--tunnel') || list.includes('--cloudflare')) return 'cloudflare';
+  if (list.includes('--frp')) return 'frp';
+
+  // 兼容旧调用方：start({ autoTunnel: false }) 的语义是「本次不要公网通道」
+  if (autoTunnel === false) return 'none';
+  if (autoTunnel === true) return 'cloudflare';
+  return 'frp';
+}
+
 // 命令行参数解析
 const args = process.argv.slice(2);
-const autoTunnel = args.includes('--tunnel');
 let customUrlArg = null;
 const urlIndex = args.indexOf('--url');
 if (urlIndex !== -1 && args[urlIndex + 1]) {
@@ -709,7 +733,12 @@ function printBannerAndQr(connectHost, isPiWebRunning, listenPort = PORT) {
 async function start(options = {}) {
   const listenPort = options.port || PORT;
   const targetOverride = options.target || customUrlArg || null;
-  const isTunnelEnabled = options.autoTunnel !== undefined ? options.autoTunnel : autoTunnel;
+  const tunnelMode = resolveTunnelMode({
+    explicit: options.tunnelMode,
+    autoTunnel: options.autoTunnel,
+    argv: args
+  });
+  const isTunnelEnabled = tunnelMode === 'cloudflare';
   // 固定隧道按「实际监听端口」解析，避免与 `--port` / start({port}) 形成第二份真值。
   const stable = resolveStableTunnel(listenPort);
 
@@ -870,6 +899,30 @@ async function start(options = {}) {
           }
         }, 10000);
 
+      } else if (tunnelMode === 'frp') {
+        // frp：自建服务器 + TCP 直连（默认通道）。
+        // 公网地址由 frpc toml 的 customDomains 推导（域名不写死在代码里），
+        // 服务器侧由 nginx 把 /pi/ 反代到 frps 的 vhost 端口。
+        const info = frpClient.startFrp({ localPort: listenPort });
+        for (const note of info.notes) {
+          console.warn(`[frp] ⚠️ ${note}`);
+        }
+        if (!info.ok) {
+          console.warn('[frp] 未能启动 frp 隧道，本次只暴露局域网地址。');
+          printBannerAndQr(defaultHost, isAlive, listenPort);
+          resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+          return;
+        }
+        console.log(`\n🌐 frp 隧道启动中 -> ${info.publicUrl || '(未知公网地址)'}`);
+        console.log(`   配置文件: ${info.configPath}`);
+        printBannerAndQr(info.publicUrl || defaultHost, isAlive, listenPort);
+        resolve({
+          server,
+          tunnelProcess: info.child || null,
+          publicUrl: info.publicUrl || defaultHost,
+          token: AUTH_TOKEN,
+          target: TARGET
+        });
       } else {
         printBannerAndQr(defaultHost, isAlive, listenPort);
         resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
@@ -926,5 +979,8 @@ module.exports = {
   isSafeTunnelName,
   isSafeHostname,
   resolveStableTunnel,
-  stopTunnel
+  stopTunnel,
+  // 公网通道选择与 frp 守护
+  resolveTunnelMode,
+  stopFrp: frpClient.stopFrp
 };

@@ -4,7 +4,7 @@
 - **🚀 一键统合启动 (Unified Launcher)**：单命令/单脚本自动拉起官方原生 `pi-web` 与伴侣网关，保持官方 100% 独立平滑更新；
 - **🔒 动态高熵 Token 安全鉴权**：保护本地 Agent，彻底防止未授权局域网与公网 RCE 远程命令执行风险；
 - **📱 终端 ASCII 二维码生成**：App 打开【扫码配对】一键对准终端即可自动握手；
-- **🌐 自动探测局域网 IP 与 Cloudflare 临时公网隧道**：随时随地通过蜂窝网络远程控制；
+- **🌐 公网通道双选**：默认走自建 **frp 隧道**（TCP 直连，地址固定），也可一键切回 Cloudflare 隧道；纯局域网模式照旧可用；
 - **🔄 REST 与 SSE / WebSocket 实时双向透明长连接**。
 
 ---
@@ -12,16 +12,16 @@
 ## ⚡ 极速启动 (推荐)
 
 ### 方式 1: 项目根目录双击启动
-- **局域网模式**：双击根目录下的 `start-server.bat`
-- **公网隧道模式 (跨网络/5G直连)**：双击根目录下的 `start-server-tunnel.bat`
+- **默认模式（frp 公网隧道 + 局域网）**：双击根目录下的 `start-server.bat`
+- **改用 Cloudflare 隧道**：双击根目录下的 `start-server-tunnel.bat`
 
 ### 方式 2: 命令行运行
 在 `server` 目录下运行：
 ```bash
-# 局域网模式 (自动启动 pi-web 并挂载安全网关输出二维码)
+# 默认模式：自动启动 pi-web + 网关 + frp 隧道（公网地址固定）
 npm start
 
-# 公网模式 (自动启动 pi-web + Cloudflare 临时隧道)
+# 改用 Cloudflare 隧道
 npm run tunnel
 ```
 
@@ -41,12 +41,74 @@ node launcher.js --no-pi-web
 node launcher.js [options]
 
 选项:
-  --tunnel          一键自动启用 Cloudflare 临时公网隧道 (免公网 IP，外网手机直连)
+  (默认)            frp 隧道：走自建服务器，公网地址固定（推荐）
+  --frp             显式指定 frp 隧道（等同默认）
+  --tunnel          改用 Cloudflare 隧道：命名隧道优先，否则临时 trycloudflare 域名
+  --local           只开局域网，不建任何公网隧道
+  --public-url <u>  手动指定公网地址（默认由 frpc 配置的 customDomains 推导）
   --no-pi-web       仅启动伴侣安全网关，不自动启动/托管本地 pi-web
   --port <port>     自定义伴侣网关监听端口 (默认: 4100)
   --pi-url <url>    自定义目标 pi-web 服务地址 (默认: http://127.0.0.1:30141)
   -h, --help        显示帮助信息
 ```
+
+---
+
+## 🌐 公网通道：默认 frp，Cloudflare 可选
+
+**为什么换默认**：Cloudflare 的入口 IP 由 Anycast 决定，国内直连经常绕到美国西海岸
+（200~400ms）并在高峰被 QoS 丢包，手机端表现就是「获取会话列表失败」「一直自动重连中」。
+自建服务器 + frp 走 TCP 直连，实测 `GET /api/sessions`（310KB → gzip 83KB）约 0.27s。
+
+### 链路
+
+```
+手机 App → https://pi.example.com/pi/api/...   (nginx 443 + Let's Encrypt)
+         → frps vhost（绑 docker 网桥网关，仅容器可达，公网 8080 关闭）
+         → frpc（本机，由启动器守护）→ 127.0.0.1:4100（伴侣网关）
+```
+
+App 里的**服务器地址**就是 `https://<你的域名>/pi`（带路径前缀，Token 与原来完全一致）。
+真实域名只写在未入库的 frpc 配置里（`customDomains`），仓库中不出现具体域名与服务器地址。
+
+### 本机配置
+
+| 文件 | 作用 |
+| --- | --- |
+| `D:\frpc\frpc-pidroid.toml` | 客户端配置真源：serverAddr/serverPort/token/customDomains/localPort |
+| `D:\frpc\frpc.exe` | frpc 可执行文件（与服务端 frps 版本保持一致） |
+
+覆盖项（一般不用改）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `PI_FRPC_CONFIG` | 指定其它 frpc 配置路径 |
+| `PI_FRPC_BIN` | 指定 frpc 可执行文件 |
+| `PI_PUBLIC_URL` | 直接指定公网地址（默认由 customDomains 推导） |
+| `PI_PUBLIC_PATH` | 路径前缀，默认 `/pi`（改成 `/` 表示直接占域名根） |
+
+### 服务器侧（自建 VPS + nginx）
+
+| 路径 | 说明 |
+| --- | --- |
+| `/opt/frp/frps` | frps 二进制（建议与服务端 frpc 同版本） |
+| `/opt/frp/frps.toml` | `bindPort`（控制端口）+ `vhostHTTPPort`（vhost 端口）+ `auth.token` |
+| `/opt/frp/start-frps.sh` | 启动包装器：动态探测 docker 网桥网关并注入 `proxyBindAddr` |
+| `systemctl status/restart frps` | systemd 服务（建议 `enable` 开机自启 + `Restart=always`） |
+| 站点 nginx 配置 | 新增 `location /pi/` 反代到 frps vhost，剥掉前缀、关缓冲（SSE） |
+
+> vhost 端口刻意**不绑 0.0.0.0**：否则公网可明文直连 `:8080`，App Token 会裸奔。
+> 包装器探测失败时 fail-closed 退回 127.0.0.1（宁可隧道不通也不暴露）。
+
+### 排查
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| 启动日志没有 `[frp]` 行 | 找不到 frpc 或配置：设 `PI_FRPC_BIN` / `PI_FRPC_CONFIG` |
+| `404` 而不是 401 | frpc 没连上，或 `customDomains` 与域名不一致（frp 按 Host 匹配） |
+| `502` | toml 的 `localPort` 与网关实际端口不一致（启动器会告警） |
+| 手机一直重连 | 服务器 `systemctl status frps`；`journalctl -u frps -n 50` |
+| 隧道地址变了 | 改了 `customDomains` → 需同步 nginx `location /pi/` 与 App 地址 |
 
 ---
 
