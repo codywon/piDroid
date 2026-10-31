@@ -28,7 +28,7 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 
 ---
 
-## 0. 现在默认就是固定域名（无需环境变量）
+## 现状：默认就走固定域名（无需环境变量）
 
 `server/gateway.js` 会读取 `%USERPROFILE%\.cloudflared\config.yml`：
 
@@ -87,20 +87,29 @@ ingress:
 
 ### 告诉启动器使用固定域名
 
-设置两个用户级环境变量（设置一次，永久生效，重开终端生效）：
+**通常什么都不用做。** 只要 `~/.cloudflared/config.yml` 里存在
+「`tunnel:` + 一条 `service` 指向网关端口（默认 4100）的 `hostname`」，
+双击 `start-server-tunnel.bat` 就会自动用它：
+
+- 不再启动临时隧道，改为执行 `cloudflared tunnel run <tunnel>`；
+- 直接打印 `https://<hostname>` 的二维码，不再等待解析随机域名；
+- 二维码里的 URL 与 Token 每次启动都相同 —— **扫一次，永久可用**。
+
+环境变量仍然可用，作用是**覆盖**自动识别结果（例如配置里有多个 hostname、
+或想临时换一条隧道）：
 
 ```bat
 setx PI_TUNNEL_NAME pi
 setx PI_TUNNEL_HOSTNAME pi.example.com
 ```
 
-之后照常双击 `start-server-tunnel.bat`。启动器检测到这两个变量后：
+排查时注意启动日志里这两类提示：
 
-- 不再启动临时隧道，改为执行 `cloudflared tunnel run pi`；
-- 直接打印 `https://pi.example.com` 的二维码，不再等待解析随机域名；
-- 二维码里的 URL 与 Token 每次启动都相同 —— **扫一次，永久可用**。
+- `[tunnel] ⚠️ … 的 ingress 指向端口 3081，不是网关端口 4100` —— 配置存在但没匹配上，
+  已回退 Quick Tunnel（随机域名，重启即失效）；
+- `⚠️ https://… 当前打不开` —— 已经在跑的网关进程不是带 `--tunnel` 启动的。
 
-想退回临时隧道，删掉这两个环境变量即可：
+想彻底退回临时隧道：删掉配置里的那条 ingress，或删掉这两个环境变量。
 
 ```bat
 reg delete HKCU\Environment /v PI_TUNNEL_NAME /f

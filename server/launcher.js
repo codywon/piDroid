@@ -11,6 +11,7 @@
 
 const { spawn, execSync } = require('child_process');
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const gateway = require('./gateway');
 
@@ -91,6 +92,27 @@ function checkGatewayRunning(port, timeoutMs = 800) {
       req.on('timeout', () => { req.destroy(); resolve(false); });
       req.end();
     } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+// 公网地址可达性探测：只看“有没有人应答”，不关心 401/200。
+// 超时短一些（2s）：这只是横幅前的顺手体检，不该把启动卡住。
+function probePublicUrl(hostname, timeoutMs = 2000) {
+  return new Promise((resolve) => {
+    try {
+      const req = https.request(
+        { hostname, path: '/api/ping', method: 'GET', timeout: timeoutMs },
+        (res) => {
+          res.resume();
+          resolve(Boolean(res.statusCode) && res.statusCode < 500);
+        }
+      );
+      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.end();
+    } catch {
       resolve(false);
     }
   });
@@ -212,12 +234,15 @@ async function main() {
 
   // 步骤 A: 检查 pi-web 是否已运行
   const alreadyRunning = await checkUrlAlive(piWebUrl, 1000);
+  // 横幅里“pi-web 是否正常”必须反映当前真实状态：刚拉起的也可能还没就绪。
+  let piWebReady = alreadyRunning;
   if (alreadyRunning) {
     console.log(`[1/3] ✓ 检测到本地已存在运行中的 pi-web (${piWebUrl})，直接接入。`);
   } else if (!skipPiWeb) {
     piWebProcess = await launchPiWeb();
     process.stdout.write('[2/3] 等待 pi-web 服务就绪中...');
     const isReady = await waitForReady(piWebUrl);
+    piWebReady = isReady;
     if (isReady) {
       console.log(' ✓ 服务已就绪！');
     } else {
@@ -230,17 +255,29 @@ async function main() {
   // 步骤 B: 检查伴侣网关是否已在运行
   const isGatewayRunning = await checkGatewayRunning(gatewayPort);
   if (isGatewayRunning) {
-    // 网关由其他窗口托管。若已配置固定域名隧道，直接展示公网地址，
-    // 避免用户看到局域网 IP 误以为外网不可用。
-    const stableHost = (process.env.PI_TUNNEL_HOSTNAME || '')
-      .trim()
-      .replace(/^https?:\/\//i, '')
-      .replace(/\/+$/, '');
+    // 网关由其他窗口托管。这里必须用与 gateway.start() 相同的解析逻辑（环境变量 →
+    // cloudflared 配置），否则会退回到「展示局域网 IP」：用户扫了那张二维码，
+    // 一旦离开家里 Wi-Fi 就连不上，表现仍是「一直自动重连中」。
+    const stable = gateway.resolveStableTunnel(gatewayPort);
+    const stableHost = stable.tunnel ? stable.tunnel.hostname : '';
+    for (const note of stable.notes) {
+      console.warn(`[tunnel] ⚠️ ${note}`);
+    }
     const connectHost = stableHost
       ? `https://${stableHost}`
       : `http://${gateway.getLocalIp()}:${gatewayPort}`;
     console.log(`[2/2] ✓ 检测到伴侣安全网关已在端口 ${gatewayPort} 运行中，直接呈现连接凭据：`);
-    gateway.printBannerAndQr(connectHost, true);
+    gateway.printBannerAndQr(connectHost, piWebReady, gatewayPort);
+    if (stableHost) {
+      // 已经在跑的网关未必接管了隧道（可能是用 start-server.bat 起的），
+      // 直接探一下公网地址，别把一张打不开的二维码交给用户。
+      const reachable = await probePublicUrl(stableHost);
+      if (!reachable) {
+        console.warn(`\n⚠️  ${connectHost} 当前打不开：正在运行的网关进程可能不是带 --tunnel 启动的。`);
+        console.warn('   处理：关掉旧网关窗口后重新运行本脚本；或单独执行 cloudflared tunnel run ' +
+          `${stable.tunnel.name}`);
+      }
+    }
     if (stableHost && autoTunnel) {
       console.log('💡 已有网关进程不负责隧道进程。若公网地址打不开，请关掉旧网关窗口后重新运行本脚本。');
     }

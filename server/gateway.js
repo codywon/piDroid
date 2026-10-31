@@ -646,7 +646,7 @@ const proxy = createProxyMiddleware({
 
 app.use('/', authMiddleware, proxy);
 
-function printBannerAndQr(connectHost, isPiWebRunning) {
+function printBannerAndQr(connectHost, isPiWebRunning, listenPort = PORT) {
   const localIp = getLocalIp();
   const hostName = os.hostname();
   const connectUri = `pidroid://connect?url=${encodeURIComponent(connectHost)}&token=${AUTH_TOKEN}&name=${encodeURIComponent(hostName)}`;
@@ -654,8 +654,10 @@ function printBannerAndQr(connectHost, isPiWebRunning) {
   console.log('\n======================================================');
   console.log('       🛡️  piDroid 安全网关   ');
   console.log('======================================================');
-  console.log(`[本地监听]  http://127.0.0.1:${PORT}`);
-  console.log(`[局域网直连] http://${localIp}:${PORT}`);
+  // 用实际监听端口，不能用模块级 PORT：launcher 可以传 --port，
+  // 写死 4100 会把用户引到一个没人在听的端口上。
+  console.log(`[本地监听]  http://127.0.0.1:${listenPort}`);
+  console.log(`[局域网直连] http://${localIp}:${listenPort}`);
   if (connectHost.startsWith('https://')) {
     console.log(`[公网外网直连] ${connectHost}  🌐 (全球任何网络可用)`);
   }
@@ -754,10 +756,10 @@ async function start(options = {}) {
         tunnelProcess.on('error', (err) => {
           console.error(`\n[tunnel] 启动 ${stableTunnel.name} 失败: ${err.message}`);
           console.error('[tunnel] 请确认 cloudflared 已安装且已完成 cloudflared tunnel login / create / route dns');
-          printBannerAndQr(publicUrl, isAlive);
+          printBannerAndQr(publicUrl, isAlive, listenPort);
         });
 
-        printBannerAndQr(publicUrl, isAlive);
+        printBannerAndQr(publicUrl, isAlive, listenPort);
         resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
@@ -775,7 +777,7 @@ async function start(options = {}) {
           if (match) {
             detectedUrl = true;
             const publicUrl = match[0];
-            printBannerAndQr(publicUrl, isAlive);
+            printBannerAndQr(publicUrl, isAlive, listenPort);
             resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
           }
         }
@@ -784,19 +786,19 @@ async function start(options = {}) {
         tunnelProcess.stderr.on('data', handleOutput);
 
         tunnelProcess.on('error', () => {
-          printBannerAndQr(defaultHost, isAlive);
+          printBannerAndQr(defaultHost, isAlive, listenPort);
           resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
         });
 
         setTimeout(() => {
           if (!detectedUrl) {
-            printBannerAndQr(defaultHost, isAlive);
+            printBannerAndQr(defaultHost, isAlive, listenPort);
             resolve({ server, tunnelProcess, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
           }
         }, 10000);
 
       } else {
-        printBannerAndQr(defaultHost, isAlive);
+        printBannerAndQr(defaultHost, isAlive, listenPort);
         resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
       }
     });
@@ -846,8 +848,9 @@ module.exports = {
   checkServerAlive,
   printBannerAndQr,
   AUTH_TOKEN,
-  // 导出给单测：纯函数（不读磁盘、不启动进程）
+  // 导出给单测 / launcher：纯函数（不读磁盘、不启动进程）
   parseStableTunnelConfig,
   isSafeTunnelName,
-  isSafeHostname
+  isSafeHostname,
+  resolveStableTunnel
 };
