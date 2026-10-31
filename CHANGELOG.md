@@ -2,7 +2,7 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
-## [1.7.77] - 2026-11-01
+## [1.7.78] - 2026-11-01
 
 ### ✨ 提示词增强体验与 Prompt 深度全面升级（废除微修保守策略）
 
