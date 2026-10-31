@@ -72,101 +72,70 @@ install -m 755 frp_${VER}_linux_amd64/frpc /opt/frp/frpc   # 可选，方便在�
 > 国内 VPS 从 GitHub 拉取可能超时。可靠做法是本地下载后 `scp`/SFTP 上传，
 > 或用可信镜像；不要为此改成来路不明的二进制。
 
-## 二、服务端：frps.toml
+## 二、服务端：拿到三个文件
 
-`/opt/frp/frps.toml`：
+`deploy/frp/` 里已经是可执行版本（`bash -n` 通过、本仓库的默认通道就是用它跑起来的），
+不要从文档里再手抄一份——两份会漂移。装上去即可：
 
-```toml
-bindAddr = "0.0.0.0"
-bindPort = 7000            # 控制端口：客户端连这里，安全组需放通
-
-auth.method = "token"
-auth.token = "<FRP_TOKEN>" # 高熵随机串，不要复用其它系统的密码
-
-vhostHTTPPort = 8080       # HTTP vhost 端口：只给 nginx 反代用
-
-log.to = "/opt/frp/frps.log"
-log.level = "info"
-log.maxDays = 7
-
-transport.maxPoolCount = 20
-transport.tcpKeepAlive = 7200
-transport.heartbeatTimeout = 30
+```bash
+# 在本仓库根目录执行
+sudo install -Dm 755 deploy/frp/start-frps.sh     /opt/frp/start-frps.sh
+sudo install -Dm 600 deploy/frp/frps.example.toml /opt/frp/frps.toml   # 随后填 auth.token
+sudo install -Dm 644 deploy/frp/frps.service      /etc/systemd/system/frps.service
 ```
 
-**不要在这个文件里写 `proxyBindAddr`**：frp 的配置文件优先级高于命令行参数，
-写死会覆盖下面包装器动态探测出来的地址（这也是本 runbook 里唯一容易踩的坑）。
+`/opt/frp/frps.toml` 只需要关心四项（其余是日志与连接池，模板里已写好并带注释）：
+
+| 键 | 作用 | 注意 |
+| --- | --- | --- |
+| `bindPort` | 控制端口，frpc 连这里 | 安全组需放通 |
+| `auth.token` | 客户端鉴权 | `openssl rand -hex 24` 生成，别复用其它系统的密码 |
+| `vhostHTTPPort` | HTTP vhost 端口 | **只给 nginx 反代，安全组不要放通** |
+| `proxyBindAddr` | vhost 绑定地址 | **不要写**，见下 |
+
+> ⚠️ **不要在这个文件里写 `proxyBindAddr`**：frp 的配置文件优先级高于命令行参数，
+> 写死会覆盖启动包装器的探测结果，结果要么公网能明文访问 vhost，要么 nginx 根本连不上。
+> 正确位置是启动时生成的 `/run/frp/frps.toml`。
 
 ## 三、服务端：启动包装器（决定 vhost 绑在哪）
 
-vhost 端口既不能绑 `0.0.0.0`（公网可明文访问），也不能绑 `127.0.0.1`
-（nginx 在容器里，够不到宿主回环）。所以每次启动动态探测 nginx 所在 docker
-网络的网关地址：同网络容器可达，公网不可达，网络重建后还能自愈。
+`deploy/frp/start-frps.sh` 每次启动做一件事：把 vhost 绑到**nginx 所在 docker 网络的
+网关地址**上。为什么必须这么做：
 
-`/opt/frp/start-frps.sh`（`chmod +x`）：
+- 绑 `0.0.0.0` → 任何人 `http://<VPS_IP>:<vhostPort>` 都能明文访问网关，Bearer Token 裸奔；
+- 绑 `127.0.0.1` → nginx 在容器里，够不到宿主回环，隧道直接不可用；
+- 绑网桥网关地址 → 同网络容器可达、公网不可达，且网络重建后 IP 变化也能自愈。
+
+包装器还负责 **fail-closed**：探测不到网桥地址时只绑 `127.0.0.1` 并打 WARN，
+宁可隧道不通，也不把明文入口暴露到公网。相关环境变量：
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `NGINX_CONTAINER` | `nginx` | nginx 容器名；nginx 直装宿主机时设为空串 |
+| `FRPS_CONFIG` | `/opt/frp/frps.toml` | 基础配置，只读，不会被改写 |
+| `RUNTIME_CONFIG` | `/run/frp/frps.toml` | 运行期副本，每次启动重写并追加 `proxyBindAddr` |
+| `FRPS_BIN` | `/opt/frp/frps` | frps 可执行文件 |
+
+容器名随环境不同，**不要改单元文件**，用 drop-in 指定：
 
 ```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-# 换成你自己的 nginx 容器名
-NGINX_CONTAINER="${NGINX_CONTAINER:-nginx}"
-
-detect_gw() {
-  local net
-  net="$(docker inspect "$NGINX_CONTAINER" \
-    --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}' 2>/dev/null | awk '{print $1}' || true)"
-  if [ -n "${net:-}" ]; then
-    docker network inspect "$net" --format '{{(index .IPAM.Config 0).Gateway}}' 2>/dev/null | head -1 || true
-  fi
-}
-
-GW="$(detect_gw)"
-if [ -z "${GW:-}" ] || [ "${GW}" = "<no value>" ]; then
-  # 探测失败时 fail-closed：宁可隧道不通，也不把明文入口暴露到公网
-  echo "[frps-wrapper] WARN: 未能探测 docker 网桥网关，vhost 退回 127.0.0.1" >&2
-  GW="127.0.0.1"
-fi
-
-mkdir -p /run/frp
-cp /opt/frp/frps.toml /run/frp/frps.toml
-printf '\nproxyBindAddr = "%s"\n' "$GW" >> /run/frp/frps.toml
-
-echo "[frps-wrapper] proxy-bind-addr = ${GW}"
-exec /opt/frp/frps -c /run/frp/frps.toml
+sudo mkdir -p /etc/systemd/system/frps.service.d
+printf '[Service]\nEnvironment=NGINX_CONTAINER=%s\n' "<容器名>" \
+  | sudo tee /etc/systemd/system/frps.service.d/container.conf
 ```
-
-若 nginx 不是容器而是宿主直装，把 `GW` 直接设为 `127.0.0.1` 即可，同时**不要**
-再监听 `0.0.0.0`。
 
 ## 四、服务端：systemd
 
-`/etc/systemd/system/frps.service`：
-
-```ini
-[Unit]
-Description=frp server (frps) for piDroid companion gateway
-Documentation=https://github.com/fatedier/frp
-After=network-online.target docker.service
-Wants=network-online.target docker.service
-
-[Service]
-Type=simple
-ExecStart=/opt/frp/start-frps.sh
-Restart=always
-RestartSec=3
-LimitNOFILE=1048576
-
-[Install]
-WantedBy=multi-user.target
-```
+单元文件用仓库里的 `deploy/frp/frps.service`（`Restart=always`、`KillMode=mixed`、
+`LimitNOFILE=1048576`）。启用与自检：
 
 ```bash
-systemctl daemon-reload
-systemctl enable --now frps
+sudo systemctl daemon-reload
+sudo systemctl enable --now frps
 systemctl is-active frps
-ss -lntp | grep -E ':7000|:8080'   # 8080 应只出现在网桥 IP 或 127.0.0.1 上
-curl -s -o /dev/null -w '%{http_code}\n' http://<网桥网关IP>:8080/   # 无匹配 proxy 时 404
+journalctl -u frps -n 5 --no-pager      # 应看到 [frps-wrapper] proxy-bind-addr = <网桥IP>
+ss -lntp | grep -E ':7000|:8080'        # 8080 必须落在网桥 IP 或 127.0.0.1，绝不能是 0.0.0.0
+tail -3 /run/frp/frps.toml              # 确认注入的地址
 ```
 
 ## 五、服务端：nginx 挂上前缀

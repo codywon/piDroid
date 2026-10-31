@@ -1,0 +1,27 @@
+[Unit]
+Description=frp server (frps) for piDroid companion gateway
+Documentation=https://github.com/fatedier/frp
+After=network-online.target docker.service
+Wants=network-online.target docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/frp/start-frps.sh
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+# 停止时先 SIGTERM 让 frps 收尾，超时再 KILL
+KillMode=mixed
+TimeoutStopSec=10
+
+# nginx 在容器里时，包装器需要知道容器名才能探测它所在网络的网关地址。
+# 容器名随环境不同，别写进本文件（会变成一堆环境差异），用 drop-in 指定：
+#
+#   /etc/systemd/system/frps.service.d/container.conf
+#   [Service]
+#   Environment=NGINX_CONTAINER=你的容器名
+#
+# nginx 直装宿主机时改成 Environment=NGINX_CONTAINER=（空即只绑 127.0.0.1）。
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+# frp server 配置模板
+#
+# 安装：install -m 600 frps.example.toml /opt/frp/frps.toml  之后把 <FRP_TOKEN> 填成真值。
+# 该文件**只被读取**，启动时由 start-frps.sh 复制成 /run/frp/frps.toml 并追加
+# proxyBindAddr（vhost 绑定地址随环境变化，不能写死在这里）。
+
+bindAddr = "0.0.0.0"
+# 控制端口：客户端（frpc）连这里。安全组/防火墙需要放通。
+bindPort = 7000
+
+auth.method = "token"
+# 高熵随机串，别复用其它系统的密码：
+#   openssl rand -hex 24
+# 客户端 frpc.toml 里的 auth.token 必须与这里完全一致。
+auth.token = "<FRP_TOKEN>"
+
+# HTTP vhost 端口：**只给同机 nginx 反代用**，不对公网开放。
+# 实际监听地址由 start-frps.sh 注入的 proxyBindAddr 决定（默认 docker 网桥网关）。
+vhostHTTPPort = 8080
+
+log.to = "/opt/frp/frps.log"
+log.level = "info"
+log.maxDays = 7
+
+# 客户端复用连接，减少弱网下的握手次数
+transport.maxPoolCount = 20
+transport.tcpKeepAlive = 7200
+transport.heartbeatTimeout = 30
+
+# 注意：这里**不要**写 proxyBindAddr。
+# frp 的配置文件优先级高于命令行参数，写死会覆盖包装器探测出的地址，
+# 导致 vhost 要么绑在 0.0.0.0（公网可明文访问）要么绑在 127.0.0.1（nginx 够不到）。

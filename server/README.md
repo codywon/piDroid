@@ -97,6 +97,9 @@ App 里的**服务器地址**就是 `https://<你的域名>/pi`（带路径前�
 | `systemctl status/restart frps` | systemd 服务（建议 `enable` 开机自启 + `Restart=always`） |
 | 站点 nginx 配置 | 新增 `location /pi/` 反代到 frps vhost，剥掉前缀、关缓冲（SSE） |
 
+> 服务端三件套的可执行版本在 [`deploy/frp/`](../deploy/frp/)（模板 + 启动包装器 + systemd 单元，
+> 不含任何密钥）；完整步骤与验收命令见 [docs/FRP_TUNNEL.md](../docs/FRP_TUNNEL.md)。
+
 > vhost 端口刻意**不绑 0.0.0.0**：否则公网可明文直连 `:8080`，App Token 会裸奔。
 > 包装器探测失败时 fail-closed 退回 127.0.0.1（宁可隧道不通也不暴露）。
 
