@@ -1706,25 +1706,31 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
-         * 轻量对账这条会话的模型身份：PC 端切的模型 **不会推 SSE 事件**（pi-web 的 set_model
-         * 实测静默），只能靠 `context?tail=1`（1.9 KB）主动拉。
+         * 用**运行时状态**对账（`GET /api/agent/{id}?systemPrompt=0`，实测 **1.2 KB**）：
+         * PC 端切的模型不会推 SSE 事件，只能主动拉，而全量快照 267 KB / `/state` 21 KB 都不适合进 3s 循环。
          *
-         * 与全量快照共用同一套「本地切换优先」护栏：请求发出后会比对 revision，
-         * 中途用户自己切了模型 / 思考档就丢弃这次结果。
+         * **不能用 `context.model`（分支记录）充当真相**：实测有会话 `/context` 返回 deepseek-flash、
+         * 而运行时是 gemini-3.8-flash-high（分支上的 model_change 不在当前 leaf 上），而且 `context`
+         * 的回包体积随内容膨胀（实测 2.7 KB → 122 KB）。用它会让界面在两个供应商之间反复横跳。
+         *
+         * 运行时未存活时直接放弃：此时不存在“权威模型”，交给全量快照（`fromSnapshot`）处理。
          */
-        suspend fun refreshSessionModelRef(sessionId: String) {
+        suspend fun refreshSessionModelFromRuntime(sessionId: String) {
             if (pendingModelMetaChanges > 0) return
             val revision = modelMetaRevision
-            val ref = apiClient.getSessionModelRef(sessionId).getOrNull() ?: return
+            val state = apiClient.getAgentState(sessionId).getOrNull() ?: return
             if (currentSession?.id != sessionId) return
             if (pendingModelMetaChanges > 0 || modelMetaRevision != revision) return
-            if (!SessionModelSelection.matches(selectedModel, ref.provider, ref.modelId)) {
-                SessionModelSelection.resolve(dynamicCatalog.models, ref.provider, ref.modelId)?.let { resolved ->
+            if (!state.runtimeAlive) return
+            val provider = state.provider?.takeIf { it.isNotBlank() }
+            val modelId = state.modelId?.takeIf { it.isNotBlank() }
+            if (provider != null && modelId != null && !SessionModelSelection.matches(selectedModel, provider, modelId)) {
+                SessionModelSelection.resolve(dynamicCatalog.models, provider, modelId)?.let { resolved ->
                     selectedModel = resolved
                     prefs.saveSessionModelIdentity(sessionId, resolved.provider, resolved.id)
                 }
             }
-            ref.thinkingLevel?.let { level ->
+            state.thinkingLevel?.takeIf { it.isNotBlank() }?.let { level ->
                 val parsed = ThinkingLevel.fromValue(level)
                 if (parsed != currentThinkingLevel) currentThinkingLevel = parsed
             }
@@ -1958,7 +1964,7 @@ class MainActivity : ComponentActivity() {
                         } else {
                             // 每轮都跟一下「PC 端切的模型/思考档」：pi-web 的 set_model 不发 SSE 事件，
                             // 不做这一步就得等下一次全量快照（空闲 15s / 在跑 10s）才跟上。
-                            refreshSessionModelRef(activeSession.id)
+                            refreshSessionModelFromRuntime(activeSession.id)
                         }
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
@@ -2468,11 +2474,11 @@ class MainActivity : ComponentActivity() {
                     onOpenModelSheet = {
                         showModelSheet = true
                         // 打开面板 = 「我要看 PC 端现在到底用的谁」：立刻拉一次目录（2.9KB）
-                        // 与会话当前模型（1.9KB）。pi-web 的 set_model 不发 SSE 事件，
+                        // 与运行时状态（1.2KB）。pi-web 的 set_model 不发 SSE 事件，
                         // 不主动拉就只能看到轮询循环上一拍的旧值。
                         loadCapabilitiesAndModels(modelsOnly = true)
                         currentSession?.let { sess ->
-                            lifecycleScope.launch { refreshSessionModelRef(sess.id) }
+                            lifecycleScope.launch { refreshSessionModelFromRuntime(sess.id) }
                         }
                     },
                     onOpenThinkingSheet = {

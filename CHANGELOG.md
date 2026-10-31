@@ -2,6 +2,41 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.3] - 2026-11-01
+
+### 🐛 修「会话模型在 gemini-3.8 与 deepseek-flash 之间来回横跳」（1.7.62 探针的回归）
+
+现象：PC 上这条会话是 `gemini-3.8-flash-high`，App 打开后先显示 `deepseek-flash`，
+过一会变成 `gemini-3.8-flash-high`，随即又跳回 `deepseek-flash`，如此往复。
+
+**根因是我在 1.7.62 加的 3s 探针用错了数据源。** 拿正在跑的网关对这条会话（`01a18ba4`）实测：
+
+```
+GET /api/sessions/{id}/context?tail=1    2.7 KB   model = deepseek/deepseek-flash        ← 分支记录（错）
+GET /api/agent/{id}?systemPrompt=0       1.2 KB   model = codywon/gemini-3.8-flash-high  ← 运行时（对）
+文件里最后一条 model_change（#1296）       codywon/gemini-3.8-flash-high（最近 435 条 assistant 全是 gemini）
+```
+
+pi-web 的 `context.model` 取的是**当前 leaf 分支上最后一个 `model_change`**（chunk 5582 的
+`W(entries, leafId)`），而分支上的 `model_change` 可能不在 leaf 上 —— 于是它与运行时不一致。
+探针 3s 一次把它写进界面，全量快照 10–15s 一次把运行时写回，两者打架 = 横跳。
+
+顺带发现第二个坑：`/context` 的回包是**整段 LLM 上下文投影**，不受 `tail=1` 约束，
+同一会话实测 **2.7 KB → 122 KB**（`tail=60` 到 6.3 MB）。放进 3s 循环本身就是灾难。
+
+**修法**
+
+- 探针改用 **运行时状态** `GET /api/agent/{id}?systemPrompt=0`（实测 **1.2 KB**，就是 App 已经在用的
+  `getAgentState`），只认运行时模型与思考档；运行时未存活直接跳过（此时不存在权威模型，
+  交给全量快照的分支记录，与 pi-web 前端行为一致）。
+- 删除 `SessionModelRef` / `SessionModelRefParser` / `PiApiClient.getSessionModelRef`
+  （不可信且体积无界的那条路彻底移除）。
+- 模型面板打开时同样改用运行时状态对账（1.2 KB），不再用 `/context`。
+
+**记录**：`docs/DESIGN-model-sync.md` 补 §2.1「`context.model` 不可信、体积不定」的实测与结论；
+另外验证了 `set_model` 会让 `/api/agent/running` 的 `sessionListVersion` 自增（40 → 41 → 42），
+所以「版本变化 → 立刻全量快照」这条既有通路本身也能感知 PC 端切模型。
+
 ## [1.8.2] - 2026-11-01
 
 ### 🖼️ 图片「进视口才加载」+ 长回合过程组不再一次性铺满

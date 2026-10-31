@@ -1,7 +1,9 @@
 # 设计决策：会话模型身份 (provider + modelId) 的同步
 
 > 状态：**已决策（A 方案已上线）**；B/C 方案**记录在案、暂不实施**。
-> 相关版本：1.7.57 → 1.7.62。
+> 相关版本：1.7.57 → 1.8.3。
+> 1.7.62 曾用 `/context?tail=1` 做 3s 探针，**引入了一次“供应商横跳”事故**，已于 1.8.3 回退并换成
+> 运行时状态探针（见 §2.1 与 §3）。
 
 ## 1. 问题
 
@@ -26,13 +28,39 @@
 
 体积实测（决定探针选型）：
 
-| 端点 | 体积 | 含模型身份 |
-|---|---|---|
-| `GET /api/sessions/{id}?tail=60&deferMedia=1&tree=summary` | 267 KB | ✅ |
-| `GET /api/sessions/{id}/state` | 25 KB | ✅ |
-| `GET /api/sessions/{id}/context?tail=1` | **1.9 KB** | ✅ |
-| `GET /api/models` | 2.9 KB | 目录 |
-| `GET /api/agent/running` | 0.23 KB | ❌ |
+| 端点 | 体积 | 含模型身份 | 权威性 |
+|---|---|---|---|
+| `GET /api/sessions/{id}?tail=60&deferMedia=1&tree=summary` | 267 KB | ✅ | 分支记录 |
+| `GET /api/sessions/{id}/state` | 21–25 KB | ✅ | 运行时 |
+| `GET /api/agent/{id}?systemPrompt=0` | **1.2 KB** | ✅ | **运行时** |
+| `GET /api/sessions/{id}/context?tail=1` | **不定：2.7 KB → 122 KB** | ⚠️ 可能过期 | 分支记录 |
+| `GET /api/models` | 2.9 KB | 目录 | — |
+| `GET /api/agent/running` | 0.23 KB | ❌ | — |
+
+### 2.1 事故：`context.model` 不可信，且体积不定（1.8.3 修正）
+
+pi-web 的 `context.model` 来自 chunk 5582 的 `W(entries, leafId)`：取 **当前 leaf 那条分支上
+最后一个 `model_change`**，取不到才退回「最后一条 assistant 消息的 model」。而分支上的
+`model_change` 可能与运行时不一致 —— 实测会话 `01a18ba4`（PC 上就是 gemini-3.8）：
+
+```
+GET /api/sessions/{id}/context?tail=1   2.7 KB   model = deepseek/deepseek-flash     ← 分支记录（错）
+GET /api/agent/{id}?systemPrompt=0      1.2 KB   model = codywon/gemini-3.8-flash-high ← 运行时（对）
+文件里最后一条 model_change（#1296）      codywon/gemini-3.8-flash-high；最近 435 条 assistant 全是 gemini
+```
+
+两个后果：
+
+1. **横跳**：3s 探针用 `/context`（→ deepseek-flash），10–15s 全量快照用运行时（→ gemini-3.8），
+   界面在两个供应商之间来回切。
+2. **体积失控**：`/context` 回包是整段 LLM 上下文投影（不受 `tail=1` 约束），同一会话实测
+   2.7 KB ~ 122 KB（`tail=60` 到 6.3 MB），放进 3s 循环是灾难。
+
+结论：**模型身份只认运行时**（`/api/agent/{id}?systemPrompt=0`，1.2 KB）。运行时未存活时
+不存在权威模型，交给全量快照的分支记录（此时 pi-web 前端也只能显示分支记录，行为一致）。
+
+另一个已验证的省事结论：**`set_model` 会让 `/api/agent/running` 的 `sessionListVersion` 自增**
+（实测 40 → 41 → 42），所以「版本变了 → 立刻全量快照」这条既有通路本身就能感知 PC 端切模型。
 
 ## 3. 当前实现（A 方案，已上线）
 
@@ -40,12 +68,13 @@
 - **本地快照不再写模型**：`applyHistoryMeta` 只回放正文/统计/游标；模型身份只来自
   本机刚切的选择（`SessionModelIdentityCodec`，按会话持久化，上限 300 条）或服务端网络快照。
 - **PC 端切换的跟进**：同步循环每轮（空闲 3s / 在跑 1.5s）在「不需要全量快照」的那一拍拉一次
-  `context?tail=1`（1.9 KB），模型或思考档变了就更新并落盘。
-- **面板打开即对账**：`modelsOnly` 拉目录（2.9 KB）+ 探针（1.9 KB）。
+  `GET /api/agent/{id}?systemPrompt=0`（1.2 KB，运行时权威），模型或思考档变了就更新并落盘；
+  运行时未存活直接跳过（不存在权威模型）。另：`sessionListVersion` 变化也会立刻触发全量快照。
+- **面板打开即对账**：`modelsOnly` 拉目录（2.9 KB）+ 运行时状态（1.2 KB）。
 - 护栏：`modelMetaRevision` + `pendingModelMetaChanges`，本机刚切的选择优先于在途请求。
 - 顺带加固：同步循环每轮 try/catch（`CancellationException` 仍上抛），单次异常不再弄死轮询。
 
-延迟：PC 切完 → 手机 **≤3s** 跟上；代价 1.9 KB / 3s。
+延迟：PC 切完 → 手机 **≤3s** 跟上；代价 **1.2 KB / 3s**（且只在会话页、运行时存活时才有实际体积）。
 
 ## 4. B 方案（本地给 SDK 打补丁）——**记录，暂不实施**
 
