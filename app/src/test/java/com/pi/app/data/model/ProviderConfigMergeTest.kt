@@ -414,4 +414,29 @@ class ProviderConfigMergeTest {
         Assert.assertTrue("误判为内置也不许删 models", codywon.has("models"))
         Assert.assertEquals(2, codywon.getAsJsonArray("models").size())
     }
+    @Test
+    fun `custom model thinking level map survives a save round trip`() {
+        // pi-ai 的规则：xhigh / max 只有在 thinkingLevelMap 里显式写了才存在；
+        // 丢掉这个 map，模型就只剩到 high（P0 那次把整段 models 删掉时顺手丢了它）。
+        val root = JsonParser.parseString("""
+            {"providers": {"codywon": {"baseUrl": "https://x/v1", "api": "openai-completions", "apiKey": "k",
+              "models": [
+                {"id": "deepseek-flash", "name": "deepseek-flash", "reasoning": true,
+                 "contextWindow": 1000000, "maxTokens": 384000, "input": ["text","image"],
+                 "thinkingLevelMap": {"low": "low", "medium": "medium", "high": "high", "max": "max"}}
+              ]}}}
+        """.trimIndent()).asJsonObject
+
+        val providers = ModelConfigConverter.combineProviders(root, emptyMap(), null)
+        val saved = ModelConfigConverter.serializeProvidersConfig(providers, root)
+            .getAsJsonObject("providers").getAsJsonObject("codywon")
+            .getAsJsonArray("models").get(0).asJsonObject
+
+        val map = saved.getAsJsonObject("thinkingLevelMap")
+        Assert.assertNotNull("thinkingLevelMap 不能被丢掉", map)
+        Assert.assertEquals("max", map.get("max").asString)
+        Assert.assertEquals("high", map.get("high").asString)
+        Assert.assertEquals("deepseek-flash", saved.get("name").asString)
+        Assert.assertEquals(2, saved.getAsJsonArray("input").size())
+    }
 }

@@ -2,6 +2,48 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.7] - 2026-11-01
+
+### 🐛 codywon 的模型推理档位最高只能到 high（P0 的二次损失，已补回）
+
+现象：无论 pi-web 还是 App，`codywon/deepseek-flash` 等模型的思考档位最高只能选到 `high`，
+`max` 消失。
+
+**规则（pi-ai `getSupportedThinkingLevels`，实测源码）**
+
+```js
+EXTENDED = ["off","minimal","low","medium","high","xhigh","max"]
+reasoning ? EXTENDED.filter(l => {
+   const mapped = model.thinkingLevelMap?.[l];
+   if (mapped === null) return false;
+   return (l === "xhigh" || l === "max") ? mapped !== undefined : true;   // ← 关键
+}) : ["off"]
+```
+
+`xhigh` / `max` **只有在该模型的 `thinkingLevelMap` 里显式写出来才存在**，
+没写就默认只到 `high`（`off…high` 无需声明）。
+
+**为什么会丢**：P0 那次把 `providers.codywon.models` 整个数组删掉时，
+每个模型的 `thinkingLevelMap`（连同 `name`/`input`）一起被删了；
+残留的 `modelOverrides` 只带 `contextWindow`/`maxTokens`，所以恢复模型定义时补不回这张表。
+
+**已补回**：给 codywon 的 7 个模型各加了
+
+```json
+"thinkingLevelMap": { "low": "low", "medium": "medium", "high": "high", "max": "max" }
+```
+
+`/api/models` 复核：7 个模型的可选档位已从 `[off…high]` 变回
+`[off, minimal, low, medium, high, max]`；deepseek 内置的 2 个不受影响。
+
+> `xhigh` 仍未开启：它不是 OpenAI 兼容接口的标准 `reasoning_effort` 取值，
+> 冒然映射有被网关 400 的风险。需要的话在模型编辑里给它加一条
+> `"xhigh": "xhigh"`（或告诉我，我改）。
+
+**工程**：新增回归用例 `custom model thinking level map survives a save round trip`
+（自定义模型带 `thinkingLevelMap` 经 combine → serialize 往返后不丢），
+`ProviderConfigMergeTest` 11 项本地全绿。
+
 ## [1.8.6] - 2026-11-01
 
 ### 🔧 修 CI：`PromptEnhancementRulesTest` 断言参数顺序写反，导致 1.8.4 / 1.8.5 都没出包
