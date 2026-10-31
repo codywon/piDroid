@@ -26,6 +26,7 @@
 | 日志脱敏 | 隧道日志过滤 SSE 断开噪声，并把 `?token=` 打码（`server/gateway.js` 的 `pipeTunnelLogs`）；App 侧 `PiSseClient` 不再把 token 放进 URL（需重打 APK 生效） |
 | 401 机器可读 | 网关 401 固定带 `WWW-Authenticate: Bearer realm="pi-gateway", error="invalid_token"` 与响应体 `{"code":"TOKEN_INVALID"}`；App 只认这个标记才判「密钥失效」——pi-web 自己的 `401 Invalid API key`（模型 Key 填错）不参与判定 |
 | 401 日志节流 | 只节流「压根没带 token」的（公网扫描器，3s 一条）；**带了 token 却不匹配的永远记**，避免扫描器刷屏时把轮换 Token 后 App 的失败记录挤掉 |
+| 文件接口路径边界 | Token 等价于本机权限，所以网关自己的文件接口再做一层限制：`/api/skills/content` 读写只接受 realpath 落在技能库（`~/.pi/agent/skills`、`<cwd>/.pi/skills`、`.claude/skills`）或带 `skills` 目录段的 `.md`；`/api/files/raw` 必须是会话 cwd（无 cwd 时为主目录）内的图片/PDF；`/api/cwd/browse` 只创建绝对路径、子目录名单段。单测见 `server/test/gateway-paths.test.mjs` |
 
 **核心事实**：Token 等价于本机命令行权限（pi-web 能执行 shell、读写任意文件），
 所以它必须按 SSH 私钥对待。当前没有第二因子。

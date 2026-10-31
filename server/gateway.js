@@ -519,6 +519,146 @@ function resolveHomePath(p) {
   return p;
 }
 
+// ── 3.5.0 路径边界 ─────────────────────────────────────────────────────────
+// 技能文档读写、媒体原文件这三个接口都能直接碰 PC 磁盘。Token 只能挡住
+// 「没拿到密钥的人」，挡不住「密钥泄漏之后把接口当任意文件读写器用」，
+// 所以每条路径都必须先落进白名单根目录，再做文件操作。
+// 判断一律基于 realpath（解析符号链接与 ..），避免 `skills/../../` 或软链接逃逸。
+
+/** target 是否在 root 之内（含 root 本身）；win32 下 path.relative 大小写不敏感。 */
+function isPathInside(root, target) {
+  if (!root || !target) return false;
+  const rel = path.relative(root, target);
+  return rel === '' || (!rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel));
+}
+
+/**
+ * 取 realpath；目标还不存在（新建技能文件）时，解析最近的已存在祖先再拼回剩余段。
+ * 解析失败退回 path.resolve —— 调用方随后一定会被 isPathInside 判掉。
+ */
+function realPathLoose(target) {
+  const absolute = path.resolve(target);
+  const missing = [];
+  let current = absolute;
+  for (let i = 0; i < 64; i += 1) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...missing.slice().reverse());
+    } catch (e) {
+      const parent = path.dirname(current);
+      if (parent === current) return absolute;
+      missing.push(path.basename(current));
+      current = parent;
+    }
+  }
+  return absolute;
+}
+
+/** 路径中是否有名为 segment 的目录段（大小写不敏感）。 */
+function hasPathSegment(target, segment) {
+  const wanted = String(segment).toLowerCase();
+  return path
+    .resolve(target)
+    .split(/[\\/]+/)
+    .some((part) => part.toLowerCase() === wanted);
+}
+
+/** 目录名 / 技能名必须是单独一段：不接受分隔符、`..` 与空串。 */
+function isSafeNameSegment(name) {
+  if (typeof name !== 'string') return false;
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === '.' || trimmed === '..') return false;
+  return !/[\\/\u0000]/.test(trimmed);
+}
+
+/**
+ * 技能库根目录：与 pi 自己的发现规则一致（`~/.pi/agent/skills`、`<cwd>/.pi/skills`），
+ * 另外保留历史实现支持的 `.claude/skills`。
+ */
+function skillRoots(rawCwd) {
+  const roots = [
+    path.join(os.homedir(), '.pi', 'agent', 'skills'),
+    path.join(os.homedir(), '.claude', 'skills'),
+  ];
+  const cwd = typeof rawCwd === 'string' ? rawCwd.trim() : '';
+  if (cwd) {
+    const resolvedCwd = resolveHomePath(cwd);
+    roots.push(path.join(resolvedCwd, '.pi', 'skills'));
+    roots.push(path.join(resolvedCwd, '.claude', 'skills'));
+  }
+  return roots;
+}
+
+/**
+ * 把「技能文档路径」收敛成磁盘真实路径；不合法返回 null。
+ *
+ * 允许两种形态（都必须以 `.md` 结尾，避免变成任意文本文件读写器）：
+ *  1. 落在技能库根目录内（含项目级 `<cwd>/.pi/skills`）；
+ *  2. 路径中带 `skills` 目录段 —— 技能包/临时技能的布局是
+ *     `…/packages/<pkg>/skills/<name>/SKILL.md`，只按根目录白名单会把正常编辑挡掉。
+ */
+function resolveSkillDocument(rawPath, rawCwd) {
+  if (typeof rawPath !== 'string') return null;
+  const trimmed = rawPath.trim();
+  if (!trimmed || !trimmed.toLowerCase().endsWith('.md')) return null;
+  const resolved = realPathLoose(resolveHomePath(trimmed));
+  for (const root of skillRoots(rawCwd)) {
+    if (isPathInside(realPathLoose(root), resolved)) return resolved;
+  }
+  if (hasPathSegment(resolved, 'skills')) return resolved;
+  return null;
+}
+
+/** 媒体预览允许的扩展名：既是 MIME 表，也是「只读这些类型」的白名单。 */
+const MEDIA_MIME_BY_EXT = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.bmp': 'image/bmp',
+  '.svg': 'image/svg+xml',
+  '.pdf': 'application/pdf'
+};
+
+/**
+ * 媒体原文件路径收敛：必须是已存在、扩展名在白名单内的文件，且落在会话工作目录
+ * （`cwd`）内；没有 cwd 时退回主目录。
+ *
+ * 越界请求被拒绝不会让正常图片加载断掉：客户端还有 pi-web 的 `/api/files?path=`
+ * 作为兜底，那条路由自带 isFilePathReferencedBySession 校验。
+ *
+ * @returns {{ path: string, contentType: string } | null}
+ */
+function resolveMediaReadPath(rawPath, rawCwd) {
+  if (typeof rawPath !== 'string') return null;
+  const trimmed = rawPath.trim();
+  if (!trimmed) return null;
+
+  let candidate = resolveHomePath(trimmed);
+  const cwd = typeof rawCwd === 'string' ? rawCwd.trim() : '';
+  if (!path.isAbsolute(candidate)) {
+    if (!cwd) return null;
+    candidate = path.resolve(resolveHomePath(cwd), candidate);
+  }
+
+  const ext = path.extname(candidate).toLowerCase();
+  const contentType = MEDIA_MIME_BY_EXT[ext];
+  if (!contentType) return null;
+
+  const resolved = realPathLoose(candidate);
+  try {
+    if (!fs.statSync(resolved).isFile()) return null;
+  } catch (e) {
+    return null;
+  }
+
+  const roots = [];
+  if (cwd) roots.push(realPathLoose(resolveHomePath(cwd)));
+  roots.push(realPathLoose(os.homedir()));
+  const allowed = roots.some((root) => isPathInside(root, resolved));
+  return allowed ? { path: resolved, contentType } : null;
+}
+
 // 自动检测并无损自愈本地 ~/.pi/agent/models.json（防止因缺失 baseUrl 的单模型数组或顶层 config 字段导致 pi 无法工作）
 function autoHealLocalModelsJson() {
   try {
@@ -595,15 +735,20 @@ app.get('/api/skills/content', authMiddleware, (req, res, next) => {
     const rawCwd = (req.query.cwd || '').toString().trim();
 
     const candidates = [];
-    if (rawPath) candidates.push(resolveHomePath(rawPath));
-    if (rawBaseDir) candidates.push(path.join(resolveHomePath(rawBaseDir), 'SKILL.md'));
-    if (skillName) {
-      candidates.push(path.join(os.homedir(), '.pi', 'agent', 'skills', skillName, 'SKILL.md'));
-      candidates.push(path.join(os.homedir(), '.claude', 'skills', skillName, 'SKILL.md'));
+    // 每个候选都先过路径守卫：技能名里带 `../`、或 filePath 指向技能库之外的文件都会被丢弃。
+    const pushCandidate = (candidate) => {
+      const safe = resolveSkillDocument(candidate, rawCwd);
+      if (safe) candidates.push(safe);
+    };
+    if (rawPath) pushCandidate(rawPath);
+    if (rawBaseDir) pushCandidate(path.join(resolveHomePath(rawBaseDir), 'SKILL.md'));
+    if (skillName && isSafeNameSegment(skillName)) {
+      pushCandidate(path.join(os.homedir(), '.pi', 'agent', 'skills', skillName, 'SKILL.md'));
+      pushCandidate(path.join(os.homedir(), '.claude', 'skills', skillName, 'SKILL.md'));
       if (rawCwd) {
         const resolvedCwd = resolveHomePath(rawCwd);
-        candidates.push(path.join(resolvedCwd, '.pi', 'skills', skillName, 'SKILL.md'));
-        candidates.push(path.join(resolvedCwd, '.claude', 'skills', skillName, 'SKILL.md'));
+        pushCandidate(path.join(resolvedCwd, '.pi', 'skills', skillName, 'SKILL.md'));
+        pushCandidate(path.join(resolvedCwd, '.claude', 'skills', skillName, 'SKILL.md'));
       }
     }
 
@@ -625,16 +770,21 @@ app.put('/api/skills/content', authMiddleware, express.json({ limit: '5mb' }), (
     const rawPath = (body.filePath || body.path || '').toString().trim();
     const skillName = (body.name || body.skill || '').toString().trim();
     const content = (body.content || '').toString();
-    let resolved = resolveHomePath(rawPath);
-    if (!resolved && skillName) {
-      resolved = path.join(os.homedir(), '.pi', 'agent', 'skills', skillName, 'SKILL.md');
-    }
-    if (!resolved) {
+    const rawCwd = (body.cwd || '').toString().trim();
+    if (!rawPath && !skillName) {
       return res.status(400).json({ error: 'Missing filePath' });
     }
-    // 安全防护：该接口仅用于保存技能 Markdown 源码，严禁覆写非 .md 文件
-    if (!resolved.toLowerCase().endsWith('.md')) {
-      return res.status(400).json({ error: 'Invalid filePath: only markdown files (.md) can be modified' });
+    if (skillName && !isSafeNameSegment(skillName)) {
+      return res.status(400).json({ error: 'Invalid name: must be a single path segment' });
+    }
+    const requested = rawPath || path.join(os.homedir(), '.pi', 'agent', 'skills', skillName.trim(), 'SKILL.md');
+    // 安全防护：只允许写技能库内（或带 skills 目录段）的 Markdown 文档。
+    // 以前的 `.md 后缀` 检查挡不住 `~/xxx.md` 这类任意文件覆盖，也挡不住目录穿越。
+    const resolved = resolveSkillDocument(requested, rawCwd);
+    if (!resolved) {
+      return res.status(400).json({
+        error: 'Invalid filePath: only markdown files inside a skills directory can be modified'
+      });
     }
     const dir = path.dirname(resolved);
     if (!fs.existsSync(dir)) {
@@ -653,6 +803,19 @@ app.post('/api/cwd/browse', authMiddleware, express.json(), (req, res, next) => 
     const targetFull = resolveHomePath(body.fullPath || body.cwd || '');
     const parentDir = resolveHomePath(body.path || body.dir || '');
     const childName = (body.name || '').trim();
+    // 该接口的用途是「在 PC 上新建工作区目录」，用户本来就能选任意盘符，所以不能拿
+    // 主目录当白名单；但必须堵住两件事：相对路径被解析到网关自己的目录、以及
+    // 子目录名里夹 `..\` 把目录建到别处。因此只接受绝对路径 / `~` 开头，子目录名必须是单段。
+    const isAbsoluteOrHome = (p) =>
+      !!p && (path.isAbsolute(p) || p.startsWith('~/') || p.startsWith('~\\'));
+    for (const raw of [targetFull, parentDir].filter(Boolean)) {
+      if (!isAbsoluteOrHome(raw)) {
+        return res.status(400).json({ error: 'Only absolute paths can be created' });
+      }
+    }
+    if (childName && !isSafeNameSegment(childName)) {
+      return res.status(400).json({ error: 'Invalid name: must be a single path segment' });
+    }
     const finalDir = targetFull || (parentDir && childName ? path.join(parentDir, childName) : parentDir);
     if (finalDir) {
       fs.mkdirSync(finalDir, { recursive: true });
@@ -671,27 +834,14 @@ app.get('/api/files/raw', authMiddleware, (req, res, next) => {
     const rawCwd = (req.query.cwd || '').toString().trim();
     if (!rawPath) return next();
 
-    let resolved = resolveHomePath(rawPath);
-    if (!path.isAbsolute(resolved) && rawCwd) {
-      resolved = path.resolve(resolveHomePath(rawCwd), resolved);
+    // 必须是工作目录内的图片/PDF；越界一律 403（客户端会回落 pi-web 的兜底路由）。
+    const media = resolveMediaReadPath(rawPath, rawCwd);
+    if (!media) {
+      return res.status(403).json({ error: 'path outside the allowed workspace' });
     }
-    if (resolved && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-      const ext = path.extname(resolved).toLowerCase();
-      const mimeMap = {
-        '.png': 'image/png',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.webp': 'image/webp',
-        '.gif': 'image/gif',
-        '.bmp': 'image/bmp',
-        '.svg': 'image/svg+xml',
-        '.pdf': 'application/pdf'
-      };
-      if (!mimeMap[ext]) return next();
-      res.setHeader('Content-Type', mimeMap[ext]);
-      res.setHeader('Cache-Control', 'private, max-age=300');
-      return res.sendFile(path.resolve(resolved));
-    }
+    res.setHeader('Content-Type', media.contentType);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    return res.sendFile(media.path);
   } catch (e) {
     // 交由下游 pi-web 继续处理
   }
@@ -1010,6 +1160,12 @@ module.exports = {
   isSafeHostname,
   resolveStableTunnel,
   stopTunnel,
+  // 路径边界（单测直接覆盖，不起服务）
+  isPathInside,
+  isSafeNameSegment,
+  skillRoots,
+  resolveSkillDocument,
+  resolveMediaReadPath,
   // 公网通道选择与 frp 守护
   resolveTunnelMode,
   stopFrp: frpClient.stopFrp
