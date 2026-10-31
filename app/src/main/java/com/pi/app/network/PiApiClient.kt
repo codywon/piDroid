@@ -4071,56 +4071,70 @@ data class CatalogPreset(
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         val key = connectionKey(baseUrl)
-        val previous = modelsManagementCache.load(key)
+        // 合并阶段要解析网关下发的 models.json，非法字段类型会抛异常：
+        // 这里必须兰住，否则会冒到 Compose 的 LaunchedEffect 里直接闪退
+        try {
+            val observedMutationSeq = modelsManagementCache.currentMutationSeq()
+            val previous = modelsManagementCache.load(key)
 
-        val (configResult, authResult) = coroutineScope {
-            val configDeferred = async { getModelsConfigObject(baseUrl) }
-            val authDeferred = async { getProviderAuthStates(baseUrl) }
-            configDeferred.await() to authDeferred.await()
-        }
+            val (configResult, authResult) = coroutineScope {
+                val configDeferred = async { getModelsConfigObject(baseUrl) }
+                val authDeferred = async { getProviderAuthStates(baseUrl) }
+                configDeferred.await() to authDeferred.await()
+            }
 
-        val rootObj = configResult.getOrNull()
-            ?: return@withContext Result.failure(
-                configResult.exceptionOrNull() ?: IOException("读取 models.json 失败")
+            val rootObj = configResult.getOrNull()
+                ?: return@withContext Result.failure(
+                    configResult.exceptionOrNull() ?: IOException("读取 models.json 失败")
+                )
+
+            val freshAuth = authResult.getOrNull()
+            // 目录要判断「provider 是否还活着」，凭据拉取失败时用上次的有效值，避免多请求一次
+            val effectiveAuth = freshAuth ?: previous?.authStates ?: emptyMap()
+            val catalogResult = getDynamicModelsInternal(baseUrl, rootObj, effectiveAuth)
+
+            // 请求期间用户切了网关：这批结果属于上一台机器
+            if (connectionKey() != key) {
+                return@withContext Result.failure(IOException("连接已变更，已丢弃过期同步结果"))
+            }
+
+            val merged = mergeModelsManagementSnapshot(
+                connectionKey = key,
+                previous = previous,
+                rootConfig = rootObj,
+                authStates = freshAuth,
+                catalogModels = catalogResult.getOrNull()?.models
             )
-
-        val freshAuth = authResult.getOrNull()
-        // 目录要判断「provider 是否还活着」，凭据拉取失败时用上次的有效值，避免多请求一次
-        val effectiveAuth = freshAuth ?: previous?.authStates ?: emptyMap()
-        val catalogResult = getDynamicModelsInternal(baseUrl, rootObj, effectiveAuth)
-
-        // 请求期间用户切了网关：这批结果属于上一台机器
-        if (connectionKey() != key) {
-            return@withContext Result.failure(IOException("连接已变更，已丢弃过期同步结果"))
+            // 同步期间用户保存过 → 这次（更早的）结果不得盖掉刚保存的配置
+            modelsManagementCache.storeSynced(merged.data, observedMutationSeq)
+            Result.success(merged)
+        } catch (e: Exception) {
+            Result.failure(e)
         }
-
-        val merged = mergeModelsManagementSnapshot(
-            connectionKey = key,
-            previous = previous,
-            rootConfig = rootObj,
-            authStates = freshAuth,
-            catalogModels = catalogResult.getOrNull()?.models
-        )
-        modelsManagementCache.store(merged.data)
-        Result.success(merged)
     }
 
     /**
      * 保存类操作成功后把新配置写回本地快照（沿用已知的凭据状态与模型目录），
      * 让「保存 → 再次打开」直接命中新数据。
+     *
+     * 缓存只是加速层：写穿失败绝不能把「已经保存成功」报成保存失败，所以整段兰住。
      */
     private suspend fun writeThroughLocalConfig(baseUrl: String, config: JsonObject) {
-        // 保存请求属于发起时的网关；切换连接后也只能更新原网关的快照。
-        val key = connectionKey(baseUrl)
-        val base = modelsManagementCache.load(key)
-        val merged = mergeModelsManagementSnapshot(
-            connectionKey = key,
-            previous = base,
-            rootConfig = config,
-            authStates = base?.authStates,
-            catalogModels = base?.catalogModels
-        )
-        modelsManagementCache.store(merged.data)
+        runCatching {
+            // 保存请求属于发起时的网关；切换连接后也只能更新原网关的快照。
+            val key = connectionKey(baseUrl)
+            // 没有历史快照就不凭空造一个「凭据为空 + 目录未知」的假快照，
+            // 否则冷启动会先把内置 Provider 显示成缺失（比没缓存更误导）
+            val base = modelsManagementCache.load(key) ?: return@runCatching
+            val merged = mergeModelsManagementSnapshot(
+                connectionKey = key,
+                previous = base,
+                rootConfig = config,
+                authStates = base.authStates,
+                catalogModels = base.catalogModels
+            )
+            modelsManagementCache.store(merged.data)
+        }
     }
 
     /**

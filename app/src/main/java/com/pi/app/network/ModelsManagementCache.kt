@@ -98,6 +98,9 @@ class ModelsManagementCacheStore(
     private val lock = Mutex()
     private val modelListType = object : TypeToken<List<ModelInfo>>() {}.type
 
+    /** 本地变更序号（受 [lock] 保护）：用于让更早发起的网络同步落盘失效。 */
+    private var localMutationSeq = 0L
+
     @Volatile
     private var memory: ModelsManagementData? = null
 
@@ -115,36 +118,62 @@ class ModelsManagementCacheStore(
         }
     }
 
+    /** 当前本地变更序号。同步开始前记下，落盘时用它判定期间有没有本地保存。 */
+    suspend fun currentMutationSeq(): Long = withContext(Dispatchers.IO) {
+        lock.withLock { localMutationSeq }
+    }
+
+    /** 本地保存写穿：先递增变更序号再落盘，代表它比任何已发起的同步都新。 */
     suspend fun store(data: ModelsManagementData) = withContext(Dispatchers.IO) {
         lock.withLock {
+            localMutationSeq++
             memory = data
             runCatching { writeToDisk(data) }
             Unit
         }
     }
 
-    fun invalidateMemory() {
-        memory = null
-    }
+    /**
+     * 网络同步落盘：若同步期间发生过本地保存（序号已变），直接丢弃这次结果。
+     *
+     * 否则「同步发起 → 用户保存 → 旧同步返回」会把用户刚保存的配置从缓存里抹掉，
+     * 下次冷启动就回到保存前的状态。UI 侧另有 saveEpoch 守卫，缓存侧必须有这一道。
+     *
+     * @return 是否真的写入
+     */
+    suspend fun storeSynced(data: ModelsManagementData, observedMutationSeq: Long): Boolean =
+        withContext(Dispatchers.IO) {
+            lock.withLock {
+                if (localMutationSeq != observedMutationSeq) return@withLock false
+                memory = data
+                runCatching { writeToDisk(data) }
+                true
+            }
+        }
 
     private fun cacheFile(connectionKey: String): File =
         File(dir, "$FILE_PREFIX${Integer.toHexString(connectionKey.hashCode())}.json")
 
-    private fun readFromDisk(connectionKey: String): ModelsManagementData? {
+    /**
+     * 读磁盘。整段用 [runCatching] 兜底：缓存只是加速层，内容再离谱
+     * （磁盘损坏、用户在 raw JSON 里把 baseUrl 写成对象/把数字字段写成字符串）
+     * 也只能退化成「没命中」，绝不允许把异常抛给调用方/UI。
+     */
+    private fun readFromDisk(connectionKey: String): ModelsManagementData? = runCatching {
         val file = cacheFile(connectionKey)
-        if (!file.exists() || file.length() <= 0L) return null
-        val root = runCatching { JsonParser.parseString(file.readText()).asJsonObject }.getOrNull() ?: return null
-        if (root.get("version")?.takeIf { !it.isJsonNull }?.asInt != CACHE_VERSION) return null
-        if (root.get("connectionKey")?.takeIf { !it.isJsonNull }?.asString != connectionKey) return null
-        val config = root.get("modelsConfig")?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
+        if (!file.exists() || file.length() <= 0L) return@runCatching null
+        val root = JsonParser.parseString(file.readText()).asJsonObject
+        if (root.get("version")?.takeIf { !it.isJsonNull }?.asInt != CACHE_VERSION) return@runCatching null
+        if (root.get("connectionKey")?.takeIf { !it.isJsonNull }?.asString != connectionKey) return@runCatching null
+        val config = root.get("modelsConfig")?.takeIf { it.isJsonObject }?.asJsonObject ?: return@runCatching null
         val auth = root.get("auth")?.takeIf { it.isJsonObject }
             ?.let { ProviderAuthStateSerializer.parse(it.toString()) }
             ?: emptyMap()
         val models = root.get("catalogModels")?.takeIf { it.isJsonArray }?.let { arr ->
-            runCatching { gson.fromJson<List<ModelInfo>>(arr, modelListType) }.getOrNull()
+            gson.fromJson<List<ModelInfo>>(arr, modelListType)
         }
         val syncedAt = root.get("syncedAt")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-        return ModelsManagementData(
+        ModelsManagementData(
             connectionKey = connectionKey,
             rootConfig = config,
             authStates = auth,
@@ -152,7 +181,7 @@ class ModelsManagementCacheStore(
             providers = ModelConfigConverter.combineProviders(config, auth, models),
             syncedAt = syncedAt
         )
-    }
+    }.getOrNull()
 
     private fun writeToDisk(data: ModelsManagementData) {
         if (!dir.exists()) dir.mkdirs()
@@ -174,13 +203,17 @@ class ModelsManagementCacheStore(
         prune()
     }
 
-    /** 只保留最近几个连接的缓存，防止长期换网关后无限增长。 */
+    /** 只保留最近几个连接的缓存，防止长期换网关后无限增长；清理中断留下的临时文件。 */
     private fun prune() {
-        val files = dir.listFiles()
-            ?.filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.name.endsWith(".json") }
-            ?: return
-        if (files.size <= MAX_FILES) return
-        files.sortedByDescending { it.lastModified() }.drop(MAX_FILES).forEach { it.delete() }
+        val allFiles = dir.listFiles() ?: return
+        val now = System.currentTimeMillis()
+        // 清理超过 1 小时的孤立 .tmp 临时文件（防进程意外中断残留）
+        allFiles.filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.name.endsWith(".tmp") }
+            .forEach { if (now - it.lastModified() > 3600_000L) it.delete() }
+
+        val jsonFiles = allFiles.filter { it.isFile && it.name.startsWith(FILE_PREFIX) && it.name.endsWith(".json") }
+        if (jsonFiles.size <= MAX_FILES) return
+        jsonFiles.sortedByDescending { it.lastModified() }.drop(MAX_FILES).forEach { it.delete() }
     }
 
     private companion object {

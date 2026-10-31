@@ -144,6 +144,73 @@ class ModelsManagementCacheTest {
     }
 
     @Test
+    fun `structurally invalid cache payload degrades to miss instead of throwing`() {
+        // 用户在 raw JSON 编辑器里把 baseUrl 写成对象（或者把数字字段写成非数字）时，
+        // parseProvidersConfig 会抛 UnsupportedOperationException。
+        // 缓存层必须退化为「没命中」，否则冷启动会直接闪退。
+        val dir = File(tmp.root, "cache")
+        dir.mkdirs()
+        val payload = JsonParser.parseString(
+            """
+            {
+              "version": 2,
+              "connectionKey": "$keyA",
+              "syncedAt": 1,
+              "modelsConfig": { "providers": { "x": { "baseUrl": { "nested": 1 }, "models": [ { "id": "m1" } ] } } },
+              "auth": { "apiKeyProviders": [ { "id": { "oops": 1 }
+              } ] }
+            }
+            """.trimIndent()
+        ).asJsonObject
+        File(dir, "models_management_${Integer.toHexString(keyA.hashCode())}.json")
+            .writeText(payload.toString())
+
+        assertNull(runBlocking { ModelsManagementCacheStore(dir).load(keyA) })
+    }
+
+    @Test
+    fun `local save during sync is not overwritten by the older sync snapshot`() {
+        val store = ModelsManagementCacheStore(File(tmp.root, "cache"))
+        runBlocking {
+            store.store(snapshot())
+            // 同步开始
+            val observed = store.currentMutationSeq()
+
+            // 同步途中用户保存了新配置
+            val saved = mergeModelsManagementSnapshot(
+                connectionKey = keyA,
+                previous = null,
+                rootConfig = config(provider = "saved-provider"),
+                authStates = authStates("deepseek"),
+                catalogModels = catalogModels()
+            ).data
+            store.store(saved)
+
+            // 更早发起的同步现在才回来
+            val wrote = store.storeSynced(snapshot(), observed)
+
+            assertTrue("旧同步结果不得落盘", !wrote)
+            assertTrue(
+                "用户刚保存的配置必须还在缓存里",
+                store.peek(keyA)!!.providers.any { it.name == "saved-provider" }
+            )
+        }
+    }
+
+    @Test
+    fun `sync snapshot is persisted when no local save happened meanwhile`() {
+        val store = ModelsManagementCacheStore(File(tmp.root, "cache"))
+        runBlocking {
+            store.store(snapshot())
+            val observed = store.currentMutationSeq()
+            val synced = snapshot().copy(syncedAt = 99L)
+
+            assertTrue(store.storeSynced(synced, observed))
+            assertEquals(99L, store.peek(keyA)!!.syncedAt)
+        }
+    }
+
+    @Test
     fun `previous auth is kept when auth fetch failed`() {
         val previous = snapshot()
         val merged = mergeModelsManagementSnapshot(

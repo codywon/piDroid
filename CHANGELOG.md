@@ -2,6 +2,19 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.7.71] - 2026-10-31
+
+### ⚡ 模型管理页缓存秒开 + 三处稳定性修复
+
+- **秒开缓存（Stale-While-Revalidate）**：模型管理页先渲染内存/磁盘快照（按网关连接身份隔离，切换网关不会串用），后台再并发对账 `GET /api/models-config`、`GET /api/auth/providers`、`GET /api/models`（从 5 次请求降为 3 次），网络回来平滑替换并保持当前选中项不跳变；不再每次打开都整屏等一个居中加载圈，离线冷启动也能看到完整的提供商与模型列表；
+- **修复冷启动闪退（高危）**：缓存文件字段类型异常时（例如在 raw JSON 编辑器里把 `baseUrl` 写成对象），反序列化会抛 `UnsupportedOperationException` 并冒到 `LaunchedEffect` 导致闪退。缓存层现在整体兜底，任何异常只退化为「没命中」，绝不影响启动；
+- **修复同步异常闪退（高危）**：`syncModelsManagementData` 补齐 `try/catch`，模型配置合并阶段的解析异常统一转为可提示的失败，不再击穿到 UI 协程；
+- **修复保存与同步竞态（高危）**：引入本地变更序号（`currentMutationSeq` / `storeSynced`），同步期间用户保存过配置时，更早发起的同步结果不再写回缓存，重启后不会回到保存前状态；缓存写穿失败也不再误报「保存失败」；
+- **草稿保护**：后台同步回包若与本地未保存修改冲突，保留用户编辑并提示，不再盲接覆盖；
+- **测试保障**：新增 4 个纯 JVM 用例（缓存损坏、字段类型异常、同步期间保存、无本地保存时正常落盘），`ModelsManagementCacheTest` 与 `ProviderConfigMergeTest` 共 18 个用例全部通过。
+
+---
+
 ## [1.7.70] - 2026-10-31
 
 ### 🐛 修复通用 SVG 附件卡片白屏与宽度塌陷（消灭 flex width:auto 0px 漏洞）
