@@ -2,6 +2,39 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.29] - 2026-11-01
+
+### 🎨 配色收尾：业务组件裸色真正清零 + 首次加 CI 守卫
+
+v1.8.21 宣告"裸色只剩有意保留的 20 处"，逐字核查后发现口径不准：
+其中 3 处是 PDF 错误红（未收口）、1 处是行内代码底纹、1 处是注释文字。这一版真正清零，并把标准写进 CI。
+
+#### 已修
+
+| 项 | 原状 | 现状 |
+|---|---|---|
+| **PDF 徽标 / 图标** | `#EF4444` 压在 16% 叠色底上，10sp 文字只有 **3.05:1**（不达 AA），且与主题 error 是两套红 | M3 `errorContainer` + `error`：浅 **5.30:1** / 深 **5.84:1** |
+| 行内代码底纹 | `Color(0x1F88888F)` 裸值 | `ThemePalette.InlineCodeTint` |
+| 脑图分支色 / 图表色（11 处） | 裸值、无归属说明 | `ThemePalette.Chart*` 七个命名常量，注明"数据色、不随主题" |
+| 扫码沉浸层（4 处） | 裸值；`ThemePalette` 注释只说有 git/图表色，没提 scrim | `ScrimBase / ScrimLightbox / ScrimSurface / ScrimOnSurface`（实测 16.02 / 14.64:1） |
+| 注释里的 `Color(0xFF8B5CF6)` 字样 | 会让逐字核查误判为未收口 | 改为描述性文字 |
+
+#### 主题层清账
+
+删除 10 个从未被引用的 `Termius*` 常量、`TermiusColorScheme`，以及 `LocalTextPrimary/Secondary/Muted`
+三个 **0 消费者**的 `CompositionLocal`；`error` 仍只有 M3 `ColorScheme` 一处真源。
+
+新增 `docs/DESIGN-color-tokens.md`：三层结构、**承接面约束表**（`textMuted` 为何只允许
+`background`/`surfaceContainerLow`）、组件级 Token 归属（哪些刻意不随主题）、三处有意偏离、门禁说明。
+
+#### 工程
+
+- **CI 新增 `Guard hardcoded colors` 步骤**：`app/src/main/java` 下除 `ui/theme/` 外一旦出现
+  `Color(0x......)` 直接判红。配色收口从此有机制兜底。
+- `ColorContrastTest` 增至 **17 组**（新增沉浸层断言）。
+- 10 处 `Icons.Filled.ArrowBack/KeyboardReturn/Undo/PlaylistAdd/CallSplit` 换成
+  `Icons.AutoMirrored.Filled.*`（RTL 语言下方向才正确），编译警告清零。
+
 ## [1.8.28] - 2026-11-01
 
 ### 🔔 通知栏和 App 内的图标也换成 π
@@ -263,8 +296,8 @@ Content-Type，本来就发 JSON。
 
 #### 现状
 
-业务组件里 `Color(0x...)` 只剩 20 处，且都是**有意保留**：Markdown 图表分类色（12）、
-扫码取景与大图查看器的沉浸深色层（8）——它们不随主题变化，理由已写进 `ThemePalette` 注释。
+业务组件里 `Color(0x...)` 当时只剩 20 处，但**并非全部有意保留**：11 处是图表分类色、5 处是沉浸底、
+1 处是行内代码底纹、3 处是 PDF 错误红（未收口）、1 处是注释文字。真正清零见 v1.8.29。
 
 `ColorContrastTest` 增至 16 组：新增 info / pin / 成功按钮前景 / 用户气泡四项断言。
 

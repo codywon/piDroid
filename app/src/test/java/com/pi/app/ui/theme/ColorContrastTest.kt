@@ -345,6 +345,16 @@ class ColorContrastTest {
         }
     }
 
+    /**
+     * ⑰ 沉浸层（theme-invariant）：文字压在遮罩上必须可读。
+     * 这一层不随 5 套主题变化，所以单独断言一次即可，不必进 allSchemes。
+     */
+    @Test
+    fun scrimLayerMeetsContrast() {
+        assertAtLeast("scrim.onSurface/ScrimBase", ThemePalette.ScrimOnSurface, ThemePalette.ScrimBase, 7.0)
+        assertAtLeast("scrim.onSurface/ScrimSurface", ThemePalette.ScrimOnSurface, ThemePalette.ScrimSurface, 4.5)
+    }
+
     /** ⑪ 公式自检：黑白极值必须是 21:1，同色必须是 1:1 */
     @Test
     fun contrastFormulaSanity() {

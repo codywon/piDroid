@@ -40,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Lightbulb
 import androidx.compose.material.icons.outlined.PushPin
@@ -1187,7 +1188,7 @@ fun ChatScreen(
                 ),
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "返回", tint = theme.textSecondary)
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回", tint = theme.textSecondary)
                     }
                 },
                 title = {
@@ -1313,7 +1314,7 @@ fun ChatScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Icon(
-                                    imageVector = Icons.Default.KeyboardReturn,
+                                    imageVector = Icons.AutoMirrored.Filled.KeyboardReturn,
                                     contentDescription = "放回输入框",
                                     modifier = Modifier.size(12.dp),
                                     tint = theme.textSecondary
@@ -1553,7 +1554,7 @@ fun ChatScreen(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.Undo,
+                                        Icons.AutoMirrored.Filled.Undo,
                                         contentDescription = null,
                                         modifier = Modifier.size(12.dp),
                                         tint = theme.primary
@@ -1641,7 +1642,7 @@ fun ChatScreen(
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        Icons.Default.PlaylistAdd,
+                                        Icons.AutoMirrored.Filled.PlaylistAdd,
                                         contentDescription = "后续排队 (Follow-up)",
                                         modifier = Modifier.size(15.dp),
                                         tint = if (canSend) theme.primary else theme.textMuted
@@ -2820,7 +2821,7 @@ fun ChatMessageItem(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(3.dp)
                         ) {
-                            Icon(Icons.Default.CallSplit, contentDescription = "新会话", modifier = Modifier.size(11.dp), tint = theme.textMuted)
+                            Icon(Icons.AutoMirrored.Filled.CallSplit, contentDescription = "新会话", modifier = Modifier.size(11.dp), tint = theme.textMuted)
                             Text("新会话", fontSize = 10.5.sp, color = theme.textMuted)
                         }
 

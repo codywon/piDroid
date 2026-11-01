@@ -81,6 +81,22 @@ jobs:
             exit 1
           fi
 
+      # 裸色守卫：配色体系已全部收敛到 ThemePalette（见 docs/DESIGN-color-tokens.md）。
+      # 本机不能编译，全靠这里兜住「新代码又写死 Color(0x...)」的回潮。
+      # 唯一白名单是主题定义层 —— 把颜色翻译成 Token 的地方本来就要写原始值；
+      # 业务组件（含沉浸层、图表色）的数值都已下沉到 ThemePalette，因此不应再有例外。
+      - name: Guard hardcoded colors
+        run: |
+          set -e
+          raw=$(git grep -nE "Color\(0x[0-9A-Fa-f]{6,8}\)" -- app/src/main/java || true)
+          hits=$(echo "$raw" | grep -v "com/pi/app/ui/theme/" | grep -F ".kt:" || true)
+          if [ -n "$hits" ]; then
+            echo "::error::业务组件里出现裸色值，请改用 ThemePalette / AppTheme Token（见 docs/DESIGN-color-tokens.md）"
+            echo "$hits"
+            exit 1
+          fi
+          echo "OK: 业务组件无裸色值"
+
       # 单测门禁：解析与流式提取这类纯 JVM 逻辑一旦回归，宁可不发版也不能把已知坏掉的构建推给用户。
       # 放在签名/打包之前，失败即中断，不浪费一次 release。
       - name: Run Unit Tests

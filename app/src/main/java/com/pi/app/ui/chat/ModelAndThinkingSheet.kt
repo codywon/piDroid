@@ -289,7 +289,7 @@ fun ModelAndThinkingSheet(
                                             imageVector = Icons.Default.Psychology,
                                             contentDescription = "支持思考推理",
                                             modifier = Modifier.size(13.dp),
-                                            // 原先裸写 Color(0xFF8B5CF6)，与主题无关且在深色底上偏暗；
+                                            // 原先裸写一个固定紫色常量，与主题无关且在深色底上偏暗；
                                             // 现由语义色提供（浅 #7C3AED 5.70:1 / 深 #A78BFA 6.28:1）
                                             tint = if (isSelected) theme.primary else theme.featureThinking
                                         )

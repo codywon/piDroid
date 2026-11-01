@@ -237,6 +237,36 @@ object ThemePalette {
     val TpsLag: Int = 0xFFE01A4F.toInt()
 
     // ══════════════════════════════════════════════════════════════
+    // 沉浸层（theme-invariant）：扫码取景、大图查看器
+    //
+    // 这三组不随 5 套主题变化——相机取景与暗房看图本来就该是深色，主题化成
+    // 琥珀底只会伤害可用性。它们集中在这里是为了让「业务组件不再出现裸 Color(0x...)」
+    // 这条口径能真正兑现，而不是因为想给它们上主题。
+        // ══════════════════════════════════════════════════════════════
+    val ScrimBase: Int = 0xFF0D1117.toInt()          // 扫码全屏底 / 半透明胶囊的基色
+    val ScrimLightbox: Int = 0xF20B0D13.toInt()      // 大图查看器底（95% 不透明）
+    val ScrimSurface: Int = 0xFF161B22.toInt()       // 沉浸层上的按钮/胶囊底
+    val ScrimOnSurface: Int = 0xFFE6EDF3.toInt()     // 沉浸层上的文字（vs ScrimBase = 15.4:1）
+
+    // ══════════════════════════════════════════════════════════════
+    // 行内代码底纹（12% 中性灰，叠在任意卡片底上都只做「轻底纹」，不承担对比度职责）
+        // ══════════════════════════════════════════════════════════════
+    val InlineCodeTint: Int = 0x1F88888F
+
+    // ══════════════════════════════════════════════════════════════
+    // 图表分类色（mindmap 分支 / 饼图柱图）：**数据色，不是语义色**
+    //
+    // 它们表达「第几类」，不表达成败/警告，所以既不该跟随主题，也不该被
+    // success/warning 语义色取代——否则主题一换，同一份数据的颜色映射就变了。
+        // ══════════════════════════════════════════════════════════════
+    val ChartBlue: Int = 0xFF3B82F6.toInt()
+    val ChartGreen: Int = 0xFF10B981.toInt()
+    val ChartAmber: Int = 0xFFF59E0B.toInt()
+    val ChartRed: Int = 0xFFEF4444.toInt()
+    val ChartPink: Int = 0xFFEC4899.toInt()
+    val ChartCyan: Int = 0xFF06B6D4.toInt()
+    val ChartViolet: Int = 0xFF8B5CF6.toInt()
+    // ══════════════════════════════════════════════════════════════
     // 品牌（theme-invariant：logo 不随主题变色，避免 AMBER 主题下出现亮黄块）
     // ══════════════════════════════════════════════════════════════
     val BrandLogoBackground: Int = 0xFF1E293B.toInt() // 与白 π 对比度 14.6:1

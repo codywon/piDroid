@@ -60,6 +60,7 @@ import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaKind
 import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.ui.theme.LocalAppTheme
+import com.pi.app.ui.theme.ThemePalette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -892,13 +893,13 @@ private fun PdfThumbnailCard(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(5.dp),
-                        color = Color(0xFFEF4444).copy(alpha = 0.16f)
+                        color = MaterialTheme.colorScheme.errorContainer
                     ) {
                         Text(
                             text = "PDF",
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFEF4444),
+                            color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                         )
                     }
@@ -978,7 +979,7 @@ private fun PdfThumbnailCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(18.dp))
                     Text(
                         text = attachment.filePath ?: attachment.title,
                         fontSize = 11.5.sp,
@@ -1076,7 +1077,7 @@ fun FullscreenMediaLightboxDialog(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xF20B0D13))
+                .background(Color(ThemePalette.ScrimLightbox))
         ) {
             // 主体可缩放画布区域
             Box(

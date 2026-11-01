@@ -37,6 +37,7 @@ import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import com.pi.app.ui.theme.LocalAppTheme
+import com.pi.app.ui.theme.ThemePalette
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -172,7 +173,7 @@ fun QrScannerScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0D1117))) {
+    Box(modifier = Modifier.fillMaxSize().background(Color(ThemePalette.ScrimBase))) {
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -286,13 +287,13 @@ fun QrScannerScreen(
                 }
 
                 Surface(
-                    color = Color(0xFF0D1117).copy(alpha = 0.72f),
+                    color = Color(ThemePalette.ScrimBase).copy(alpha = 0.72f),
                     shape = RoundedCornerShape(20.dp),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
                 ) {
                     Text(
                         text = "对准 PC 终端二维码 · 或从下方相册选图 / 手动填写",
-                        color = Color(0xFFE6EDF3),
+                        color = Color(ThemePalette.ScrimOnSurface),
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                     )
@@ -309,7 +310,7 @@ fun QrScannerScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Surface(
-                    color = Color(0xFF161B22).copy(alpha = 0.88f),
+                    color = Color(ThemePalette.ScrimSurface).copy(alpha = 0.88f),
                     shape = RoundedCornerShape(12.dp),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.22f)),
                     modifier = Modifier

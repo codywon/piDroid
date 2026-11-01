@@ -79,9 +79,9 @@ object ToolDefinitionsParsing {
             val spec = value.takeIf { it.isJsonObject }?.asJsonObject
             ToolParameter(
                 name = key,
-                type = spec.string("type"),
+                type = spec?.string("type"),
                 required = required.contains(key),
-                description = spec.string("description")
+                description = spec?.string("description")
             )
         }.orEmpty()
 
@@ -95,9 +95,9 @@ object ToolDefinitionsParsing {
         )
     }
 
-    private fun JsonObject?.string(key: String): String? =
-        this?.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+    private fun JsonObject.string(key: String): String? =
+        get(key)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
 
-    private fun JsonObject?.boolean(key: String): Boolean? =
-        this?.get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+    private fun JsonObject.boolean(key: String): Boolean? =
+        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
 }

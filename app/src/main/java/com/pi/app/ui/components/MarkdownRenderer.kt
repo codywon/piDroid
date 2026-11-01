@@ -1014,7 +1014,7 @@ private fun appendInlineChildren(
                     SpanStyle(
                         fontFamily = FontFamily.Monospace,
                         fontSize = 12.sp,
-                        background = if (withTint) Color(0x1F88888F) else Color.Transparent
+                        background = if (withTint) Color(ThemePalette.InlineCodeTint) else Color.Transparent
                     )
                 )
                 if (withTint) builder.append(" $literal ") else builder.append(literal)
@@ -1360,12 +1360,13 @@ fun MermaidDiagramCard(code: String, language: String) {
 @Composable
 private fun RenderVisualMindmap(lines: List<String>) {
     val theme = LocalAppTheme.current
+    // Data colours ("which branch"), not semantics: they must not follow the theme.
     val branchColors = listOf(
-        Color(0xFF3B82F6),
-        Color(0xFF10B981),
-        Color(0xFFF59E0B),
-        Color(0xFFEC4899),
-        Color(0xFF06B6D4)
+        Color(ThemePalette.ChartBlue),
+        Color(ThemePalette.ChartGreen),
+        Color(ThemePalette.ChartAmber),
+        Color(ThemePalette.ChartPink),
+        Color(ThemePalette.ChartCyan)
     )
 
     val contentLines = lines.dropWhile { it.trim().equals("mindmap", ignoreCase = true) }
@@ -1662,12 +1663,12 @@ private val PIE_ENTRY_REGEX = Regex("""^\s*"?([^":]+)"?\s*:\s*([0-9.]+)""")
 private fun RenderVisualChart(lines: List<String>) {
     val theme = LocalAppTheme.current
     val palette = listOf(
-        Color(0xFF3B82F6),
-        Color(0xFF10B981),
-        Color(0xFFF59E0B),
-        Color(0xFFEF4444),
-        Color(0xFF8B5CF6),
-        Color(0xFF06B6D4)
+        Color(ThemePalette.ChartBlue),
+        Color(ThemePalette.ChartGreen),
+        Color(ThemePalette.ChartAmber),
+        Color(ThemePalette.ChartRed),
+        Color(ThemePalette.ChartViolet),
+        Color(ThemePalette.ChartCyan)
     )
 
     val title = lines.firstOrNull { it.trim().startsWith("title ", ignoreCase = true) }
