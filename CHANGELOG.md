@@ -2,6 +2,41 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.13] - 2026-11-01
+
+### ✨ 提示词增强终于拿到了它真正需要的信息：工具执行结果
+
+「效果像个 demo」的根因不是提示词写得不好，而是**喂给模型的信息缺了一半以上**。
+实测一个真实会话（230 条消息）：
+
+```
+role 分布：assistant 109 | toolResult 119 | user 1 | system 1
+```
+
+而旧实现把 `toolResult` 全过滤掉了。用户说「这个报错」「刚才改的那段」——信息就在里面。
+
+本次只改三处，没有新增任何架构：
+
+- **纳入工具结果**：`MessageRole.TOOL` 不再被丢弃，取 `toolName` + 命令 + 输出
+  （无输出时退回预览），以错误结束的会额外标注；
+- **用完整历史**：`olderMessages + messages`，翻页加载的更早记录也能进上下文；
+- **不再砍助手消息**：删掉「助手只留 400 字」的特殊裁剪（那会把上一轮的方案截断），
+  上下文预算 8→12 条、6000→12000 字。
+
+刻意没做：不读 `~/.pi/agent/sessions/*.jsonl`（客户端已有数据）、不做 token 估算、
+不做相关性排序、不改提示词规则——先把信息喂够再谈规则。
+
+### ✅ 端到端验证（5.7 秒）
+
+上下文含一条编译错误工具结果（`./gradlew assembleDebug` → `unresolved reference:
+enhancementEnabled at ChatScreen.kt:1841`），草稿「这个报错怎么修，先别改代码」，
+输出同时命中 `enhancementEnabled`、`ChatScreen.kt`、`unresolved reference`、`1841`，
+并保留了「只读检索、不要输出补丁」的约束。
+
+服务端 85 项测试通过（新增：工具结果进上下文、长助手回复不被砍）。
+
+---
+
 ## [1.8.12] - 2026-11-01
 
 ### 🐛 修复同一目录在工作区列表里分成两行（`D:\` 与 `D:/` 写法不一致）

@@ -11,11 +11,9 @@ const DEFAULTS = {
   // 手机端入口随之隐藏，原有聊天与标题功能不受影响。
   disableEnv: 'PROMPT_ENHANCE_DISABLED',
   maxDraftChars: 6000,
-  maxContextChars: 6000,
-  maxContextMessages: 8,
+  maxContextChars: 12000,
+  maxContextMessages: 12,
   maxContextMessageChars: 1200,
-  // 助手长回答只取开头（结论），把预算留给用户写下的约束（与客户端口径一致）
-  maxContextAssistantChars: 400,
   maxOutputChars: 10000,
   // 实测 WorkBuddy 风格的六段式输出落在 250~700 字，1600 token 足够且能早停，
   // 4096 只会拉长可能的生成时间与账单。
@@ -44,7 +42,6 @@ function readEnhancementConfig(env = process.env) {
     maxContextChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT', DEFAULTS.maxContextChars, 0, 60000),
     maxContextMessages: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_MESSAGES', DEFAULTS.maxContextMessages, 0, 50),
     maxContextMessageChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE', DEFAULTS.maxContextMessageChars, 100, 10000),
-    maxContextAssistantChars: readInt(env, 'PROMPT_ENHANCE_MAX_CONTEXT_ASSISTANT', DEFAULTS.maxContextAssistantChars, 100, 10000),
     maxOutputChars: readInt(env, 'PROMPT_ENHANCE_MAX_OUTPUT', DEFAULTS.maxOutputChars, 200, 40000),
     outputTokens: readInt(env, 'PROMPT_ENHANCE_OUTPUT_TOKENS', DEFAULTS.outputTokens, 128, 32000),
     timeoutMs: readInt(env, 'PROMPT_ENHANCE_TIMEOUT_MS', DEFAULTS.timeoutMs, 5000, 180000),

@@ -441,7 +441,9 @@ fun ChatScreen(
         var startedJob: Job? = null
         startedJob = coroutineScope.launch {
             try {
-                val contextMessages = buildPromptEnhancementContext(messages)
+                // 这里直接拼一次而不是引用下面的 conversation：那个 val 声明在渲染段之后，
+                // Kotlin 局部变量不能前向引用。拼接本身只是 List 相加，点击时算一次即可。
+                val contextMessages = buildPromptEnhancementContext(olderMessages + messages)
                 val result = onEnhancePrompt(
                     PromptEnhancementRequest(
                         requestId = requestId,
@@ -3940,18 +3942,38 @@ private fun openFileWithOtherApp(context: Context, file: File, mime: String): Bo
  * 只给「最近一段」而不是整段历史：增强是改写当前这句，历史只用来消解指代。
  * 裁剪预算由 [PromptEnhancementRules.selectContext] 统一决定（纯 JVM 可单测）。
  */
-private fun buildPromptEnhancementContext(messages: List<ChatItem>): List<PromptEnhancementContextMessage> {
+private fun buildPromptEnhancementContext(history: List<ChatItem>): List<PromptEnhancementContextMessage> {
     // 注意：takeLast 是 List/Iterable 的扩展，Sequence 上没有；
     // 先裁出最近一段再转成上下文，不要写成 asSequence().takeLast(..)。
-    val candidates = messages
-        .filter { it.role == MessageRole.USER || it.role == MessageRole.AGENT }
-        .filter { it.content.isNotBlank() }
-        .takeLast(20)
-        .map { item ->
-            PromptEnhancementContextMessage(
-                role = if (item.role == MessageRole.USER) "user" else "assistant",
-                text = item.content
-            )
+    val candidates = history
+        .takeLast(60)
+        .mapNotNull { item ->
+            when (item.role) {
+                MessageRole.USER ->
+                    PromptEnhancementContextMessage("user", item.content)
+                MessageRole.AGENT ->
+                    PromptEnhancementContextMessage("assistant", item.content)
+                // 工具结果：这才是「这个报错」「刚才改的那段」的真实出处。
+                // 一条会话里 toolResult 往往占一半以上，旧实现把它们全过滤掉了。
+                MessageRole.TOOL -> {
+                    val call = item.toolCall
+                    if (call == null) null else PromptEnhancementContextMessage(
+                        role = "tool",
+                        text = buildString {
+                            append('[').append(call.toolName).append(']')
+                            call.command?.trim()?.takeIf { it.isNotEmpty() }?.let { append(' ').append(it) }
+                            val body = call.output?.trim()?.takeIf { it.isNotEmpty() }
+                                ?: call.preview?.trim()?.takeIf { it.isNotEmpty() }
+                            if (body != null) append('
+').append(body)
+                            if (call.isError) append("
+(命令/工具以错误结束)")
+                        }
+                    )
+                }
+                else -> null
+            }
         }
+        .filter { it.text.isNotBlank() }
     return PromptEnhancementRules.selectContext(candidates)
 }

@@ -76,6 +76,56 @@ test('reports unchanged when the model keeps the draft intact', async () => {
   assert.equal(result.value.enhancedText, baseBody().draft.trim());
 });
 
+test('includes tool results so error output reaches the rewriter', async () => {
+  let captured = null;
+  const modelClient = {
+    async generate(input) {
+      const payload = parsePayload(input.userText);
+      captured = payload.context;
+      return { text: payload.draft, stopReason: 'stop', usage: null, provider: input.provider, modelId: input.modelId };
+    },
+  };
+  const service = serviceWith(modelClient);
+
+  const result = await service.enhance(baseBody({
+    draft: '帮我看看 @A.kt 这个报错',
+    context: [
+      { role: 'user', text: '刚才改了上传逻辑' },
+      {
+        role: 'tool',
+        text: '[bash] ./gradlew assembleRelease error: unresolved reference: enhancementEnabled',
+      },
+      { role: 'assistant', text: '编译报错了。' },
+    ],
+  }), { subject: 's-tool' });
+
+  assert.equal(result.ok, true);
+  assert.equal(captured.length, 3);
+  // 工具结果原样进入上下文（含命令与报错正文）
+  const tool = captured.find((m) => m.role === 'tool');
+  assert.ok(tool, JSON.stringify(captured));
+  assert.match(tool.text, /gradlew assembleRelease/);
+  assert.match(tool.text, /unresolved reference/);
+});
+
+test('keeps a long assistant reply instead of clipping it to a small quota', async () => {
+  let captured = null;
+  const modelClient = {
+    async generate(input) {
+      const payload = parsePayload(input.userText);
+      captured = payload.context;
+      return { text: payload.draft, stopReason: 'stop', usage: null, provider: input.provider, modelId: input.modelId };
+    },
+  };
+  const service = serviceWith(modelClient);
+  // 一段 900 字的助手方案：旧实现会砍到 400 字，把后半段的关键决策丢掉
+  const plan = '方案第 ' + 'z'.repeat(890) + ' 条：用 Mutex 保护并发计数';
+  await service.enhance(baseBody({ context: [{ role: 'assistant', text: plan }] }), { subject: 's-plan' });
+  const asst = captured.find((m) => m.role === 'assistant');
+  assert.ok(asst.text.length > 800, `assistant length ${asst.text.length}`);
+  assert.match(asst.text, /Mutex/);
+});
+
 test('rejects malformed or unsafe input without calling the model', async () => {
   const modelClient = fakeModelClient();
   const service = serviceWith(modelClient);
@@ -232,36 +282,6 @@ test('reports unavailable when disabled', async () => {
   assert.equal(disabled.capability().available, false);
   const result = await disabled.enhance(baseBody(), { subject: 's' });
   assert.equal(result.code, 'ENHANCEMENT_UNAVAILABLE');
-});
-
-test('clips assistant replies harder so user constraints survive the budget', async () => {
-  let captured = null;
-  const modelClient = {
-    async generate(input) {
-      const payload = parsePayload(input.userText);
-      captured = payload.context;
-      // 必须原样带回 draft（含受保护占位符），否则会被判 INVALID_OUTPUT
-      return { text: payload.draft, stopReason: 'stop', usage: null, provider: input.provider, modelId: input.modelId };
-    },
-  };
-  const service = serviceWith(modelClient, {
-    PROMPT_ENHANCE_MAX_CONTEXT: '900',
-    PROMPT_ENHANCE_MAX_CONTEXT_MESSAGE: '1200',
-    PROMPT_ENHANCE_MAX_CONTEXT_ASSISTANT: '400',
-  });
-
-  const result = await service.enhance(baseBody({
-    context: [
-      { role: 'user', text: '先给建议别改代码' },
-      { role: 'assistant', text: 'y'.repeat(5000) },
-    ],
-  }), { subject: 'subject-1' });
-
-  assert.equal(result.ok, true);
-  // 用户那句约束必须还在（不能被助手的长回答挤掉）
-  assert.ok(captured.some((m) => m.role === 'user' && m.text === '先给建议别改代码'), JSON.stringify(captured));
-  const assistant = captured.find((m) => m.role === 'assistant');
-  assert.ok(assistant.text.length <= 401, `assistant clipped to ${assistant.text.length}`);
 });
 
 test('returns TIMEOUT on its own even when the provider ignores the abort signal', async () => {

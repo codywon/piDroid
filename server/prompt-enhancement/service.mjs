@@ -69,7 +69,8 @@ function fitContextBudget(rawContext, config) {
   const valid = [];
   for (const item of rawContext) {
     if (!isPlainObject(item)) continue;
-    const role = item.role === 'user' || item.role === 'assistant' ? item.role : null;
+    // tool = 工具执行结果（报错、读到的代码、命令输出），是「这个报错」的真实出处
+    const role = item.role === 'user' || item.role === 'assistant' || item.role === 'tool' ? item.role : null;
     if (!role || typeof item.text !== 'string') continue;
     const text = item.text.trim();
     if (!text) continue;
@@ -80,15 +81,13 @@ function fitContextBudget(rawContext, config) {
   const recent = valid.slice(-config.maxContextMessages);
 
   // 3. 从最新往最早累计预算（最近的对话最关键，优先保留）
-  // 按角色分档：用户写的是意图与约束，助手长回答只需开头结论。
-  // 与客户端 PromptEnhancementRules.selectContext 保持一致的口径。
+  // 与客户端 PromptEnhancementRules.selectContext 同一口径：一律按单条上限裁剪，
+  // 不再给助手消息单独的更小配额（那会把上一轮的方案/代码截断）。
   const picked = [];
   let totalChars = 0;
   for (let i = recent.length - 1; i >= 0; i--) {
     const item = recent[i];
-    const budget = item.role === 'assistant'
-      ? Math.min(config.maxContextMessageChars, config.maxContextAssistantChars)
-      : config.maxContextMessageChars;
+    const budget = config.maxContextMessageChars;
     // 单条超长自动平滑截断，绝不报错
     const clippedText = clipCodePoints(item.text, budget);
     const chars = codePoints(clippedText);

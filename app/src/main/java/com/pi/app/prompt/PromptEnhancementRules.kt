@@ -112,13 +112,16 @@ object PromptEnhancementCapabilityParser {
 
 object PromptEnhancementRules {
     const val MAX_DRAFT_CHARS = 6000
-    // 上下文只用来消解「它 / 那个接口 / 刚才那个报错」这类指代，不是让模型重读整段对话：
-    // 预算越大延迟越高（实测 12000 字比 6000 字慢 1~2 秒），而消解指代并不需要那么多。
-    const val MAX_CONTEXT_MESSAGES = 8
+    /**
+     * 参考上下文的规模。
+     *
+     * 只用来消解「它 / 那个接口 / 刚才那个报错」这类指代，不要求模型重读整段对话，
+     * 但必须覆盖到**工具结果**：实测一个 230 条的会话里 toolResult 占 119 条，
+     * 用户说的「这个报错」「刚才改的那段」几乎都在里面。
+     */
+    const val MAX_CONTEXT_MESSAGES = 12
     const val MAX_CONTEXT_MESSAGE_CHARS = 1200
-    const val MAX_CONTEXT_TOTAL_CHARS = 6000
-    /** 助手的长回答只取开头（结论/结论性描述），把预算留给用户写下的约束。 */
-    const val MAX_CONTEXT_ASSISTANT_CHARS = 400
+    const val MAX_CONTEXT_TOTAL_CHARS = 12000
 
     fun modelKey(provider: String, modelId: String): String = "${provider.trim()}:${modelId.trim()}"
 
@@ -195,8 +198,7 @@ object PromptEnhancementRules {
         candidates: List<PromptEnhancementContextMessage>,
         maxMessages: Int = MAX_CONTEXT_MESSAGES,
         maxTotalChars: Int = MAX_CONTEXT_TOTAL_CHARS,
-        maxPerMessageChars: Int = MAX_CONTEXT_MESSAGE_CHARS,
-        maxAssistantChars: Int = MAX_CONTEXT_ASSISTANT_CHARS
+        maxPerMessageChars: Int = MAX_CONTEXT_MESSAGE_CHARS
     ): List<PromptEnhancementContextMessage> {
         if (maxMessages <= 0 || maxTotalChars <= 0) return emptyList()
         val picked = ArrayDeque<PromptEnhancementContextMessage>()
@@ -205,13 +207,8 @@ object PromptEnhancementRules {
             val candidate = candidates[index]
             val text = candidate.text.trim()
             if (text.isEmpty()) continue
-            if (candidate.role != "user" && candidate.role != "assistant") continue
-            val budget = if (candidate.role == "assistant") {
-                minOf(maxPerMessageChars, maxAssistantChars)
-            } else {
-                maxPerMessageChars
-            }
-            val clipped = clip(text, budget)
+            if (!candidate.role.isContextRole()) continue
+            val clipped = clip(text, maxPerMessageChars)
             val cost = clipped.codePointCount(0, clipped.length)
             if (used + cost > maxTotalChars) break
             used += cost
@@ -220,6 +217,9 @@ object PromptEnhancementRules {
         }
         return picked.toList()
     }
+
+    /** 允许进入参考上下文的角色：对话双方 + 工具结果。 */
+    fun String.isContextRole(): Boolean = this == "user" || this == "assistant" || this == "tool"
 
     private fun clip(text: String, maxChars: Int): String {
         if (maxChars <= 0) return ""
