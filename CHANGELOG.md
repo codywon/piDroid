@@ -37,6 +37,30 @@ pi-web（0.12.2 / 0.13.0）与 pi SDK 都没有这条事件与这个路由，点
 覆盖预设反推、`powershell` 归一、非内置工具不参与判定、未知值回落、
 以及 `PUT /api/tools/settings` 的「一次一项」报文与「写入裸值 / 读回包装对象」的形状差异。
 
+### 🐛 侧边栏「分叉 / Clone」恢复可用：不再 415
+
+侧边栏长按分叉必然失败，弹的是 `分叉失败：Server HTTP 415: {"error":"Content-Type must be
+application/json","code":"request-denied"}`。
+
+**原因**：pi-web 的 `POST /api/sessions/[id]/fork` 在解析 `params` 之前就先跑
+`hasJsonContentType()`（`lib/request-security.ts`），只要请求头不是 `application/json`
+或 `application/*+json` 就直接 415 —— 它其实**根本不读 body**。而 App 这边发的是
+`"".toRequestBody(null)`：空 body 且不设 Content-Type，于是被稳稳拒在门口。
+本机实测对 30141 验证过：不带 Content-Type → 415；改成 `application/json` + `{}` →
+越过守卫进到业务层（返回 404 `Session not found`）。
+
+现在与 pi-web 前端一致：`Content-Type: application/json` + body `{}`。
+
+**顺带对齐响应结构**：0.13 起返回的是 `{ sessionId, session }`，新会话的 `path` / `name`
+已经挪进 `session`（SessionInfo）里，顶层没有了。旧代码只读顶层 → 两者恒为 null，
+分叉出来的会话在手机上被命名成「源标题 · 分叉」，刷新后又被服务端的「源标题 · 3f9c」
+覆盖，看着像丢了东西。解析现在优先读 `session`、顶层做兜底（兼容老网关），并抽成纯逻辑
+`ForkSessionResponseParsing`，附 6 组 JVM 单测（新形状 / 旧形状 / 无名源会话 / 空串回退 /
+缺 sessionId / 非对象响应）。
+
+消息级「新会话」分叉（`POST /api/agent/{id}` `{type:"fork"}`）不受影响：那条路由不校验
+Content-Type，本来就发 JSON。
+
 ## [1.8.22] - 2026-11-01
 
 ### ⚡ 预算改为「效果优先」：上下文 12000→40000 字，输出 2400→4096 token
@@ -115,30 +139,6 @@ pi-web（0.12.2 / 0.13.0）与 pi SDK 都没有这条事件与这个路由，点
 扫码取景与大图查看器的沉浸深色层（8）——它们不随主题变化，理由已写进 `ThemePalette` 注释。
 
 `ColorContrastTest` 增至 16 组：新增 info / pin / 成功按钮前景 / 用户气泡四项断言。
-
-### 🐛 侧边栏「分叉 / Clone」恢复可用：不再 415
-
-侧边栏长按分叉必然失败，弹的是 `分叉失败：Server HTTP 415: {"error":"Content-Type must be
-application/json","code":"request-denied"}`。
-
-**原因**：pi-web 的 `POST /api/sessions/[id]/fork` 在解析 `params` 之前就先跑
-`hasJsonContentType()`（`lib/request-security.ts`），只要请求头不是 `application/json`
-或 `application/*+json` 就直接 415 —— 它其实**根本不读 body**。而 App 这边发的是
-`"".toRequestBody(null)`：空 body 且不设 Content-Type，于是被稳稳拒在门口。
-本机实测对 30141 验证过：不带 Content-Type → 415；改成 `application/json` + `{}` →
-越过守卫进到业务层（返回 404 `Session not found`）。
-
-现在与 pi-web 前端一致：`Content-Type: application/json` + body `{}`。
-
-**顺带对齐响应结构**：0.13 起返回的是 `{ sessionId, session }`，新会话的 `path` / `name`
-已经挪进 `session`（SessionInfo）里，顶层没有了。旧代码只读顶层 → 两者恒为 null，
-分叉出来的会话在手机上被命名成「源标题 · 分叉」，刷新后又被服务端的「源标题 · 3f9c」
-覆盖，看着像丢了东西。解析现在优先读 `session`、顶层做兜底（兼容老网关），并抽成纯逻辑
-`ForkSessionResponseParsing`，附 6 组 JVM 单测（新形状 / 旧形状 / 无名源会话 / 空串回退 /
-缺 sessionId / 非对象响应）。
-
-消息级「新会话」分叉（`POST /api/agent/{id}` `{type:"fork"}`）不受影响：那条路由不校验
-Content-Type，本来就发 JSON。
 
 ## [1.8.20] - 2026-11-01
 
@@ -1146,7 +1146,6 @@ body 不得用 vh 抬下限），高度夹紧用例同步到 560。单测合计 
 **效果**：绝大多数「瞬间断一下」的请求用户不再感知（重试就回来了）；真正不通的会在 ~12–24s 内
 给出一句能照着做的提示，而不是几十秒的无尽转圈。
 
-
 ## [1.7.64] - 2026-10-30
 
 ### 🎨 修复 SVG 架构图全变黑块：注入 Claude.ai / pi-generative-ui 完整设计系统色阶（深浅色自适应）
@@ -1241,7 +1240,6 @@ body 不得用 vh 抬下限），高度夹紧用例同步到 560。单测合计 
 - 新增 `SessionModelRefParser`（纯逻辑，+8 项校验）：只半边身份（缺 provider 或 id）一律拒识，不开半更新。
 - `SessionModelRefParserTest` 覆盖真实探针 JSON、PC 侧换供应商、`id` 兼容字段、垃圾响应。
 
-
 ## [1.7.61] - 2026-10-30
 
 ### 🐛 密钥失效不再是「静默 401 刷屏」：停轮询 + 明确提示 + 一条机器可读的 401 标记
@@ -1303,7 +1301,6 @@ App 手里还是上一轮的值，而各条轮询（`/api/agent/running` 每 2.5
 **工程**
 
 - 新增 `SessionModelIdentityCodecTest`（7 项）；纯逻辑校验（含真实会话数据同构用例）全绿。
-
 
 ## [1.7.59] - 2026-10-30
 
