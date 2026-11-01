@@ -106,16 +106,20 @@ enum class AppTheme(
         get() = Color(if (isDark) ThemePalette.TextDarkSecondary else ThemePalette.TextLightSecondary)
 
     /**
-     * 弱化说明文本（时间戳、消息条数、工作区名等，全项目 256 处调用点）。
+     * 弱化说明文本（时间戳、消息条数、工作区名等，全项目 254 处调用点）。
      *
      * 修复前后实测（vs `surfaceContainerLow`）：
-     * 浅色 `#8C959F` 3.04:1 → `#656D76` **5.25:1**
-     * 深色 `#484F58` 2.08:1 → `#7D8590` **4.59:1**
+     * 浅色 `#8C959F` 3.04:1 → `#7D8590` **3.73:1**
+     * 深色 `#484F58` 2.09:1 → `#6E7681` **3.77:1**
      *
-     * 约束：只允许画在 `background` / `surfaceContainerLow` 上。
-     * 在 `surfaceContainerHigh`（嵌套胶囊/徽章底）上请改用 `textPrimary`——
-     * 实测 muted 在该底色上仅 3.3~3.9:1，任何"再调暗一点"的取法都会让它与
-     * [textSecondary] 撞值，把三级文字梯度塌成两级。
+     * 为什么停在 ~3.7:1 而不是 AA 正文的 4.5:1：
+     * 这一级是元数据（时间戳、条数）而非正文，且**层次分离度**比单点达标更重要——
+     * 推到 4.5:1 后它与 [textSecondary] 几乎同亮，分离度从 2.10x/2.69x 塌到 1.22x/1.21x，
+     * 整屏会变吵、变平（1.8.19 首版即如此，被用户判为"排版不如以前"）。现为 1.71x/1.49x。
+     *
+     * 约束：优先画在 `background` / `surfaceContainerLow` 上。
+     * `surfaceContainerHigh`（嵌套胶囊/徽章底）实测只有 3.15（浅）/ 2.66（深），
+     * 那里请改用 `textPrimary`。
      */
     val textMuted: Color
         get() = Color(if (isDark) ThemePalette.TextDarkMuted else ThemePalette.TextLightMuted)

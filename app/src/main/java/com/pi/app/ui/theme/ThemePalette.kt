@@ -23,8 +23,15 @@ object ThemePalette {
     val LightSurfaceContainer: Int = 0xFFF3F6F9.toInt()
     val LightSurfaceHigh: Int = 0xFFEAECEF.toInt()
 
-    /** 发丝线 / 分割线。原 `#E1E6EB` 与卡片只有 1.26:1（等于没有边框），改为 1.60:1 */
-    val LightOutline: Int = 0xFFC6CDD5.toInt()
+    /**
+     * 发丝线 / 分割线（装饰性）。保持原值 1.26:1。
+     *
+     * WCAG 1.4.11 约束的是「理解控件所必需」的边界（输入框、可点击元件）；卡片靠背景落差
+     * 与排版区分，这条线不在其范围内，主流体系也都刻意很轻：Primer 1.45:1、Tailwind
+     * slate-200 1.23:1、M3 outlineVariant 1.21:1、Apple systemGray4 1.52:1。
+     * 1.8.19 首版曾按「可见性门槛」提到 #C6CDD5（1.60:1），156 个调用点一起变粗重、观感倒退，已回退。
+     */
+    val LightOutline: Int = 0xFFE1E6EB.toInt()
 
     val LightPreviewFrom: Int = 0xFF0969DA.toInt()
     val LightPreviewTo: Int = 0xFF54A0FF.toInt()
@@ -78,8 +85,8 @@ object ThemePalette {
     val DarkSlateSurfaceContainer: Int = 0xFF21262D.toInt()
     val DarkSlateSurfaceHigh: Int = 0xFF30363D.toInt()
 
-    /** 原 `#30363D` 与卡片仅 1.42:1，改为 1.76:1 */
-    val DarkSlateOutline: Int = 0xFF3D444D.toInt()
+    /** 发丝线 / 分割线（装饰性）。保持原值 1.42:1，理由同 [LightOutline] */
+    val DarkSlateOutline: Int = 0xFF30363D.toInt()
     val DarkSlatePreviewFrom: Int = 0xFF58A6FF.toInt()
     val DarkSlatePreviewTo: Int = 0xFF1F6FEB.toInt()
 
@@ -89,18 +96,23 @@ object ThemePalette {
     val TextLightPrimary: Int = 0xFF1F2328.toInt()
     val TextLightSecondary: Int = 0xFF57606A.toInt()
 
-    /** 原 `#8C959F` 与白卡仅 3.04:1（低于 AA 4.5），改为 5.25:1 */
-    val TextLightMuted: Int = 0xFF656D76.toInt()
+    /**
+     * 原 `#8C959F` 与白卡仅 3.04:1。取 3.73:1 而不是 AA 正文的 4.5:1：
+     * 这一级承载时间戳 / 条数一类元数据，不是正文；推到 4.5:1 会与 [TextLightSecondary]（6.39:1）
+     * 几乎同亮，层次分离度从 2.10x 塌到 1.22x，整屏会变吵。现 1.71x 仍能一眼分出主次
+     * （Apple 的 tertiaryLabel 同样故意低于 AA）。
+     */
+    val TextLightMuted: Int = 0xFF7D8590.toInt()
 
     val TextDarkPrimary: Int = 0xFFF0F6FC.toInt()
     val TextDarkSecondary: Int = 0xFF8B949E.toInt()
 
     /**
-     * 原 `#484F58` 与深色卡片仅 2.08:1（几乎看不见）。
-     * 不能直接复用 `#8B949E`（那就是 textSecondary，三级梯度会塌成两级），
-     * 取 Primer dark `fg.muted` = 4.59~4.64:1，与 secondary 仍可区分。
+     * 原 `#484F58` 与深色卡片仅 2.09:1（几乎看不见）。取 3.77:1：
+     * 既不能复用 `#8B949E`（那是 textSecondary），也不推到 4.5:1
+     * （深色层次分离度会从 2.69x 塌到 1.21x）。现 1.49x，仍能看出主次。
      */
-    val TextDarkMuted: Int = 0xFF7D8590.toInt()
+    val TextDarkMuted: Int = 0xFF6E7681.toInt()
 
     // ══════════════════════════════════════════════════════════════
     // 语义色：Success / Warning（M3 无对应槽位，故只在本层定义一次）

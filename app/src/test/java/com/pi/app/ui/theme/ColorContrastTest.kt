@@ -10,10 +10,16 @@ import org.junit.Test
  * 与生产代码（`AppTheme.onPrimary` 等）用的是**同一份实现**，因此这里绿了，
  * 生产侧就不可能出现「手写 4.63、实测 3.19」那种偏差。
  *
- * 阈值依据 WCAG 2.1：
- * - 1.4.3 正文 4.5:1（大字 3:1）
- * - 1.4.11 非文本界面元素（可点击控件边界/图标）3:1
- * - 装饰性发丝线不属 1.4.11 范围，但仍要求 >= 1.5:1 才有可见性
+ * 阈值依据 WCAG 2.1，外加一条 WCAG 没写但设计必须有的：
+ * - 1.4.3 正文 4.5:1（大字 3:1）           → textPrimary / textSecondary
+ * - 1.4.11 非文本界面元素 3:1              → 星标、图标、弱化元数据、语义状态色
+ * - 装饰性发丝线不属 1.4.11               → 只断言「可见但不抢戏」区间
+ * - **层次分离度**（本文件自定义）：相邻两级文字的对比度倍数
+ *   一级/二级 >= 1.6x、二级/弱化 >= 1.45x
+ *
+ * 最后一条是本项目踩过的坑：每个 Token 单独都"达标"，但把 254 处弱化文本推到 4.5:1 后，
+ * 它与二级文本几乎同亮（分离度 2.10x -> 1.22x），整屏变吵、层次消失。
+ * 所以这里必须同时锁「绝对可读」与「相对分离」。
  */
 class ColorContrastTest {
 
@@ -166,45 +172,68 @@ class ColorContrastTest {
     }
 
     /**
-     * ④ 弱化文本：只允许 background / surfaceContainerLow。
-     * `surfaceContainerHigh` 是明确禁止的组合（实测 3.3~3.9:1），见 AppTheme.textMuted 的注释。
+     * ④ 弱化文本：元数据档，要求 >= 3.0（AA 大字 / 非文本档）。
+     *
+     * 不要求 4.5：这一级是时间戳、条数一类元数据；硬推到 4.5 会撞上二级文本，
+     * 把层次分离度压到 1.2x（详见 [textTiersKeepSeparation]）。
+     * `surfaceContainerHigh` 仍不在允许范围内（实测 3.15 浅 / 2.66 深）。
      */
     @Test
-    fun textMutedMeetsAaOnAllowedSurfaces() {
+    fun textMutedStaysReadable() {
         allSchemes.forEach { s ->
-            assertAtLeast("${s.name}.textMuted/background", s.textMuted, s.background, 4.5)
-            assertAtLeast("${s.name}.textMuted/surfaceContainerLow", s.textMuted, s.surfaceLow, 4.5)
+            assertAtLeast("${s.name}.textMuted/background", s.textMuted, s.background, 3.0)
+            assertAtLeast("${s.name}.textMuted/surfaceContainerLow", s.textMuted, s.surfaceLow, 3.0)
         }
     }
 
-    /** ⑤ 三级文字必须互相可区分：否则"弱化"语义塌陷（深色曾把 muted 设成与 secondary 同值） */
+    /**
+     * ⑤ 文字层次必须既"递减"又"分得开"。
+     *
+     * 1.8.19 首版只断言了单调递减，于是"primary 15.8 / secondary 6.4 / muted 5.3"也过了——
+     * 数值上合法，观感上是一坨。现在加上**最小分离倍数**：二级/弱化 >= 1.45x。
+     * （深色主题受卡片亮度限制，实测 1.49x，故阈值取 1.45 而非 1.6。）
+     */
     @Test
-    fun textTiersAreDistinguishable() {
+    fun textTiersKeepSeparation() {
         allSchemes.forEach { s ->
             assertTrue(
                 "${s.name}: textMuted 与 textSecondary 同值，三级文字梯度塌成两级",
                 s.textMuted != s.textSecondary
             )
-            assertTrue(
-                "${s.name}: textSecondary 与 textPrimary 同值",
-                s.textSecondary != s.textPrimary
-            )
-            // 顺序：primary 比 secondary 更亮/更暗，但两者的对比度必须构成递减关系
             val primaryContrast = ArgbContrast.contrastRatio(s.textPrimary, s.surfaceLow)
             val secondaryContrast = ArgbContrast.contrastRatio(s.textSecondary, s.surfaceLow)
             val mutedContrast = ArgbContrast.contrastRatio(s.textMuted, s.surfaceLow)
+
+            val primaryToSecondary = primaryContrast / secondaryContrast
+            val secondaryToMuted = secondaryContrast / mutedContrast
+
             assertTrue(
-                "${s.name}: 文字梯度不是递减（primary=$primaryContrast secondary=$secondaryContrast muted=$mutedContrast）",
-                primaryContrast > secondaryContrast && secondaryContrast > mutedContrast
+                "${s.name}: 一级/二级 分离度 ${fmt(primaryToSecondary)}x 低于 1.60x" +
+                    " (primary=${fmt(primaryContrast)} secondary=${fmt(secondaryContrast)})",
+                primaryToSecondary >= 1.6
+            )
+            assertTrue(
+                "${s.name}: 二级/弱化 分离度 ${fmt(secondaryToMuted)}x 低于 1.45x，" +
+                    "弱化文本已被推到与二级同亮 (secondary=${fmt(secondaryContrast)} muted=${fmt(mutedContrast)})",
+                secondaryToMuted >= 1.45
             )
         }
     }
 
-    /** ⑥ 发丝线 / 卡片边框：装饰性但必须有可见性 */
+    /**
+     * ⑥ 发丝线 / 卡片边框：装饰性，锁「可见但不抢戏」区间 [1.15, 2.0]。
+     *
+     * 上界是 1.8.19 首版的教训：把它当控件边界要求 1.5:1+ 后，156 个调用点一起变粗重，
+     * 观感直接被判为"线条加深、排版变丑"。卡片靠背景落差区分，不需要抢眼的描边。
+     */
     @Test
-    fun outlineIsVisibleAgainstCard() {
+    fun outlineStaysLightButVisible() {
         allSchemes.forEach { s ->
-            assertAtLeast("${s.name}.outline/surfaceContainerLow", s.outline, s.surfaceLow, 1.5)
+            val ratio = ArgbContrast.contrastRatio(s.outline, s.surfaceLow)
+            assertTrue(
+                "${s.name}.outline 与卡片对比度 ${fmt(ratio)}:1 超出 [1.15, 2.00] 区间（太隐形或太抢戏）",
+                ratio >= 1.15 && ratio <= 2.0
+            )
         }
     }
 
