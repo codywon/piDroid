@@ -590,11 +590,13 @@ private fun RenderAstBlockNode(
             if (calloutMatch != null) {
                 val calloutType = calloutMatch.groupValues[1].uppercase(Locale.ROOT)
                 val (accentColor, labelZh, iconVec) = when (calloutType) {
-                    "TIP" -> Triple(Color(0xFF16A34A), "提示 (Tip)", Icons.Default.Lightbulb)
-                    "IMPORTANT" -> Triple(Color(0xFF8B5CF6), "重要 (Important)", Icons.Default.PriorityHigh)
-                    "WARNING" -> Triple(Color(0xFFD97706), "警告 (Warning)", Icons.Default.Warning)
-                    "CAUTION" -> Triple(Color(0xFFDC2626), "危险 (Caution)", Icons.Default.ErrorOutline)
-                    else -> Triple(Color(0xFF2563EB), "说明 (Note)", Icons.Default.Info)
+                    // 5 种强调色原本不分深浅，深色模式下只有 3.0~3.3:1。改走语义色：
+                    // TIP 5.02/9.93、IMPORTANT 5.70/6.36、WARNING 7.09/10.36、CAUTION 6.47/6.25、NOTE 5.19/6.85
+                    "TIP" -> Triple(theme.success, "提示 (Tip)", Icons.Default.Lightbulb)
+                    "IMPORTANT" -> Triple(theme.featureThinking, "重要 (Important)", Icons.Default.PriorityHigh)
+                    "WARNING" -> Triple(theme.warning, "警告 (Warning)", Icons.Default.Warning)
+                    "CAUTION" -> Triple(MaterialTheme.colorScheme.error, "危险 (Caution)", Icons.Default.ErrorOutline)
+                    else -> Triple(theme.primary, "说明 (Note)", Icons.Default.Info)
                 }
                 Surface(
                     shape = RoundedCornerShape(8.dp),
@@ -681,7 +683,7 @@ private fun RenderAstBlockNode(
                                 Icon(
                                     imageVector = if (isTaskChecked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
                                     contentDescription = null,
-                                    tint = if (isTaskChecked) Color(0xFF16A34A) else theme.textMuted,
+                                    tint = if (isTaskChecked) theme.success else theme.textMuted,
                                     modifier = Modifier
                                         .padding(top = 2.5.dp, start = 2.dp, end = 7.dp)
                                         .size(15.dp)
@@ -1562,9 +1564,9 @@ private fun FlowNodeChip(
     modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
-    val bgColor = if (isDecision) Color(0xFFF59E0B).copy(alpha = 0.14f) else theme.surfaceContainer
-    val borderColor = if (isDecision) Color(0xFFF59E0B).copy(alpha = 0.55f) else theme.primary.copy(alpha = 0.4f)
-    val textColor = if (isDecision) (if (theme.isDark) Color(0xFFFBBF24) else Color(0xFFB45309)) else theme.textPrimary
+    val bgColor = if (isDecision) theme.warningContainer else theme.surfaceContainer
+    val borderColor = if (isDecision) theme.warning.copy(alpha = 0.55f) else theme.primary.copy(alpha = 0.4f)
+    val textColor = if (isDecision) theme.warning else theme.textPrimary
 
     Surface(
         shape = RoundedCornerShape(if (isDecision) 12.dp else 7.dp),
@@ -1839,13 +1841,13 @@ private fun DiffCodeBlockCard(code: String, language: String) {
                     // 浅色用 Primer 的实底/实字（4.81 / 4.67 / 4.56:1），深色保持原有的半透明叠色
                     val (bgColor, txtColor) = when {
                         line.startsWith("+") && !line.startsWith("+++") ->
-                            if (theme.isDark) Color(ThemePalette.DarkSuccess).copy(alpha = 0.16f) to Color(0xFF86EFAC)
+                            if (theme.isDark) Color(ThemePalette.DarkSuccess).copy(alpha = 0.16f) to Color(ThemePalette.DiffAddFgDark)
                             else Color(ThemePalette.DiffAddBgLight) to Color(ThemePalette.DiffAddFgLight)
                         line.startsWith("-") && !line.startsWith("---") ->
-                            if (theme.isDark) Color(ThemePalette.DarkError).copy(alpha = 0.16f) to Color(0xFFFCA5A5)
+                            if (theme.isDark) Color(ThemePalette.DarkError).copy(alpha = 0.16f) to Color(ThemePalette.DiffDelFgDark)
                             else Color(ThemePalette.DiffDelBgLight) to Color(ThemePalette.DiffDelFgLight)
                         line.startsWith("@@") ->
-                            if (theme.isDark) Color(0xFF3B82F6).copy(alpha = 0.15f) to Color(0xFF93C5FD)
+                            if (theme.isDark) Color(ThemePalette.DiffHunkBaseDark).copy(alpha = 0.15f) to Color(ThemePalette.DiffHunkFgDark)
                             else Color(ThemePalette.DiffHunkBgLight) to Color(ThemePalette.DiffHunkFgLight)
                         else -> Color.Transparent to bodyFg
                     }

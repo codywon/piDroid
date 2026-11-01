@@ -281,7 +281,7 @@ fun SettingsStatusDot(active: Boolean, modifier: Modifier = Modifier) {
         modifier = modifier
             .size(7.dp)
             .background(
-                color = if (active) Color(0xFF2EA043) else theme.textMuted,
+                color = if (active) theme.success else theme.textMuted,
                 shape = CircleShape
             )
     )

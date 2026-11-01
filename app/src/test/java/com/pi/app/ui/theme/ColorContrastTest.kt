@@ -27,6 +27,7 @@ class ColorContrastTest {
         val name: String,
         val isDark: Boolean,
         val primary: Int,
+        val primaryContainer: Int,
         val background: Int,
         val surfaceLow: Int,
         val surfaceContainer: Int,
@@ -45,13 +46,17 @@ class ColorContrastTest {
         val onErrorContainer: Int,
         val starActive: Int,
         val starInactive: Int,
-        val featureThinking: Int
+        val featureThinking: Int,
+        val info: Int,
+        val pinActive: Int,
+        val onSuccess: Int
     )
 
     private val lightScheme = Scheme(
         name = "LIGHT_PAPER",
         isDark = false,
         primary = ThemePalette.LightPrimary,
+        primaryContainer = ThemePalette.LightPrimaryContainer,
         background = ThemePalette.LightBackground,
         surfaceLow = ThemePalette.LightSurfaceLow,
         surfaceContainer = ThemePalette.LightSurfaceContainer,
@@ -70,12 +75,16 @@ class ColorContrastTest {
         onErrorContainer = ThemePalette.LightOnErrorContainer,
         starActive = ThemePalette.LightStarActive,
         starInactive = ThemePalette.LightStarInactive,
-        featureThinking = ThemePalette.LightFeatureThinking
+        featureThinking = ThemePalette.LightFeatureThinking,
+        info = ThemePalette.LightInfo,
+        pinActive = ThemePalette.LightPinActive,
+        onSuccess = ArgbContrast.bestOn(ThemePalette.LightSuccess)
     )
 
     private fun darkScheme(
         name: String,
         primary: Int,
+        primaryContainer: Int,
         background: Int,
         surfaceLow: Int,
         surfaceContainer: Int,
@@ -85,6 +94,7 @@ class ColorContrastTest {
         name = name,
         isDark = true,
         primary = primary,
+        primaryContainer = primaryContainer,
         background = background,
         surfaceLow = surfaceLow,
         surfaceContainer = surfaceContainer,
@@ -103,21 +113,24 @@ class ColorContrastTest {
         onErrorContainer = ThemePalette.DarkOnErrorContainer,
         starActive = ThemePalette.DarkStarActive,
         starInactive = ThemePalette.DarkStarInactive,
-        featureThinking = ThemePalette.DarkFeatureThinking
+        featureThinking = ThemePalette.DarkFeatureThinking,
+        info = ThemePalette.DarkInfo,
+        pinActive = ThemePalette.DarkPinActive,
+        onSuccess = ArgbContrast.bestOn(ThemePalette.DarkSuccess)
     )
 
     private val allSchemes: List<Scheme> = listOf(
         lightScheme,
-        darkScheme("ICE_BLUE", ThemePalette.IceBluePrimary, ThemePalette.IceBlueBackground,
+        darkScheme("ICE_BLUE", ThemePalette.IceBluePrimary, ThemePalette.IceBluePrimaryContainer, ThemePalette.IceBlueBackground,
             ThemePalette.IceBlueSurfaceLow, ThemePalette.IceBlueSurfaceContainer,
             ThemePalette.IceBlueSurfaceHigh, ThemePalette.IceBlueOutline),
-        darkScheme("EMERALD", ThemePalette.EmeraldPrimary, ThemePalette.EmeraldBackground,
+        darkScheme("EMERALD", ThemePalette.EmeraldPrimary, ThemePalette.EmeraldPrimaryContainer, ThemePalette.EmeraldBackground,
             ThemePalette.EmeraldSurfaceLow, ThemePalette.EmeraldSurfaceContainer,
             ThemePalette.EmeraldSurfaceHigh, ThemePalette.EmeraldOutline),
-        darkScheme("AMBER", ThemePalette.AmberPrimary, ThemePalette.AmberBackground,
+        darkScheme("AMBER", ThemePalette.AmberPrimary, ThemePalette.AmberPrimaryContainer, ThemePalette.AmberBackground,
             ThemePalette.AmberSurfaceLow, ThemePalette.AmberSurfaceContainer,
             ThemePalette.AmberSurfaceHigh, ThemePalette.AmberOutline),
-        darkScheme("DARK_SLATE", ThemePalette.DarkSlatePrimary, ThemePalette.DarkSlateBackground,
+        darkScheme("DARK_SLATE", ThemePalette.DarkSlatePrimary, ThemePalette.DarkSlatePrimaryContainer, ThemePalette.DarkSlateBackground,
             ThemePalette.DarkSlateSurfaceLow, ThemePalette.DarkSlateSurfaceContainer,
             ThemePalette.DarkSlateSurfaceHigh, ThemePalette.DarkSlateOutline)
     )
@@ -314,6 +327,21 @@ class ColorContrastTest {
             "lag" to ThemePalette.TpsLag
         ).forEach { (name, bg) ->
             assertAtLeast("tps.$name", ArgbContrast.bestOn(bg), bg, 4.5)
+        }
+    }
+
+    /** ⑯ 未读 info / 置顶 pin / 成功按钮前景 / 用户气泡 */
+    @Test
+    fun infoPinSuccessAndBubbleMeetContrast() {
+        allSchemes.forEach { s ->
+            // info 原裸写 #0891B2，白底仅 3.68:1
+            assertAtLeast("${s.name}.info/surfaceContainerLow", s.info, s.surfaceLow, 4.5)
+            // pin 是非文本图标，WCAG 1.4.11 要求 3:1（原 #EAB308 白底仅 1.92:1）
+            assertAtLeast("${s.name}.pinActive/surfaceContainerLow", s.pinActive, s.surfaceLow, 3.0)
+            // 绿色通过按钮上的前景：浅色白字 5.02 / 深色深墨 11.40
+            assertAtLeast("${s.name}.onSuccess/success", s.onSuccess, s.success, 4.5)
+            // 用户气泡改用 primaryContainer 后，textPrimary 必须仍然可读
+            assertAtLeast("${s.name}.textPrimary/primaryContainer", s.textPrimary, s.primaryContainer, 4.5)
         }
     }
 

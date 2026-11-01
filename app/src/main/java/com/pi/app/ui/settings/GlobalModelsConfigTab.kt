@@ -661,7 +661,7 @@ fun GlobalModelsConfigTab(
                                         Text(
                                             text = keyStatusLabel,
                                             fontSize = 10.sp,
-                                            color = if (isKeyConfigured) Color(0xFF2EA043) else theme.textMuted,
+                                            color = if (isKeyConfigured) theme.success else theme.textMuted,
                                             maxLines = 1,
                                             softWrap = false
                                         )
@@ -1761,7 +1761,7 @@ fun GlobalModelsConfigTab(
                         Text(
                             "当前状态：${currentProvider.name} 已配置（来源：$keySourceDetail）",
                             fontSize = 10.5.sp,
-                            color = Color(0xFF2EA043)
+                            color = theme.success
                         )
                     }
                     OutlinedTextField(
@@ -1922,7 +1922,7 @@ fun GlobalModelsConfigTab(
                             showDeleteProviderDialog = false
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text(if (isBuiltIn) "确认断开" else "确认删除", color = Color.White)
                 }
@@ -1951,7 +1951,7 @@ fun GlobalModelsConfigTab(
                         selectedModelId = updatedModels.firstOrNull()?.id
                         showDeleteModelDialog = false
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF5350))
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text("确认移除", color = Color.White)
                 }
@@ -2022,14 +2022,14 @@ fun GlobalModelsConfigTab(
                     } else if (discoverError != null) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFFEF4444).copy(alpha = 0.12f),
-                            border = BorderStroke(1.dp, Color(0xFFEF4444).copy(alpha = 0.35f)),
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(modifier = Modifier.padding(10.dp)) {
-                                Text("查询失败", fontWeight = FontWeight.Bold, color = Color(0xFF991B1B), fontSize = 12.sp)
+                                Text("查询失败", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 12.sp)
                                 Spacer(modifier = Modifier.height(4.dp))
-                                Text(discoverError ?: "", color = Color(0xFF991B1B), fontSize = 11.sp)
+                                Text(discoverError ?: "", color = MaterialTheme.colorScheme.onErrorContainer, fontSize = 11.sp)
                                 Spacer(modifier = Modifier.height(8.dp))
                                 OutlinedButton(
                                     onClick = {

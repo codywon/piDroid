@@ -63,7 +63,7 @@ fun SkillDetailSheet(
 
     val isProject = skill.isProjectScope
     val isVisible = skill.isVisibleToModel
-    val accent = if (isVisible) Color(0xFF2EA043) else theme.textMuted
+    val accent = if (isVisible) theme.success else theme.textMuted
 
     val displayPath = remember(skill) {
         skill.filePath?.takeIf { it.isNotBlank() }
@@ -122,7 +122,7 @@ fun SkillDetailSheet(
                         Text(
                             text = if (isVisible) "对模型可见" else "对模型隐藏",
                             fontSize = 10.5.sp,
-                            color = if (isVisible) Color(0xFF3FB950) else theme.textMuted
+                            color = if (isVisible) theme.success else theme.textMuted
                         )
                     }
                 }
@@ -166,8 +166,8 @@ fun SkillDetailSheet(
             // ── 可见性开关（一句话说清后果）──
             Surface(
                 shape = RoundedCornerShape(9.dp),
-                color = if (isVisible) Color(0xFF2EA043).copy(alpha = 0.08f) else theme.surfaceContainer,
-                border = BorderStroke(1.dp, if (isVisible) Color(0xFF2EA043).copy(alpha = 0.35f) else theme.outline),
+                color = if (isVisible) theme.success.copy(alpha = 0.08f) else theme.surfaceContainer,
+                border = BorderStroke(1.dp, if (isVisible) theme.success.copy(alpha = 0.35f) else theme.outline),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
@@ -179,7 +179,7 @@ fun SkillDetailSheet(
                             text = if (isVisible) "在模型提示词中可见" else "对模型隐藏",
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (isVisible) Color(0xFF3FB950) else theme.textPrimary
+                            color = if (isVisible) theme.success else theme.textPrimary
                         )
                         Text(
                             text = if (isVisible) "模型可在系统提示词中发现并主动调用"
@@ -192,8 +192,8 @@ fun SkillDetailSheet(
                         checked = isVisible,
                         onCheckedChange = onToggleVisible,
                         colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color(0xFF2EA043),
-                            checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                            checkedThumbColor = theme.success,
+                            checkedTrackColor = theme.success.copy(alpha = 0.3f),
                             uncheckedThumbColor = theme.textMuted,
                             uncheckedTrackColor = theme.surfaceContainerHigh
                         )
@@ -326,8 +326,11 @@ fun SkillDetailSheet(
 
 @Composable
 private fun ScopeBadge(isProject: Boolean) {
-    val color = if (isProject) Color(0xFF8250DF) else Color(0xFF1F6FEB)
-    val textColor = if (isProject) Color(0xFFD2A8FF) else Color(0xFF58A6FF)
+    val theme = LocalAppTheme.current
+    // 原写死 #8250DF/#1F6FEB + 深色专用的 #D2A8FF/#58A6FF：浅色主题下浅紫字压在浅底上几乎读不出。
+    // 改用语义色，底色 18% 叠 + 同色文字（浅 5.70:1 / 深 6.36:1）。
+    val color = if (isProject) theme.featureThinking else theme.primary
+    val textColor = color
     Surface(
         shape = RoundedCornerShape(4.dp),
         color = color.copy(alpha = 0.18f),
@@ -437,13 +440,13 @@ private fun PathAndVersionRow(
                                 text = "skills.sh",
                                 fontSize = 10.5.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFF58A6FF)
+                                color = theme.primary
                             )
                             Spacer(modifier = Modifier.width(2.dp))
                             Icon(
                                 Icons.Default.OpenInNew,
                                 contentDescription = null,
-                                tint = Color(0xFF58A6FF),
+                                tint = theme.primary,
                                 modifier = Modifier.size(11.dp)
                             )
                         }

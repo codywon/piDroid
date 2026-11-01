@@ -369,7 +369,7 @@ fun AppUpdateDialog(
                                 Icon(
                                     Icons.Default.CheckCircle,
                                     contentDescription = null,
-                                    tint = Color(0xFF2EA043),
+                                    tint = theme.success,
                                     modifier = Modifier.size(36.dp)
                                 )
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -470,21 +470,21 @@ fun AppUpdateDialog(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
                             color = theme.surfaceContainer,
-                            border = BorderStroke(1.dp, Color(0xFFCF222E).copy(alpha = 0.4f))
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f))
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(
                                         Icons.Default.ErrorOutline,
                                         contentDescription = null,
-                                        tint = Color(0xFFCF222E),
+                                        tint = MaterialTheme.colorScheme.error,
                                         modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
                                         text = "下载中断或校验失败",
                                         fontWeight = FontWeight.Bold,
-                                        color = Color(0xFFCF222E),
+                                        color = MaterialTheme.colorScheme.error,
                                         fontSize = 14.sp
                                     )
                                 }

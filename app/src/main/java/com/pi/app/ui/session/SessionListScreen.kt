@@ -82,7 +82,7 @@ private enum class SessionStatusFilter {
 @Composable
 fun PiWebRunningSpinner(
     size: Dp = 14.dp,
-    color: Color = Color(0xFF16A34A),
+    color: Color = Color(ThemePalette.LightSuccess), // 默认参数不能用 theme，取纯 Kotlin 色板常量
     strokeWidth: Dp = 2.2.dp
 ) {
     val infiniteTransition = rememberInfiniteTransition(label = "pi_web_spinner")
@@ -451,9 +451,9 @@ fun SessionListScreen(
                                         )
                                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                                         DropdownMenuItem(
-                                            text = { Text("清空已归档", color = Color(0xFFDC2626), style = MaterialTheme.typography.bodyMedium) },
+                                            text = { Text("清空已归档", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) },
                                             leadingIcon = {
-                                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = Color(0xFFDC2626))
+                                                Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                                             },
                                             onClick = {
                                                 showArchiveMenu = false
@@ -589,7 +589,7 @@ fun SessionListScreen(
                                                     Icon(
                                                         Icons.Default.DeleteOutline,
                                                         contentDescription = "删除任务",
-                                                        tint = Color(0xFFDC2626),
+                                                        tint = MaterialTheme.colorScheme.error,
                                                         modifier = Modifier.size(15.dp)
                                                     )
                                                 }
@@ -779,7 +779,7 @@ fun SessionListScreen(
                                         )
                                     }
                                     if (sessions.any { pinnedSessionIds.contains(it.id) && it.isLive }) {
-                                        PiWebRunningSpinner(size = 10.dp, color = Color(0xFF16A34A), strokeWidth = 1.8.dp)
+                                        PiWebRunningSpinner(size = 10.dp, color = theme.success, strokeWidth = 1.8.dp)
                                         Spacer(modifier = Modifier.width(4.dp))
                                     }
                                     Surface(
@@ -913,7 +913,7 @@ fun SessionListScreen(
                                         imageVector = if (isPinned) Icons.Default.PushPin else Icons.Default.Folder,
                                         contentDescription = null,
                                         modifier = Modifier.size(18.dp),
-                                        tint = if (isPinned) Color(0xFFEAB308) else (if (isSelected) theme.primary else theme.textSecondary)
+                                        tint = if (isPinned) theme.pinActive else (if (isSelected) theme.primary else theme.textSecondary)
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Column(modifier = Modifier.weight(1f)) {
@@ -939,21 +939,21 @@ fun SessionListScreen(
                                     if (ws.runningCount > 0) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = Color(0xFF22C55E).copy(alpha = 0.15f),
-                                            border = BorderStroke(0.8.dp, Color(0xFF22C55E).copy(alpha = 0.4f))
+                                            color = theme.success.copy(alpha = 0.15f),
+                                            border = BorderStroke(0.8.dp, theme.success.copy(alpha = 0.4f))
                                         ) {
                                             Row(
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
-                                                PiWebRunningSpinner(size = 10.dp, color = Color(0xFF16A34A), strokeWidth = 1.8.dp)
+                                                PiWebRunningSpinner(size = 10.dp, color = theme.success, strokeWidth = 1.8.dp)
                                                 Text(
                                                     text = "${ws.runningCount}",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontFamily = FontFamily.Monospace,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF16A34A)
+                                                    color = theme.success
                                                 )
                                             }
                                         }
@@ -964,8 +964,8 @@ fun SessionListScreen(
                                     if (ws.unreadCount > 0) {
                                         Surface(
                                             shape = RoundedCornerShape(12.dp),
-                                            color = Color(0xFF0891B2).copy(alpha = 0.15f),
-                                            border = BorderStroke(0.8.dp, Color(0xFF0891B2).copy(alpha = 0.4f))
+                                            color = theme.info.copy(alpha = 0.15f),
+                                            border = BorderStroke(0.8.dp, theme.info.copy(alpha = 0.4f))
                                         ) {
                                             Row(
                                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -975,14 +975,14 @@ fun SessionListScreen(
                                                 Surface(
                                                     modifier = Modifier.size(6.dp),
                                                     shape = CircleShape,
-                                                    color = Color(0xFF0891B2)
+                                                    color = theme.info
                                                 ) {}
                                                 Text(
                                                     text = "${ws.unreadCount}",
                                                     style = MaterialTheme.typography.labelSmall,
                                                     fontFamily = FontFamily.Monospace,
                                                     fontWeight = FontWeight.Bold,
-                                                    color = Color(0xFF0891B2)
+                                                    color = theme.info
                                                 )
                                             }
                                         }
@@ -1146,8 +1146,8 @@ fun SessionListScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 val dotColor = when {
                                     !isConfigured -> theme.textMuted
-                                    isGatewayOnline -> Color(0xFF2EA043)
-                                    else -> Color(0xFFD29922)
+                                    isGatewayOnline -> theme.success
+                                    else -> theme.warning
                                 }
                                 Surface(
                                     modifier = Modifier.size(6.dp),
@@ -1162,7 +1162,7 @@ fun SessionListScreen(
                                         else -> "${deviceName.ifEmpty { "主机网关" }} · 自动重连中..."
                                     },
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (!isConfigured || isGatewayOnline) theme.textSecondary else Color(0xFFD29922)
+                                    color = if (!isConfigured || isGatewayOnline) theme.textSecondary else theme.warning
                                 )
                             }
                         }
@@ -1206,7 +1206,7 @@ fun SessionListScreen(
                             onNewSessionClick(targetPath)
                         },
                         containerColor = theme.primary,
-                        contentColor = Color.White,
+                        contentColor = theme.onPrimary, // 琥珀/翡翠主题下白字仅 1.7:1
                         shape = CircleShape
                     ) {
                         Icon(
@@ -1362,12 +1362,12 @@ fun SessionListScreen(
                                     selected = statusFilter == SessionStatusFilter.UNREAD,
                                     onClick = { statusFilter = SessionStatusFilter.UNREAD },
                                     label = "未读 ($unreadInWorkspace)",
-                                    activeColor = Color(0xFF0891B2),
+                                    activeColor = theme.info,
                                     leadingIcon = {
                                         Surface(
                                             modifier = Modifier.size(6.dp),
                                             shape = CircleShape,
-                                            color = if (statusFilter == SessionStatusFilter.UNREAD) Color(0xFF0891B2) else Color(0xFF0891B2).copy(alpha = 0.6f)
+                                            color = if (statusFilter == SessionStatusFilter.UNREAD) theme.info else theme.info.copy(alpha = 0.6f)
                                         ) {}
                                     }
                                 )
@@ -1376,12 +1376,12 @@ fun SessionListScreen(
                                 selected = statusFilter == SessionStatusFilter.RUNNING,
                                 onClick = { statusFilter = SessionStatusFilter.RUNNING },
                                 label = "运行中 ($runningInWorkspace)",
-                                activeColor = Color(0xFF16A34A),
+                                activeColor = theme.success,
                                 leadingIcon = {
                                     if (runningInWorkspace > 0) {
                                         PiWebRunningSpinner(
                                             size = 11.dp,
-                                            color = if (statusFilter == SessionStatusFilter.RUNNING) Color(0xFF16A34A) else Color(0xFF22C55E),
+                                            color = if (statusFilter == SessionStatusFilter.RUNNING) theme.success else theme.success,
                                             strokeWidth = 1.8.dp
                                         )
                                     } else {
@@ -1438,7 +1438,7 @@ fun SessionListScreen(
                                     modifier = Modifier
                                         .size(52.dp)
                                         .background(
-                                            if (isPinnedZone) Color(0xFFEAB308).copy(alpha = 0.14f) else theme.surfaceContainerHigh,
+                                            if (isPinnedZone) theme.pinActive.copy(alpha = 0.14f) else theme.surfaceContainerHigh,
                                             CircleShape
                                         ),
                                     contentAlignment = Alignment.Center
@@ -1451,7 +1451,7 @@ fun SessionListScreen(
                                         },
                                         contentDescription = null,
                                         modifier = Modifier.size(24.dp),
-                                        tint = if (isPinnedZone) Color(0xFFEAB308) else theme.textMuted
+                                        tint = if (isPinnedZone) theme.pinActive else theme.textMuted
                                     )
                                 }
 
@@ -1542,7 +1542,7 @@ fun SessionListScreen(
                                             Icons.Default.PushPin,
                                             contentDescription = null,
                                             modifier = Modifier.size(12.dp),
-                                            tint = Color(0xFFEAB308).copy(alpha = 0.9f)
+                                            tint = theme.pinActive.copy(alpha = 0.9f)
                                         )
                                         Text(
                                             text = "$pinnedCountInWorkspace 个置顶任务已归入「常用置顶」",
@@ -1737,7 +1737,7 @@ fun SessionListScreen(
                             )
                             if (isPinned) {
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Icon(Icons.Default.PushPin, contentDescription = "已置顶", tint = Color(0xFFEAB308), modifier = Modifier.size(13.dp))
+                                Icon(Icons.Default.PushPin, contentDescription = "已置顶", tint = theme.pinActive, modifier = Modifier.size(13.dp))
                             }
                         }
                         Text(
@@ -1759,7 +1759,7 @@ fun SessionListScreen(
                 // 1. 置顶项目 / 取消置顶项目
                 WorkspaceMenuActionItem(
                     icon = if (isPinned) Icons.Default.PushPin else Icons.Outlined.PushPin,
-                    iconTint = if (isPinned) Color(0xFFEAB308) else theme.primary,
+                    iconTint = if (isPinned) theme.pinActive else theme.primary,
                     title = if (isPinned) "取消置顶项目" else "置顶项目",
                     onClick = {
                         // 项目置顶的真源在 pi-web 的 ui-state（pin-project），本地只做乐观镜像
@@ -1838,7 +1838,7 @@ fun SessionListScreen(
                 // 5. 查看已归档会话 · N
                 WorkspaceMenuActionItem(
                     icon = Icons.Default.FolderZip,
-                    iconTint = if (archivedCount > 0) Color(0xFF8B5CF6) else theme.textMuted,
+                    iconTint = if (archivedCount > 0) theme.featureThinking else theme.textMuted,
                     title = "查看已归档会话 · $archivedCount",
                     enabled = archivedCount > 0,
                     onClick = {
@@ -1852,10 +1852,10 @@ fun SessionListScreen(
                 Spacer(modifier = Modifier.height(4.dp))
                 WorkspaceMenuActionItem(
                     icon = Icons.Default.DeleteForever,
-                    iconTint = Color(0xFFEF4444),
+                    iconTint = MaterialTheme.colorScheme.error,
                     title = "删除该项目全部会话 · ${projectSessions.size}",
                     subtitle = "删除所有历史会话（正在运行的会话会自动保留）",
-                    titleColor = Color(0xFFEF4444),
+                    titleColor = MaterialTheme.colorScheme.error,
                     danger = true,
                     enabled = projectSessions.isNotEmpty(),
                     onClick = {
@@ -1922,7 +1922,7 @@ fun SessionListScreen(
                                 Toast.makeText(context, "已恢复项目默认名称", Toast.LENGTH_SHORT).show()
                             }
                         ) {
-                            Text("恢复默认", color = Color(0xFFEF4444))
+                            Text("恢复默认", color = MaterialTheme.colorScheme.error)
                         }
                     }
                     TextButton(onClick = { showRenameWsDialog = null }) {
@@ -1952,9 +1952,9 @@ fun SessionListScreen(
             containerColor = theme.surfaceContainerLow,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Warning, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(20.dp))
+                    Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("删除 ${target.displayName} 的全部会话", fontWeight = FontWeight.Bold, color = Color(0xFFEF4444), fontSize = 15.sp)
+                    Text("删除 ${target.displayName} 的全部会话", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 15.sp)
                 }
             },
             text = {
@@ -1967,14 +1967,14 @@ fun SessionListScreen(
                     if (runningSessions.isNotEmpty()) {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = Color(0xFF22C55E).copy(alpha = 0.12f),
-                            border = BorderStroke(0.8.dp, Color(0xFF22C55E).copy(alpha = 0.35f)),
+                            color = theme.success.copy(alpha = 0.12f),
+                            border = BorderStroke(0.8.dp, theme.success.copy(alpha = 0.35f)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
                                 text = "💡 正在运行中的 ${runningSessions.size} 个活跃会话会被完整保留。",
                                 fontSize = 11.5.sp,
-                                color = Color(0xFF16A34A),
+                                color = theme.success,
                                 modifier = Modifier.padding(8.dp)
                             )
                         }
@@ -1997,7 +1997,10 @@ fun SessionListScreen(
                         showDeleteAllSessionsDialog = null
                         Toast.makeText(context, "已删除 $count 个历史会话" + (if (runningSessions.isNotEmpty()) "，保留 ${runningSessions.size} 个运行中会话" else ""), Toast.LENGTH_SHORT).show()
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444))
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    )
                 ) {
                     Text("确认删除 (${toDeleteSessions.size})", color = Color.White)
                 }
@@ -2034,7 +2037,7 @@ fun SessionListScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Default.FolderZip, contentDescription = null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(18.dp))
+                        Icon(Icons.Default.FolderZip, contentDescription = null, tint = theme.featureThinking, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("${target.displayName} 已归档会话 (${archivedList.size})", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = theme.textPrimary)
                     }
@@ -2176,7 +2179,7 @@ fun SessionListScreen(
     deletingSession?.let { sess ->
         AlertDialog(
             onDismissRequest = { deletingSession = null },
-            title = { Text("删除任务会话", fontWeight = FontWeight.Bold, color = Color(0xFFDC2626)) },
+            title = { Text("删除任务会话", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
             text = {
                 Text("确定要彻底删除任务「${customTitles[sess.id] ?: sess.displayTitle}」吗？\n删除后任务上下文与历史记录将无法恢复。")
             },
@@ -2186,7 +2189,7 @@ fun SessionListScreen(
                         onDeleteSession(sess.id)
                         deletingSession = null
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text("确认删除", color = Color.White, fontWeight = FontWeight.Bold)
                 }
@@ -2203,7 +2206,7 @@ fun SessionListScreen(
         AlertDialog(
             onDismissRequest = { showConfirmDeleteAllArchived = false },
             containerColor = theme.surfaceContainerLow,
-            title = { Text("清空已归档会话", fontWeight = FontWeight.Bold, color = Color(0xFFDC2626)) },
+            title = { Text("清空已归档会话", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error) },
             text = { Text("确定要彻底删除全部 ${allArchivedSessions.size} 个已归档任务吗？\n删除后任务上下文与历史记录将无法恢复。") },
             confirmButton = {
                 Button(
@@ -2212,7 +2215,7 @@ fun SessionListScreen(
                         showConfirmDeleteAllArchived = false
                         ids.forEach { onDeleteSession(it) }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {
                     Text("确认清空", color = Color.White, fontWeight = FontWeight.Bold)
                 }
@@ -2463,7 +2466,7 @@ private fun RemoteWorkspaceDialog(
                             onConfirm(pathInput.trim(), newChildName.trim().takeIf { it.isNotBlank() }, createIfMissing, true)
                         }
                     },
-                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = Color.White),
+                    colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary),
                     shape = RoundedCornerShape(8.dp),
                     contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)
                 ) {
@@ -2633,16 +2636,16 @@ fun SessionCard(
     // 置顶不再用底色/描边强调（置顶本身已有「置顶」小徽章与图钉图标），
     // 只有「等待确认 / 运行中 / 未读」这类需要注意的状态才着色。
     val borderStroke = when {
-        isAwaiting -> BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.55f))
-        isRunning -> BorderStroke(1.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
-        isUnread -> BorderStroke(1.dp, Color(0xFF0891B2).copy(alpha = 0.45f))
+        isAwaiting -> BorderStroke(1.dp, theme.warning.copy(alpha = 0.55f))
+        isRunning -> BorderStroke(1.dp, theme.success.copy(alpha = 0.45f))
+        isUnread -> BorderStroke(1.dp, theme.info.copy(alpha = 0.45f))
         else -> BorderStroke(1.dp, theme.outline)
     }
 
     val cardBg = when {
-        isAwaiting -> Color(0xFFF59E0B).copy(alpha = if (theme.isDark) 0.07f else 0.04f)
-        isRunning -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.06f else 0.03f)
-        isUnread -> Color(0xFF0891B2).copy(alpha = if (theme.isDark) 0.08f else 0.04f)
+        isAwaiting -> theme.warning.copy(alpha = if (theme.isDark) 0.07f else 0.04f)
+        isRunning -> theme.success.copy(alpha = if (theme.isDark) 0.06f else 0.03f)
+        isUnread -> theme.info.copy(alpha = if (theme.isDark) 0.08f else 0.04f)
         else -> theme.surfaceContainerLow
     }
 
@@ -2671,13 +2674,13 @@ fun SessionCard(
                             Surface(
                                 modifier = Modifier.size(10.dp),
                                 shape = CircleShape,
-                                color = Color(0xFFF59E0B)
+                                color = theme.warning
                             ) {}
                         }
                         isRunning -> {
                             PiWebRunningSpinner(
                                 size = 14.dp,
-                                color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A),
+                                color = theme.success,
                                 strokeWidth = 2.dp
                             )
                         }
@@ -2690,12 +2693,12 @@ fun SessionCard(
                                 Surface(
                                     modifier = Modifier.size(14.dp),
                                     shape = CircleShape,
-                                    color = Color(0xFF0891B2).copy(alpha = 0.22f)
+                                    color = theme.info.copy(alpha = 0.22f)
                                 ) {}
                                 Surface(
                                     modifier = Modifier.size(6.5.dp),
                                     shape = CircleShape,
-                                    color = Color(0xFF0891B2)
+                                    color = theme.info
                                 ) {}
                             }
                         }
@@ -2704,7 +2707,7 @@ fun SessionCard(
                                 imageVector = Icons.Outlined.CheckCircle,
                                 contentDescription = "已完成",
                                 modifier = Modifier.size(15.dp),
-                                tint = if (theme.isDark) Color(0xFF3FB950).copy(alpha = 0.75f) else Color(0xFF16A34A).copy(alpha = 0.75f)
+                                tint = theme.success.copy(alpha = 0.75f)
                             )
                         }
                     }
@@ -2728,15 +2731,15 @@ fun SessionCard(
                         isAwaiting -> {
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFFF59E0B).copy(alpha = 0.16f),
-                                border = BorderStroke(0.5.dp, Color(0xFFF59E0B).copy(alpha = 0.5f))
+                                color = theme.warning.copy(alpha = 0.16f),
+                                border = BorderStroke(0.5.dp, theme.warning.copy(alpha = 0.5f))
                             ) {
                                 Text(
                                     text = "等待确认",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.SemiBold,
-                                    color = Color(0xFFD97706),
+                                    color = theme.warning,
                                     maxLines = 1,
                                     softWrap = false,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
@@ -2746,8 +2749,8 @@ fun SessionCard(
                         isRunning -> {
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFF22C55E).copy(alpha = 0.15f),
-                                border = BorderStroke(0.5.dp, Color(0xFF22C55E).copy(alpha = 0.45f))
+                                color = theme.success.copy(alpha = 0.15f),
+                                border = BorderStroke(0.5.dp, theme.success.copy(alpha = 0.45f))
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -2761,7 +2764,7 @@ fun SessionCard(
                                         fontWeight = FontWeight.SemiBold,
                                         maxLines = 1,
                                         softWrap = false,
-                                        color = if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
+                                        color = theme.success
                                     )
                                 }
                             }
@@ -2769,8 +2772,8 @@ fun SessionCard(
                         isUnread -> {
                             Surface(
                                 shape = RoundedCornerShape(4.dp),
-                                color = Color(0xFF0891B2).copy(alpha = 0.15f),
-                                border = BorderStroke(0.5.dp, Color(0xFF0891B2).copy(alpha = 0.45f))
+                                color = theme.info.copy(alpha = 0.15f),
+                                border = BorderStroke(0.5.dp, theme.info.copy(alpha = 0.45f))
                             ) {
                                 Text(
                                     text = "未读",
@@ -2779,7 +2782,7 @@ fun SessionCard(
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
                                     softWrap = false,
-                                    color = Color(0xFF0891B2),
+                                    color = theme.info,
                                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                 )
                             }
@@ -2800,7 +2803,7 @@ fun SessionCard(
                         Icon(
                             imageVector = Icons.Default.PushPin,
                             contentDescription = "已置顶",
-                            tint = Color(0xFFEAB308),
+                            tint = theme.pinActive,
                             modifier = Modifier.size(14.dp)
                         )
                     }
@@ -2829,7 +2832,7 @@ fun SessionCard(
                                         Icons.Default.PushPin,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp),
-                                        tint = if (isPinned) Color(0xFFEAB308) else theme.textSecondary
+                                        tint = if (isPinned) theme.pinActive else theme.textSecondary
                                     )
                                 },
                                 onClick = {
@@ -2877,7 +2880,7 @@ fun SessionCard(
                                         imageVector = if (isUnread) Icons.Outlined.MarkChatRead else Icons.Outlined.MarkChatUnread,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp),
-                                        tint = if (isUnread) theme.textSecondary else Color(0xFF0891B2)
+                                        tint = if (isUnread) theme.textSecondary else theme.info
                                     )
                                 },
                                 onClick = {
@@ -2905,13 +2908,13 @@ fun SessionCard(
                             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                             DropdownMenuItem(
-                                text = { Text("删除...", color = Color(0xFFDC2626), style = MaterialTheme.typography.bodyMedium) },
+                                text = { Text("删除...", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium) },
                                 leadingIcon = {
                                     Icon(
                                         Icons.Default.DeleteOutline,
                                         contentDescription = null,
                                         modifier = Modifier.size(16.dp),
-                                        tint = Color(0xFFDC2626)
+                                        tint = MaterialTheme.colorScheme.error
                                     )
                                 },
                                 onClick = {
@@ -3017,11 +3020,11 @@ private fun WorkspaceMenuActionItem(
         // 禁用态用 surfaceContainer（sheet 底色是 surfaceContainerLow，旧写法几乎看不见）
         color = when {
             !enabled -> theme.surfaceContainer.copy(alpha = 0.6f)
-            danger -> Color(0xFFEF4444).copy(alpha = 0.08f)
+            danger -> MaterialTheme.colorScheme.error.copy(alpha = 0.08f)
             else -> Color.Transparent
         },
         border = if (danger && enabled) {
-            BorderStroke(0.6.dp, Color(0xFFEF4444).copy(alpha = 0.35f))
+            BorderStroke(0.6.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f))
         } else {
             null
         },

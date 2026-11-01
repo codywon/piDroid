@@ -772,8 +772,8 @@ fun GlobalModelsTab(
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         if (model.hasVision) {
-                            Surface(color = Color(0xFF2EA043).copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
-                                Text("Vision 图像输入", style = MaterialTheme.typography.labelSmall, color = Color(0xFF2EA043), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                            Surface(color = theme.success.copy(alpha = 0.15f), shape = RoundedCornerShape(4.dp)) {
+                                Text("Vision 图像输入", style = MaterialTheme.typography.labelSmall, color = theme.success, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
                             }
                         }
                         if (model.supportsThinking) {
@@ -1048,7 +1048,7 @@ fun GlobalModelsTab(
                                 showCustomModelDialog = false
                             }
                         ) {
-                            Text("删除模型", color = Color(0xFFCF222E))
+                            Text("删除模型", color = MaterialTheme.colorScheme.error)
                         }
                     }
                     TextButton(onClick = { showCustomModelDialog = false }) {
@@ -1376,7 +1376,7 @@ fun GlobalSkillsTab(
                                         Icons.Default.Refresh,
                                         contentDescription = "检查更新",
                                         modifier = Modifier.size(17.dp),
-                                        tint = if (updatableCount > 0) Color(0xFFD29922) else theme.textSecondary
+                                        tint = if (updatableCount > 0) theme.warning else theme.textSecondary
                                     )
                                 }
                             }
@@ -1457,7 +1457,7 @@ fun GlobalSkillsTab(
                             SkillGroupHeader(
                                 title = "项目技能",
                                 icon = Icons.Default.Folder,
-                                accent = Color(0xFF8250DF),
+                                accent = theme.featureThinking,
                                 badgeText = "${projectSkills.count { it.isVisibleToModel }}/${projectSkills.size}",
                                 checked = projectSkills.isNotEmpty() && projectSkills.all { it.isVisibleToModel },
                                 switchEnabled = projectSkills.isNotEmpty(),
@@ -1484,7 +1484,7 @@ fun GlobalSkillsTab(
                             SkillGroupHeader(
                                 title = "全局技能",
                                 icon = Icons.Default.Public,
-                                accent = Color(0xFF58A6FF),
+                                accent = theme.primary,
                                 badgeText = "${globalSkills.count { it.isVisibleToModel }}/${globalSkills.size}",
                                 checked = globalSkills.isNotEmpty() && globalSkills.all { it.isVisibleToModel },
                                 switchEnabled = globalSkills.isNotEmpty(),
@@ -1589,9 +1589,9 @@ fun GlobalSkillsTab(
                                     }
                                 }
                             ) {
-                                Text("skills.sh", fontSize = 12.sp, color = Color(0xFF58A6FF), fontWeight = FontWeight.Bold)
+                                Text("skills.sh", fontSize = 12.sp, color = theme.primary, fontWeight = FontWeight.Bold)
                                 Spacer(modifier = Modifier.width(2.dp))
-                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp), tint = Color(0xFF58A6FF))
+                                Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(13.dp), tint = theme.primary)
                             }
                         }
                     }
@@ -1801,14 +1801,14 @@ fun GlobalSkillsTab(
                         item {
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
-                                color = Color(0xFFF85149).copy(alpha = 0.1f),
-                                border = BorderStroke(1.dp, Color(0xFFF85149).copy(alpha = 0.4f)),
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.1f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Text(
                                     text = "搜索遇到错误: $searchError",
                                     fontSize = 12.sp,
-                                    color = Color(0xFFF85149),
+                                    color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.padding(12.dp)
                                 )
                             }
@@ -1880,7 +1880,7 @@ fun GlobalSkillsTab(
                                                     text = " · ${result.installs}",
                                                     fontSize = 10.5.sp,
                                                     fontWeight = FontWeight.Medium,
-                                                    color = Color(0xFF3FB950),
+                                                    color = theme.success,
                                                     maxLines = 1,
                                                     softWrap = false
                                                 )
@@ -1904,7 +1904,7 @@ fun GlobalSkillsTab(
                                                 imageVector = Icons.Default.OpenInNew,
                                                 contentDescription = "在 skills.sh 打开",
                                                 modifier = Modifier.size(15.dp),
-                                                tint = Color(0xFF58A6FF)
+                                                tint = theme.primary
                                             )
                                         }
                                     }
@@ -1912,14 +1912,14 @@ fun GlobalSkillsTab(
                                     if (isAlreadyInstalled) {
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
-                                            color = Color(0xFF2EA043).copy(alpha = 0.15f),
-                                            border = BorderStroke(1.dp, Color(0xFF2EA043).copy(alpha = 0.4f))
+                                            color = theme.success.copy(alpha = 0.15f),
+                                            border = BorderStroke(1.dp, theme.success.copy(alpha = 0.4f))
                                         ) {
                                             Text(
                                                 text = "✓ 已安装",
                                                 fontSize = 11.sp,
                                                 fontWeight = FontWeight.Bold,
-                                                color = Color(0xFF2EA043),
+                                                color = theme.success,
                                                 maxLines = 1,
                                                 softWrap = false,
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
@@ -2048,14 +2048,14 @@ private fun SkillCardItem(
                         Spacer(modifier = Modifier.width(5.dp))
                         Surface(
                             shape = RoundedCornerShape(4.dp),
-                            color = Color(0xFFD29922).copy(alpha = 0.15f),
-                            border = BorderStroke(0.5.dp, Color(0xFFD29922).copy(alpha = 0.5f))
+                            color = theme.warning.copy(alpha = 0.15f),
+                            border = BorderStroke(0.5.dp, theme.warning.copy(alpha = 0.5f))
                         ) {
                             Text(
                                 text = if (isUpdating) "更新中" else "更新",
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = Color(0xFFD29922),
+                                color = theme.warning,
                                 maxLines = 1,
                                 softWrap = false,
                                 modifier = Modifier
@@ -2132,8 +2132,8 @@ private fun SkillGroupHeader(
             enabled = switchEnabled,
             onCheckedChange = onToggleAll,
             colors = SwitchDefaults.colors(
-                checkedThumbColor = Color(0xFF2EA043),
-                checkedTrackColor = Color(0xFF2EA043).copy(alpha = 0.3f),
+                checkedThumbColor = theme.success,
+                checkedTrackColor = theme.success.copy(alpha = 0.3f),
                 uncheckedThumbColor = theme.textMuted,
                 uncheckedTrackColor = theme.surfaceContainerHigh
             )
@@ -2292,7 +2292,7 @@ fun GlobalMcpTab(
                                 isConnected -> "已连接"
                                 else -> "未连接"
                             },
-                            valueColor = if (isConnected) Color(0xFF2EA043) else theme.textMuted
+                            valueColor = if (isConnected) theme.success else theme.textMuted
                         )
                         SettingsRow(
                             title = "传输方式",
@@ -2402,7 +2402,7 @@ fun GlobalMcpTab(
                         )
                         SettingsRow(
                             title = "移除服务器",
-                            titleColor = Color(0xFFCF222E),
+                            titleColor = MaterialTheme.colorScheme.error,
                             topDivider = true,
                             showChevron = true,
                             onClick = { onManageMcpServer("remove", focusedServer.name) }
@@ -2720,7 +2720,7 @@ fun GlobalMcpTab(
             containerColor = theme.surfaceContainerLow,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(shape = CircleShape, color = Color(0xFF2EA043), modifier = Modifier.size(8.dp)) {}
+                    Surface(shape = CircleShape, color = theme.success, modifier = Modifier.size(8.dp)) {}
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("MCP 节点测试通过: $name", color = theme.textPrimary, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
@@ -2763,9 +2763,9 @@ fun GlobalMcpTab(
             containerColor = theme.surfaceContainerLow,
             title = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(shape = CircleShape, color = Color(0xFFCF222E), modifier = Modifier.size(8.dp)) {}
+                    Surface(shape = CircleShape, color = MaterialTheme.colorScheme.error, modifier = Modifier.size(8.dp)) {}
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("MCP 节点连通失败: $name", color = Color(0xFFCF222E), fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("MCP 节点连通失败: $name", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             },
             text = {
@@ -2774,10 +2774,10 @@ fun GlobalMcpTab(
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = theme.background,
-                        border = BorderStroke(1.dp, Color(0xFFCF222E).copy(alpha = 0.4f)),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.4f)),
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp)
                     ) {
-                        Text(err, color = Color(0xFFCF222E), fontSize = 11.5.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
+                        Text(err, color = MaterialTheme.colorScheme.error, fontSize = 11.5.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(8.dp))
                     }
                 }
             },
@@ -3017,7 +3017,7 @@ fun GlobalPluginsTab(
                             editingPluginTarget = null
                         }
                     ) {
-                        Text("卸载", color = Color(0xFFCF222E))
+                        Text("卸载", color = MaterialTheme.colorScheme.error)
                     }
                     TextButton(onClick = { editingPluginTarget = null }) {
                         Text("取消", color = theme.textMuted)
@@ -3223,7 +3223,7 @@ fun GlobalSystemSettingsTab(
                         title = "电池优化白名单",
                         subtitle = if (liveIgnoringBattery) "后台网络不受系统休眠限制" else "建议加入，防息屏冻结长连接",
                         value = if (liveIgnoringBattery) "已加入" else "去开启",
-                        valueColor = if (liveIgnoringBattery) Color(0xFF2EA043) else theme.primary,
+                        valueColor = if (liveIgnoringBattery) theme.success else theme.primary,
                         showChevron = !liveIgnoringBattery,
                         topDivider = true,
                         onClick = {
@@ -3252,7 +3252,7 @@ fun GlobalSystemSettingsTab(
                         title = deviceName.ifBlank { if (isConnected) "My PC" else "未配对" },
                         subtitle = if (isConnected) "已配对 · 令牌就绪" else "扫码或手动填写网关地址与访问令牌",
                         value = if (isConnected) "在线" else "未配对",
-                        valueColor = if (isConnected) Color(0xFF2EA043) else theme.textMuted
+                        valueColor = if (isConnected) theme.success else theme.textMuted
                     )
                     SettingsRow(
                         title = "网关地址",
@@ -3336,7 +3336,7 @@ fun GlobalSystemSettingsTab(
                         SettingsRow(
                             title = "断开当前连接",
                             subtitle = "清空本地令牌，需要重新配对",
-                            titleColor = Color(0xFFCF222E),
+                            titleColor = MaterialTheme.colorScheme.error,
                             topDivider = true,
                             showChevron = true,
                             onClick = onDisconnect

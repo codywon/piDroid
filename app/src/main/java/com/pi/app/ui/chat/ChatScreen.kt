@@ -230,7 +230,7 @@ fun ChatScreen(
     recallRequest: RecallToComposerRequest? = null,
     onRecallConsumed: () -> Unit = {},
     onApproveTool: (approved: Boolean) -> Unit,
-    currentToolPreset: ToolPreset = ToolPreset.FULL,
+    currentToolPreset: ToolPreset = ToolPreset.CONFIGURED,
     onToolPresetChange: (ToolPreset) -> Unit = {},
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
@@ -1197,7 +1197,7 @@ fun ChatScreen(
                                         .size(6.dp)
                                         .semantics { contentDescription = "事件流自动重连并同步中" },
                                     shape = CircleShape,
-                                    color = Color(0xFFD29922)
+                                    color = theme.warning
                                 ) {}
                             }
                         }
@@ -1429,7 +1429,7 @@ fun ChatScreen(
                                 val thinkingTint = when {
                                     !selectedModel.supportsThinking -> theme.textMuted
                                     thinkingLevel == ThinkingLevel.OFF -> theme.textSecondary
-                                    isHighThinking -> Color(0xFFF59E0B) // 琥珀橙醒目警示
+                                    isHighThinking -> theme.warning // 琥珀橙醒目警示
                                     else -> theme.primary
                                 }
 
@@ -1486,7 +1486,7 @@ fun ChatScreen(
                                     Icons.Default.Build,
                                     contentDescription = "权限模式",
                                     modifier = Modifier.size(11.dp),
-                                    tint = Color(0xFFEAB308)
+                                    tint = theme.pinActive
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
@@ -2000,7 +2000,7 @@ fun ChatScreen(
                                 // 行业标准停止按钮：红色填充圆圈 + 内部纯白正方形块，无多余文字
                                 Surface(
                                     shape = CircleShape,
-                                    color = Color(0xFFDF2A39),
+                                    color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier
                                         .size(34.dp)
                                         .clickable { onStopAgent() }
@@ -2024,8 +2024,8 @@ fun ChatScreen(
                 val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
                 val cacheTokensStr = TokenStats.formatCacheCompact(tokenStats.cacheReadTokens)
                 val ctxColor = when {
-                    percent >= 90 -> Color(0xFFCF222E)
-                    percent >= 70 -> Color(0xFFD29922)
+                    percent >= 90 -> MaterialTheme.colorScheme.error
+                    percent >= 70 -> theme.warning
                     else -> theme.textSecondary
                 }
 
@@ -2111,7 +2111,7 @@ fun ChatScreen(
                                 imageVector = Icons.Default.Bolt,
                                 contentDescription = "缓存读取",
                                 modifier = Modifier.size(12.dp),
-                                tint = if (tokenStats.cacheReadTokens > 0) Color(0xFF60A5FA) else theme.textMuted
+                                tint = if (tokenStats.cacheReadTokens > 0) theme.primary else theme.textMuted
                             )
                             Text(
                                 text = cacheTokensStr,
@@ -2687,7 +2687,7 @@ fun ChatMessageItem(
         when (item.role) {
             MessageRole.USER -> {
                 // 对标 pi-web MessageView.tsx & globals.css (--user-bg: #EFF6FF / #232C3F, border: rgba(59,130,246,0.22), color: var(--text))
-                val userBubbleBg = if (theme.isDark) Color(0xFF232C3F) else Color(0xFFEFF6FF)
+                val userBubbleBg = theme.primaryContainer
                 // pi-web：isEditing ? accent 14% 混入 user-bg / 边框 accent 62% / 外圈 16% 红色光环
                 val editTint = theme.primary
                 val bubbleBg = if (isEditing) {
@@ -2695,7 +2695,7 @@ fun ChatMessageItem(
                 } else userBubbleBg
                 val bubbleBorder = if (isEditing) {
                     editTint.copy(alpha = if (theme.isDark) 0.62f else 0.55f)
-                } else Color(0xFF3B82F6).copy(alpha = if (theme.isDark) 0.28f else 0.22f)
+                } else theme.primary.copy(alpha = if (theme.isDark) 0.28f else 0.22f)
                 val clipboardManager = androidx.compose.ui.platform.LocalClipboardManager.current
                 val context = androidx.compose.ui.platform.LocalContext.current
 
@@ -3147,27 +3147,27 @@ fun PiWebToolCallCard(
 
     val hasMedia = tool.mediaList.isNotEmpty()
     val borderColor = when {
-        tool.requiresApproval && !tool.isApproved -> Color(0xFFD29922)
-        tool.isError -> Color(0xFFF87171).copy(alpha = 0.65f)
+        tool.requiresApproval && !tool.isApproved -> theme.warning
+        tool.isError -> MaterialTheme.colorScheme.error.copy(alpha = 0.65f)
         isPending -> theme.primary.copy(alpha = 0.55f)
-        hasMedia -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.42f else 0.35f)
+        hasMedia -> theme.success.copy(alpha = if (theme.isDark) 0.42f else 0.35f)
         else -> theme.outline
     }
 
     val cardContainerColor = when {
-        hasMedia && !tool.isError -> Color(0xFF22C55E).copy(alpha = if (theme.isDark) 0.08f else 0.06f)
+        hasMedia && !tool.isError -> theme.success.copy(alpha = if (theme.isDark) 0.08f else 0.06f)
         else -> theme.surfaceContainerLow
     }
 
     val badgeBg = when {
-        tool.isError -> Color(0xFFEF4444).copy(alpha = 0.14f)
-        hasMedia -> Color(0xFF22C55E).copy(alpha = 0.16f)
+        tool.isError -> MaterialTheme.colorScheme.error.copy(alpha = 0.14f)
+        hasMedia -> theme.success.copy(alpha = 0.16f)
         else -> theme.primary.copy(alpha = 0.13f)
     }
 
     val badgeFg = when {
-        tool.isError -> Color(0xFFEF4444)
-        hasMedia -> if (theme.isDark) Color(0xFF4ADE80) else Color(0xFF16A34A)
+        tool.isError -> MaterialTheme.colorScheme.error
+        hasMedia -> theme.success
         else -> theme.primary
     }
 
@@ -3245,7 +3245,7 @@ fun PiWebToolCallCard(
                             text = "待审批",
                             fontSize = 10.5.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFD97706)
+                            color = theme.warning
                         )
                     }
                     isPending -> {
@@ -3260,7 +3260,7 @@ fun PiWebToolCallCard(
                             text = "✗",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFFEF4444)
+                            color = MaterialTheme.colorScheme.error
                         )
                     }
                     hasResult -> {
@@ -3268,7 +3268,7 @@ fun PiWebToolCallCard(
                             text = "✓",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = Color(0xFF22C55E)
+                            color = theme.success
                         )
                     }
                 }
@@ -3382,7 +3382,7 @@ fun PiWebToolCallCard(
                             Text(
                                 text = if (tool.isError) "错误输出" else "执行结果",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = if (tool.isError) Color(0xFFEF4444) else theme.textMuted
+                                color = if (tool.isError) MaterialTheme.colorScheme.error else theme.textMuted
                             )
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
@@ -3415,7 +3415,7 @@ fun PiWebToolCallCard(
                         Surface(
                             color = theme.background,
                             shape = RoundedCornerShape(5.dp),
-                            border = BorderStroke(0.5.dp, if (tool.isError) Color(0xFFF87171).copy(alpha = 0.5f) else theme.outline),
+                            border = BorderStroke(0.5.dp, if (tool.isError) MaterialTheme.colorScheme.error.copy(alpha = 0.5f) else theme.outline),
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(
@@ -3423,7 +3423,7 @@ fun PiWebToolCallCard(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 lineHeight = 16.sp,
-                                color = if (tool.isError) Color(0xFFEF4444) else theme.textSecondary,
+                                color = if (tool.isError) MaterialTheme.colorScheme.error else theme.textSecondary,
                                 modifier = Modifier.padding(8.dp)
                             )
                         }
@@ -3437,7 +3437,7 @@ fun PiWebToolCallCard(
                         ) {
                             Button(
                                 onClick = { onApproveTool(true) },
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF16A34A)),
+                                colors = ButtonDefaults.buttonColors(containerColor = theme.success, contentColor = theme.onSuccess),
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                             ) {
@@ -3445,8 +3445,8 @@ fun PiWebToolCallCard(
                             }
                             OutlinedButton(
                                 onClick = { onApproveTool(false) },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFDC2626)),
-                                border = BorderStroke(1.dp, Color(0xFFDC2626)),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
                                 shape = RoundedCornerShape(6.dp),
                                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
                             ) {

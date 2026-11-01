@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.ui.theme.LocalAppTheme
+import com.pi.app.ui.theme.ThemePalette
 
 /** @@ -a,b +c,d @@ 区块头正则（顶层常量，避免每行/每个 Hunk 重复编译）。 */
 private val HUNK_HEADER_REGEX = Regex("""^(@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@)(.*)$""")
@@ -152,15 +153,15 @@ private fun DiffLineItem(
 
     val (bgColor, edgeColor, prefixColor, prefixChar) = when (line.type) {
         PatchLineType.ADDED -> Quadruple(
-            if (isDark) Color(0xFF132B1B) else Color(0xFFE6F7EA),
-            Color(0xFF2EA043),
-            Color(0xFF2EA043),
+            Color(if (isDark) ThemePalette.GitDiffAddBgDark else ThemePalette.GitDiffAddBgLight),
+            theme.success,
+            theme.success,
             "+"
         )
         PatchLineType.REMOVED -> Quadruple(
-            if (isDark) Color(0xFF331618) else Color(0xFFFFECEE),
-            Color(0xFFCF222E),
-            Color(0xFFCF222E),
+            Color(if (isDark) ThemePalette.GitDiffDelBgDark else ThemePalette.GitDiffDelBgLight),
+            MaterialTheme.colorScheme.error,
+            MaterialTheme.colorScheme.error,
             "-"
         )
         // CONTEXT 与（理论上不可达的）HUNK 共用一个中性样式，避免用 error() 把渲染变成崩溃
@@ -179,8 +180,8 @@ private fun DiffLineItem(
             it.first >= 0 && it.last < source.length && it.first <= it.last
         }
         val highlightBg = when (line.type) {
-            PatchLineType.ADDED -> if (isDark) Color(0xFF1F5C2C) else Color(0xFFACECBC)
-            PatchLineType.REMOVED -> if (isDark) Color(0xFF6B181E) else Color(0xFFFFBCC3)
+            PatchLineType.ADDED -> Color(if (isDark) ThemePalette.GitDiffAddLineDark else ThemePalette.GitDiffAddLineLight)
+            PatchLineType.REMOVED -> Color(if (isDark) ThemePalette.GitDiffDelLineDark else ThemePalette.GitDiffDelLineLight)
             else -> Color.Transparent
         }
         if (range == null) {
@@ -317,10 +318,10 @@ private fun DiffSectionRow(
         else -> "文件" to trimmed.removePrefix("--- 文件:").removeSuffix("---").trim()
     }
 
-    val bannerBg = if (isDark) Color(0xFF161F2E) else Color(0xFFF1F6FD)
-    val bannerBorder = if (isDark) Color(0xFF263854) else Color(0xFFD4E3FA)
-    val badgeBg = if (isDark) Color(0xFF233550) else Color(0xFFDCEAFE)
-    val accentColor = if (isDark) Color(0xFF79B8FF) else Color(0xFF0969DA)
+    val bannerBg = Color(if (isDark) ThemePalette.GitDiffBannerBgDark else ThemePalette.GitDiffBannerBgLight)
+    val bannerBorder = Color(if (isDark) ThemePalette.GitDiffBannerBorderDark else ThemePalette.GitDiffBannerBorderLight)
+    val badgeBg = Color(if (isDark) ThemePalette.GitDiffBadgeBgDark else ThemePalette.GitDiffBadgeBgLight)
+    val accentColor = Color(if (isDark) ThemePalette.GitDiffAccentDark else ThemePalette.GitDiffAccentLight)
 
     Row(
         modifier = Modifier

@@ -246,7 +246,7 @@ private fun GitFileListContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = Color(0xFFCF222E), modifier = Modifier.size(32.dp))
+                    Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(32.dp))
                     Text(text = "读取 Git 状态失败", fontWeight = FontWeight.Bold, color = theme.textPrimary)
                     Text(text = error, fontSize = 11.5.sp, color = theme.textMuted)
                     Button(onClick = onRetry) {
@@ -273,7 +273,7 @@ private fun GitFileListContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Icon(Icons.Default.CheckCircleOutline, contentDescription = null, tint = Color(0xFF2EA043), modifier = Modifier.size(36.dp))
+                    Icon(Icons.Default.CheckCircleOutline, contentDescription = null, tint = theme.success, modifier = Modifier.size(36.dp))
                     Text("工作目录很干净", fontWeight = FontWeight.Bold, color = theme.textPrimary)
                     Text("没有未提交的代码改动", fontSize = 11.5.sp, color = theme.textMuted)
                 }
@@ -311,14 +311,14 @@ private fun GitFileListContent(
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2EA043)
+                                    color = theme.success
                                 )
                                 Text(
                                     text = "-${status.deletions}",
                                     fontFamily = FontFamily.Monospace,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFCF222E)
+                                    color = MaterialTheme.colorScheme.error
                                 )
                             }
                         }
@@ -353,9 +353,9 @@ private fun GitFileRowItem(
         file.status.equals("added", ignoreCase = true) || file.status.equals("untracked", ignoreCase = true)
 
     val badgeColor = when {
-        isDeleted -> Color(0xFFCF222E)
-        isAdded -> Color(0xFF2EA043)
-        else -> Color(0xFFD29922)
+        isDeleted -> MaterialTheme.colorScheme.error
+        isAdded -> theme.success
+        else -> theme.warning
     }
 
     val normPath = file.filePath.replace('\\', '/')
@@ -605,7 +605,7 @@ private fun GitFileDetailView(
                                     text = "+${formatDiffStat(stats.first)}",
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFF2EA043),
+                                    color = theme.success,
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -618,7 +618,7 @@ private fun GitFileDetailView(
                                     text = "-${formatDiffStat(stats.second)}",
                                     fontSize = 10.5.sp,
                                     fontWeight = FontWeight.Bold,
-                                    color = Color(0xFFCF222E),
+                                    color = MaterialTheme.colorScheme.error,
                                     maxLines = 1,
                                     softWrap = false
                                 )
@@ -672,7 +672,7 @@ private fun GitFileDetailView(
                         diffError != null -> {
                             Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("加载 Diff 失败", fontWeight = FontWeight.Bold, color = Color(0xFFCF222E), fontSize = 12.sp)
+                                    Text("加载 Diff 失败", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                     Text(diffError!!, fontSize = 11.sp, color = theme.textMuted)
                                     Button(onClick = { loadDiff() }) { Text("重试") }
                                 }
@@ -716,7 +716,7 @@ private fun GitFileDetailView(
                         sourceError != null -> {
                             Box(modifier = Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    Text("读取文件内容失败", fontWeight = FontWeight.Bold, color = Color(0xFFCF222E), fontSize = 12.sp)
+                                    Text("读取文件内容失败", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                                     Text(sourceError!!, fontSize = 11.sp, color = theme.textMuted)
                                     Button(onClick = { loadSource() }) { Text("重试") }
                                 }

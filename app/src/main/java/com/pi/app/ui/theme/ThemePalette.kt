@@ -144,6 +144,49 @@ object ThemePalette {
     val DarkOnErrorContainer: Int = 0xFFFFB4AB.toInt()
 
     // ══════════════════════════════════════════════════════════════
+    // 功能色：未读提示（info）/ 置顶（pin）
+    //
+    // info：原裸写 #0891B2（白底 3.68:1 不达标）。浅色取 #0E7490 = 5.36:1，
+    //       深色取 #22D3EE = 9.57:1（在四套深色卡片上均 >= 9.4）。
+    // pin：原裸写 #EAB308（白底 1.92:1，几乎看不见）。这是非文本图标（WCAG 1.4.11 需 3:1），
+    //      浅色取 #D97706 = 3.19:1 仍保持琥珀观感，深色保留 #EAB308 = 9.02:1。
+    // ══════════════════════════════════════════════════════════════
+    val LightInfo: Int = 0xFF0E7490.toInt()
+    val DarkInfo: Int = 0xFF22D3EE.toInt()
+    val LightPinActive: Int = 0xFFD97706.toInt()
+    val DarkPinActive: Int = 0xFFEAB308.toInt()
+
+    // ══════════════════════════════════════════════════════════════
+    // Git diff 视图 / 深色代码块 diff 前景
+    //
+    // 这两组是「git 变更」自带的固定色调（绿增红删 + 蓝色 banner），属于组件的视觉标识，
+    // 不随 5 套主题变化（与扫码取景、大图查看器的深色层同理）。放在这里是为了让业务组件
+    // 不再出现裸 Color(0x...)，而不是为了把它们主题化。
+    // ══════════════════════════════════════════════════════════════
+    val GitDiffAddBgDark: Int = 0xFF132B1B.toInt()
+    val GitDiffAddBgLight: Int = 0xFFE6F7EA.toInt()
+    val GitDiffDelBgDark: Int = 0xFF331618.toInt()
+    val GitDiffDelBgLight: Int = 0xFFFFECEE.toInt()
+    val GitDiffAddLineDark: Int = 0xFF1F5C2C.toInt()
+    val GitDiffAddLineLight: Int = 0xFFACECBC.toInt()
+    val GitDiffDelLineDark: Int = 0xFF6B181E.toInt()
+    val GitDiffDelLineLight: Int = 0xFFFFBCC3.toInt()
+    val GitDiffBannerBgDark: Int = 0xFF161F2E.toInt()
+    val GitDiffBannerBgLight: Int = 0xFFF1F6FD.toInt()
+    val GitDiffBannerBorderDark: Int = 0xFF263854.toInt()
+    val GitDiffBannerBorderLight: Int = 0xFFD4E3FA.toInt()
+    val GitDiffBadgeBgDark: Int = 0xFF233550.toInt()
+    val GitDiffBadgeBgLight: Int = 0xFFDCEAFE.toInt()
+    val GitDiffAccentDark: Int = 0xFF79B8FF.toInt()
+    val GitDiffAccentLight: Int = 0xFF0969DA.toInt()
+
+    /** 深色代码块里 diff 行的前景（叠在 CodeBgDark 上） */
+    val DiffAddFgDark: Int = 0xFF86EFAC.toInt()
+    val DiffDelFgDark: Int = 0xFFFCA5A5.toInt()
+    val DiffHunkFgDark: Int = 0xFF93C5FD.toInt()
+    val DiffHunkBaseDark: Int = 0xFF3B82F6.toInt()
+
+    // ══════════════════════════════════════════════════════════════
     // 功能色：星标 / 能力图标
     // ══════════════════════════════════════════════════════════════
 

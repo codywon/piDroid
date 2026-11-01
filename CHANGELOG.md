@@ -2,6 +2,61 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.21] - 2026-11-01
+
+### 🎨 收尾：业务组件不再有裸色值（149 处 → 0）
+
+前两版只改到「主题层 + 3 个弹窗」，会话列表、聊天流、设置页、Git 视图里仍散落着
+149 处写死的十六进制色。这一版全部收敛成语义 Token，浅色/深色自动适配。
+
+#### 你最容易看到的三处
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| **用户消息气泡** | 写死 `#232C3F` / `#EFF6FF`，换到琥珀或翡翠主题仍是蓝底 | 跟随主题的 `primaryContainer`，文字对比度 9.03~13.89:1 |
+| **Markdown 提示块**（TIP/IMPORTANT/WARNING/CAUTION/NOTE） | 5 个颜色深浅共用，深色模式只有 3.0~3.3:1 | 5 个语义色分深浅：TIP 5.02/9.93、IMPORTANT 5.70/6.36、WARNING 7.09/10.36、CAUTION 6.47/6.25、NOTE 5.19/6.85 |
+| **会话列表状态** | 等待确认 `#F59E0B`(白底 2.16)、未读 `#0891B2`(3.68)、置顶图钉 `#EAB308`(**1.92**) | 语义 warning(7.09)、新增 info `#0E7490`(5.36)、新增 pin `#D97706`(3.19，图标档 ≥3:1) |
+
+#### 其它一并收敛
+
+- **浮动按钮 / 确认按钮**前景改 `theme.onPrimary`（琥珀主题下白字只有 1.67:1）
+- **删除类按钮**统一 `colorScheme.error` + `colorScheme.onError`（原来 8 种红：`#CF222E`/`#DC2626`/`#EF4444`/`#EF5350`/`#F85149`/`#991B1B`/`#DF2A39`/`#F87171`）
+- **设置页**：连接状态、Vision 标签、删除项、更新提示等 32 处裸色 → `success`/`warning`/`error`
+- **Git 视图**：增删/修改标记、diff banner、词级高亮，11+12 处 → 语义色 + `ThemePalette` 常量
+- **技能面板**作用域徽标：原写死紫/蓝 + 深色专用浅字，浅色下几乎读不出 → 语义色
+- 阈值提示、缓存率、模型能力图标、置顶区高亮等全部走 Token
+
+#### 现状
+
+业务组件里 `Color(0x...)` 只剩 20 处，且都是**有意保留**：Markdown 图表分类色（12）、
+扫码取景与大图查看器的沉浸深色层（8）——它们不随主题变化，理由已写进 `ThemePalette` 注释。
+
+`ColorContrastTest` 增至 16 组：新增 info / pin / 成功按钮前景 / 用户气泡四项断言。
+
+### 🐛 侧边栏「分叉 / Clone」恢复可用：不再 415
+
+侧边栏长按分叉必然失败，弹的是 `分叉失败：Server HTTP 415: {"error":"Content-Type must be
+application/json","code":"request-denied"}`。
+
+**原因**：pi-web 的 `POST /api/sessions/[id]/fork` 在解析 `params` 之前就先跑
+`hasJsonContentType()`（`lib/request-security.ts`），只要请求头不是 `application/json`
+或 `application/*+json` 就直接 415 —— 它其实**根本不读 body**。而 App 这边发的是
+`"".toRequestBody(null)`：空 body 且不设 Content-Type，于是被稳稳拒在门口。
+本机实测对 30141 验证过：不带 Content-Type → 415；改成 `application/json` + `{}` →
+越过守卫进到业务层（返回 404 `Session not found`）。
+
+现在与 pi-web 前端一致：`Content-Type: application/json` + body `{}`。
+
+**顺带对齐响应结构**：0.13 起返回的是 `{ sessionId, session }`，新会话的 `path` / `name`
+已经挪进 `session`（SessionInfo）里，顶层没有了。旧代码只读顶层 → 两者恒为 null，
+分叉出来的会话在手机上被命名成「源标题 · 分叉」，刷新后又被服务端的「源标题 · 3f9c」
+覆盖，看着像丢了东西。解析现在优先读 `session`、顶层做兜底（兼容老网关），并抽成纯逻辑
+`ForkSessionResponseParsing`，附 6 组 JVM 单测（新形状 / 旧形状 / 无名源会话 / 空串回退 /
+缺 sessionId / 非对象响应）。
+
+消息级「新会话」分叉（`POST /api/agent/{id}` `{type:"fork"}`）不受影响：那条路由不校验
+Content-Type，本来就发 JSON。
+
 ## [1.8.20] - 2026-11-01
 
 ### 🎨 浅色模式：代码块不再是一块黑砖

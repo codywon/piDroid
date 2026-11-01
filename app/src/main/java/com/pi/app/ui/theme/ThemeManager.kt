@@ -152,6 +152,18 @@ enum class AppTheme(
     val starInactive: Color
         get() = Color(if (isDark) ThemePalette.DarkStarInactive else ThemePalette.LightStarInactive)
 
+    /** 未读 / 新会话提示色（原裸写 #0891B2，白底仅 3.68:1） */
+    val info: Color
+        get() = Color(if (isDark) ThemePalette.DarkInfo else ThemePalette.LightInfo)
+
+    /** 置顶图钉（非文本图标，需 >= 3:1；原 #EAB308 白底仅 1.92:1） */
+    val pinActive: Color
+        get() = Color(if (isDark) ThemePalette.DarkPinActive else ThemePalette.LightPinActive)
+
+    /** 压在 [success] 上的前景色：浅色白字 5.02:1，深色深墨 11.40:1（白字仅 1.70:1） */
+    val onSuccess: Color
+        get() = Color(ArgbContrast.bestOn(if (isDark) ThemePalette.DarkSuccess else ThemePalette.LightSuccess))
+
     /** 「支持思考推理」能力图标（替代原先裸写的紫色常量） */
     val featureThinking: Color
         get() = Color(if (isDark) ThemePalette.DarkFeatureThinking else ThemePalette.LightFeatureThinking)
