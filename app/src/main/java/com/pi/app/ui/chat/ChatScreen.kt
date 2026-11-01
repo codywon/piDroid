@@ -2566,7 +2566,7 @@ fun ChatScreen(
                 }
                 draftPrefs.saveSessionDraftWithUndo(sessionId, inputText, null)
                 artifactTitle = null
-                android.widget.Toast.makeText(context, "已引用到输入框: $mentionText", Toast.LENGTH_SHORT).show()
+                android.widget.Toast.makeText(context, "已引用到输入框: $mentionText", android.widget.Toast.LENGTH_SHORT).show()
             },
             onDownloadFile = { path ->
                 openArtifactExternally()

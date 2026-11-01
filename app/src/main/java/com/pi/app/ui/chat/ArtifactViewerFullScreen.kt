@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -21,11 +22,16 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.WrapText
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -50,21 +56,18 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.automirrored.filled.WrapText
-import androidx.compose.material.icons.filled.AlternateEmail
-import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.ui.text.style.TextAlign
-import com.pi.app.ui.files.CodeSyntaxHighlighter
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.FilePlaybackSource
 import com.pi.app.data.model.formatBytes
+import com.pi.app.network.FileListParsing
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.PdfDocumentView
 import com.pi.app.ui.components.SvgWebViewCanvas
+import com.pi.app.ui.files.CodeSyntaxHighlighter
 import com.pi.app.ui.theme.LocalAppTheme
 import java.io.File
 
@@ -163,7 +166,7 @@ internal fun ArtifactViewerFullScreen(
                         Column {
                             val displayPath = remember(path, sessionCwd) {
                                 if (path.isNullOrBlank()) title
-                                else FileLinks.relativePath(path, sessionCwd).removePrefix("./")
+                                else FileListParsing.relativePath(path, sessionCwd).removePrefix("./")
                             }
                             Text(
                                 text = displayPath,
@@ -208,7 +211,7 @@ internal fun ArtifactViewerFullScreen(
                         if (onAtMention != null && !path.isNullOrBlank()) {
                             IconButton(
                                 onClick = {
-                                    val rel = FileLinks.relativePath(path, sessionCwd).removePrefix("./")
+                                    val rel = FileListParsing.relativePath(path, sessionCwd).removePrefix("./")
                                     onAtMention(rel)
                                 },
                                 modifier = Modifier.size(36.dp)

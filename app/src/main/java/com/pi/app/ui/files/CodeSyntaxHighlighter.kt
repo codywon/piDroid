@@ -4,7 +4,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontPosture
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import com.pi.app.ui.theme.AppTheme
 import java.util.Locale
@@ -19,6 +19,7 @@ enum class CodeTokenType {
     NUMBER,
     FUNCTION_CALL,
     PROPERTY_KEY,
+    TYPE_OR_ANNOTATION,
     PUNCTUATION,
     PLAIN_TEXT
 }
@@ -233,7 +234,7 @@ object CodeSyntaxHighlighter {
                     CodeTokenType.KEYWORD -> SpanStyle(color = theme.primary, fontWeight = FontWeight.Bold)
                     CodeTokenType.PROPERTY_KEY -> SpanStyle(color = theme.primary, fontWeight = FontWeight.SemiBold)
                     CodeTokenType.STRING -> SpanStyle(color = theme.success)
-                    CodeTokenType.COMMENT -> SpanStyle(color = theme.textMuted, fontStyle = FontPosture.Italic)
+                    CodeTokenType.COMMENT -> SpanStyle(color = theme.textMuted, fontStyle = FontStyle.Italic)
                     CodeTokenType.NUMBER -> SpanStyle(color = theme.warning)
                     CodeTokenType.FUNCTION_CALL -> SpanStyle(color = theme.featureThinking)
                     CodeTokenType.PUNCTUATION -> SpanStyle(color = theme.textSecondary)
@@ -272,7 +273,7 @@ object CodeSyntaxHighlighter {
                         CodeTokenType.KEYWORD -> SpanStyle(color = theme.primary, fontWeight = FontWeight.Bold)
                         CodeTokenType.PROPERTY_KEY -> SpanStyle(color = theme.primary, fontWeight = FontWeight.SemiBold)
                         CodeTokenType.STRING -> SpanStyle(color = theme.success)
-                        CodeTokenType.COMMENT -> SpanStyle(color = theme.textMuted, fontStyle = FontPosture.Italic)
+                        CodeTokenType.COMMENT -> SpanStyle(color = theme.textMuted, fontStyle = FontStyle.Italic)
                         CodeTokenType.NUMBER -> SpanStyle(color = theme.warning)
                         CodeTokenType.FUNCTION_CALL -> SpanStyle(color = theme.featureThinking)
                         CodeTokenType.PUNCTUATION -> SpanStyle(color = theme.textSecondary)
