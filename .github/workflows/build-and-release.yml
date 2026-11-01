@@ -1,4 +1,4 @@
-name: Build & Release piDroid APK
+name: Build & Release πDroid APK
 
 on:
   push:
@@ -111,6 +111,8 @@ jobs:
             echo "Error: No release APK found!"
             exit 1
           fi
+          # APK 资产名保持 ASCII slug：下载走 GitHub / 国内镜像的 URL path，
+          # 非 ASCII 文件名会被二次编码，部分镜像站会 404。展示名在 Release 标题里。
           TARGET_NAME="piDroid-${VERSION}.apk"
 
           cp "$APK_PATH" "$TARGET_NAME"
@@ -146,7 +148,7 @@ jobs:
           fi
 
           if [ ! -s "$NOTES_FILE" ]; then
-            echo "### 🚀 piDroid 官方正式发布版本 ${VERSION}" > "$NOTES_FILE"
+            echo "### 🚀 πDroid 官方正式发布版本 ${VERSION}" > "$NOTES_FILE"
             echo "- 修复已知问题并提升稳定性" >> "$NOTES_FILE"
           fi
 
@@ -157,7 +159,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
         with:
           tag_name: ${{ steps.prepare_apk.outputs.version }}
-          name: "piDroid ${{ steps.prepare_apk.outputs.version }}"
+          name: "πDroid ${{ steps.prepare_apk.outputs.version }}"
           draft: false
           prerelease: false
           generate_release_notes: true

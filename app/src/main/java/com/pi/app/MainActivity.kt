@@ -184,7 +184,7 @@ class MainActivity : ComponentActivity() {
                     append("● 远程主机: $devName")
                 }
             } else {
-                title = if (totalSessions > 0) "piDroid 常驻守护中 · $completedCount 项任务就绪" else "piDroid · 网关常驻守护中"
+                title = if (totalSessions > 0) "πDroid 常驻守护中 · $completedCount 项任务就绪" else "πDroid · 网关常驻守护中"
                 content = "主机: $devName | 保持长连接与后台实时对账"
                 subText = if (totalSessions > 0) "$completedCount 项就绪" else "守护中"
                 bigText = buildString {

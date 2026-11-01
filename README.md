@@ -1,6 +1,6 @@
-# piDroid 📱
+# πDroid 📱
 
-[![Build & Release piDroid APK](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml)
+[![Build & Release πDroid APK](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml/badge.svg)](https://github.com/codywon/piDroid/actions/workflows/build-and-release.yml)
 [![Latest Release](https://img.shields.io/github/v/release/codywon/piDroid?color=blue&label=Latest%20Release)](https://github.com/codywon/piDroid/releases)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

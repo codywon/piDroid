@@ -1126,7 +1126,7 @@ fun SessionListScreen(
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = if (isConfigured) currentWorkspaceName else "piDroid",
+                                    text = if (isConfigured) currentWorkspaceName else "πDroid",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold,
                                     maxLines = 1,

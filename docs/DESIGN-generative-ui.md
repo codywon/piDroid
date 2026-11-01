@@ -257,7 +257,7 @@ body             { box-sizing: border-box; min-height: 0; }
 对标 `pi-generative-ui` 的导出能力，并在移动端针对分享做深度优化：
 
 1. **入口与时机**：仅当微组件为 SVG（`payload.isSvg`）且已生成完成时，在卡片标题栏右侧（全屏图标旁）及全屏顶栏展示「下载」图标；
-2. **两级导出**：点击弹出菜单，**PNG 为主**（「保存图片 (PNG)」直接存入系统相册 `Pictures/piDroid`，微信/通讯软件可一键发送即开）；**SVG 为辅**（「保存矢量图 (SVG)」存入 `Download/piDroid`，供设计软件/二次编辑使用）；
+2. **两级导出**：点击弹出菜单，**PNG 为主**（「保存图片 (PNG)」直接存入系统相册 `Pictures/πDroid`，微信/通讯软件可一键发送即开）；**SVG 为辅**（「保存矢量图 (SVG)」存入 `Download/πDroid`，供设计软件/二次编辑使用）；
 3. **自包含防黑块**：导出的 `.svg` 文件**绝非裸代码写入**，而是通过 `serializeSelfContainedSvg` 在 `<svg>` 内部内联注入当前深/浅色模式的 `<style>` 色阶定义与背景底色矩形，保证文件发给第三方、在外部 Chrome / Figma 打开时**绝不再回退变黑块**。
 
 ## 4. 已知边界与未做的事

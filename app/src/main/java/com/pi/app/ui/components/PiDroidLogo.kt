@@ -1,22 +1,30 @@
 package com.pi.app.ui.components
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.pi.app.R
 import com.pi.app.ui.theme.ArgbContrast
 import com.pi.app.ui.theme.ThemePalette
 
 /**
- * piDroid 极简扁平化品牌图标组件：
- * 纯色圆角底块 + 居中单轮廓几何 π 符号
+ * πDroid 品牌标识：纯色圆角底块 + 居中衬线字母 π（横梁两端下折、竖腿带衬脚）。
+ *
+ * 字形来源是 `res/drawable/ic_pi_glyph.xml`（108 视口、对角半径 34.9，落在
+ * 自适应图标 72dp 圆形遮罩安全区内），与桌面图标共用同一份矢量，不做二次手绘，
+ * 因此改字形只需改那一处。
  *
  * 底块与 π 的颜色是 **theme-invariant**（不随 5 套主题变色）：logo 是品牌标识，
  * 若跟随主题，AMBER 主题下会出现亮黄底块。前景也不能用 `theme.primary` 推导——
@@ -30,52 +38,19 @@ fun PiDroidLogo(
 ) {
     val blockColor = Color(ThemePalette.BrandLogoBackground)
     val glyphColor = Color(ArgbContrast.bestOn(ThemePalette.BrandLogoBackground))
-    Canvas(modifier = modifier.size(size)) {
-        val w = this.size.width
-        val h = this.size.height
-        val s = w / 108f
-
-        // 1. 扁平化纯色圆角底块
-        drawRoundRect(
-            color = blockColor,
-            topLeft = Offset.Zero,
-            size = Size(w, h),
-            cornerRadius = CornerRadius(24f * s, 24f * s)
+    Box(
+        modifier = modifier
+            .size(size)
+            // 圆角比例与 drawable 内 108 视口的 24/108 保持一致
+            .clip(RoundedCornerShape(size * 0.222f))
+            .background(blockColor),
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            painter = painterResource(R.drawable.ic_pi_glyph),
+            contentDescription = null,
+            colorFilter = ColorFilter.tint(glyphColor),
+            modifier = Modifier.fillMaxSize()
         )
-
-        // 2. 居中单轮廓几何 π 符号
-        val piPath = Path().apply {
-            // 顶部横梁
-            addRoundRect(
-                androidx.compose.ui.geometry.RoundRect(
-                    left = 26f * s,
-                    top = 28f * s,
-                    right = 82f * s,
-                    bottom = 39f * s,
-                    cornerRadius = CornerRadius(4f * s, 4f * s)
-                )
-            )
-            // 左侧竖柱
-            addRoundRect(
-                androidx.compose.ui.geometry.RoundRect(
-                    left = 36f * s,
-                    top = 34f * s,
-                    right = 47f * s,
-                    bottom = 80f * s,
-                    cornerRadius = CornerRadius(4f * s, 4f * s)
-                )
-            )
-            // 右侧竖柱
-            addRoundRect(
-                androidx.compose.ui.geometry.RoundRect(
-                    left = 61f * s,
-                    top = 34f * s,
-                    right = 72f * s,
-                    bottom = 80f * s,
-                    cornerRadius = CornerRadius(4f * s, 4f * s)
-                )
-            )
-        }
-        drawPath(path = piPath, color = glyphColor)
     }
 }

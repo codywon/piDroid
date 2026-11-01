@@ -6,7 +6,7 @@
 
 ## 1. APK 编译与发版规范（核心重点）
 
-本仓库为 **piDroid**（Android 客户端 + 伴侣网关）。正式发布证书（Release Keystore）严格受云端安全密钥保护，而本机通常没有 Android SDK / NDK。因此**编译与验证只有一条合法通道：GitHub Actions**。
+本仓库为 **πDroid**（Android 客户端 + 伴侣网关）。正式发布证书（Release Keystore）严格受云端安全密钥保护，而本机通常没有 Android SDK / NDK。因此**编译与验证只有一条合法通道：GitHub Actions**。
 
 ### 1.1 铁律：一律禁止本地编译（No Local Builds）
 
@@ -50,7 +50,7 @@
      ```
      工作流监听到 `v*` 开头的 Tag 推送，将自动开始编译、签名并发布 Release。
    - **方式 B（手动触发）**:
-     在 GitHub 网页端的 `Actions` 页面，选择 `Build & Release piDroid APK`，点击 `Run workflow`，输入对应的版本 Tag（例如 `v1.7.33`）并触发。
+     在 GitHub 网页端的 `Actions` 页面，选择 `Build & Release πDroid APK`，点击 `Run workflow`，输入对应的版本 Tag（例如 `v1.7.33`）并触发。
 
 5. **云端流水线自动完成的事项**:
    - 读取 GitHub Secrets 自动解码 `keystore/release.jks`（杜绝密钥本地泄漏）；

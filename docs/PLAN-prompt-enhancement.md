@@ -2,7 +2,7 @@
 
 状态：**已批准并实施（首版）**；实现与验收现状见 `docs/DESIGN-prompt-enhancement.md`。
 本文件保留为原始方案与验收矩阵，用于后续回归对照。
-范围：piDroid Android 客户端与本仓库伴侣网关。
+范围：πDroid Android 客户端与本仓库伴侣网关。
 
 ## 1. 标题功能核查与复用结论
 

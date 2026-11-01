@@ -1,4 +1,4 @@
-# 🛡️ piDroid 统合伴侣网关 (Unified Companion Launcher)
+# 🛡️ πDroid 统合伴侣网关 (Unified Companion Launcher)
 
 为 `pi-web` 提供移动端专用的零侵入安全反向代理网关与一键统合启动中心：
 - **🚀 一键统合启动 (Unified Launcher)**：单命令/单脚本自动拉起官方原生 `pi-web` 与伴侣网关，保持官方 100% 独立平滑更新；

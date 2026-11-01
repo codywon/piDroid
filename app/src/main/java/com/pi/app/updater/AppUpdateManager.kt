@@ -69,6 +69,12 @@ object AppUpdateManager {
 
     private const val TAG = "AppUpdateManager"
     private const val GITHUB_REPO_OWNER = "codywon"
+
+    /**
+     * 注意：这是 GitHub 仓库的**真实标识符**，不是展示名。App 的品牌名已改为 πDroid，
+     * 但仓库仍是 codywon/piDroid —— 这里保持 ASCII 原样，否则 releases/latest 会 404、
+     * 自动更新直接断掉。若将来在 GitHub 上重命名仓库，再同步改这一行（旧链接靠重定向存活）。
+     */
     private const val GITHUB_REPO_NAME = "piDroid"
     private const val GITHUB_API_URL = "https://api.github.com/repos/$GITHUB_REPO_OWNER/$GITHUB_REPO_NAME/releases/latest"
 
@@ -243,7 +249,7 @@ object AppUpdateManager {
             val updateInfo = UpdateInfo(
                 tagName = tagName,
                 versionName = tagName.removePrefix("v").removePrefix("V"),
-                releaseTitle = if (releaseTitle.isNotBlank()) releaseTitle else "piDroid $tagName",
+                releaseTitle = if (releaseTitle.isNotBlank()) releaseTitle else "πDroid $tagName",
                 releaseNotes = releaseNotes,
                 downloadUrl = targetDownloadUrl,
                 mirrorUrls = mirrorUrls,

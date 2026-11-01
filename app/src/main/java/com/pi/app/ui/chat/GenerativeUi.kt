@@ -439,7 +439,7 @@ fun serializeSelfContainedSvg(payload: WidgetPayload, isDark: Boolean): String {
 
     val styleBlock = """
 <style>
-/* 自包含设计令牌与色阶定义（piDroid 导出） */
+/* 自包含设计令牌与色阶定义（πDroid 导出） */
 $tokens
 svg { background-color: $bgHex; }
 </style>
@@ -623,8 +623,8 @@ internal object WidgetThumbs {
  * SVG 导出与存储工具。
  *
  * 负责两件事：
- * 1. 保存高清 PNG 图片到系统相册 (Pictures/piDroid)；
- * 2. 保存自包含 SVG 矢量文件到系统下载目录 (Download/piDroid)。
+ * 1. 保存高清 PNG 图片到系统相册 (Pictures/πDroid)；
+ * 2. 保存自包含 SVG 矢量文件到系统下载目录 (Download/πDroid)。
  */
 internal object WidgetExportHelper {
 
@@ -636,7 +636,7 @@ internal object WidgetExportHelper {
     }
 
     /**
-     * 将 Bitmap 保存到系统相册 (Pictures/piDroid)
+     * 将 Bitmap 保存到系统相册 (Pictures/πDroid)
      */
     fun saveImageToGallery(context: Context, bitmap: Bitmap, title: String): Result<String> {
         val name = cleanFilename(title, "widget")
@@ -648,7 +648,7 @@ internal object WidgetExportHelper {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
                 put(MediaStore.MediaColumns.MIME_TYPE, "image/png")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/piDroid")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/πDroid")
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
             }
@@ -667,12 +667,12 @@ internal object WidgetExportHelper {
                 contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(uri, contentValues, null, null)
             }
-            "Pictures/piDroid/$filename"
+            "Pictures/πDroid/$filename"
         }
     }
 
     /**
-     * 将自包含 SVG 文本保存到下载目录 (Download/piDroid)
+     * 将自包含 SVG 文本保存到下载目录 (Download/πDroid)
      */
     fun saveSvgToDownloads(context: Context, svgContent: String, title: String): Result<String> {
         val name = cleanFilename(title, "diagram")
@@ -684,7 +684,7 @@ internal object WidgetExportHelper {
                 val contentValues = ContentValues().apply {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
                     put(MediaStore.MediaColumns.MIME_TYPE, "image/svg+xml")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/piDroid")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/πDroid")
                     put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
 
@@ -699,12 +699,12 @@ internal object WidgetExportHelper {
                 contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
                 resolver.update(uri, contentValues, null, null)
             } else {
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "piDroid")
+                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "πDroid")
                 if (!dir.exists()) dir.mkdirs()
                 val file = File(dir, filename)
                 file.writeText(svgContent, Charsets.UTF_8)
             }
-            "Download/piDroid/$filename"
+            "Download/πDroid/$filename"
         }
     }
 }

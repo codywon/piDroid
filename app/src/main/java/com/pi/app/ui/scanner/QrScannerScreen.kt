@@ -155,7 +155,7 @@ fun QrScannerScreen(
                         val msg = if (barcodes.isEmpty()) {
                             "未在所选图片中识别到二维码"
                         } else {
-                            "该二维码不是有效的 piDroid 配对码"
+                            "该二维码不是有效的 πDroid 配对码"
                         }
                         Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                     }

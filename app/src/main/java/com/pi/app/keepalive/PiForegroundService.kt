@@ -32,7 +32,7 @@ class PiForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "piDroid · 网关守护运行中"
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "πDroid · 网关守护运行中"
         val content = intent?.getStringExtra(EXTRA_CONTENT) ?: "保持长连接与后台实时同步..."
         val subText = intent?.getStringExtra(EXTRA_SUB_TEXT)
         val bigText = intent?.getStringExtra(EXTRA_BIG_TEXT)
@@ -116,7 +116,7 @@ class PiForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "piDroid 常驻通知栏保活服务",
+                "πDroid 常驻通知栏保活服务",
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "在通知栏常驻显示网关连接与后台 Agent 任务状态，防止锁屏断连"
@@ -147,7 +147,7 @@ class PiForegroundService : Service() {
 
         fun start(
             context: Context,
-            title: String = "piDroid · 网关守护已就绪",
+            title: String = "πDroid · 网关守护已就绪",
             content: String = "长连接保活与实时同步运行中",
             subText: String? = null,
             bigText: String? = null,

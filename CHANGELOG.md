@@ -1,6 +1,48 @@
 # Changelog
 
-All notable changes to the piDroid application will be documented in this file.
+All notable changes to the πDroid application will be documented in this file.
+
+## [1.8.24] - 2026-11-01
+
+### 🏷️ 正式更名为 πDroid，图标换成字母 π
+
+品牌名从 `piDroid` 改为 **πDroid**；桌面图标从「三块圆角矩形拼出来的 π」换成一条连续轮廓的
+**衬线字母 π**（横梁两端下折、竖腿带衬脚）。
+
+#### ① 名字一次改全
+
+App 名、桌面图标、前台服务通知标题、扫码页配对码提示、会话列表工作区回退名、设置页「关于」行、
+生成式 UI 导出目录（`Pictures/πDroid`、`Download/πDroid`）全部换新名。
+
+`app_name` 统一收进 `res/values/strings.xml`，Manifest 不再硬编码 —— 此前 `strings.xml` 写 `PiDroid`、
+`AndroidManifest` 写 `piDroid`，两处大小写还不一致，改一处就漏一处。
+
+#### ② 图标是单一路径的矢量
+
+新字形是 `res/drawable/ic_pi_glyph.xml`（108 视口、字形 51.7×47.1、对角半径 34.9），
+落在自适应图标 72dp 圆形遮罩的安全区内，圆形裁切不会切掉衬脚。同时补上 Android 13 的
+**主题图标**（`<monochrome>`）：此前缺这一项，系统着色时图标会被当成普通位图缩成小方块。
+
+App 内 logo 直接复用同一份矢量（tint 取实际底色的最佳前景，仍是 14.6:1），不再单独手绘路径 ——
+以后调字形只改一处。
+
+#### ③ 机器标识特意没改名
+
+这些地方保留 ASCII `piDroid`，改了会真的坏掉：
+
+| 位置 | 改了会怎样 |
+|---|---|
+| `AppUpdateManager.GITHUB_REPO_NAME` | 仓库仍叫 `codywon/piDroid`，改名后 `releases/latest` 直接 404，自动更新断掉 |
+| `User-Agent` | HTTP 头只允许 ISO-8859-1，塞 π 会抛异常 |
+| APK 资产名 `piDroid-<ver>.apk` | 下载走 URL path，镜像站对非 ASCII 文件名不稳定 |
+| wake lock tag / prefs key / 更新临时文件名 | 内部标识，改了丢「忽略此版本」记录 |
+
+历史导出的图片与 SVG 仍在旧目录 `Pictures/piDroid`、`Download/piDroid`，不会自己搬家。
+
+### 🧩 补齐 1.8.23 漏提交的分叉响应解析
+
+`PiApiClient` 里引用的 `ForkSessionResponseParsing` 在 1.8.23 提交时漏了入库（tag `v1.8.23`
+因此编译失败、没有安装包），本版一并补上源码与回归测试。
 
 ## [1.8.23] - 2026-11-01
 
