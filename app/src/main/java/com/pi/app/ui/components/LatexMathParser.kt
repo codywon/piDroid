@@ -16,6 +16,24 @@ import androidx.compose.ui.unit.sp
 object LatexMathParser {
 
     /**
+     * 整段文本就是一条公式时使用（块级公式卡片的原生兜底、`\(…\)` 之外的裸 LaTeX）。
+     *
+     * 之所以要有这个入口：块级公式的内容**不含 `$` 定界符**，旧实现把它塞进
+     * [appendTextWithMath]，而那个函数只对 `$…$` 片段分词，于是整段 LaTeX
+     * 被逐字符原样吐出（线上截图里公式卡片显示 `\text{总放线长度 } L = \Delta X…` 的来源）。
+     */
+    fun appendFormula(
+        formula: String,
+        builder: AnnotatedString.Builder,
+        isBlock: Boolean = false,
+        textColor: Color = Color.Unspecified
+    ) {
+        val raw = formula.trim()
+        if (raw.isEmpty()) return
+        renderFormulaToBuilder(raw, builder, isUser = false, isBlock = isBlock, textColor = textColor)
+    }
+
+    /**
      * 将包含 LaTeX 数学语法的文本解析并以带排版样式的 AnnotatedString 写入 builder
      */
     fun appendTextWithMath(
@@ -215,6 +233,9 @@ object LatexMathParser {
                 '/' -> { tokens.add(MathToken.Operator(" / ")); i++; continue }
                 '~' -> { tokens.add(MathToken.Operator(" ~ ")); i++; continue }
                 ',' -> { tokens.add(MathToken.Text(", ")); i++; continue }
+                // 环境里的对齐制表符 `&` 与纯分组用的 `{}`：都不该出现在正文里
+                '&' -> { tokens.add(MathToken.Text(" ")); i++; continue }
+                '{', '}' -> { i++; continue }
             }
 
             if (c.isLetter()) {
@@ -247,9 +268,14 @@ object LatexMathParser {
     private fun parseCommand(formula: String, startIndex: Int): Pair<List<MathToken>, Int> {
         var i = startIndex + 1
         val len = formula.length
+        if (i >= len) return listOf(MathToken.Text("")) to i
 
-        if (i < len && (formula[i] == ',' || formula[i] == ';' || formula[i] == ':' || formula[i] == '!')) {
-            return listOf(MathToken.Text(" ")) to (i + 1)
+        // 单字符命令：`\\`（换行/分隔）、`\,` `\;` `\:` `\!`（间距）、`\{` `\%` 等转义。
+        // 必须在读字母命令之前拦下，否则 `\\` 会被读成一个空命令名。
+        when (val single = formula[i]) {
+            '\\' -> return listOf(MathToken.Text(" ; ")) to (i + 1)
+            ',', ';', ':', '!', ' ' -> return listOf(MathToken.Text(" ")) to (i + 1)
+            '{', '}', '%', '$', '#', '&', '_' -> return listOf(MathToken.Text(single.toString())) to (i + 1)
         }
 
         val cmdStart = i
@@ -257,19 +283,40 @@ object LatexMathParser {
             i++
         }
         val cmd = formula.substring(cmdStart, i)
+        if (cmd.isEmpty()) return listOf(MathToken.Text("")) to i
 
         when (cmd) {
-            "text", "mathrm", "mathbf", "mathit" -> {
+            "text", "mbox", "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "operatorname" -> {
                 val (content, nextIdx) = readBracedBlock(formula, i)
-                val cleanContent = cleanLatexCommandToUnicode(content)
-                return listOf(MathToken.Text(" $cleanContent")) to nextIdx
+                // 不做 trim：`\text{总放线长度 }` 的尾随空格是原文的一部分，
+                // 抹掉以后中文与后面的变量会粘成一串。
+                return listOf(MathToken.Text(decodeLatexContent(content))) to nextIdx
             }
-            "frac" -> {
+            "vec", "bar", "overline", "underline", "hat", "widehat", "tilde", "dot", "ddot" -> {
+                val (content, nextIdx) = readBracedBlock(formula, i)
+                val accent = when (cmd) {
+                    "vec" -> "\u20D7"
+                    "hat", "widehat" -> "\u0302"
+                    "tilde" -> "\u0303"
+                    "dot" -> "\u0307"
+                    "ddot" -> "\u0308"
+                    "bar", "overline" -> "\u0304"
+                    "underline" -> "\u0332"
+                    else -> ""
+                }
+                return listOf(MathToken.Text(decodeLatexContent(content) + accent)) to nextIdx
+            }
+            "begin", "end" -> {
+                // 环境名（aligned / cases / array …）本身不需要出现在正文里
+                val (_, nextIdx) = readBracedBlock(formula, i)
+                return listOf(MathToken.Text("")) to nextIdx
+            }
+            "frac", "dfrac", "tfrac", "cfrac" -> {
                 val (num, nextAfterNum) = readBracedBlock(formula, i)
                 val (den, nextAfterDen) = readBracedBlock(formula, nextAfterNum)
                 val cleanNum = cleanLatexCommandToUnicode(num)
                 val cleanDen = cleanLatexCommandToUnicode(den)
-                return listOf(MathToken.Text(" ($cleanNum) / ($cleanDen) ")) to nextAfterDen
+                return listOf(MathToken.Text("($cleanNum) / ($cleanDen)")) to nextAfterDen
             }
             "sqrt" -> {
                 var currentIdx = i
@@ -286,36 +333,26 @@ object LatexMathParser {
                 val resultText = if (rootDegree.isNotEmpty()) "$rootDegree√($cleanRadicand)" else "√($cleanRadicand)"
                 return listOf(MathToken.Text(resultText)) to nextIdx
             }
-            "times" -> return listOf(MathToken.Operator(" × ")) to i
-            "div" -> return listOf(MathToken.Operator(" ÷ ")) to i
-            "approx" -> return listOf(MathToken.Operator(" ≈ ")) to i
-            "pm" -> return listOf(MathToken.Operator(" ± ")) to i
-            "mp" -> return listOf(MathToken.Operator(" ∓ ")) to i
-            "cdot" -> return listOf(MathToken.Operator(" · ")) to i
-            "leq", "le" -> return listOf(MathToken.Operator(" ≤ ")) to i
-            "geq", "ge" -> return listOf(MathToken.Operator(" ≥ ")) to i
-            "neq" -> return listOf(MathToken.Operator(" ≠ ")) to i
-            "sim" -> return listOf(MathToken.Operator(" ~ ")) to i
-            "infty" -> return listOf(MathToken.Text("∞")) to i
-            "circ", "degree" -> return listOf(MathToken.Text("°")) to i
-            "Omega" -> return listOf(MathToken.Text(" Ω")) to i
-            "omega" -> return listOf(MathToken.Text(" ω")) to i
-            "mu", "micro" -> return listOf(MathToken.Text(" μ")) to i
-            "Delta" -> return listOf(MathToken.Text(" Δ")) to i
-            "delta" -> return listOf(MathToken.Text(" δ")) to i
-            "phi" -> return listOf(MathToken.Text(" φ")) to i
-            "theta" -> return listOf(MathToken.Text(" θ")) to i
-            "alpha" -> return listOf(MathToken.Text(" α")) to i
-            "beta" -> return listOf(MathToken.Text(" β")) to i
-            "gamma" -> return listOf(MathToken.Text(" γ")) to i
-            "pi" -> return listOf(MathToken.Text(" π")) to i
-            "cos" -> return listOf(MathToken.Text("cos ")) to i
-            "sin" -> return listOf(MathToken.Text("sin ")) to i
-            "tan" -> return listOf(MathToken.Text("tan ")) to i
-            "ln" -> return listOf(MathToken.Text("ln ")) to i
-            "log" -> return listOf(MathToken.Text("log ")) to i
-            else -> return listOf(MathToken.Text(cmd)) to i
         }
+
+        // 符号表统一放在 LatexSymbols（纯 Kotlin，有单元测试守着）：之前这里是一长串
+        // `when` 分支，没登记的命令就落到 `else` 把命令名当正文输出 —— 线上那句
+        // “基站 rightarrow 机柜” 就是 `\rightarrow` 走出来的。
+        LatexSymbols.resolve(cmd)?.let { symbol ->
+            return listOf(MathToken.Text(symbol.text)) to i
+        }
+        if (LatexSymbols.isFunction(cmd)) {
+            return listOf(MathToken.Text(LatexSymbols.functionText(cmd))) to i
+        }
+        if (LatexSymbols.isLayoutOnly(cmd)) {
+            return listOf(MathToken.Text("")) to i
+        }
+        if (LatexSymbols.takesDroppedArgument(cmd)) {
+            val (_, nextIdx) = readBracedBlock(formula, i)
+            return listOf(MathToken.Text("")) to nextIdx
+        }
+        // 认不出来的命令：宁可不出字，也不再往外吐命令名。
+        return listOf(MathToken.Text("")) to i
     }
 
     private fun readBracedBlock(formula: String, startIndex: Int): Pair<String, Int> {
@@ -382,26 +419,62 @@ object LatexMathParser {
         return word in listOf("sin", "cos", "tan", "cot", "sec", "csc", "log", "ln", "lg", "exp", "min", "max", "lim", "det")
     }
 
-    private fun cleanLatexCommandToUnicode(raw: String): String {
-        var s = raw
-            .replace("\\times", " × ")
-            .replace("\\div", " ÷ ")
-            .replace("\\approx", " ≈ ")
-            .replace("\\pm", " ± ")
-            .replace("\\Omega", "Ω")
-            .replace("\\mu", "μ")
-            .replace("\\degree", "°")
-            .replace("\\circ", "°")
-
-        var braceIdx = s.indexOf("\\text{")
-        while (braceIdx != -1) {
-            val (textVal, nextIdx) = readBracedBlock(s, braceIdx + "\\text".length)
-            s = s.substring(0, braceIdx) + textVal + s.substring(nextIdx)
-            braceIdx = s.indexOf("\\text{")
+    /**
+     * 把一段带命令/转义的片段降成纯文本（供 `\text{…}`、上下标这类子表达式使用）。
+     *
+     * 统一走 [LatexSymbols]：之前的实现是十几个 `String.replace`，没登记的符号
+     * （箭头、希腊字母、大型运算符…）会原封不动留在文本里。
+     */
+    private fun decodeLatexContent(raw: String): String {
+        if (!raw.contains('\\')) return raw
+        val sb = StringBuilder(raw.length)
+        var i = 0
+        val len = raw.length
+        while (i < len) {
+            val c = raw[i]
+            if (c != '\\' || i + 1 >= len) {
+                sb.append(c)
+                i++
+                continue
+            }
+            val next = raw[i + 1]
+            when (next) {
+                '\\' -> { sb.append(' '); i += 2 }
+                '{', '}', '%', '$', '#', '&', '_' -> { sb.append(next); i += 2 }
+                ',', ';', ':', '!', ' ' -> { sb.append(' '); i += 2 }
+                else -> {
+                    var j = i + 1
+                    while (j < len && raw[j].isLetter()) j++
+                    val name = raw.substring(i + 1, j)
+                    val symbol = LatexSymbols.resolve(name)
+                    when {
+                        // `\text{…}` 嵌套：吃掉花括号，内容递归解码（不能把括号留在正文里）
+                        TEXT_LIKE_COMMANDS.contains(name) -> {
+                            val (inner, nextIdx) = readBracedBlock(raw, j)
+                            sb.append(decodeLatexContent(inner))
+                            j = nextIdx
+                        }
+                        symbol != null -> sb.append(symbol.text)
+                        LatexSymbols.isFunction(name) -> sb.append(LatexSymbols.functionText(name))
+                        LatexSymbols.isLayoutOnly(name) -> Unit
+                        LatexSymbols.takesDroppedArgument(name) -> {
+                            val (_, nextIdx) = readBracedBlock(raw, j)
+                            j = nextIdx
+                        }
+                        else -> Unit
+                    }
+                    i = j
+                }
+            }
         }
-
-        return s.trim()
+        return sb.toString()
     }
+
+    private fun cleanLatexCommandToUnicode(raw: String): String = decodeLatexContent(raw).trim()
+
+    private val TEXT_LIKE_COMMANDS = setOf(
+        "text", "mbox", "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "operatorname"
+    )
 
     private sealed class MathToken {
         data class Text(val content: String) : MathToken()

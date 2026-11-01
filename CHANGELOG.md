@@ -2,6 +2,50 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.16] - 2026-11-01
+
+### ✨ 公式真渲染：内置 KaTeX，块级公式与 pi-web 视觉对齐
+
+用户截图里那块公式卡片显示的是**原始 LaTeX**（`\text{总放线长度 } L = \Delta X…`），
+行内箭头则被印成了 `rightarrow`。查下去是两处独立的实现缺陷，外加一层架构缺口：
+
+**缺陷 1：块级公式卡片根本没进分词器。**
+`MathFormulaBlockCard` 把 ```math 里的裸 LaTeX 传给 `LatexMathParser.appendTextWithMath`，
+而后者只对 `$…$` 片段分词 —— 没有 `$` 的整段 LaTeX 走逐字符直出，于是反斜杠原样上屏。
+新增 `LatexMathParser.appendFormula`（直接分词）作为原生通道入口。
+
+**缺陷 2：没登记的 LaTeX 命令会把命令名当正文吐出来。**
+`parseCommand` 的 `else -> MathToken.Text(cmd)` 就是那句「基站 rightarrow 机柜」的来历。
+现在命令解析统一走新增的 `LatexSymbols` 符号表（箭头/希腊字母/大型运算符/关系符/括号/装饰符
+共 150+ 条），认不出来的命令一律**丢弃**而不是输出命令名；`\begin{aligned}`、`\left(`、
+`\vec{}`、`&`、`\\` 这些结构命令也有了明确处理。
+
+**架构缺口：我们从来没有真正的排版引擎。**
+上游 pi-web 用的是 `katex ^0.16.47` + `remark-math`，而 piDroid 只有一个「LaTeX → Unicode 近似」
+的降级渲染器（分式只能写成 `(a) / (b)`，矩阵/多行对齐无从谈起）。本版一步补齐：
+
+- `app/src/main/assets/libs/katex/` 内置 KaTeX 0.16.47：`katex.min.js`、`katex.min.css`、
+  20 个 `woff2` 字体（只留 woff2，APK 净增 ~600 KB，无网络依赖）；
+- 新增 `KaTeXFormulaView`：一个 `AndroidView` + WebView，页面里的
+  `https://pi-katex.local/…` 由 `shouldInterceptRequest` 全部映射到 assets，
+  **不开 JS 桥**、禁文件访问、禁一切外链导航；
+- 高度由页面内经 `getBoundingClientRect` 实测后回报（字体异步落盘后再校准一次），
+  公式比屏幕宽时按比例 `transform: scale` 缩放而不是被裁掉；
+- KaTeX 缺失/脚本报错/加载失败一律回退到原生近似版（`LatexMathParser.appendFormula`），
+  不留白板；公式文本稳定 140ms 才排版，避免流式输出把 WebView 重载打满；
+- 公式卡片保留「∑ 数学公式 + 复制」的原有外壳，复制内容仍是纯 LaTeX。
+
+**边界说明**：行内 `$…$` 仍然走原生通道 —— 一张公式一个常驻 WebView 会吃掉长消息的显存，
+而这一版的符号表已经把行内最刺眼的箭头/希腊字母/运算符全部补上。
+
+### ✅ 验证
+
+- 新增 `LatexSymbolsTest`（6 组）与 `KaTeXPageTemplateTest`（6 组）纯 JVM 单元测试，
+  守住「未知命令不得漏成命令名」「公式不得从 `<script>` 里逃逸」「颜色必须走白名单」；
+- 这两组测试刻意只依赖纯 Kotlin（不碰 `android.*` 与 Compose 类型），所以不需要也不允许
+  “先在本地编一遍”——编译、单元测试、打包、签名全部由 GitHub Actions 完成（AGENTS.md §1.1）；
+- CI 若报红，用递增的补丁版本重新走一遍发版 SOP，不复用同一个 Tag。
+
 ## [1.8.15] - 2026-11-01
 
 ### 🔧 修复 1.8.13/1.8.14 发版失败：单元测试引用了已删除的常量

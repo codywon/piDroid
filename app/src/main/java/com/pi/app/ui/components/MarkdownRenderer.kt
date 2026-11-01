@@ -1094,9 +1094,11 @@ private fun appendMdTextWithFallbacks(
 private fun MathFormulaBlockCard(formula: String) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
-    val rendered = remember(formula) {
+    // 原生降级版：KaTeX 没跑起来（WebView 被禁用、字体缺失、脚本报错）时兜底，
+    // 也用来在排版完成前顶住卡片高度，避免出现一块空白。
+    val fallbackText = remember(formula, theme.textPrimary) {
         buildAnnotatedString {
-            LatexMathParser.appendTextWithMath(formula, this, isUser = false)
+            LatexMathParser.appendFormula(formula, this, textColor = theme.textPrimary)
         }
     }
 
@@ -1142,24 +1144,25 @@ private fun MathFormulaBlockCard(formula: String) {
                 }
             }
             Spacer(modifier = Modifier.height(6.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 4.dp, horizontal = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    text = rendered,
-                    style = TextStyle(
-                        fontSize = 15.sp,
-                        fontFamily = FontFamily.Serif,
-                        fontWeight = FontWeight.Medium,
-                        color = theme.textPrimary,
-                        lineHeight = 22.sp
+            KaTeXFormulaView(
+                latex = formula,
+                displayMode = true,
+                fontSizeSp = 15f,
+                textColor = theme.textPrimary,
+                modifier = Modifier.fillMaxWidth(),
+                fallback = {
+                    Text(
+                        text = fallbackText,
+                        style = TextStyle(
+                            fontSize = 15.sp,
+                            fontFamily = FontFamily.Serif,
+                            fontWeight = FontWeight.Medium,
+                            color = theme.textPrimary,
+                            lineHeight = 22.sp
+                        )
                     )
-                )
-            }
+                }
+            )
         }
     }
 }
