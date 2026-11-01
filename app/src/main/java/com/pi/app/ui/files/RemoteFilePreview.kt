@@ -16,7 +16,7 @@ private val VIDEO_FILE_EXTENSIONS = setOf("mp4", "m4v", "mov", "webm", "mkv", "3
  * 判定预览类型：mime 优先，扩展名兜底（meta 拿不到时仍然能分派）。
  * 纯 Kotlin 逻辑，不依赖 Android 运行时。
  */
-fun artifactKindOf(absPath: String, mime: String = ""): ArtifactKind {
+internal fun artifactKindOf(absPath: String, mime: String = ""): ArtifactKind {
     val clean = absPath.replace('\\', '/').trimEnd('/')
     val filename = if (clean.contains('/')) clean.substringAfterLast('/') else clean
     val ext = filename.substringAfterLast('.', "").lowercase(Locale.ROOT)
@@ -37,7 +37,7 @@ fun artifactKindOf(absPath: String, mime: String = ""): ArtifactKind {
 /**
  * 远端文件数据源回调接口。
  */
-interface FilePreviewDataSource {
+internal interface FilePreviewDataSource {
     suspend fun getFileMeta(path: String): Result<FileMeta>
     suspend fun getFileTextChunk(path: String, offset: Long): Result<FileTextChunk>
     suspend fun getFilePreviewHtml(path: String): Result<String>
@@ -48,7 +48,7 @@ interface FilePreviewDataSource {
 /**
  * 统一的文件预览加载结果。
  */
-data class RemoteFilePreviewData(
+internal data class RemoteFilePreviewData(
     val path: String,
     val title: String,
     val kind: ArtifactKind,
@@ -65,7 +65,7 @@ data class RemoteFilePreviewData(
     val isBinary: Boolean = false
 )
 
-object RemoteFilePreviewLoader {
+internal object RemoteFilePreviewLoader {
 
     /**
      * 加载远端文件预览所需数据并完成类型分派。

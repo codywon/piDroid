@@ -331,6 +331,9 @@ fun GlobalSettingsScreen(
                     completionSoundEnabled = completionSoundEnabled,
                     onToggleCompletionSound = onToggleCompletionSound,
                     onTestCompletionSound = onTestCompletionSound,
+                    enhanceModelProvider = enhanceModelProvider,
+                    enhanceModelId = enhanceModelId,
+                    onOpenEnhanceModelPicker = { showEnhanceModelPicker = true },
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
@@ -3148,6 +3151,9 @@ fun GlobalSystemSettingsTab(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
+    enhanceModelProvider: String = "",
+    enhanceModelId: String = "",
+    onOpenEnhanceModelPicker: () -> Unit = {},
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -3255,7 +3261,7 @@ fun GlobalSystemSettingsTab(
                         trailing = {
                             SettingsInlineAction(
                                 text = if (enhanceModelProvider.isBlank()) "选择" else "更改",
-                                onClick = { showEnhanceModelPicker = true }
+                                onClick = onOpenEnhanceModelPicker
                             )
                         }
                     )
