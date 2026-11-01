@@ -2,6 +2,59 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.10] - 2026-11-01
+
+### 💬 全部 Toast 文案重写：去掉模板腔，修掉 4 条说反话的提示
+
+175 处 `Toast.makeText` 逐条过了一遍，改写 111 条：
+
+- **删掉自我加冕**：`已成功绑定设备` / `已成功分叉出新会话！` / `已成功接入 X！` 里的「成功」和
+  感叹号，只留「已…」；`上下文压缩完成！` → `上下文已压缩`。
+- **删掉装饰与形容词**：两处 `✨`；`正在智能压缩上下文` → `正在压缩上下文…`；
+  `已批量开启 N 项技能` → `已开启 N 项技能`；`所有技能均为最新版本` → `技能都已是最新版本`。
+- **标点统一全角**：`失败: msg` → `失败：msg`，`相册 (path)` → `相册（path）`，
+  `安装中...` → `安装中…`。全仓 Toast 不再混用半角冒号、半角括号和英文省略号。
+- **绕口句改写**：`网关未生效，X 仍保留在 PC 上` → `未同步到网关，X 仍留在 PC 上`；
+  `已清除 X 的已保存 Key` → `已清除 X 保存的 Key`；`读取图片异常` → `读取图片失败`；
+  `无法打开的链接：…` → `打不开这个链接：…`。
+
+顺手修掉 4 处文案与行为不符：
+
+- **任务完成通知的开关播报错了对象**：`taskCompletedNotifyEnabled` 只控制「任务完成发通知」，
+  Toast 却念「已开启常驻通知栏保活守护 / 已关闭常驻通知栏（仅在任务运行时启动前台服务）」。
+  改为「任务完成时会发通知 / 任务完成后不再通知」。
+- **失败分支说成功，还把内部动作码漏给用户**：插件与 MCP 的 `onFailure` 原提示
+  「插件状态已更新 (enable)」——既说成了成功，又把 `enable` / `remove` 这类内部动作码直接
+  显示出来。改为「插件状态已存本地，同步到 PC 失败：X」，与既有的
+  「改名已存本地，同步到 PC 失败」统一。
+- **404 文案是半句话**：`GatewayError` 的「请确认 pi-web 与 App 版本」补成
+  「可能是 pi-web 与 App 版本不匹配」。
+
+没动的：隧道断开、密钥失效、任务执行中拦截、发送失败退回输入框这些
+「说清发生了什么 + 下一步做什么」的提示只统一了标点，措辞保持原样。
+
+**验证**：仅改字符串字面量，`${...}` 插值里的代码原样保留；7 个改动文件引号与大括号计数
+前后一致；脚本复查 175 个 Toast，半角标点、「已成功」、`✨` 残留为 0。本地未编译，
+按规范留给 CI。
+
+## [1.8.9] - 2026-11-01
+
+### ✨ codywon 全系模型开启 `xhigh`（已用真实请求验证可用）
+
+1.8.7 恢复了 `max`，`xhigh` 因为我担心网关不认而留着。按你的要求开启，并且**先验证再交付**：
+
+- 给 codywon 的 7 个模型的 `thinkingLevelMap` 补上 `"xhigh": "xhigh"`；
+- `/api/models` 复核：7 个模型档位均为
+  `[off, minimal, low, medium, high, xhigh, max]`；
+- **真实跑了一次**：临时会话 → `set_model` codywon/deepseek-flash → `set_thinking_level xhigh`
+  → 发一条极短提示，`stopReason = stop`、无 `errorMessage`，正文正常返回，
+  说明你的 codywon 网关接受 `xhigh` 这个 `reasoning_effort` 取值（会话已删除）。
+- 备份：改前另存 `models.json.bak-xhigh-20261101-042840`。
+
+`deepseek` 内置提供商（`deepseek-flash` / `deepseek-v4-pro`）**未改动**：
+它们的档位来自 pi 官方注册表（`off/low/high/max`），要开 `xhigh` 需要额外在
+`modelOverrides` 里写 map，且未经实测，需要的话说一声我再单独验证后开启。
+
 ## [1.8.8] - 2026-11-01
 
 ### 🔒 安全：伴侣网关的文件接口不再能越界读写
@@ -41,24 +94,6 @@ Token 等价于本机权限，但拿到 Token 之后也不该能把网关当「�
 
 - 提示词增强的限流桶按授权头哈希分桶，Token 轮换会留下不回收的键；超过 256 个桶时清理整桶
   都已过窗的主体，长期运行不再慢速增长。
-
-## [1.8.9] - 2026-11-01
-
-### ✨ codywon 全系模型开启 `xhigh`（已用真实请求验证可用）
-
-1.8.7 恢复了 `max`，`xhigh` 因为我担心网关不认而留着。按你的要求开启，并且**先验证再交付**：
-
-- 给 codywon 的 7 个模型的 `thinkingLevelMap` 补上 `"xhigh": "xhigh"`；
-- `/api/models` 复核：7 个模型档位均为
-  `[off, minimal, low, medium, high, xhigh, max]`；
-- **真实跑了一次**：临时会话 → `set_model` codywon/deepseek-flash → `set_thinking_level xhigh`
-  → 发一条极短提示，`stopReason = stop`、无 `errorMessage`，正文正常返回，
-  说明你的 codywon 网关接受 `xhigh` 这个 `reasoning_effort` 取值（会话已删除）。
-- 备份：改前另存 `models.json.bak-xhigh-20261101-042840`。
-
-`deepseek` 内置提供商（`deepseek-flash` / `deepseek-v4-pro`）**未改动**：
-它们的档位来自 pi 官方注册表（`off/low/high/max`），要开 `xhigh` 需要额外在
-`modelOverrides` 里写 map，且未经实测，需要的话说一声我再单独验证后开启。
 
 ## [1.8.7] - 2026-11-01
 
