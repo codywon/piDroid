@@ -44,9 +44,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.pi.app.data.model.ProjectMoveDirection
-import com.pi.app.data.model.ProjectMovePlan
 import com.pi.app.data.model.ProjectMovePlanner
+import com.pi.app.data.model.WorkspaceDragReorder
 import com.pi.app.data.model.RemoteBrowseData
 import com.pi.app.data.model.RemoteDirEntry
 import android.widget.Toast
@@ -61,6 +60,11 @@ import com.pi.app.data.model.groupWorkspaces
 import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import kotlin.math.abs
 
 const val PINNED_WORKSPACE_KEY = "__global_pinned__"
@@ -173,6 +177,7 @@ fun SessionListScreen(
     val theme = LocalAppTheme.current
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
     var showManualDialog by remember { mutableStateOf(false) }
     var showAddWorkspaceDialog by remember { mutableStateOf(false) }
     var selectedMenuWorkspace by remember { mutableStateOf<WorkspaceInfo?>(null) }
@@ -182,11 +187,16 @@ fun SessionListScreen(
     var showArchivedSessionsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var pinnedWorkspaces by remember { mutableStateOf(prefs.getPinnedWorkspaces()) }
     var wsOrder by remember { mutableStateOf(prefs.getWorkspaceOrder()) }
-    // 长按拖动排序：dragWsPath 非空时该行跟随手指平移，越过邻居一半高度就调一次相邻移动
+    // 长按拖动排序：
+    // 拖动期间只重排「本地展示顺序」(wsOrderOverride)，不再每跨一行就发一次 move-project；
+    // 交换相邻行时把位移读数减去一行的高度，行的视觉位置保持不变，因此不会一顿一跳。
     var dragWsPath by remember { mutableStateOf<String?>(null) }
     var dragWsOffset by remember { mutableStateOf(0f) }
     var dragWsMoved by remember { mutableStateOf(false) }
-    val wsRowHeights = remember { mutableStateMapOf<String, Float>() }
+    var wsOrderOverride by remember { mutableStateOf<List<String>?>(null) }
+    var wsCommitTick by remember { mutableStateOf(0) }
+    // 普通 HashMap 而非 mutableStateMapOf：行高只给手势回调读，写成 State 会在拖动中反复触发重组
+    val wsRowHeights = remember { HashMap<String, Float>() }
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
     var renamingSession by remember { mutableStateOf<Session?>(null) }
@@ -208,6 +218,19 @@ fun SessionListScreen(
         if (drawerState.isClosed) {
             isArchiveViewOpen = false
         }
+    }
+
+    // 排序提交后本地顺序继续生效，直到服务端 ui-state 回读到新顺序（或超时）才让位给真源：
+    // 否则会出现「松手先闪回旧顺序、回包到了再跳一次」，这正是拖动看起来很跳的第二个原因。
+    LaunchedEffect(wsCommitTick) {
+        if (wsCommitTick == 0) return@LaunchedEffect
+        val pending = wsOrderOverride
+        val baseline = serverWorkspaceOrder
+        withTimeoutOrNull(5000L) {
+            snapshotFlow { serverWorkspaceOrder }.first { it != baseline }
+        }
+        // 期间若又开始了新的拖动，覆盖已被换成新顺序，不能动它
+        if (wsOrderOverride === pending) wsOrderOverride = null
     }
 
     // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
@@ -648,40 +671,56 @@ fun SessionListScreen(
                         )
                     }
 
-                    // 拖动排序与菜单里的上移/下移共用同一条单步相邻移动：
-                    // 走 ProjectMovePlanner，保证 projectKey / anchorKey / position 合法
-                    // （锚点必须取「移动之前」的邻居，否则服务端 400）。
-                    val stepWorkspace: (WorkspaceInfo, ProjectMoveDirection) -> Unit = { ws, direction ->
-                        val pinned = pinnedKeys.contains(wsKey(ws.path))
-                        val bandKeys = sortedWorkspaces
-                            .filter { pinnedKeys.contains(wsKey(it.path)) == pinned }
-                            .map { wsKey(it.path) }
-                        val plan = ProjectMovePlanner.plan(bandKeys, wsKey(ws.path), direction)
-                        if (plan != null) {
-                            val anchorWs = sortedWorkspaces.firstOrNull { wsKey(it.path) == plan.anchorKey }
-                            val currentPaths = sortedWorkspaces.map { it.path }.toMutableList()
-                            val from = currentPaths.indexOf(ws.path)
-                            val to = anchorWs?.let { currentPaths.indexOf(it.path) } ?: -1
-                            if (from >= 0 && to >= 0 && from != to) {
-                                java.util.Collections.swap(currentPaths, from, to)
-                                prefs.saveWorkspaceOrder(currentPaths)
-                                wsOrder = currentPaths
+                    // 拖动过程中的展示顺序：拖动/提交后立即生效（wsOrderOverride），
+                    // 未拖动时就是真源顺序，两者一致，因此松手瞬间不会二次跳动。
+                    val displayWorkspaces = remember(sortedWorkspaces, wsOrderOverride) {
+                        val order = wsOrderOverride ?: return@remember sortedWorkspaces
+                        val byPath = sortedWorkspaces.associateBy { it.path }
+                        val orderSet = order.toHashSet()
+                        order.mapNotNull { byPath[it] } + sortedWorkspaces.filterNot { orderSet.contains(it.path) }
+                    }
+                    // 相邻行之间有 spacedBy(6.dp) 的间隙，换位补偿要一起算上，否则每换一行残留 6dp 偏位
+                    val wsRowGapPx = with(LocalDensity.current) { 6.dp.toPx() }
+
+                    // 松手时一次性提交：本地镜像 + 一条 move-project（锚点取「落位之后」紧邻的同分组邻居）
+                    // 返回是否真的换了顺序，用于决定本地顺序覆盖要不要保留。
+                    val commitWsDragOrder: (String, List<String>) -> Boolean = { draggedPath, finalPaths ->
+                        val currentPaths = sortedWorkspaces.map { it.path }
+                        if (finalPaths == currentPaths) {
+                            false
+                        } else {
+                            // 本地偏好只做镜像（真源在 pi-web 的 projectOrder）
+                            prefs.saveWorkspaceOrder(finalPaths)
+                            wsOrder = finalPaths
+                            val draggedKey = wsKey(draggedPath)
+                            // 只在同一（置顶 / 非置顶）分组内移动，跨分组服务端不接受
+                            val bandPaths = finalPaths.filter {
+                                pinnedKeys.contains(wsKey(it)) == pinnedKeys.contains(draggedKey)
                             }
-                            onMoveWorkspace(
-                                ws.path,
-                                anchorWs?.path ?: plan.anchorKey,
-                                plan.position,
-                                ProjectMovePlanner.collectAddKeys(
-                                    bandKeys,
-                                    orderList,
-                                    plan.projectKey,
-                                    plan.anchorKey
+                            val bandKeys = bandPaths.map { wsKey(it) }
+                            val anchor = WorkspaceDragReorder.anchorFor(bandKeys, draggedKey)
+                            if (anchor == null) {
+                                true
+                            } else {
+                                onMoveWorkspace(
+                                    draggedPath,
+                                    bandPaths.firstOrNull { wsKey(it) == anchor.anchorKey } ?: anchor.anchorKey,
+                                    anchor.position,
+                                    ProjectMovePlanner.collectAddKeys(
+                                        bandKeys,
+                                        orderList,
+                                        draggedKey,
+                                        anchor.anchorKey
+                                    )
                                 )
-                            )
+                                true
+                            }
                         }
                     }
                     // pointerInput 不随列表重排重启（否则拖到一半会被打断），因此用 updated 引用取最新一份
-                    val latestStepWorkspace by rememberUpdatedState(stepWorkspace)
+                    val latestCommitWsDragOrder by rememberUpdatedState(commitWsDragOrder)
+                    val latestPinnedKeys by rememberUpdatedState(pinnedKeys)
+                    val latestDisplayPaths by rememberUpdatedState(displayWorkspaces.map { it.path })
 
                     Text(
                         text = "项目工作区 (${workspaces.size})",
@@ -763,7 +802,7 @@ fun SessionListScreen(
 
 
 
-                        items(sortedWorkspaces, key = { it.path }) { ws ->
+                        items(displayWorkspaces, key = { it.path }) { ws ->
                             val isSelected = WorkspacePaths.samePath(ws.path, selectedWorkspacePath)
                             val isPinned = pinnedKeys.contains(wsKey(ws.path))
                             val isDragging = dragWsPath == ws.path
@@ -780,7 +819,9 @@ fun SessionListScreen(
                                 border = if (isSelected) BorderStroke(1.dp, theme.primary) else null,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .zIndex(if (isDragging) 1f else 0f)
+                                    // 被拖行浮在最上层，其余行换位时用 animateItem 平滑上/下平移
+                                    .zIndex(if (isDragging) 2f else 0f)
+                                    .then(if (isDragging) Modifier else Modifier.animateItem())
                                     .graphicsLayer {
                                         if (isDragging) translationY = dragWsOffset
                                     }
@@ -797,35 +838,69 @@ fun SessionListScreen(
                                     .pointerInput(ws.path) {
                                         detectDragGesturesAfterLongPress(
                                             onDragStart = {
+                                                // 和全局「触感反馈」开关保持一致
+                                                if (prefs.hapticsEnabled) {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                }
                                                 dragWsPath = ws.path
                                                 dragWsOffset = 0f
                                                 dragWsMoved = false
+                                                // 拖动起点固定在「当前展示顺序」上，拖动期间不再接受服务端回包改顺序
+                                                wsOrderOverride = latestDisplayPaths
                                             },
                                             onDrag = { change, amount ->
                                                 change.consume()
                                                 dragWsOffset += amount.y
                                                 if (!dragWsMoved && abs(dragWsOffset) > 8f) dragWsMoved = true
-                                                val rowHeight = wsRowHeights[ws.path] ?: 56f
-                                                // 每跨过半个行高就调一次相邻移动；位移读数归零，
-                                                // 避免「行已经挪过去了、行仍然带着旧位移继续飘」的叠加偏移
-                                                if (dragWsOffset < -rowHeight / 2f) {
-                                                    latestStepWorkspace(ws, ProjectMoveDirection.UP)
-                                                    dragWsOffset = 0f
-                                                } else if (dragWsOffset > rowHeight / 2f) {
-                                                    latestStepWorkspace(ws, ProjectMoveDirection.DOWN)
-                                                    dragWsOffset = 0f
+                                                val selfPinned = latestPinnedKeys.contains(wsKey(ws.path))
+                                                val order = wsOrderOverride
+                                                if (order != null) {
+                                                    // 换位算法见 WorkspaceDragReorder：自己的中心越过邻居中心才换位，
+                                                    // 换位后抹掉那一行的高度（旧实现把读数归零，于是每换一次都往回弹半行）
+                                                    val step = WorkspaceDragReorder.settle(
+                                                        order = order,
+                                                        draggedPath = ws.path,
+                                                        offset = dragWsOffset,
+                                                        rowGap = wsRowGapPx,
+                                                        heightOf = { path -> wsRowHeights[path] ?: 56f },
+                                                        sameBand = { path ->
+                                                            latestPinnedKeys.contains(wsKey(path)) == selfPinned
+                                                        }
+                                                    )
+                                                    if (step.order != order) wsOrderOverride = step.order
+                                                    dragWsOffset = step.offset
                                                 }
                                             },
                                             onDragEnd = {
+                                                val finalPaths = wsOrderOverride
                                                 if (!dragWsMoved) selectedMenuWorkspace = ws
-                                                dragWsPath = null
-                                                dragWsOffset = 0f
+                                                if (finalPaths != null && latestCommitWsDragOrder(ws.path, finalPaths)) {
+                                                    // 顺序已提交：本地覆盖保留到服务端回读到新顺序为止
+                                                    wsCommitTick++
+                                                } else {
+                                                    wsOrderOverride = null
+                                                }
+                                                // 让残位移用一个小动画落回格子，避免松手瞬间硬跳半行
+                                                val residual = dragWsOffset
+                                                if (dragWsMoved && abs(residual) > 0.5f) {
+                                                    coroutineScope.launch {
+                                                        animate(residual, 0f, animationSpec = tween(110)) { v, _ ->
+                                                            dragWsOffset = v
+                                                        }
+                                                        dragWsPath = null
+                                                        dragWsOffset = 0f
+                                                    }
+                                                } else {
+                                                    dragWsPath = null
+                                                    dragWsOffset = 0f
+                                                }
                                                 dragWsMoved = false
                                             },
                                             onDragCancel = {
                                                 dragWsPath = null
                                                 dragWsOffset = 0f
                                                 dragWsMoved = false
+                                                wsOrderOverride = null
                                             }
                                         )
                                     }
@@ -1723,106 +1798,6 @@ fun SessionListScreen(
                         }
                     }
                 )
-
-                HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
-                Spacer(modifier = Modifier.height(2.dp))
-
-                // 板块 2：排序微调（紧凑 chip，首个/末个自动禁用，避免点了没反应）
-                // 逐行对齐 pi-web 的 move-up / move-down：锚点必须取自「换位之前」的同分组邻居。
-                // 旧实现先 swap 再取 currentList[idx ± 1]，取到的正是它自己，
-                // 服务端因此回 400 `projectKey and anchorKey must differ`（详见 ProjectMovePlanner）。
-                fun menuWsKey(path: String): String = path.replace('\\', '/').trimEnd('/').lowercase()
-                fun menuIsPinned(path: String): Boolean =
-                    if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
-                        serverPinnedWorkspaceKeys.contains(menuWsKey(path))
-                    } else {
-                        prefs.isWorkspacePinned(path)
-                    }
-                val menuOrderKeys =
-                    if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { menuWsKey(it) }
-                val menuOrderedWs = workspaces.sortedWith(
-                    compareByDescending<WorkspaceInfo> { menuIsPinned(it.path) }
-                        .thenBy { ws ->
-                            val idx = menuOrderKeys.indexOf(menuWsKey(ws.path))
-                            if (idx != -1) idx else Int.MAX_VALUE
-                        }
-                )
-                // 只在同一（置顶 / 非置顶）分组内相邻移动，跨分组服务端不接受
-                val bandKeys = menuOrderedWs.filter { menuIsPinned(it.path) == isPinned }.map { menuWsKey(it.path) }
-                val upPlan = ProjectMovePlanner.plan(bandKeys, menuWsKey(targetWs.path), ProjectMoveDirection.UP)
-                val downPlan = ProjectMovePlanner.plan(bandKeys, menuWsKey(targetWs.path), ProjectMoveDirection.DOWN)
-                val canMoveUp = upPlan != null
-                val canMoveDown = downPlan != null
-
-                // 本地偏好只做镜像（真源在 pi-web 的 projectOrder），随后把完整 move-project 请求发给 PC
-                fun applyMovePlan(plan: ProjectMovePlan) {
-                    val anchorWs = menuOrderedWs.firstOrNull { menuWsKey(it.path) == plan.anchorKey }
-                    val currentList = menuOrderedWs.map { it.path }.toMutableList()
-                    val from = currentList.indexOf(targetWs.path)
-                    val to = if (anchorWs != null) currentList.indexOf(anchorWs.path) else -1
-                    if (from >= 0 && to >= 0 && from != to) {
-                        java.util.Collections.swap(currentList, from, to)
-                        prefs.saveWorkspaceOrder(currentList)
-                        wsOrder = currentList
-                    }
-                    onMoveWorkspace(
-                        targetWs.path,
-                        anchorWs?.path ?: plan.anchorKey,
-                        plan.position,
-                        ProjectMovePlanner.collectAddKeys(
-                            bandKeys,
-                            menuOrderKeys,
-                            plan.projectKey,
-                            plan.anchorKey
-                        )
-                    )
-                    Toast.makeText(
-                        context,
-                        if (plan.position == ProjectMovePlan.BEFORE) "已上移项目" else "已下移项目",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                    selectedMenuWorkspace = null
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "排序",
-                        fontSize = 11.sp,
-                        color = theme.textMuted,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    // 裸图标而非带边框胶囊：排序是低频工具动作，不应与「置顶 / 重命名」同一声量
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clickable(enabled = canMoveUp) { upPlan?.let { applyMovePlan(it) } },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowUp,
-                            contentDescription = "上移",
-                            modifier = Modifier.size(18.dp),
-                            tint = if (canMoveUp) theme.textSecondary else theme.textMuted.copy(alpha = 0.45f)
-                        )
-                    }
-
-                    Box(
-                        modifier = Modifier
-                            .size(34.dp)
-                            .clickable(enabled = canMoveDown) { downPlan?.let { applyMovePlan(it) } },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            Icons.Default.KeyboardArrowDown,
-                            contentDescription = "下移",
-                            modifier = Modifier.size(18.dp),
-                            tint = if (canMoveDown) theme.textSecondary else theme.textMuted.copy(alpha = 0.45f)
-                        )
-                    }
-                }
 
                 HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
                 Spacer(modifier = Modifier.height(2.dp))
