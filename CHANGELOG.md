@@ -2,7 +2,7 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.42] - 2026-11-02
+## [1.8.43] - 2026-11-02
 
 ### 🐛 彻底修复发送消息后气泡被截断丢失与深度思考模型超时误判完成问题
 

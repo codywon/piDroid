@@ -155,21 +155,26 @@ object SessionSnapshotMerge {
             // 优先按 entryId 精确匹配
             var localMatchIdx = -1
             if (!diskItem.entryId.isNullOrBlank()) {
-                localMatchIdx = local.indexOfFirst { idx ->
-                    !matchedLocalIndices.contains(idx) && local[idx].entryId == diskItem.entryId
+                for (i in local.indices) {
+                    if (!matchedLocalIndices.contains(i) && local[i].entryId == diskItem.entryId) {
+                        localMatchIdx = i
+                        break
+                    }
                 }
             }
 
             // 若 entryId 未匹配，针对乐观用户消息尝试按角色与正文内容匹配
             if (localMatchIdx < 0 && diskItem.role == MessageRole.USER) {
                 val diskContent = diskItem.content.trim()
-                localMatchIdx = local.indexOfFirst { idx ->
-                    if (matchedLocalIndices.contains(idx)) return@indexOfFirst false
-                    val item = local[idx]
-                    if (item.role != MessageRole.USER) return@indexOfFirst false
+                for (i in local.indices) {
+                    if (matchedLocalIndices.contains(i)) continue
+                    val item = local[i]
+                    if (item.role != MessageRole.USER) continue
                     val localContent = item.content.trim()
-                    localContent == diskContent ||
-                        localContent.removePrefix("➔ [引导] ").trim() == diskContent
+                    if (localContent == diskContent || localContent.removePrefix("➔ [引导] ").trim() == diskContent) {
+                        localMatchIdx = i
+                        break
+                    }
                 }
             }
 
