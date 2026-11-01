@@ -2,6 +2,32 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.28] - 2026-11-01
+
+### 🔔 通知栏和 App 内的图标也换成 π
+
+1.8.24 / 1.8.25 只换了桌面图标：常驻通知与「任务完成」通知用的还是系统自带的
+`stat_notify_sync`（一个同步箭头），App 内 logo 的 π 也偏瘦。
+
+#### ① 通知栏换品牌 π
+
+新增 `res/drawable/ic_stat_pi.xml`：24dp 画布、字形占 75%、纯白单色、**不带底块**。
+通知小图标只取 alpha 通道、由系统整体着色，带底色块会在状态栏上变成一个实心方块。
+四处 `setSmallIcon`（前台常驻服务 ×2、任务完成通知 ×2）全部换成它。
+
+#### ② App 内 logo 补满一点
+
+`ic_pi_glyph.xml` 的字形从占画布 48% 提到 **54%**：28dp 的「关于」行上原来四周留白过多，
+π 看着虚。
+
+三份矢量现在的分工（比例不能互换）：
+
+| 用在哪 | 文件 | 字形 / 占比 |
+|---|---|---|
+| 桌面图标 | `ic_launcher_foreground.xml` | 36 × 32.8 · 可见区 50% |
+| App 内 logo | `ic_pi_glyph.xml` | 58.3 × 53.1 · 画布 54% |
+| 通知栏 | `ic_stat_pi.xml` | 18 × 16.4 · 画布 75%（单色无底） |
+
 ## [1.8.27] - 2026-11-01
 
 > `v1.8.26` 的 tag 因工具定义解析器里两个可空接收者调用被编译器拒绝而没出安装包，本版为修复后的同内容首发。
@@ -38,32 +64,6 @@ All notable changes to the πDroid application will be documented in this file.
 
 `ToolDefinitionsParsingTest`（RPC 包装层、裸数组、`declarationHidden`、错误响应不当空清单）
 与 `ToolErrorMessagesTest`（三条拒绝 + 未知错误原样放行）。
-
-## [1.8.26] - 2026-11-01
-
-### 🔔 通知栏和 App 内的图标也换成 π
-
-1.8.24 / 1.8.25 只换了桌面图标：常驻通知与「任务完成」通知用的还是系统自带的
-`stat_notify_sync`（一个同步箭头），App 内 logo 的 π 也偏瘦。
-
-#### ① 通知栏换品牌 π
-
-新增 `res/drawable/ic_stat_pi.xml`：24dp 画布、字形占 75%、纯白单色、**不带底块**。
-通知小图标只取 alpha 通道、由系统整体着色，带底色块会在状态栏上变成一个实心方块。
-四处 `setSmallIcon`（前台常驻服务 ×2、任务完成通知 ×2）全部换成它。
-
-#### ② App 内 logo 补满一点
-
-`ic_pi_glyph.xml` 的字形从占画布 48% 提到 **54%**：28dp 的「关于」行上原来四周留白过多，
-π 看着虚。
-
-三份矢量现在的分工（比例不能互换）：
-
-| 用在哪 | 文件 | 字形 / 占比 |
-|---|---|---|
-| 桌面图标 | `ic_launcher_foreground.xml` | 36 × 32.8 · 可见区 50% |
-| App 内 logo | `ic_pi_glyph.xml` | 58.3 × 53.1 · 画布 54% |
-| 通知栏 | `ic_stat_pi.xml` | 18 × 16.4 · 画布 75%（单色无底） |
 
 ## [1.8.25] - 2026-11-01
 
