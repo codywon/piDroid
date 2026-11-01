@@ -2,6 +2,28 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.17] - 2026-11-01
+
+### 🔧 修复 1.8.16 发版失败：`isMainFrame` 写错，CI 卡在单元测试编译
+
+1.8.16 的 Tag 推送后，CI 在 `Run Unit Tests` 的 `:app:compileDebugKotlin` 阶段就红了，
+**没有产出安装包**（`Build Release APK` 被 skip）：
+
+```
+e: KaTeXFormulaView.kt:232:26 Unresolved reference 'isMainFrame'.
+```
+
+`WebResourceRequest` 的方法是 `isForMainFrame()`，不是 `isMainFrame()`——
+仓库里 `GenerativeUi.kt` 早就在用正确写法，是我新写这个 WebView 时凭印象写了错的名字。
+本版修正该引用，并把 `view.tag` / `view.tag = …` 改成显式的 `getTag()` / `setTag(…)`，
+避开 `View.setTag(Int, Any?)` 重载在合成属性上的歧义。
+
+**教训已写进准则**：AGENTS.md §1.1 明令禁止本地编译（含 `kotlinc`、Gradle 任务、用 stub 凑类型
+的“单独编一下”）。这次之所以能漏掉一个大小写级别的 API 名错误，正是因为此前用 stub 通过了编译，
+产生了假的“已验证”信号；从本版起，编译与测试只看 GitHub Actions 的结论。
+
+1.8.16 的功能内容不变，随本版一并交付（KaTeX 真渲染 + LaTeX 命令名泄漏修复）。
+
 ## [1.8.16] - 2026-11-01
 
 ### ✨ 公式真渲染：内置 KaTeX，块级公式与 pi-web 视觉对齐

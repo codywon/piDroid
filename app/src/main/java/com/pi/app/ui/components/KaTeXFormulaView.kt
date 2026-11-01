@@ -115,9 +115,11 @@ internal fun KaTeXFormulaView(
                         }
                     },
                     update = { view ->
-                        val loaded = view.tag as? String
+                        // 用显式 getTag/setTag：View 上有 setTag(Int, Any?) 重载，
+                        // 属性语法在这里容易误读，也避免依赖合成属性的推断
+                        val loaded = view.getTag() as? String
                         if (loaded != html) {
-                            view.tag = html
+                            view.setTag(html)
                             view.loadDataWithBaseURL(
                                 "https://${KaTeXPageTemplate.ASSET_HOST}/",
                                 html,
@@ -163,7 +165,7 @@ private fun createFormulaWebView(
 ): WebView {
     val web = WebView(context)
     var settled = false
-    web.tag = html
+    web.setTag(html)
 
     web.settings.apply {
         javaScriptEnabled = true
@@ -229,7 +231,7 @@ private fun createFormulaWebView(
             request: WebResourceRequest?,
             error: WebResourceError?
         ) {
-            if (request?.isMainFrame == true) onFail()
+            if (request?.isForMainFrame == true) onFail()
         }
 
         override fun onPageFinished(view: WebView?, url: String?) {
