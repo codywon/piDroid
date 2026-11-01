@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        系统处于深色模式时的窗口底色（与 DARK_SLATE 的 background 一致）。
+        已知妥协：App 内可选 5 套主题，但窗口底色只能跟随系统深浅色，
+        因此「系统浅色 + App 内选 AMBER」时会有一帧 #F6F8FA。
+        彻底解决需要 setDefaultNightMode 或全 Compose 单 Activity（登记为技术债）。
+    -->
+    <style name="Theme.PiDroid" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#0D1117</item>
+        <item name="android:statusBarColor">#0D1117</item>
+        <item name="android:navigationBarColor">#0D1117</item>
+    </style>
+</resources>

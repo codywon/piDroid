@@ -12,7 +12,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -140,7 +139,9 @@ fun ThinkingLevelBottomSheet(
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                                     color = when {
                                         isSelected -> theme.primary
-                                        isHigh -> Color(0xFFF59E0B)
+                                        // 原裸写 #F59E0B（浅色白底仅 2.16:1），改用语义 warning：
+                                        // 浅 #92400E = 7.09:1 / 深 #FBBF24 = 10.25:1
+                                        isHigh -> theme.warning
                                         else -> theme.textPrimary
                                     }
                                 )
@@ -154,16 +155,16 @@ fun ThinkingLevelBottomSheet(
                                 if (isHigh) {
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Surface(
-                                        color = Color(0xFFF59E0B).copy(alpha = 0.14f),
+                                        color = theme.warningContainer,
                                         shape = RoundedCornerShape(4.dp),
-                                        border = BorderStroke(0.5.dp, Color(0xFFF59E0B).copy(alpha = 0.4f))
+                                        border = BorderStroke(0.5.dp, theme.warning.copy(alpha = 0.4f))
                                     ) {
                                         Text(
                                             text = "深度推理",
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.Medium,
                                             modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                                            color = Color(0xFFF59E0B)
+                                            color = theme.warning
                                         )
                                     }
                                 }
@@ -181,14 +182,14 @@ fun ThinkingLevelBottomSheet(
                                         Icon(
                                             imageVector = Icons.Default.Star,
                                             contentDescription = "当前默认档位",
-                                            tint = Color(0xFFF59E0B),
+                                            tint = theme.starActive,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     } else {
                                         Icon(
                                             imageVector = Icons.Default.Star,
                                             contentDescription = "点击设为全局默认档位",
-                                            tint = theme.textMuted.copy(alpha = 0.22f),
+                                            tint = theme.starInactive,
                                             modifier = Modifier.size(20.dp)
                                         )
                                     }

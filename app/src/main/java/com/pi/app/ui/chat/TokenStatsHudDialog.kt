@@ -9,7 +9,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,6 +37,15 @@ fun TokenStatsHudDialog(
             )
         },
         text = {
+            // 占用率三档色阶：必须在 Column 之外先算好。
+            // 原先三处 when 各自内联，改写成变量时若声明在 Row 的 content lambda 里，
+            // 兄弟节点 LinearProgressIndicator / 缓存卡片就会引用不到（作用域越界）。
+            // error 走 M3 ColorScheme（全局唯一真源），warning 走 AppTheme 语义色。
+            val usageColor = when {
+                stats.contextUsagePercent > 0.85f -> MaterialTheme.colorScheme.error
+                stats.contextUsagePercent > 0.70f -> theme.warning
+                else -> theme.primary
+            }
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
@@ -62,11 +70,7 @@ fun TokenStatsHudDialog(
                             fontWeight = FontWeight.Bold,
                             maxLines = 1,
                             softWrap = false,
-                            color = when {
-                                stats.contextUsagePercent > 0.85f -> Color(0xFFCF222E)
-                                stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
-                                else -> theme.primary
-                            }
+                            color = usageColor
                         )
                     }
                     LinearProgressIndicator(
@@ -74,20 +78,16 @@ fun TokenStatsHudDialog(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp),
-                        color = when {
-                            stats.contextUsagePercent > 0.85f -> Color(0xFFCF222E)
-                            stats.contextUsagePercent > 0.70f -> Color(0xFFD29922)
-                            else -> theme.primary
-                        },
+                        color = usageColor,
                         trackColor = theme.surfaceContainer
                     )
                 }
 
-                // 2. 缓存命中率卡片
+                // 2. 缓存命中率卡片：容器用不透明语义色（半透明容器会让对比度不可计算、不可断言）
                 Surface(
-                    color = Color(0xFF2EA043).copy(alpha = if (theme.isDark) 0.25f else 0.12f),
+                    color = theme.successContainer,
                     shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, Color(0xFF2EA043).copy(alpha = 0.35f))
+                    border = BorderStroke(1.dp, theme.success.copy(alpha = 0.35f))
                 ) {
                     Row(
                         modifier = Modifier
@@ -106,7 +106,7 @@ fun TokenStatsHudDialog(
                             Text(
                                 text = "缓存命中: ${TokenStats.formatTokenStandard(stats.cacheReadTokens)} Tokens",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = Color(0xFF2EA043),
+                                color = theme.success,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
@@ -118,7 +118,7 @@ fun TokenStatsHudDialog(
                             fontFamily = FontFamily.Monospace,
                             maxLines = 1,
                             softWrap = false,
-                            color = Color(0xFF2EA043)
+                            color = theme.success
                         )
                     }
                 }

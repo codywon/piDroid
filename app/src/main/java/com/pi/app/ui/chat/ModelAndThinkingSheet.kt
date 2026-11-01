@@ -15,7 +15,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -290,7 +289,9 @@ fun ModelAndThinkingSheet(
                                             imageVector = Icons.Default.Psychology,
                                             contentDescription = "支持思考推理",
                                             modifier = Modifier.size(13.dp),
-                                            tint = if (isSelected) theme.primary else Color(0xFF8B5CF6)
+                                            // 原先裸写 Color(0xFF8B5CF6)，与主题无关且在深色底上偏暗；
+                                            // 现由语义色提供（浅 #7C3AED 5.70:1 / 深 #A78BFA 6.28:1）
+                                            tint = if (isSelected) theme.primary else theme.featureThinking
                                         )
                                     }
                                     if (model.supportsVision) {
@@ -341,14 +342,17 @@ fun ModelAndThinkingSheet(
                                     Icon(
                                         imageVector = Icons.Default.Star,
                                         contentDescription = "当前默认模型",
-                                        tint = Color(0xFFF59E0B),
+                                        // 浅色原 #F59E0B 在白卡上仅 2.16:1；现 #B45309 = 5.02:1
+                                        tint = theme.starActive,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 } else {
                                     Icon(
                                         imageVector = Icons.Default.Star,
                                         contentDescription = "点击设为全局默认模型",
-                                        tint = theme.textMuted.copy(alpha = 0.22f),
+                                        // 实色灰而非 textMuted.copy(alpha = 0.22f)：20% alpha 叠白底只有 ≈1.4:1，
+                                        // 可点击控件需 >= 3:1（浅 #8C959F 3.04:1 / 深 #6E7681 3.72:1）
+                                        tint = theme.starInactive,
                                         modifier = Modifier.size(20.dp)
                                     )
                                 }

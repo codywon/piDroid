@@ -6,9 +6,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 
 /**
  * 专业级硬核极客主题配色模型 (参考 Termius 架构，彻底剔除紫色，默认浅色)
+ *
+ * 所有原始色值统一来自 [ThemePalette]（纯 Kotlin Int），本枚举只负责「语义映射」。
+ * 这样 `ColorContrastTest` 能在纯 JVM 环境中断言同一份数值，而无需加载 Compose 图形类。
  */
 enum class AppTheme(
     val id: String,
@@ -29,75 +33,124 @@ enum class AppTheme(
         titleZh = "纯白明眸",
         titleEn = "Paper Light (默认)",
         isDark = false,
-        primary = Color(0xFF0969DA),
-        primaryContainer = Color(0xFFDDF4FF),
-        background = Color(0xFFF6F8FA),
-        surfaceContainerLow = Color(0xFFFFFFFF),
-        surfaceContainer = Color(0xFFF3F6F9),
-        surfaceContainerHigh = Color(0xFFEAECEF),
-        outline = Color(0xFFE1E6EB),
-        previewGradient = listOf(Color(0xFF0969DA), Color(0xFF54A0FF))
+        primary = Color(ThemePalette.LightPrimary),
+        primaryContainer = Color(ThemePalette.LightPrimaryContainer),
+        background = Color(ThemePalette.LightBackground),
+        surfaceContainerLow = Color(ThemePalette.LightSurfaceLow),
+        surfaceContainer = Color(ThemePalette.LightSurfaceContainer),
+        surfaceContainerHigh = Color(ThemePalette.LightSurfaceHigh),
+        outline = Color(ThemePalette.LightOutline),
+        previewGradient = listOf(Color(ThemePalette.LightPreviewFrom), Color(ThemePalette.LightPreviewTo))
     ),
     ICE_BLUE(
         id = "ice_blue",
         titleZh = "极客冰蓝",
         titleEn = "Cyber Ice Blue",
         isDark = true,
-        primary = Color(0xFF38BDF8),
-        primaryContainer = Color(0xFF0E436B),
-        background = Color(0xFF0B1320),
-        surfaceContainerLow = Color(0xFF111C2D),
-        surfaceContainer = Color(0xFF162338),
-        surfaceContainerHigh = Color(0xFF21324E),
-        outline = Color(0xFF2E466E),
-        previewGradient = listOf(Color(0xFF38BDF8), Color(0xFF0284C7))
+        primary = Color(ThemePalette.IceBluePrimary),
+        primaryContainer = Color(ThemePalette.IceBluePrimaryContainer),
+        background = Color(ThemePalette.IceBlueBackground),
+        surfaceContainerLow = Color(ThemePalette.IceBlueSurfaceLow),
+        surfaceContainer = Color(ThemePalette.IceBlueSurfaceContainer),
+        surfaceContainerHigh = Color(ThemePalette.IceBlueSurfaceHigh),
+        outline = Color(ThemePalette.IceBlueOutline),
+        previewGradient = listOf(Color(ThemePalette.IceBluePreviewFrom), Color(ThemePalette.IceBluePreviewTo))
     ),
     EMERALD(
         id = "emerald",
         titleZh = "黑曜石翡翠",
         titleEn = "Obsidian Emerald",
         isDark = true,
-        primary = Color(0xFF67DF70),
-        primaryContainer = Color(0xFF1B4D20),
-        background = Color(0xFF0B141C),
-        surfaceContainerLow = Color(0xFF141C24),
-        surfaceContainer = Color(0xFF182028),
-        surfaceContainerHigh = Color(0xFF222B33),
-        outline = Color(0xFF3E4A3C),
-        previewGradient = listOf(Color(0xFF67DF70), Color(0xFF3FB950))
+        primary = Color(ThemePalette.EmeraldPrimary),
+        primaryContainer = Color(ThemePalette.EmeraldPrimaryContainer),
+        background = Color(ThemePalette.EmeraldBackground),
+        surfaceContainerLow = Color(ThemePalette.EmeraldSurfaceLow),
+        surfaceContainer = Color(ThemePalette.EmeraldSurfaceContainer),
+        surfaceContainerHigh = Color(ThemePalette.EmeraldSurfaceHigh),
+        outline = Color(ThemePalette.EmeraldOutline),
+        previewGradient = listOf(Color(ThemePalette.EmeraldPreviewFrom), Color(ThemePalette.EmeraldPreviewTo))
     ),
     AMBER(
         id = "amber",
         titleZh = "复古琥珀",
         titleEn = "Cyber Amber",
         isDark = true,
-        primary = Color(0xFFFBBF24),
-        primaryContainer = Color(0xFF5B3E05),
-        background = Color(0xFF14120C),
-        surfaceContainerLow = Color(0xFF1F1A12),
-        surfaceContainer = Color(0xFF292318),
-        surfaceContainerHigh = Color(0xFF383021),
-        outline = Color(0xFF52452D),
-        previewGradient = listOf(Color(0xFFFBBF24), Color(0xFFD97706))
+        primary = Color(ThemePalette.AmberPrimary),
+        primaryContainer = Color(ThemePalette.AmberPrimaryContainer),
+        background = Color(ThemePalette.AmberBackground),
+        surfaceContainerLow = Color(ThemePalette.AmberSurfaceLow),
+        surfaceContainer = Color(ThemePalette.AmberSurfaceContainer),
+        surfaceContainerHigh = Color(ThemePalette.AmberSurfaceHigh),
+        outline = Color(ThemePalette.AmberOutline),
+        previewGradient = listOf(Color(ThemePalette.AmberPreviewFrom), Color(ThemePalette.AmberPreviewTo))
     ),
     DARK_SLATE(
         id = "dark_slate",
         titleZh = "暗夜极客",
         titleEn = "Dark Slate",
         isDark = true,
-        primary = Color(0xFF58A6FF),
-        primaryContainer = Color(0xFF1F3556),
-        background = Color(0xFF0D1117),
-        surfaceContainerLow = Color(0xFF161B22),
-        surfaceContainer = Color(0xFF21262D),
-        surfaceContainerHigh = Color(0xFF30363D),
-        outline = Color(0xFF30363D),
-        previewGradient = listOf(Color(0xFF58A6FF), Color(0xFF1F6FEB))
+        primary = Color(ThemePalette.DarkSlatePrimary),
+        primaryContainer = Color(ThemePalette.DarkSlatePrimaryContainer),
+        background = Color(ThemePalette.DarkSlateBackground),
+        surfaceContainerLow = Color(ThemePalette.DarkSlateSurfaceLow),
+        surfaceContainer = Color(ThemePalette.DarkSlateSurfaceContainer),
+        surfaceContainerHigh = Color(ThemePalette.DarkSlateSurfaceHigh),
+        outline = Color(ThemePalette.DarkSlateOutline),
+        previewGradient = listOf(Color(ThemePalette.DarkSlatePreviewFrom), Color(ThemePalette.DarkSlatePreviewTo))
     );
 
-    val textPrimary: Color get() = if (isDark) Color(0xFFF0F6FC) else Color(0xFF1F2328)
-    val textSecondary: Color get() = if (isDark) Color(0xFF8B949E) else Color(0xFF57606A)
-    val textMuted: Color get() = if (isDark) Color(0xFF484F58) else Color(0xFF8C959F)
+    // ── 文本梯队 ────────────────────────────────────────────────
+    val textPrimary: Color
+        get() = Color(if (isDark) ThemePalette.TextDarkPrimary else ThemePalette.TextLightPrimary)
+    val textSecondary: Color
+        get() = Color(if (isDark) ThemePalette.TextDarkSecondary else ThemePalette.TextLightSecondary)
+
+    /**
+     * 弱化说明文本（时间戳、消息条数、工作区名等，全项目 256 处调用点）。
+     *
+     * 修复前后实测（vs `surfaceContainerLow`）：
+     * 浅色 `#8C959F` 3.04:1 → `#656D76` **5.25:1**
+     * 深色 `#484F58` 2.08:1 → `#7D8590` **4.59:1**
+     *
+     * 约束：只允许画在 `background` / `surfaceContainerLow` 上。
+     * 在 `surfaceContainerHigh`（嵌套胶囊/徽章底）上请改用 `textPrimary`——
+     * 实测 muted 在该底色上仅 3.3~3.9:1，任何"再调暗一点"的取法都会让它与
+     * [textSecondary] 撞值，把三级文字梯度塌成两级。
+     */
+    val textMuted: Color
+        get() = Color(if (isDark) ThemePalette.TextDarkMuted else ThemePalette.TextLightMuted)
+
+    // ── 主操作前景色（动态） ─────────────────────────────────────
+    /**
+     * 压在 [primary] 上的前景色。**禁止**调用点再写 `contentColor = Color.White`：
+     * AMBER 白字仅 1.67:1、EMERALD 1.70:1、ICE_BLUE 2.14:1、DARK_SLATE 2.53:1，
+     * 全部低于 WCAG AA。这里按实际对比度在白 / 深墨之间取优，实测最低 5.19:1（LIGHT_PAPER）。
+     */
+    val onPrimary: Color
+        get() = Color(ArgbContrast.bestOn(primary.toArgb()))
+
+    // ── 语义状态色（M3 没有 success / warning 槽位，故只在本层定义一次）──
+    val success: Color
+        get() = Color(if (isDark) ThemePalette.DarkSuccess else ThemePalette.LightSuccess)
+    val successContainer: Color
+        get() = Color(if (isDark) ThemePalette.DarkSuccessContainer else ThemePalette.LightSuccessContainer)
+    val warning: Color
+        get() = Color(if (isDark) ThemePalette.DarkWarning else ThemePalette.LightWarning)
+    val warningContainer: Color
+        get() = Color(if (isDark) ThemePalette.DarkWarningContainer else ThemePalette.LightWarningContainer)
+
+    // ── 功能色 ──────────────────────────────────────────────────
+    /** 已设为默认的实心星标 */
+    val starActive: Color
+        get() = Color(if (isDark) ThemePalette.DarkStarActive else ThemePalette.LightStarActive)
+
+    /** 未设为默认的空心星标：可点击控件，实色且 >= 3:1（不可用 alpha 预混） */
+    val starInactive: Color
+        get() = Color(if (isDark) ThemePalette.DarkStarInactive else ThemePalette.LightStarInactive)
+
+    /** 「支持思考推理」能力图标（替代原先裸写的紫色常量） */
+    val featureThinking: Color
+        get() = Color(if (isDark) ThemePalette.DarkFeatureThinking else ThemePalette.LightFeatureThinking)
 
     companion object {
         fun fromId(id: String): AppTheme = entries.find { it.id == id } ?: LIGHT_PAPER

@@ -1,8 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+        窗口底色只决定「冷启动那一帧」与系统栏底色，Compose 内容由 PiDroidTheme 控制。
+
+        默认主题是 LIGHT_PAPER（浅色），原来这里却把 windowBackground 写死 #0D1117（深色），
+        导致浅色用户每次冷启动都先黑一下。浅色放在本文件，深色放 values-night/themes.xml，
+        跟随系统深浅色。
+    -->
     <style name="Theme.PiDroid" parent="android:Theme.Material.NoActionBar">
-        <item name="android:windowBackground">#0D1117</item>
-        <item name="android:statusBarColor">#0D1117</item>
-        <item name="android:navigationBarColor">#0D1117</item>
+        <item name="android:windowBackground">#F6F8FA</item>
+        <item name="android:statusBarColor">#F6F8FA</item>
+        <item name="android:navigationBarColor">#F6F8FA</item>
     </style>
 </resources>
