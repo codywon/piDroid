@@ -2479,8 +2479,7 @@ fun GlobalMcpTab(
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 listOf(
                                     "automatic" to "自动",
-                                    "always" to "始终",
-                                    "off" to "关闭"
+                                    "always" to "始终"
                                 ).forEach { (mode, label) ->
                                     SettingsChip(
                                         text = label,
@@ -2494,7 +2493,7 @@ fun GlobalMcpTab(
                             }
                         }
                         SettingsRow(
-                            title = "脚本模式",
+                            title = "内置工具仅在脚本内可用",
                             topDivider = true,
                             trailing = {
                                 SettingsSwitch(
@@ -3283,7 +3282,7 @@ fun GlobalSystemSettingsTab(
                                         onClick = {
                                             val clipboard = context.getSystemService(android.content.ClipboardManager::class.java)
                                             clipboard?.setPrimaryClip(
-                                                android.content.ClipData.newPlainText("piDroid Token", authToken)
+                                                android.content.ClipData.newPlainText("πDroid Token", authToken)
                                             )
                                             Toast.makeText(context, "已复制访问令牌", Toast.LENGTH_SHORT).show()
                                         }
@@ -3362,7 +3361,7 @@ fun GlobalSystemSettingsTab(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = "piDroid",
+                                text = "πDroid",
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = theme.textPrimary

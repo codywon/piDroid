@@ -330,6 +330,10 @@ class MainActivity : ComponentActivity() {
         var currentToolPreset by remember {
             mutableStateOf(ToolPreset.fromId(prefs.defaultToolPreset))
         }
+        // 切权限的请求在飞时，早于它发出的会话快照不得把界面上的预设改回旧值。
+        var pendingToolPresetChanges by remember { mutableStateOf(0) }
+        // 会话被服务端重建/切换后，斜杠命令清单作废重拉（与 pi-web clearSlashCommands 对齐）
+        var commandsRevision by remember { mutableStateOf(0) }
 
         var currentProject by remember { mutableStateOf("默认工作区") }
         var tokenStats by remember {
@@ -513,10 +517,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 apiClient.getPlugins(cwd).onSuccess { plugins = it }
-                apiClient.getMcpServers(cwd).onSuccess { (cfg, srvs) ->
-                    mcpConfig = cfg
-                    mcpServers = srvs
-                }
+                apiClient.getMcpServers(cwd).onSuccess { mcpServers = it }
+                // 代码模式三个旋钮在 /api/tools/settings（上游 GET），不再从 /api/mcp 里猜测
+                apiClient.getToolSettings().onSuccess { mcpConfig = it.toCodeModeConfig() }
             }
         }
 
@@ -1004,6 +1007,11 @@ class MainActivity : ComponentActivity() {
                     currentThinkingLevel = history.thinkingLevel
                 }
                 modelMetaRevision++
+            }
+            // 权限模式跟着每次对账刷新：会话钉住的工具清单才是真相，界面不能停在本机旧偏好上
+            // （pi-web 同样在每次读会话时用 toolNames 重算，见 useAgentSession.loadData）。
+            if (pendingToolPresetChanges == 0 && history != null) {
+                currentToolPreset = ToolPreset.fromToolNames(history.toolNames)
             }
             val runningResult = if (runtime != null) {
                 Result.success(runtime.running)
@@ -1626,35 +1634,10 @@ class MainActivity : ComponentActivity() {
                                 messages[messages.size - 1] = last.copy(isStreaming = false)
                             }
                         }
-                        "approval_required" -> {
-                            lastSseActivityAt = System.currentTimeMillis()
-                            if (prefs.hapticsEnabled) {
-                                hapticsAndNotify.vibrateApprovalRequired()
-                            }
-                            // 高危命令待审批：独立高优先级通知，点一下直达该会话（不看任务完成通知开关）
-                            hapticsAndNotify.notifyApprovalNeeded(
-                                sessionTitle = currentSession?.displayTitle ?: "当前任务",
-                                project = currentProject,
-                                toolName = event.effectiveToolName,
-                                commandPreview = event.preview ?: event.effectiveCommand ?: "",
-                                sessionId = sessionId
-                            )
-                            agentPhaseLabel = "等待人工安全审批..."
-                            messages.add(
-                                ChatItem(
-                                    role = MessageRole.TOOL,
-                                    content = "",
-                                    toolCall = ToolCallInfo(
-                                        toolCallId = event.toolCallId,
-                                        toolName = event.effectiveToolName,
-                                        preview = event.preview,
-                                        command = event.effectiveCommand,
-                                        requiresApproval = true,
-                                        isApproved = false
-                                    )
-                                )
-                            )
-                        }
+                        // 注：以前这里有一个 "approval_required" 分支（待审批卡片 + 高优先级通知 + 批准/拒绝），
+                        // 但 pi-web（0.12.2 / 0.13.0）与 pi SDK 都没有这条事件，也没有
+                        // POST /api/agent/{id}/approval —— 这条链路从来没有对端，点「批准」是静默 404。
+                        // 工具权限完全由会话的 toolNames 预设决定，所以整个分支已删除。
                         "prompt_error" -> {
                             // 投递已受理、异步失败（如压缩结束后的重申被拒）：必须让用户看见错误。
                             // 收尾交给紧随其后的 prompt_done / agent_end，不在这里强行判完成。
@@ -1757,6 +1740,12 @@ class MainActivity : ComponentActivity() {
             earlierTurnCount = hist.turnsBefore
             olderCursor = hist.oldestEntryId
             olderLeafId = hist.leafId
+            // 权限模式必须来自会话自己钉住的工具清单（pi-web useAgentSession 每次读会话都重算），
+            // 不能沿用本机上次选的那个——否则打开一个“跟随 settings.json”的会话时，
+            // 界面会显示上一场的 full，让用户误以为权限已经被钉死。
+            if (pendingToolPresetChanges == 0) {
+                currentToolPreset = ToolPreset.fromToolNames(hist.toolNames)
+            }
         }
 
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
@@ -1769,6 +1758,8 @@ class MainActivity : ComponentActivity() {
                 unreadSessionIds = prefs.getUnreadSessionIds()
             }
             modelMetaRevision++
+            // 命令清单属于具体会话：换会话必须作废上一场的（否则斜杠菜单会给出别人的命令）
+            commandsRevision++
             currentSession = session
             // 「回到会话」先按这条会话上次确认的身份还原模型：
             // 否则在服务端快照回来之前，界面只能用全局默认 / 上一条会话的模型顶着，
@@ -2298,10 +2289,47 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onUpdateMcpCodeMode = { mode, scriptMode, tokenBudget ->
+                        val previous = mcpConfig
                         mcpConfig = mcpConfig.copy(mode = mode, scriptMode = scriptMode, tokenBudget = tokenBudget)
                         lifecycleScope.launch {
-                            apiClient.updateMcpCodeMode(mode, scriptMode, tokenBudget, currentProject)
-                            Toast.makeText(this@MainActivity, "已保存 MCP 代码沙箱配置", Toast.LENGTH_SHORT).show()
+                            // pi-web 的 PUT /api/tools/settings 一次只接受一个字段：
+                            // 变哪一项就只提交那一项，失败要真的说出来（以前走的是不存在的 action，且无条件 toast “已保存”）。
+                            val changes = buildList {
+                                if (mode != previous.mode) {
+                                    add(ToolSettingsChange.Codemode(mode))
+                                }
+                                if (scriptMode != previous.scriptMode) {
+                                    add(
+                                        ToolSettingsChange.Mode(
+                                            if (scriptMode) ToolSettings.MODE_ONLY else ToolSettings.MODE_ON
+                                        )
+                                    )
+                                }
+                                if (tokenBudget != previous.tokenBudget) {
+                                    add(ToolSettingsChange.InlineBudget(tokenBudget))
+                                }
+                            }
+                            if (changes.isEmpty()) return@launch
+                            var failure: String? = null
+                            var applied: ToolSettings? = null
+                            for (change in changes) {
+                                val result = apiClient.updateToolSettings(change)
+                                failure = result.exceptionOrNull()?.message
+                                if (failure != null) break
+                                applied = result.getOrNull()
+                            }
+                            if (failure != null) {
+                                // 回滚界面到服务端真实值，不留一个没生效的开关在那“亮着”
+                                apiClient.getToolSettings().onSuccess { mcpConfig = it.toCodeModeConfig() }
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "代码模式未生效：$failure",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } else {
+                                applied?.let { mcpConfig = it.toCodeModeConfig() }
+                                Toast.makeText(this@MainActivity, "已同步代码模式配置", Toast.LENGTH_SHORT).show()
+                            }
                         }
                     },
                     isIgnoringBattery = keepAliveManager.isIgnoringBatteryOptimizations(),
@@ -2843,12 +2871,6 @@ class MainActivity : ComponentActivity() {
                     // Stop / 撤回退回的排队消息：交给 ChatScreen 回填后清空请求
                     recallRequest = recallRequest,
                     onRecallConsumed = { recallRequest = null },
-                    onApproveTool = { approved ->
-                        val sid = activeSessionId
-                        lifecycleScope.launch {
-                            apiClient.sendApproval(sid, approved)
-                        }
-                    },
                     // 消息底部「新会话」：1:1 对标 pi-web 的 handleFork —— 以该条提问为切点
                     // 在磁盘上新建一个独立的 .jsonl（只拷贝它之前的历史），源会话保持不变。
                     // 以前这里忽略了 userItem、直接调侧边栏的 /fork（整条当前分支 Clone），
@@ -2883,21 +2905,53 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     currentToolPreset = currentToolPreset,
+                    commandsRevision = commandsRevision,
                     onToolPresetChange = { preset ->
                         currentToolPreset = preset
                         prefs.defaultToolPreset = preset.id
-                        currentSession?.let { sess ->
-                            lifecycleScope.launch {
-                                apiClient.setSessionTools(sess.id, preset.toolNames).onSuccess { res ->
-                                    if (res.recreated && res.sessionId != sess.id) {
-                                        val updatedSession = sess.copy(id = res.sessionId)
-                                        currentSession = updatedSession
-                                        startListeningEvents(res.sessionId)
+                        val sess = currentSession
+                        if (sess == null) {
+                            // 还没建会话：偏好已记下，等 /api/agent/new 把工具清单一起带上去
+                            Toast.makeText(
+                                this@MainActivity,
+                                "新会话将使用：${preset.displayName}",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@ChatScreen
+                        }
+                        pendingToolPresetChanges++
+                        lifecycleScope.launch {
+                            apiClient.setSessionTools(sess.id, preset.toolNames).onSuccess { res ->
+                                pendingToolPresetChanges--
+                                if (res.recreated) {
+                                    // 服务端为了应用新权限重建了会话包装（跨过“仅聊天”边界时必然重建）：
+                                    // SSE 必须重新挂到（可能换了 id 的）会话上，排队消息与阶段文案属于旧包装，全部丢掉，
+                                    // 再用快照回填真实状态（pi-web handleToolPresetChange 同样清命令/扩展面板再重拉）。
+                                    val activeId = res.sessionId.ifBlank { sess.id }
+                                    if (activeId != sess.id) {
+                                        currentSession = sess.copy(id = activeId)
                                     }
-                                    Toast.makeText(this@MainActivity, "已切换权限模式：${preset.displayName}", Toast.LENGTH_SHORT).show()
-                                }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "权限切换失败：${err.message}", Toast.LENGTH_LONG).show()
+                                    queuedMessages.clear()
+                                    agentPhaseLabel = null
+                                    streamingMessageId = null
+                                    commandsRevision++
+                                    startListeningEvents(activeId)
+                                    syncSessionSnapshot(activeId, allowCompletionTransition = false)
                                 }
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "已切换权限模式：${preset.displayName}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }.onFailure { err ->
+                                pendingToolPresetChanges--
+                                // 失败必须把界面改回会话真实状态，不能停在一个没生效的预设上
+                                currentToolPreset = ToolPreset.fromToolNames(apiClient.getCachedSessionDetail(sess.id)?.toolNames)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "权限切换失败：${err.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                     }
@@ -3211,7 +3265,10 @@ class MainActivity : ComponentActivity() {
                                 cwd = targetCwd,
                                 provider = selectedModel.provider,
                                 modelId = selectedModel.id,
-                                thinkingLevel = currentThinkingLevel
+                                thinkingLevel = currentThinkingLevel,
+                                // 权限模式跟着新会话一起交上去（pi-web ensureNewSession 同样只带显式选择，
+                                // configured 时传 null = 不钉住），否则服务端会是未钉住、而界面却显示一个钉死的值。
+                                toolNames = currentToolPreset.toolNames
                             )
                             createResult.onSuccess { realSessionId ->
                                 val newSession = Session(

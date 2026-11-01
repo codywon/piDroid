@@ -26,8 +26,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 128
-        versionName = "1.8.22"
+        versionCode = 129
+        versionName = "1.8.23"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

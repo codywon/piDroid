@@ -133,8 +133,12 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_DEFAULT_THINKING, "high") ?: "high"
         set(value) = prefs.edit().putString(KEY_DEFAULT_THINKING, value).apply()
 
+    /**
+     * 新建会话用的工具权限模式偏好。默认 `configured`：没被用户显式选过时
+     * 让 pi 按 settings.json 的 defaultTools 解析，而不是默默钉死一套内置工具（pi-web #700）。
+     */
     var defaultToolPreset: String
-        get() = prefs.getString(KEY_DEFAULT_TOOL_PRESET, "full") ?: "full"
+        get() = prefs.getString(KEY_DEFAULT_TOOL_PRESET, "configured") ?: "configured"
         set(value) = prefs.edit().putString(KEY_DEFAULT_TOOL_PRESET, value).apply()
 
     fun getSkillAlias(skillName: String): String? {

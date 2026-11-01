@@ -2,6 +2,41 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.23] - 2026-11-01
+
+### 🔧 工具权限模式真正对上 pi-web（此前只有界面，没有真相）
+
+「工具权限模式」的接口本来就用对了（`POST /api/agent/{id}` 的 `set_tools`），但只要关掉 App 重进，
+权限胶囊显示的永远是**本机上次选的那个值**，而不是这条会话实际钉住的工具 —— 于是会出现
+「界面写着 full，会话其实还在跟随 settings.json」这种看起来没问题的错觉。本版把这条链路补齐：
+
+- 打开会话时用服务端返回的 `toolNames` 反推预设（`null` = 跟随 settings.json、空清单 = 仅聊天），
+  每次对账（SSE 事件与状态轮询）都重新对齐；本机偏好只用于**新建会话**，默认值改为 `configured`；
+- 新建会话把当前预设一起交给 `/api/agent/new`，不再出现「新建就显示 full、服务端其实没钉住」；
+- 预设判定逐行对齐上游 `lib/tool-presets.ts`：只认 7 个内置工具名、`powershell` 归一成 `bash`、
+  排序后比较、认不出来回落 `default`（以前默认回落的 `full` 更危险）；未知偏好值一律回落 `configured`；
+- 切权限被服务端重建会话（跨过「仅聊天」边界必然重建）时，重新挂 SSE、清掉排队/阶段/斜杠命令缓存，
+  再拉一次快照回填真实状态；切换失败会把胶囊恢复成会话真实值，不再停在一个没生效的预设上。
+
+### 🐞 代码模式（Codemode）开关其实一直是假的
+
+三个旋钮以前发给 `POST /api/mcp {action:"set-codemode"}` —— 上游**从来没有这个 action**，
+所以每次都是静默失败，界面却照样弹「已保存」。现在读写都走真正的
+`GET/PUT /api/tools/settings`（`codemode` / `codemodeMode` / `codemodeInlineBudget`，一次只提交一项），
+失败会明说「代码模式未生效：原因」并把开关回滚到服务端的值；「关闭」这个上游不存在的档位已去掉。
+
+### 🗑 删掉从未存在的「人工审批」链路
+
+App 里监听 `approval_required` 事件、画「待审批」卡片、发高优先级通知、再 `POST /api/agent/{id}/approval` ——
+pi-web（0.12.2 / 0.13.0）与 pi SDK 都没有这条事件与这个路由，点「批准」只会 404 且结果被丢弃。
+整条链路（事件分支、卡片 UI、震动与通知函数、客户端方法）已移除；工具权限完全由会话预设决定。
+
+### ✅ 单元测试
+
+新增 `ToolPresetTest`、`ToolSettingsChangeTest`、`ToolSettingsJsonTest`：
+覆盖预设反推、`powershell` 归一、非内置工具不参与判定、未知值回落、
+以及 `PUT /api/tools/settings` 的「一次一项」报文与「写入裸值 / 读回包装对象」的形状差异。
+
 ## [1.8.22] - 2026-11-01
 
 ### ⚡ 预算改为「效果优先」：上下文 12000→40000 字，输出 2400→4096 token

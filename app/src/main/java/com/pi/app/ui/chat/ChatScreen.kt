@@ -229,9 +229,13 @@ fun ChatScreen(
      */
     recallRequest: RecallToComposerRequest? = null,
     onRecallConsumed: () -> Unit = {},
-    onApproveTool: (approved: Boolean) -> Unit,
     currentToolPreset: ToolPreset = ToolPreset.CONFIGURED,
     onToolPresetChange: (ToolPreset) -> Unit = {},
+    /**
+     * 每次切权限/会话被服务端重建都 +1：斜杠命令清单是从旧会话拉来的，
+     * 重建后（尤其是跨过「仅聊天」边界）必须作废重拉（pi-web 同样 clearSlashCommands）。
+     */
+    commandsRevision: Int = 0,
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
@@ -343,6 +347,11 @@ fun ChatScreen(
     // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）：跟随输入框里的 "/" 自动展开
     var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
     var isLoadingCommands by remember { mutableStateOf(false) }
+    // 会话被重建（set_tools 跨越仅聊天边界）后，旧会话的命令清单不再属于当前会话
+    LaunchedEffect(commandsRevision) {
+        commands = emptyList()
+        isLoadingCommands = false
+    }
 
     // 图片与文件附件选择器（按会话隔离：切会话后不会把上个会话的附件带过去）
     val attachments = remember(sessionId) { mutableStateListOf<ChatAttachment>() }
@@ -2225,7 +2234,6 @@ fun ChatScreen(
                                 item = item,
                                 showModelHeader = false,
                                 defaultModelName = selectedModel.displayName,
-                                onApproveTool = onApproveTool,
                                 onEditFromHere = editFromMessage,
                                 onForkFromHere = onForkFromMessage,
                                 onOpenBashOutput = { p, t -> openBashOutput(p, t) },
@@ -2249,7 +2257,6 @@ fun ChatScreen(
                                 item = turn.userMessage,
                                 showModelHeader = false,
                                 defaultModelName = selectedModel.displayName,
-                                onApproveTool = onApproveTool,
                                 onEditFromHere = editFromMessage,
                                 // 对标 pi-web：编辑目标条目高亮，工具条换成「取消」
                                 isEditing = !editingEntryId.isNullOrBlank() && turn.userMessage.entryId == editingEntryId,
@@ -2291,7 +2298,6 @@ fun ChatScreen(
                                             item = procItem,
                                             showModelHeader = false,
                                             defaultModelName = selectedModel.displayName,
-                                            onApproveTool = onApproveTool,
                                             onEditFromHere = editFromMessage,
                                             onForkFromHere = onForkFromMessage,
                                             onOpenBashOutput = { p, t -> openBashOutput(p, t) },
@@ -2315,7 +2321,6 @@ fun ChatScreen(
                                     item = widgetItem,
                                     showModelHeader = false,
                                     defaultModelName = selectedModel.displayName,
-                                    onApproveTool = onApproveTool,
                                     onEditFromHere = editFromMessage,
                                     onForkFromHere = onForkFromMessage,
                                     onOpenBashOutput = { p, t -> openBashOutput(p, t) },
@@ -2336,7 +2341,6 @@ fun ChatScreen(
                                     item = ans,
                                     showModelHeader = showModelHeader,
                                     defaultModelName = selectedModel.displayName,
-                                    onApproveTool = onApproveTool,
                                     onEditFromHere = editFromMessage,
                                     onForkFromHere = onForkFromMessage,
                                     onOpenBashOutput = { p, t -> openBashOutput(p, t) },
@@ -2633,7 +2637,6 @@ fun ChatMessageItem(
     item: ChatItem,
     showModelHeader: Boolean = false,
     defaultModelName: String = "",
-    onApproveTool: (approved: Boolean) -> Unit,
     onEditFromHere: ((ChatItem) -> Unit)? = null,
     onForkFromHere: ((ChatItem) -> Unit)? = null,
     /** 打开 bash 完整输出：由 ChatScreen 注入，工具卡里才有入口 */
@@ -2905,10 +2908,9 @@ fun ChatMessageItem(
                             val toolFullOutputPath = tool.fullOutputPath
                             PiWebToolCallCard(
                                 tool = if (mergedMedia.size != tool.mediaList.size) tool.copy(mediaList = mergedMedia) else tool,
-                                expanded = isToolExpanded || tool.requiresApproval,
+                                expanded = isToolExpanded,
                                 onToggle = { isToolExpanded = !isToolExpanded },
                                 onCopyText = { text -> clipboardManager.setText(AnnotatedString(text)) },
-                                onApproveTool = onApproveTool,
                                 onOpenFullOutput = if (onOpenBashOutput == null || toolFullOutputPath == null) null else {
                                     { onOpenBashOutput(toolFullOutputPath, "${tool.toolName} 完整输出") }
                                 },
@@ -3137,7 +3139,6 @@ fun PiWebToolCallCard(
     expanded: Boolean,
     onToggle: () -> Unit,
     onCopyText: (String) -> Unit,
-    onApproveTool: (approved: Boolean) -> Unit,
     /** 有 fullOutputPath 时提供「完整输出」入口（bash 长命令聊天里只有截断预览） */
     onOpenFullOutput: (() -> Unit)? = null,
     /** 有绝对文件路径时提供「查看文件」入口 */
@@ -3145,11 +3146,10 @@ fun PiWebToolCallCard(
 ) {
     val theme = LocalAppTheme.current
     val hasResult = !tool.output.isNullOrBlank() || !tool.isRunning
-    val isPending = tool.isRunning && tool.output.isNullOrBlank() && !tool.requiresApproval
+    val isPending = tool.isRunning && tool.output.isNullOrBlank()
 
     val hasMedia = tool.mediaList.isNotEmpty()
     val borderColor = when {
-        tool.requiresApproval && !tool.isApproved -> theme.warning
         tool.isError -> MaterialTheme.colorScheme.error.copy(alpha = 0.65f)
         isPending -> theme.primary.copy(alpha = 0.55f)
         hasMedia -> theme.success.copy(alpha = if (theme.isDark) 0.42f else 0.35f)
@@ -3242,14 +3242,6 @@ fun PiWebToolCallCard(
 
                 // 右侧状态指示 (旋转加载 / ✓ / ✗)
                 when {
-                    tool.requiresApproval && !tool.isApproved -> {
-                        Text(
-                            text = "待审批",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = theme.warning
-                        )
-                    }
                     isPending -> {
                         CircularProgressIndicator(
                             modifier = Modifier.size(11.dp),
@@ -3428,32 +3420,6 @@ fun PiWebToolCallCard(
                                 color = if (tool.isError) MaterialTheme.colorScheme.error else theme.textSecondary,
                                 modifier = Modifier.padding(8.dp)
                             )
-                        }
-                    }
-
-                    // 3. 危险命令人工审批操作
-                    if (tool.requiresApproval && !tool.isApproved) {
-                        Row(
-                            modifier = Modifier.padding(top = 4.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = { onApproveTool(true) },
-                                colors = ButtonDefaults.buttonColors(containerColor = theme.success, contentColor = theme.onSuccess),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                            ) {
-                                Text("批准执行", color = Color.White, style = MaterialTheme.typography.labelSmall)
-                            }
-                            OutlinedButton(
-                                onClick = { onApproveTool(false) },
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
-                                shape = RoundedCornerShape(6.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-                            ) {
-                                Text("拒绝", style = MaterialTheme.typography.labelSmall)
-                            }
                         }
                     }
                 }

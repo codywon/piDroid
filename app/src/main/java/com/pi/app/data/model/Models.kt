@@ -640,10 +640,94 @@ data class McpServerStatus(
 )
 
 data class McpCodeModeConfig(
-    val mode: String = "automatic", // automatic, always, off
-    val scriptMode: Boolean = true,
-    val tokenBudget: Int = 3000
+    val mode: String = "automatic", // automatic, always（pi-web 没有 never）
+    val scriptMode: Boolean = false, // true = 内置工具只在脚本里可用（pi-web codemodeMode "only"）
+    val tokenBudget: Int = ToolSettings.DEFAULT_INLINE_BUDGET
 )
+
+/**
+ * pi-web `GET /api/tools/settings` 的响应：工具层面真正的全局开关（代码模式 + PowerShell）。
+ * 代码模式以前是到 `/api/mcp` 里找的，那里从来没有这组字段。
+ */
+data class ToolSettings(
+    val isWindows: Boolean = false,
+    val powerShellEnabled: Boolean = false,
+    /** "automatic" | "always" */
+    val codemode: String = "automatic",
+    /** "on"（直接调用）| "only"（只在脚本里可用） */
+    val codemodeMode: String = "on",
+    /** `null` = 跟随 pi 默认值（3000），不是「还没读到」 */
+    val codemodeInlineBudget: Int? = null
+) {
+    val inlineBudgetOrDefault: Int get() = codemodeInlineBudget ?: DEFAULT_INLINE_BUDGET
+    val scriptMode: Boolean get() = codemodeMode == "only"
+
+    fun toCodeModeConfig(): McpCodeModeConfig = McpCodeModeConfig(
+        mode = codemode,
+        scriptMode = scriptMode,
+        tokenBudget = inlineBudgetOrDefault
+    )
+
+    companion object {
+        const val DEFAULT_INLINE_BUDGET = 3000
+        const val CODEMODE_AUTOMATIC = "automatic"
+        const val CODEMODE_ALWAYS = "always"
+        const val MODE_ON = "on"
+        const val MODE_ONLY = "only"
+
+        /**
+         * 解析 pi-web 的 `ToolSettingsResponse`。
+         *
+         * 注意两侧形状并不一样：写入是裸值（`"codemodeMode":"only"`、`"codemodeInlineBudget":8000`），
+         * 读回来却是包装对象（`{"codemodeMode":{"value":"only"}}`、`{"codemodeInlineBudget":{"value":8000}}`，
+         * 未设置时是 `{}`）。把读回来的对象当数字读会直接抛异常，所以这里单独处理。
+         */
+        fun fromJson(json: JsonObject): ToolSettings {
+            val modeRaw = json.get("codemodeMode")
+            val budgetRaw = json.get("codemodeInlineBudget")
+            val mode = when {
+                modeRaw != null && modeRaw.isJsonObject ->
+                    modeRaw.asJsonObject.get("value")?.takeIf { !it.isJsonNull }?.asString
+                // 兼容直接给字符串的老网关
+                modeRaw != null && modeRaw.isJsonPrimitive -> modeRaw.asString
+                else -> null
+            }
+            val budget = when {
+                budgetRaw != null && budgetRaw.isJsonObject ->
+                    budgetRaw.asJsonObject.get("value")?.takeIf { !it.isJsonNull }?.asInt
+                // 兼容直接给数字的老网关
+                budgetRaw != null && budgetRaw.isJsonPrimitive -> budgetRaw.asInt
+                else -> null
+            }
+            return ToolSettings(
+                isWindows = json.get("isWindows")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
+                powerShellEnabled = json.get("powerShellEnabled")?.takeIf { !it.isJsonNull }?.asBoolean
+                    ?: false,
+                codemode = json.get("codemode")?.takeIf { !it.isJsonNull }?.asString
+                    ?: CODEMODE_AUTOMATIC,
+                codemodeMode = mode ?: MODE_ON,
+                codemodeInlineBudget = budget
+            )
+        }
+    }
+}
+
+/**
+ * pi-web `PUT /api/tools/settings` 一次只接受一个字段，所以每次改动单独提交一项，
+ * 不能像以前那样把三个旋钮打包成一个不存在的 `action` 一次扔给 `/api/mcp`。
+ */
+sealed interface ToolSettingsChange {
+    data class Codemode(val preference: String) : ToolSettingsChange
+    data class Mode(val mode: String) : ToolSettingsChange
+    data class InlineBudget(val budget: Int) : ToolSettingsChange
+
+    /** 报文只带这一个字段。 */
+    fun toPayload(): Map<String, Any> = when (this) {
+        is Codemode -> mapOf("codemode" to preference)
+        is Mode -> mapOf("codemodeMode" to mode)
+        is InlineBudget -> mapOf("codemodeInlineBudget" to budget)
+    }
+}
 
 data class RemoteDirEntry(
     val name: String,
@@ -748,8 +832,6 @@ data class ToolCallInfo(
     val durationMs: Long = 0L,
     val isError: Boolean = false,
     val isRunning: Boolean = false,
-    val requiresApproval: Boolean = false,
-    val isApproved: Boolean = false,
     /** 长输出的临时文件路径（pi 的 fullOutputPath），可用它取完整输出 */
     val fullOutputPath: String? = null
 ) {

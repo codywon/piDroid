@@ -44,7 +44,12 @@ data class SessionHistoryData(
     val oldestEntryId: String? = null,
     /** 服务端自己统计的「还没加载的回合数」（pi 的 context.turnsBefore） */
     val turnsBefore: Int = 0,
-    val leafId: String? = null
+    val leafId: String? = null,
+    /**
+     * 本会话钉住的工具清单（pi-web `GET /api/sessions/{id}` 的 `toolNames`）。
+     * `null` = 会话没有钉住，跟随 settings.json 的 defaultTools；空清单 = 仅聊天。
+     */
+    val toolNames: List<String>? = null
 )
 
 /**
@@ -550,8 +555,18 @@ class PiApiClient(private val prefs: AppPreferences) {
             hasMoreOnServer = initialHasMore,
             oldestEntryId = extractOldestEntryId(ctxObj, initialCtxMsgs),
             turnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-            leafId = leafId
+            leafId = leafId,
+            toolNames = readPinnedToolNames(json)
         )
+    }
+
+    /**
+     * 读会话钉住的工具清单：字段缺失 = 没钉住（`null`），数组 = 钉住的清单（可能是空数组 = 仅聊天）。
+     * 不把「缺失」当成空清单，否则每个跟随 settings.json 的会话都会被显示成「仅聊天」。
+     */
+    private fun readPinnedToolNames(json: JsonObject): List<String>? {
+        val arr = json.get("toolNames")?.takeIf { it.isJsonArray }?.asJsonArray ?: return null
+        return arr.mapNotNull { el -> el.takeIf { !it.isJsonNull }?.asString }
     }
 
     suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
@@ -2874,20 +2889,6 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
     }
 
-    suspend fun sendApproval(sessionId: String, approved: Boolean): Result<Boolean> = withContext(Dispatchers.IO) {
-        val baseUrl = prefs.serverUrl
-        try {
-            val payload = mapOf("approved" to approved)
-            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId/approval").post(body).build()
-            client.newCall(req).execute().use { response ->
-                Result.success(response.isSuccessful)
-            }
-        } catch (e: Exception) {
-            Result.failure(e)
-        }
-    }
-
     suspend fun getSessionStats(sessionId: String): Result<TokenStats> = withContext(Dispatchers.IO) {
         getSessionDetail(sessionId).map { it.stats }
     }
@@ -3085,9 +3086,9 @@ class PiApiClient(private val prefs: AppPreferences) {
     // 7. MCP 协议 (GET /api/mcp)
     // ==========================================
 
-    suspend fun getMcpServers(cwd: String = ""): Result<Pair<McpCodeModeConfig, List<McpServerInfo>>> = withContext(Dispatchers.IO) {
+    suspend fun getMcpServers(cwd: String = ""): Result<List<McpServerInfo>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(Pair(McpCodeModeConfig(), emptyList()))
+        if (baseUrl.isBlank()) return@withContext Result.success(emptyList<McpServerInfo>())
         val validCwd = sanitizeCwd(cwd)
         val urlsToTry = if (validCwd.isNotBlank()) {
             val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
@@ -3099,22 +3100,13 @@ class PiApiClient(private val prefs: AppPreferences) {
         for (url in urlsToTry) {
             try {
                 val req = Request.Builder().url(url).get().build()
-                val resultPair = client.newCall(req).execute().use { response ->
+                val resultServers = client.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) return@use null
                     val body = response.body?.string() ?: "{}"
                     val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
 
-                    var codeMode = "automatic"
-                    var budget = 3000
-                    if (json.has("codemode") && json.get("codemode").isJsonObject) {
-                        val cm = json.getAsJsonObject("codemode")
-                        codeMode = cm.get("preference")?.takeIf { !it.isJsonNull }?.asString ?: "automatic"
-                        if (cm.has("inlineBudget") && cm.get("inlineBudget").isJsonObject) {
-                            budget = cm.getAsJsonObject("inlineBudget").get("default")?.takeIf { !it.isJsonNull }?.asInt ?: 3000
-                        }
-                    }
-                    val config = McpCodeModeConfig(mode = codeMode, scriptMode = true, tokenBudget = budget)
-
+                    // 代码模式不在 /api/mcp 里（上游也从来没在这里）：旧代码在此“读不到就
+                    // 默认 automatic/3000”，等于把编造的值当成用户配置显示。现在只读服务器。
                     val servers = mutableListOf<McpServerInfo>()
                     if (json.has("servers") && json.get("servers").isJsonArray) {
                         val array = json.getAsJsonArray("servers")
@@ -3156,10 +3148,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                             )
                         }
                     }
-                    Pair(config, servers)
+                    servers
                 }
-                if (resultPair != null && resultPair.second.isNotEmpty()) {
-                    return@withContext Result.success(resultPair)
+                if (resultServers != null && resultServers.isNotEmpty()) {
+                    return@withContext Result.success(resultServers)
                 }
             } catch (_: Exception) {
             }
@@ -3169,7 +3161,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 也是编的。任何一次网络抖动都会让界面显示出一台根本不存在的健康服务，
         // 比直接显示「加载失败」糟糕得多。改为返回空列表。
         Log.w("PiApiClient", "加载 MCP 配置失败，返回空列表（不再伪造默认服务器）")
-        Result.success(Pair(McpCodeModeConfig(), emptyList()))
+        Result.success(emptyList<McpServerInfo>())
     }
 
     private fun getDefaultCatalog() = DynamicModelCatalog(
@@ -4546,33 +4538,59 @@ data class CatalogPreset(
     /**
      * 更新 MCP Code Mode 与 Token 预算配置 (POST /api/mcp)
      */
-    suspend fun updateMcpCodeMode(
-        mode: String,
-        scriptMode: Boolean,
-        tokenBudget: Int,
-        cwd: String = ""
-    ): Result<Boolean> = withContext(Dispatchers.IO) {
+    /**
+     * 读工具全局设置 (GET /api/tools/settings)。
+     * 代码模式（codemode / codemodeMode / codemodeInlineBudget）在这里，不在 `/api/mcp`。
+     */
+    suspend fun getToolSettings(): Result<ToolSettings> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(true)
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val payload = mapOf(
-                "action" to "set-codemode",
-                "preference" to mode,
-                "scriptMode" to scriptMode,
-                "inlineBudget" to mapOf("default" to tokenBudget),
-                "cwd" to cwd
-            )
-            val req = Request.Builder()
-                .url("$baseUrl/api/mcp")
-                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
-                .build()
+            val req = Request.Builder().url("$baseUrl/api/tools/settings").get().build()
             client.newCall(req).execute().use { resp ->
-                Result.success(resp.isSuccessful)
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取工具设置失败 (HTTP ${resp.code})"))
+                }
+                val json = runCatching {
+                    JsonParser.parseString(resp.body?.string() ?: "{}").asJsonObject
+                }.getOrNull() ?: return@withContext Result.failure(IOException("读取工具设置失败：响应不是 JSON"))
+                Result.success(parseToolSettings(json))
             }
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
+
+    /**
+     * 改一项工具全局设置 (PUT /api/tools/settings)。
+     * pi-web 严格要求「一次一项」，所以 [ToolSettingsChange] 只带一个字段。
+     */
+    suspend fun updateToolSettings(change: ToolSettingsChange): Result<ToolSettings> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val body = gson.toJson(change.toPayload()).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/tools/settings").put(body).build()
+            client.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    // pi-web 的拒绝带 {error, reason}，原样透出原因，不编造成功
+                    val json = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    val msg = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                    return@withContext Result.failure(
+                        IOException(msg ?: "保存工具设置失败 (HTTP ${resp.code})")
+                    )
+                }
+                val json = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                    ?: return@withContext Result.failure(IOException("保存工具设置失败：响应不是 JSON"))
+                Result.success(parseToolSettings(json))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    private fun parseToolSettings(json: JsonObject): ToolSettings = ToolSettings.fromJson(json)
 
     // ==========================================
     // 9. 远程工作区项目目录浏览、创建与初始化 (对标 pi-web /api/cwd/browse, /api/cwd/validate, /api/agent/new)
@@ -4929,19 +4947,21 @@ data class CatalogPreset(
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
         try {
-            val body = "".toRequestBody(null)
+            // pi-web 的 POST /api/sessions/[id]/fork 在解析 params 之前就校验
+            // hasJsonContentType()，不满足直接回 415（body 本身并不读）。
+            // 之前这里发的是空 body + 无 Content-Type，于是稳定吃 415。
+            val body = "{}".toRequestBody(jsonMediaType)
             val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/fork").post(body).build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
                     Result.failure(IOException("Server HTTP ${resp.code}: $bodyStr"))
                 } else {
-                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
-                    val newSid = json?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString
+                    // 响应是 { sessionId, session }：path / name 在 session 里（见
+                    // ForkSessionResponseParsing 的注释），顶层只剩兜底。
+                    val parsed = ForkSessionResponseParsing.parse(bodyStr)
                         ?: return@withContext Result.failure(IOException("未返回有效的分叉会话ID"))
-                    val path = json.get("path")?.takeIf { !it.isJsonNull }?.asString
-                    val name = json.get("name")?.takeIf { !it.isJsonNull }?.asString
-                    Result.success(ForkSessionResult(sessionId = newSid, path = path, name = name))
+                    Result.success(parsed)
                 }
             }
         } catch (e: Exception) {
