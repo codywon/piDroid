@@ -56,6 +56,8 @@ import com.pi.app.data.storage.AppPreferences
 import com.pi.app.data.model.Session
 import com.pi.app.data.model.SessionSearchHit
 import com.pi.app.data.model.WorkspaceInfo
+import com.pi.app.data.model.WorkspacePaths
+import com.pi.app.data.model.groupWorkspaces
 import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
 import kotlinx.coroutines.launch
@@ -209,19 +211,19 @@ fun SessionListScreen(
     }
 
     // 按工作区项目路径归组，并融合用户手动添加/创建的远程工作区目录
+    //
+    // 🧷 分组标识用身份键（pi-web `projectKey` 口径），不是直接拿字符串当 key：
+    // App 自己拼出来的 `D:\myscript\termius` 与会话/pi-web 侧的 `D:/myscript/termius`
+    // 原本会分裂成两个项目（同一个目录出现两行、会话只归到其中一行）。
+    // 展示路径仍取会话自己那份写法，不把已有数据处理成另一种写法。
     val workspaces = remember(sessions, customWorkspaces, unreadSessionIds) {
-        val map = sessions.groupBy { it.workspacePath }.toMutableMap()
-        customWorkspaces.forEach { customPath ->
-            val trimmed = customPath.trim()
-            if (trimmed.isNotBlank() && !map.containsKey(trimmed)) {
-                map[trimmed] = emptyList()
-            }
-        }
-        map.map { (path, list) ->
+        groupWorkspaces(sessions, customWorkspaces).map { group ->
+            val list = group.sessions
             val first = list.firstOrNull()
-            val name = first?.workspaceName ?: path.trimEnd('/', '\\').substringAfterLast('\\').substringAfterLast('/')
+            val name = first?.workspaceName
+                ?: group.path.trimEnd('/', '\\').substringAfterLast('\\').substringAfterLast('/')
             WorkspaceInfo(
-                path = path,
+                path = group.path,
                 name = name.ifBlank { "默认项目" },
                 sessionCount = list.size,
                 runningCount = list.count { it.isLive },
@@ -245,13 +247,19 @@ fun SessionListScreen(
         val available = workspaces.map { it.path }
         val hint = initialWorkspacePath
         val hintUsable = hint.isNotBlank() &&
-            (hint == PINNED_WORKSPACE_KEY || available.contains(hint))
+            (hint == PINNED_WORKSPACE_KEY || available.any { WorkspacePaths.samePath(it, hint) })
         if (hintUsable && hint != appliedWorkspaceHint) {
             // 提示只应用一次（每次从别的会话返回才变），之后不去抢用户手动切的工作区
             appliedWorkspaceHint = hint
-            selectedWorkspacePath = hint
+            // 回到上次的工作区时用列表里真实的那份写法（可能与会话快照里的写法差个分隔符）
+            selectedWorkspacePath = if (hint == PINNED_WORKSPACE_KEY) {
+                hint
+            } else {
+                available.firstOrNull { WorkspacePaths.samePath(it, hint) } ?: hint
+            }
         } else if (selectedWorkspacePath.isBlank() ||
-            (selectedWorkspacePath != PINNED_WORKSPACE_KEY && !available.contains(selectedWorkspacePath))
+            (selectedWorkspacePath != PINNED_WORKSPACE_KEY &&
+                available.none { WorkspacePaths.samePath(it, selectedWorkspacePath) })
         ) {
             selectedWorkspacePath = available.firstOrNull() ?: ""
         }
@@ -269,7 +277,7 @@ fun SessionListScreen(
                 sessions
             }
             else -> {
-                sessions.filter { it.workspacePath == selectedWorkspacePath }
+                sessions.filter { WorkspacePaths.samePath(it.workspacePath, selectedWorkspacePath) }
             }
         }
         base.sortedWith(
@@ -323,7 +331,8 @@ fun SessionListScreen(
         if (selectedWorkspacePath == PINNED_WORKSPACE_KEY) {
             "常用置顶"
         } else {
-            workspaces.firstOrNull { it.path == selectedWorkspacePath }?.displayName ?: "全部工作区"
+            workspaces.firstOrNull { WorkspacePaths.samePath(it.path, selectedWorkspacePath) }?.displayName
+                ?: "全部工作区"
         }
     }
 
@@ -461,14 +470,16 @@ fun SessionListScreen(
                         } else {
                             // 归档列表按项目分组展示 (完全对标 pi-web buildArchiveRows)
                             val archivedByProject = remember(allArchivedSessions) {
-                                allArchivedSessions.groupBy { it.workspacePath }
+                                allArchivedSessions.groupBy { it.workspaceKey }
                             }
                             LazyColumn(
                                 modifier = Modifier.fillMaxSize(),
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 archivedByProject.forEach { (wsPath, sList) ->
-                                    val wsName = workspaces.firstOrNull { it.path == wsPath }?.displayName
+                                    // wsPath 这里是身份键，找展示名时同样比身份键
+                                    val wsName = workspaces
+                                        .firstOrNull { WorkspacePaths.samePath(it.path, wsPath) }?.displayName
                                         ?: sList.firstOrNull()?.workspaceName
                                         ?: wsPath.takeLast(24)
                                     item(key = "arch_group_$wsPath") {
@@ -753,7 +764,7 @@ fun SessionListScreen(
 
 
                         items(sortedWorkspaces, key = { it.path }) { ws ->
-                            val isSelected = ws.path == selectedWorkspacePath
+                            val isSelected = WorkspacePaths.samePath(ws.path, selectedWorkspacePath)
                             val isPinned = pinnedKeys.contains(wsKey(ws.path))
                             val isDragging = dragWsPath == ws.path
                             val customName = prefs.getWorkspaceCustomName(ws.path)
@@ -1113,7 +1124,9 @@ fun SessionListScreen(
                             val targetPath = if (selectedWorkspacePath == PINNED_WORKSPACE_KEY) {
                                 workspaces.firstOrNull()?.path ?: ""
                             } else {
-                                selectedWorkspacePath
+                                // 一律用列表里真实的那份路径，别把历史遗留的分隔符写法传给网关
+                                workspaces.firstOrNull { WorkspacePaths.samePath(it.path, selectedWorkspacePath) }?.path
+                                    ?: selectedWorkspacePath
                             }
                             onNewSessionClick(targetPath)
                         },
@@ -1587,7 +1600,8 @@ fun SessionListScreen(
         val isPinned = if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
             serverPinnedWorkspaceKeys.contains(targetWs.path.replace('\\', '/').trimEnd('/').lowercase())
         } else {
-            pinnedWorkspaces.contains(targetWs.path)
+            // 本地置顶表里可能是旧版本的反斜杠写法，按身份键比，别因为分隔符不同丢掉置顶状态
+            prefs.isWorkspacePinned(targetWs.path)
         }
         val customName = prefs.getWorkspaceCustomName(targetWs.path)
         val wsDisplayName = customName ?: targetWs.displayName
@@ -1722,7 +1736,7 @@ fun SessionListScreen(
                     if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
                         serverPinnedWorkspaceKeys.contains(menuWsKey(path))
                     } else {
-                        pinnedWorkspaces.contains(path)
+                        prefs.isWorkspacePinned(path)
                     }
                 val menuOrderKeys =
                     if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { menuWsKey(it) }
@@ -1815,7 +1829,11 @@ fun SessionListScreen(
 
                 // 板块 3：会话生命周期与清理维护 (对标 pi-web)
                 val projectSessions = remember(sessions, targetWs) {
-                    sessions.filter { it.workspacePath == targetWs.path || it.cwd == targetWs.path || it.project == targetWs.displayName }
+                    sessions.filter {
+                        WorkspacePaths.samePath(it.workspacePath, targetWs.path) ||
+                            WorkspacePaths.samePath(it.cwd, targetWs.path) ||
+                            it.project == targetWs.displayName
+                    }
                 }
                 val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
                 val olderSessions = remember(projectSessions, weekAgo) {
@@ -1945,7 +1963,11 @@ fun SessionListScreen(
     if (deleteTarget != null) {
         val target = deleteTarget
         val projectSessions = remember(sessions, target) {
-            sessions.filter { it.workspacePath == target.path || it.cwd == target.path || it.project == target.displayName }
+            sessions.filter {
+                WorkspacePaths.samePath(it.workspacePath, target.path) ||
+                    WorkspacePaths.samePath(it.cwd, target.path) ||
+                    it.project == target.displayName
+            }
         }
         val runningSessions = remember(projectSessions) { projectSessions.filter { it.isLive } }
         val toDeleteSessions = remember(projectSessions) { projectSessions.filterNot { it.isLive } }
@@ -2018,7 +2040,13 @@ fun SessionListScreen(
     if (archiveTarget != null) {
         val target = archiveTarget
         val archivedList = remember(sessions, target) {
-            sessions.filter { (it.workspacePath == target.path || it.cwd == target.path || it.project == target.displayName) && prefs.isSessionArchived(it.id) }
+            sessions.filter {
+                (
+                    WorkspacePaths.samePath(it.workspacePath, target.path) ||
+                        WorkspacePaths.samePath(it.cwd, target.path) ||
+                        it.project == target.displayName
+                ) && prefs.isSessionArchived(it.id)
+            }
         }
 
         AlertDialog(

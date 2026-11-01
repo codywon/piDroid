@@ -2,6 +2,34 @@
 
 All notable changes to the piDroid application will be documented in this file.
 
+## [1.8.12] - 2026-11-01
+
+### 🐛 修复同一目录在工作区列表里分成两行（`D:\` 与 `D:/` 写法不一致）
+
+现象：左侧「工作区项目」里 `termius` 出现两次 —— 一行 `D:/myscript/termius`（有会话），
+一行 `D:\myscript\termius`（0 个会话），同一个目录被当成两个项目、会话只算到其中一行。
+
+两条链路写入的写法本来就不同，本版不再「挑一边改掉」，而是把两者归到同一个身份键：
+
+- App 侧：`/api/cwd/browse` 的盘符目录返回 `D:\`（平台分隔符），手机端点选后**原样落库**成 `D:\myscript\termius`；
+- 会话/pi-web 侧：`projectRoot` 来自 `git rev-parse --show-toplevel`，是 `D:/myscript/termius`。
+
+对齐方式以 pi-web 的实现为基准 —— 它本身就把「分组标识」(`projectKey`：分隔符归一、去尾部斜杠、
+win32 上忽略大小写) 与「展示路径」(`projectRoot`：保留原始写法) 分成两层。本版照此实现：
+
+- 新增 `WorkspacePaths` 归一化层与 `groupWorkspaces()`，分组按身份键，展示仍沿用会话自己那份写法；
+- 自定义目录**写入即归一**为正斜杠写法、读取同样过一层（旧的反斜杠写法照常显示并合并，不会被改坏）；
+- 置顶、项目别名、选中态、归档分组、按项目筛会话、FAB 新建会话的 cwd 全部改为身份键比较，
+  历史遗留的反斜杠置顶/别名仍能认回来。
+
+### ✅ 验证
+
+- 新增纯 JVM 单测 `WorkspacePathsTest`（截图场景、盘符大小写、尾部斜杠、UNC、POSIX 大小写、盘符根）；
+- 用 `Models.kt` + `WorkspaceGrouping.kt` 真实源码在 JVM 上跑通 8 组场景：截图场景合并为一行、
+  同一目录的两种历史写法只出一行、不同项目仍分离、Linux 上大小写不同目录不合并。
+
+---
+
 ## [1.8.11] - 2026-11-01
 
 ### 🐛 修复提示词增强「莫名报 499」

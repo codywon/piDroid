@@ -3,6 +3,7 @@ package com.pi.app.data.storage
 import android.content.Context
 import android.content.SharedPreferences
 import com.pi.app.data.model.SessionModelIdentityCodec
+import com.pi.app.data.model.WorkspacePaths
 
 class AppPreferences(context: Context) {
     /** 应用缓存目录：会话快照离线缓存放在这里（不占用户可见空间，系统可回收） */
@@ -265,21 +266,30 @@ class AppPreferences(context: Context) {
     }
 
     // 自定义工作区项目目录列表（支持在手机端直接指定或远程创建 PC 项目目录）
+    //
+    // 🧷 写入即归一：统一成 pi-web 侧展示/比较用的正斜杠写法（`D:\x` → `D:/x`）。
+    // 否则同一个目录会以「D:\x」（App 自己拼的）与「D:/x」（会话 projectRoot / pi-web 回的）
+    // 两种写法各占一行、会话只算到其中一行（回归见 WorkspaceGrouping）。
+    // 读取也过同一层：旧版本存下的反斜杠写法仍能显示、能与新写法合并，数据不会被改坏。
     fun getCustomWorkspaces(): Set<String> {
-        return prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
+        val raw = prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
+        return raw.mapNotNull { path -> WorkspacePaths.displayPath(path).takeIf { it.isNotBlank() } }.toSet()
     }
 
     fun addCustomWorkspace(path: String) {
-        val clean = path.trim()
+        val clean = WorkspacePaths.displayPath(path)
         if (clean.isBlank()) return
         val current = getCustomWorkspaces().toMutableSet()
+        // 同一目录的旧写法（反斜杠 / 大小写不同）不再重复占位
+        current.removeAll { WorkspacePaths.samePath(it, clean) }
         current.add(clean)
         prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
     }
 
     fun removeCustomWorkspace(path: String) {
-        val current = getCustomWorkspaces().toMutableSet()
-        current.remove(path.trim())
+        val target = WorkspacePaths.displayPath(path)
+        if (target.isBlank()) return
+        val current = getCustomWorkspaces().filterNot { WorkspacePaths.samePath(it, target) }.toSet()
         prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
     }
 
@@ -398,34 +408,57 @@ class AppPreferences(context: Context) {
     }
 
     fun isWorkspacePinned(path: String): Boolean {
-        return getPinnedWorkspaces().contains(path.trim())
+        if (WorkspacePaths.identityKey(path).isBlank()) return false
+        return getPinnedWorkspaces().any { WorkspacePaths.samePath(it, path) }
     }
 
     fun togglePinWorkspace(path: String): Boolean {
+        val clean = WorkspacePaths.displayPath(path)
+        if (clean.isBlank()) return false
         val current = getPinnedWorkspaces().toMutableSet()
-        val clean = path.trim()
-        val willPin = !current.contains(clean)
+        val willPin = !current.any { WorkspacePaths.samePath(it, clean) }
+        // 清掉同一目录的旧写法，避免置顶表里两种写法各留一条
+        current.removeAll { WorkspacePaths.samePath(it, clean) }
         if (willPin) {
             current.add(clean)
-        } else {
-            current.remove(clean)
         }
         prefs.edit().putStringSet(KEY_PINNED_WORKSPACES, current).apply()
         return willPin
     }
 
     // 工作区自定义友好别名 (对标 pi-web rename-project & reset-project-name)
+    // key 里带路径，所以同样按归一化后的写法存；旧版本按原样（可能是反斜杠）写过的 key
+    // 用同一身份键兑回来，别名不会因为归一化而丢失。
+    private fun workspaceNameKeys(path: String): List<String> {
+        val clean = WorkspacePaths.displayPath(path)
+        if (clean.isBlank()) return emptyList()
+        val keys = mutableListOf("ws_name_$clean", "ws_name_${path.trim()}")
+        if (WorkspacePaths.isWindowsPath(clean)) {
+            keys.add("ws_name_${clean.replace('/', '\\')}")
+        }
+        return keys.distinct()
+    }
+
     fun getWorkspaceCustomName(path: String): String? {
-        return prefs.getString("ws_name_${path.trim()}", null)?.takeIf { it.isNotBlank() }
+        for (key in workspaceNameKeys(path)) {
+            val value = prefs.getString(key, null)
+            if (!value.isNullOrBlank()) return value
+        }
+        return null
     }
 
     fun saveWorkspaceCustomName(path: String, name: String?) {
-        val clean = path.trim()
+        val keys = workspaceNameKeys(path)
+        if (keys.isEmpty()) return
+        val editor = prefs.edit()
         if (name.isNullOrBlank()) {
-            prefs.edit().remove("ws_name_$clean").apply()
+            keys.forEach { editor.remove(it) }
         } else {
-            prefs.edit().putString("ws_name_$clean", name.trim()).apply()
+            // 旧 key 一并清掉，避免换了写法之后重新读到旧别名
+            keys.drop(1).forEach { editor.remove(it) }
+            editor.putString(keys.first(), name.trim())
         }
+        editor.apply()
     }
 
     // 工作区自定义排序 (对标 pi-web move-up / move-down)

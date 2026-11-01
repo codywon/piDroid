@@ -22,7 +22,7 @@ data class WorkspaceInfo(
     val isCurrent: Boolean = false
 ) {
     val displayName: String
-        get() = name.ifBlank { path.replace('\\', '/').substringAfterLast('/') }
+        get() = name.ifBlank { WorkspacePaths.displayPath(path).substringAfterLast('/') }
 }
 
 data class ProjectInfo(
@@ -60,13 +60,22 @@ data class Session(
             ?: "任务: ${id.take(8)}"
 
     val workspacePath: String
-        get() {
-            val raw = projectRoot?.takeIf { it.isNotBlank() }
-                ?: cwd?.takeIf { it.isNotBlank() }
-                ?: projectKey?.takeIf { it.isNotBlank() }
-                ?: "默认工作区"
-            return raw.replace('\\', '/').trimEnd('/')
-        }
+        get() = WorkspacePaths.displayPath(rawWorkspacePath).ifBlank { "默认工作区" }
+
+    /**
+     * 工作区分组 / 比较用的身份键（pi-web `projectKey` 口径）。
+     *
+     * 与 [workspacePath]（展示写法）分开：`D:\myscript\x` 与 `D:/myscript/x` 是同一个项目，
+     * 但展示时仍保留各自来源的写法，避免把已有路径数据改掉。
+     */
+    val workspaceKey: String
+        get() = WorkspacePaths.identityKey(rawWorkspacePath).ifBlank { "默认工作区" }
+
+    private val rawWorkspacePath: String
+        get() = projectRoot?.takeIf { it.isNotBlank() }
+            ?: cwd?.takeIf { it.isNotBlank() }
+            ?: projectKey?.takeIf { it.isNotBlank() }
+            ?: "默认工作区"
 
     val workspaceName: String
         get() {
