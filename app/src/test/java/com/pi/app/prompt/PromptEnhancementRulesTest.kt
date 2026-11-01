@@ -134,24 +134,42 @@ class PromptEnhancementRulesTest {
         assertEquals("最后一轮的需求", picked.last().text)
         assertTrue(picked.none { it.text.isBlank() })
         assertTrue(picked.all { it.role == "user" || it.role == "assistant" })
-        assertTrue(picked.any { it.text.length in 1..2500 && it.text.endsWith("…") })
+        assertTrue(picked.any { it.text.length <= 1201 && it.text.endsWith("…") })
     }
 
     @Test
-    fun `assistant replies are clipped harder so user constraints survive`() {
-        // 一条几千字的助手回答 + 一条短的用户约束：用户那句不能被挤出预算
-        val longReply = PromptEnhancementContextMessage("assistant", "z".repeat(5000))
-        val userRule = PromptEnhancementContextMessage("user", "先给建议别改代码")
+    fun `keeps a long assistant reply instead of clipping it to a small quota`() {
+        // 上一轮的方案/代码常超过 400 字，曾被单独砍短，导致「按刚才那个方案改」丢失关键决策。
+        val plan = "方案第 " + "z".repeat(890) + " 条：用 Mutex 保护并发计数"
         val picked = PromptEnhancementRules.selectContext(
-            listOf(userRule, longReply),
-            maxTotalChars = 800
+            listOf(PromptEnhancementContextMessage("assistant", plan))
         )
-        assertTrue(picked.toString(), picked.any { it.role == "user" && it.text == "先给建议别改代码" })
-        val assistant = picked.first { it.role == "assistant" }
-        assertTrue(
-            "assistant clipped to ${assistant.text.length}",
-            assistant.text.length <= PromptEnhancementRules.MAX_CONTEXT_ASSISTANT_CHARS + 1
+        val assistant = picked.single()
+        assertTrue("assistant length ${assistant.text.length}", assistant.text.length > 800)
+        assertTrue(assistant.text.contains("Mutex"))
+    }
+
+    @Test
+    fun `includes tool results and compaction summaries in the context`() {
+        // 这两类消息曾经被整体过滤掉：工具结果是「这个报错」的真实出处，
+        // 摘要是长会话被压缩后唯一保留的早期约定。
+        val picked = PromptEnhancementRules.selectContext(
+            listOf(
+                PromptEnhancementContextMessage("summary", "早期约定：最小侵入，不引入新依赖。"),
+                PromptEnhancementContextMessage("tool", "[bash] ./gradlew assembleDebug error: unresolved reference"),
+                PromptEnhancementContextMessage("user", "这个报错怎么修"),
+            )
         )
+        assertEquals(listOf("summary", "tool", "user"), picked.map { it.role })
+        assertTrue(picked.first { it.role == "tool" }.text.contains("unresolved reference"))
+    }
+
+    @Test
+    fun `context budget constants match the gateway`() {
+        // 客户端与服务端必须同一口径，否则一方多裁、一方少裁
+        assertEquals(12, PromptEnhancementRules.MAX_CONTEXT_MESSAGES)
+        assertEquals(1200, PromptEnhancementRules.MAX_CONTEXT_MESSAGE_CHARS)
+        assertEquals(12000, PromptEnhancementRules.MAX_CONTEXT_TOTAL_CHARS)
     }
 
     @Test
@@ -175,6 +193,7 @@ class PromptEnhancementRulesTest {
         assertEquals(1, cap?.version)
         assertTrue(cap?.available == true)
         assertEquals(6000, cap?.maxDraftChars)
+        // 预算以服务端下发的为准（不写死本地常量，避免两边漂移）
         assertEquals(4000, cap?.maxContextChars)
     }
 

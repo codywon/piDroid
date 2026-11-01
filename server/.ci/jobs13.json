@@ -1,0 +1,169 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 124817404786,
+      "run_id": 41296182372,
+      "workflow_name": "Build & Release piDroid APK",
+      "head_branch": "v1.8.13",
+      "run_url": "https://api.github.com/repos/codywon/piDroid/actions/runs/41296182372",
+      "run_attempt": 1,
+      "node_id": "CR_kwDOVWL1WM8AAAAdD7Jzcg",
+      "head_sha": "0ed6962c03c2ba833cabb9ab16a77f921e1c1783",
+      "url": "https://api.github.com/repos/codywon/piDroid/actions/jobs/124817404786",
+      "html_url": "https://github.com/codywon/piDroid/actions/runs/41296182372/job/124817404786",
+      "status": "completed",
+      "conclusion": "failure",
+      "created_at": "2026-11-01T10:08:57Z",
+      "started_at": "2026-11-01T10:08:59Z",
+      "completed_at": "2026-11-01T10:11:21Z",
+      "name": "Build Signed APK",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-11-01T10:09:00Z",
+          "completed_at": "2026-11-01T10:09:02Z"
+        },
+        {
+          "name": "Checkout Code",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 2,
+          "started_at": "2026-11-01T10:09:02Z",
+          "completed_at": "2026-11-01T10:09:05Z"
+        },
+        {
+          "name": "Set up JDK 17",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 3,
+          "started_at": "2026-11-01T10:09:05Z",
+          "completed_at": "2026-11-01T10:09:05Z"
+        },
+        {
+          "name": "Setup Gradle (basic cache)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 4,
+          "started_at": "2026-11-01T10:09:05Z",
+          "completed_at": "2026-11-01T10:09:05Z"
+        },
+        {
+          "name": "Grant Execute Permission to gradlew",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-11-01T10:09:05Z",
+          "completed_at": "2026-11-01T10:09:05Z"
+        },
+        {
+          "name": "Decode Release Keystore",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 6,
+          "started_at": "2026-11-01T10:09:05Z",
+          "completed_at": "2026-11-01T10:09:05Z"
+        },
+        {
+          "name": "Refuse the compromised keystore",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-11-01T10:09:05Z",
+          "completed_at": "2026-11-01T10:09:06Z"
+        },
+        {
+          "name": "Run Unit Tests",
+          "status": "completed",
+          "conclusion": "failure",
+          "number": 8,
+          "started_at": "2026-11-01T10:09:06Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Build Release APK",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 9,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Prepare APK Artifact",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 10,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Upload Artifact to GitHub Actions Run",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 11,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Extract Release Notes from CHANGELOG",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 12,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Create GitHub Release",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 13,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:12Z"
+        },
+        {
+          "name": "Post Setup Gradle (basic cache)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 24,
+          "started_at": "2026-11-01T10:11:12Z",
+          "completed_at": "2026-11-01T10:11:18Z"
+        },
+        {
+          "name": "Post Set up JDK 17",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 25,
+          "started_at": "2026-11-01T10:11:18Z",
+          "completed_at": "2026-11-01T10:11:18Z"
+        },
+        {
+          "name": "Post Checkout Code",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 26,
+          "started_at": "2026-11-01T10:11:18Z",
+          "completed_at": "2026-11-01T10:11:19Z"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 27,
+          "started_at": "2026-11-01T10:11:19Z",
+          "completed_at": "2026-11-01T10:11:19Z"
+        }
+      ],
+      "check_run_url": "https://api.github.com/repos/codywon/piDroid/check-runs/124817404786",
+      "labels": [
+        "ubuntu-latest"
+      ],
+      "runner_id": 1000002634,
+      "runner_name": "GitHub Actions 1000002634",
+      "runner_group_id": 0,
+      "runner_group_name": "GitHub Actions"
+    }
+  ]
+}
