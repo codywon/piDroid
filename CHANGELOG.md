@@ -2,6 +2,19 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.42] - 2026-11-02
+
+### 🐛 彻底修复发送消息后气泡被截断丢失与深度思考模型超时误判完成问题
+
+- **根因分析**：
+  1. 用户发送消息后，本地列表立即追加乐观气泡，此时服务端尚未将该提问落盘至会话文件；
+  2. 会话快照对账（`syncSessionSnapshot`）若在服务端落盘前触发（或思考模型尚未产出 Token），旧的对账合并仅保护流式尾部，对本地已发送的乐观用户消息（`role == USER`）判定为“多余历史”并直接 `removeAt` 截断抹除；
+  3. 巡检完成判定中将启动宽限期（`isRecentlyStarted`）和流活跃期（`isSseRecentlyActive`）硬编码为仅 5s 与 6s，而深度思考模型（如 Gemini Flash Thinking / Claude 3.7 Thinking / o1 / R1）思考阶段常达 15–45s，导致等待首个 Token 时被错误提前判定为“已完成”，进而触发截断将提问从界面上抹去（必须退出会话重新打开才能重新拉回）。
+- **彻底根治与算法重构**：
+  - **`SessionSnapshotMerge.reconcileList` 全量在途保护**：重构快照对账为纯 JVM 对账算法，严密保护本地未落盘的乐观用户消息（`entryId.isNullOrBlank()`）、实时流式助手消息（`isStreaming == true`）与在途工具卡片，未确认落盘前绝不截断；服务端落盘后无缝匹配并回填 `entryId`，彻底告别“发了看不见、重进才能看”的灵异现象。
+  - **深度思考模型超时宽限**：将启动保护期放宽至 60s，SSE 流活跃判定放宽至 45s（匹配 pi 30s 心跳周期），并增加未落盘用户提问防呆拦截（`hasUncommittedUserMessage`），杜绝深度思考中途被误判为完成。
+- **单测守护**：在 `SessionTreeNavigationTest` 补充针对服务端快照滞后、未落盘提问保护、提问与流式尾部同时在途等关键场景的 3 组完整回归测试。
+
 ## [1.8.41] - 2026-11-02
 
 ### 🔓 新会话默认权限改为 `full`（PC 端 `defaultTools` 同步钉成同样 7 个内置工具）

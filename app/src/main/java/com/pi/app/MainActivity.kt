@@ -1050,96 +1050,33 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // 对账规则抽到 SessionSnapshotMerge（纯 JVM，可单测），此处只做编排
-                    fun isSameChatContent(a: ChatItem, b: ChatItem) = SessionSnapshotMerge.isSameChatContent(a, b)
-                    fun mergeItem(localItem: ChatItem, diskItem: ChatItem) = SessionSnapshotMerge.mergeItem(localItem, diskItem)
-
-                    // 保存当前内存中尚未落盘的流式尾部消息（例如 SSE 正在推送 delta，但服务端 .jsonl 只在 message_end 才写入）
-                    val inFlightTail = if (effectiveRunning && messages.isNotEmpty()) {
-                        val tail = messages.last()
-                        val isInFlightItem = tail.isStreaming || (tail.role == MessageRole.TOOL && tail.toolCall?.isRunning == true)
-                        if (isInFlightItem && messages.size > synced.size) tail else null
-                    } else null
-
-                    when {
+                    if (replaceHistory) {
                         // 分支回退导航：不做任何增量合并，直接以服务端活跃分支覆盖本地，
                         // 让被放弃分支上的旧工具输出 / 中断的思考过程在界面上瞬间消失。
-                        replaceHistory -> {
-                            messages.clear()
-                            messages.addAll(synced)
-                            // 已翻页进来的更早记录属于旧游标，分支切回后可能与新快照重叠，一并重置，
-                            // 由下面的游标逻辑重新从服务端取（pi-web 的 loadSession 同样会重置 historyCursor）。
-                            // 注意：olderMessages 是 immutable List 的 state，只能整体赋值（`clear()` 无法编译）。
-                            olderMessages = emptyList()
-                        }
-                        messages.isEmpty() -> {
-                            messages.addAll(synced)
-                        }
-                        synced.size > messages.size -> {
-                            for (i in messages.indices) {
-                                val localItem = messages[i]
-                                val diskItem = synced[i]
-                                val updated = mergeItem(localItem, diskItem)
-                                if (messages[i] != updated) {
-                                    messages[i] = updated
+                        messages.clear()
+                        messages.addAll(synced)
+                        // 已翻页进来的更早记录属于旧游标，分支切回后可能与新快照重叠，一并重置，
+                        // 由下面的游标逻辑重新从服务端取（pi-web 的 loadSession 同样会重置 historyCursor）。
+                        // 注意：olderMessages 是 immutable List 的 state，只能整体赋值（`clear()` 无法编译）。
+                        olderMessages = emptyList()
+                    } else if (messages.isEmpty()) {
+                        messages.addAll(synced)
+                    } else {
+                        // 对账规则收敛至 SessionSnapshotMerge（纯 JVM，可单测）：
+                        // 1) 严密保护本地乐观用户消息与实时流式在途消息，绝不因服务端 .jsonl 尚未落盘而抹去用户提问与实时输出；
+                        // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动。
+                        val reconciled = SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
+                        for (i in reconciled.indices) {
+                            if (i < messages.size) {
+                                if (messages[i] != reconciled[i]) {
+                                    messages[i] = reconciled[i]
                                 }
-                            }
-                            for (i in messages.size until synced.size) {
-                                messages.add(synced[i])
+                            } else {
+                                messages.add(reconciled[i])
                             }
                         }
-                        synced.size == messages.size -> {
-                            for (i in synced.indices) {
-                                val localItem = messages[i]
-                                val diskItem = synced[i]
-                                // 如果最后一条正在 SSE 流式输出且本地累积字符比磁盘快照更新，保留本地流式内容，防止回退卡顿
-                                if (i == synced.lastIndex && localItem.isStreaming && localItem.role == MessageRole.AGENT && diskItem.role == MessageRole.AGENT) {
-                                    val mergedContent = if (localItem.content.length >= diskItem.content.length) localItem.content else diskItem.content
-                                    val mergedThinking = if ((localItem.thinking?.length ?: 0) >= (diskItem.thinking?.length ?: 0)) localItem.thinking else diskItem.thinking
-                                    val updated = diskItem.copy(
-                                        id = localItem.id,
-                                        timestamp = localItem.timestamp,
-                                        content = mergedContent,
-                                        thinking = mergedThinking,
-                                        isStreaming = effectiveRunning
-                                    )
-                                    if (!isSameChatContent(localItem, updated)) {
-                                        messages[i] = updated
-                                    }
-                                } else {
-                                    val updated = mergeItem(localItem, diskItem)
-                                    if (messages[i] != updated) {
-                                        messages[i] = updated
-                                    }
-                                }
-                            }
-                        }
-                        else -> {
-                            // messages.size > synced.size：说明本地有乐观发送的消息、流式输出尾部、或树分支回退导航截断
-                            if (effectiveRunning && inFlightTail != null && messages.size == synced.size + 1) {
-                                for (i in synced.indices) {
-                                    val localItem = messages[i]
-                                    val diskItem = synced[i]
-                                    val updated = mergeItem(localItem, diskItem)
-                                    if (messages[i] != updated) {
-                                        messages[i] = updated
-                                    }
-                                }
-                                messages[synced.size] = inFlightTail
-                            } else if (!effectiveRunning) {
-                                // 空闲状态下，严格以服务端活跃分支为权威基准截断多余历史
-                                for (i in synced.indices) {
-                                    val localItem = messages[i]
-                                    val diskItem = synced[i]
-                                    val updated = mergeItem(localItem, diskItem)
-                                    if (messages[i] != updated) {
-                                        messages[i] = updated
-                                    }
-                                }
-                                while (messages.size > synced.size) {
-                                    messages.removeAt(messages.lastIndex)
-                                }
-                            }
+                        while (messages.size > reconciled.size) {
+                            messages.removeAt(messages.lastIndex)
                         }
                     }
                 }
@@ -1232,9 +1169,13 @@ class MainActivity : ComponentActivity() {
             } else if (isAgentBusy && allowCompletionTransition && runningResult.isSuccess) {
                 val now = System.currentTimeMillis()
                 val hasRunningToolCard = messages.any { it.role == MessageRole.TOOL && it.toolCall?.isRunning == true }
-                val isRecentlyStarted = (now - taskStartedAt) < 5_000L
-                val isSseRecentlyActive = sseConnectionState == SseConnectionState.CONNECTED && (now - lastSseActivityAt) < 6_000L
-                if (!isAutoRetrying && !isToolExecuting && !hasRunningToolCard && completionSettleJob?.isActive != true && !isRecentlyStarted && !isSseRecentlyActive) {
+                // 思考模型（如 Gemini 3.8 Flash Thinking / Claude 3.7 Thinking / o1 / R1）思考阶段可能长达 15–45s，
+                // 且 pi 心跳为 30s。若刚启动未满 60s 或 SSE 在 45s 内正常活跃，绝不能误判为完成。
+                // 另外：若本地仍有未被服务端承认落盘的乐观用户提问，同样不能提前判结束。
+                val hasUncommittedUserMessage = messages.any { it.role == MessageRole.USER && it.entryId.isNullOrBlank() }
+                val isRecentlyStarted = (now - taskStartedAt) < 60_000L
+                val isSseRecentlyActive = sseConnectionState == SseConnectionState.CONNECTED && (now - lastSseActivityAt) < 45_000L
+                if (!isAutoRetrying && !isToolExecuting && !hasRunningToolCard && !hasUncommittedUserMessage && completionSettleJob?.isActive != true && !isRecentlyStarted && !isSseRecentlyActive) {
                     consecutiveIdlePolls += 1
                     if (consecutiveIdlePolls >= 2) {
                         completeAgentSessionRun(sessionId, syncSnapshot = false)

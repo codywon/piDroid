@@ -38,20 +38,18 @@ class SessionTreeNavigationTest {
         synced: List<ChatItem>,
         effectiveRunning: Boolean
     ) {
-        when {
-            local.isEmpty() -> local.addAll(synced)
-            synced.size > local.size -> {
-                for (i in local.indices) local[i] = SessionSnapshotMerge.mergeItem(local[i], synced[i])
-                for (i in local.size until synced.size) local.add(synced[i])
+        val reconciled = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning)
+        for (i in reconciled.indices) {
+            if (i < local.size) {
+                if (local[i] != reconciled[i]) {
+                    local[i] = reconciled[i]
+                }
+            } else {
+                local.add(reconciled[i])
             }
-            synced.size == local.size -> {
-                for (i in synced.indices) local[i] = SessionSnapshotMerge.mergeItem(local[i], synced[i])
-            }
-            !effectiveRunning -> {
-                for (i in synced.indices) local[i] = SessionSnapshotMerge.mergeItem(local[i], synced[i])
-                while (local.size > synced.size) local.removeAt(local.lastIndex)
-            }
-            // 运行中且只多一条流式尾部：保留本地尾部，不截断
+        }
+        while (local.size > reconciled.size) {
+            local.removeAt(local.lastIndex)
         }
     }
 
@@ -257,5 +255,71 @@ class SessionTreeNavigationTest {
         incrementalSync(local, synced, effectiveRunning = true)
 
         assertEquals(2, local.size)
+    }
+
+    @Test
+    fun `incremental sync preserves optimistic user message when server snapshot is behind even if idle`() {
+        // 用户刚提交提问，服务端快照（synced）尚未落盘记录该提问，无论当前判定是否 running，绝不可抹杀提问
+        val local = mutableListOf(
+            ChatItem(id = "1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答"),
+            ChatItem(id = "local_opt_u2", entryId = null, role = MessageRole.USER, content = "第二轮提问(乐观上屏)")
+        )
+        val synced = listOf(
+            ChatItem(id = "h1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "h2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答")
+        )
+
+        incrementalSync(local, synced, effectiveRunning = false)
+
+        assertEquals(3, local.size)
+        assertEquals("第二轮提问(乐观上屏)", local[2].content)
+        assertEquals("local_opt_u2", local[2].id)
+    }
+
+    @Test
+    fun `incremental sync preserves both optimistic user message and streaming tail when server snapshot is behind`() {
+        // 用户提交提问后模型立即开始 SSE 流式输出，此时 local 有 2 条未落盘项（提问 + 流式回答），快照仍落后 2 条
+        val local = mutableListOf(
+            ChatItem(id = "1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答"),
+            ChatItem(id = "local_opt_u2", entryId = null, role = MessageRole.USER, content = "第二轮提问"),
+            ChatItem(id = "stream_a2", entryId = null, role = MessageRole.AGENT, content = "正在流式思考并回答...", isStreaming = true)
+        )
+        val synced = listOf(
+            ChatItem(id = "h1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "h2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答")
+        )
+
+        incrementalSync(local, synced, effectiveRunning = true)
+
+        assertEquals(4, local.size)
+        assertEquals("第二轮提问", local[2].content)
+        assertEquals("正在流式思考并回答...", local[3].content)
+        assertTrue(local[3].isStreaming)
+    }
+
+    @Test
+    fun `incremental sync merges optimistic user message into server user message once server catches up`() {
+        // 服务端 snapshot 随后追赶上来，本地乐观消息无缝匹配，回填 entryId 并保留本地 id 与流式状态
+        val local = mutableListOf(
+            ChatItem(id = "1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答"),
+            ChatItem(id = "local_opt_u2", entryId = null, role = MessageRole.USER, content = "第二轮提问"),
+            ChatItem(id = "stream_a2", entryId = null, role = MessageRole.AGENT, content = "流式文字", isStreaming = true)
+        )
+        val synced = listOf(
+            ChatItem(id = "h1", entryId = "u1", role = MessageRole.USER, content = "第一轮提问"),
+            ChatItem(id = "h2", entryId = "a1", role = MessageRole.AGENT, content = "第一轮回答"),
+            ChatItem(id = "srv_u2", entryId = "entry_u2", role = MessageRole.USER, content = "第二轮提问")
+        )
+
+        incrementalSync(local, synced, effectiveRunning = true)
+
+        assertEquals(4, local.size)
+        assertEquals("local_opt_u2", local[2].id)
+        assertEquals("entry_u2", local[2].entryId)
+        assertEquals("第二轮提问", local[2].content)
+        assertEquals("流式文字", local[3].content)
     }
 }
