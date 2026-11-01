@@ -2,7 +2,9 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.26] - 2026-11-01
+## [1.8.27] - 2026-11-01
+
+> `v1.8.26` 的 tag 因工具定义解析器里两个可空接收者调用被编译器拒绝而没出安装包，本版为修复后的同内容首发。
 
 ### 📋 权限面板补上「这一档到底装进了哪些工具」
 

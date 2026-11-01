@@ -95,9 +95,9 @@ object ToolDefinitionsParsing {
         )
     }
 
-    private fun JsonObject.string(key: String): String? =
-        get(key)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
+    private fun JsonObject?.string(key: String): String? =
+        this?.get(key)?.takeIf { it.isJsonPrimitive }?.asString?.takeIf { it.isNotBlank() }
 
-    private fun JsonObject.boolean(key: String): Boolean? =
-        get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
+    private fun JsonObject?.boolean(key: String): Boolean? =
+        this?.get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean
 }
