@@ -2,14 +2,13 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.36] - 2026-11-02
+## [1.8.37] - 2026-11-02
 
-### 📁 完整移植 pi-web 文件管理能力：资源管理器、多格式预览与手机下载 (修复编译导入)
+### 📁 完整移植 pi-web 文件管理能力：资源管理器、多格式预览与手机下载 (修复文件名净化单测断言)
 
-- 修复 `Density`/`FileListParsing` 导入及 visibility 约束；
-- 彻底替换 `FileRow` 与 `FilesScreen` 中的硬编码裸色值，改为接入 `AppTheme`（`theme.success`, `theme.warning`, `theme.primary`, `theme.featureThinking`）与 M3 `MaterialTheme.colorScheme.error`；
-- 修复 `GlobalSystemSettingsTab` 增强模型选择参数透传；
-- 通过 CI `Guard hardcoded colors` 门禁与纯 JVM 单元测试覆盖。
+- 增强 `FileDownloader.sanitizeFileName`：非法字符转下划线后去除首尾冗余下划线，全非法字符安全回退默认文件名；
+- 单元测试 362 项全部通过，全流程对齐上游协议；
+- 通过 CI `Guard hardcoded colors` 门禁。
 
 ## [1.8.34] - 2026-11-02
 

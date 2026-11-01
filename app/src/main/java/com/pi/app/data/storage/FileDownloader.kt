@@ -31,7 +31,10 @@ object FileDownloader {
      * 净化文件名，替换操作系统保留的非法字符。
      */
     fun sanitizeFileName(fileName: String, fallback: String = "download"): String {
-        val cleaned = fileName.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_").trim()
+        val cleaned = fileName.trim()
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .trim('_')
+            .trim()
         return if (cleaned.isBlank()) fallback else cleaned
     }
 
