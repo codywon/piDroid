@@ -6,12 +6,23 @@
 
 ## 1. APK 编译与发版规范（核心重点）
 
-本仓库为 **piDroid**（Android 客户端 + 伴侣网关）。由于本地开发机环境不一定配置完整 Android SDK / NDK，且正式发布证书（Release Keystore）严格受云端安全密钥保护：
+本仓库为 **piDroid**（Android 客户端 + 伴侣网关）。正式发布证书（Release Keystore）严格受云端安全密钥保护，而本机通常没有 Android SDK / NDK。因此**编译与验证只有一条合法通道：GitHub Actions**。
 
-### 1.1 禁止本地编译 Release APK
-- **严禁**在本地开发环境直接运行打包或尝试生成正式 release APK；
-- 本地的修改只需要在代码层面完成修改、语法与单元测试验证；
-- **所有 APK 的编译、签名、校验打包与发版，一律在代码提交并推送到 GitHub 后，由 GitHub Actions (`.github/workflows/build-and-release.yml`) 统一完成**。
+### 1.1 铁律：一律禁止本地编译（No Local Builds）
+
+**任何形式的本地编译/构建都不允许**，包括但不限于：
+
+- `./gradlew assembleDebug` / `assembleRelease` / `compileDebugKotlin` / `test` / `help` 等任何 Gradle 任务；
+- 直接用 `kotlinc`（或 Gradle 缓存里的 `kotlin-compiler-embeddable`）单独编译若干 Kotlin 文件；
+- 用「本地编译器 + 手写 stub/假类型」的方式绕过缺失的 Android / Compose 依赖做语法验证；
+- Android Studio 的 Build / Sync 产物的本地构建；
+- 本地签名的任何 APK。
+
+为什么连「只编一下语法」也不行：这种验证不覆盖真实依赖与真实类型签名，产出的“已验证”是假信号，反而会让未经 CI 检验的代码被当成合格品推上去；本机缺 SDK 不是尝试的理由，而是明确的停止信号。
+
+**本地唯一允许的动作**：读源码、改代码、写单元测试源码、看 CI 日志与 CI 产物。
+
+**所有编译、单元测试、签名、校验打包与发版，一律在代码提交并推送到 GitHub 后，由 GitHub Actions (`.github/workflows/build-and-release.yml`) 统一完成**。
 
 ### 1.2 标准发版流程（SOP）
 
@@ -28,7 +39,8 @@
 
 3. **提交与推送至 GitHub**:
    - Git Commit Message 必须使用英文并严格遵循 Conventional Commits（例如 `fix(model): resolve session model override bug and sync with pi-web`）；
-   - 将改动推送到远程仓库（`git push origin main`）。
+   - 将改动推送到远程仓库（`git push origin main`）；
+   - 推送前逐条人工复核：新增/改动的单元测试引用的符号是否都还存在、新增文件是否已被 `git add`（历史上出现过“测试引用已删除常量 → CI 红 → 该版本没有安装包”）。
 
 4. **触发 GitHub Actions 构建**:
    - **方式 A（打 Tag 触发，推荐）**:
@@ -42,9 +54,16 @@
 
 5. **云端流水线自动完成的事项**:
    - 读取 GitHub Secrets 自动解码 `keystore/release.jks`（杜绝密钥本地泄漏）；
+   - 运行 `./gradlew :app:testDebugUnitTest`（单元测试不过就没有安装包）；
    - 运行 `./gradlew assembleRelease` 产出 Release APK；
    - 运行 `sha256sum` 生成 `checksums.txt`（供 App 内自动更新做完整性校验）；
    - 从 `CHANGELOG.md` 提取日志并在 GitHub Releases 创建对应版本发布，用户端打开 App 即可一键检测并无感升级。
+
+### 1.3 验证闭环（以 CI 为唯一标准）
+
+- 判断“改好了没有”的唯一依据是 GitHub Actions 的 `Run Unit Tests` 与 `Build Signed APK` 两个步骤的结论，以及产出的 APK；
+- CI 失败时：读日志定位 → 修代码 → 重新提交。**若该版本号对应的 Tag 已经推送过（CI 已产生记录），不要复用同一个 Tag**，改为递增补丁版本号（如 `v1.8.16` → `v1.8.17`）重新走一遍 1.2；
+- 严禁为了“先让 CI 变绿”而删除失败断言、跳过测试或临时注释校验逻辑。
 
 ---
 
@@ -67,8 +86,10 @@
   - 保持现有代码规范（命名、缩进、Kotlin/Jetpack Compose 惯用法）。
 - **单元测试与验证**：
   - 复杂数据流与解析逻辑必须在 `app/src/test/` 编写纯 JVM 单元测试覆盖；
-  - 本地验证优先运行轻量级单元测试与语法检查，不依赖重量级完整 Android SDK 编译；
-  - 遇到 Bug 修复，先明确根因与失败用例，修复后再执行回归验证。
+  - 单元测试**不得依赖 Android 运行时**（不碰 `android.*`、`Uri`、`Context` 等），倾向把易错的纯逻辑抽成独立文件后再测，这样即使本机没有 SDK，测试的语义也不会模糊；
+  - **禁止本地编译**（见 §1.1）：不跑 Gradle、不跑 `kotlinc`、不写 stub 伪造依赖。测试是否通过以 CI 的 `Run Unit Tests` 为准；
+  - 因此凡是新增/修改测试，都要先把被引用的符号在源码里确认一遍（历史故障：测试引用已删除的常量，导致 CI 测试源集编译失败、该版本没有安装包）；
+  - 遇到 Bug 修复，先明确根因与失败用例，修复后再交由 CI 完成回归验证。
 
 ---
 
