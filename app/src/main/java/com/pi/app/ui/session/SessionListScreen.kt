@@ -171,7 +171,8 @@ fun SessionListScreen(
     onManualConfigConfirm: (url: String, token: String, name: String) -> Unit = { _, _, _ -> },
     customWorkspaces: List<String> = emptyList(),
     onBrowseRemoteDir: suspend (String) -> RemoteBrowseData? = { null },
-    onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) }
+    onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) },
+    onBrowseFiles: (workspacePath: String, workspaceName: String) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val prefs = remember(context) { AppPreferences(context) }
@@ -1796,6 +1797,22 @@ fun SessionListScreen(
                         coroutineScope.launch {
                             drawerState.close()
                             onNewSessionClick(targetWs.path)
+                        }
+                    }
+                )
+
+                // 3.5 浏览文件 (对标 pi-web files tab)
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.Folder,
+                    iconTint = theme.primary,
+                    title = "浏览文件",
+                    onClick = {
+                        val path = targetWs.path
+                        val name = wsDisplayName
+                        selectedMenuWorkspace = null
+                        coroutineScope.launch {
+                            drawerState.close()
+                            onBrowseFiles(path, name)
                         }
                     }
                 )

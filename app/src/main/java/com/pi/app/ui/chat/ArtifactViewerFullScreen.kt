@@ -57,8 +57,10 @@ import com.pi.app.data.model.FilePlaybackSource
 import com.pi.app.data.model.formatBytes
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
+import com.pi.app.ui.components.PdfDocumentView
 import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.ui.theme.LocalAppTheme
+import java.io.File
 
 /**
  * 全屏文件 / 输出查看器（替代原先的 `ModalBottomSheet` 半屏弹层）。
@@ -92,6 +94,7 @@ internal fun ArtifactViewerFullScreen(
     kind: ArtifactKind,
     text: String?,
     image: ImageBitmap?,
+    pdfFile: File? = null,
     docxHtml: String?,
     message: String?,
     rawMode: Boolean,
@@ -327,11 +330,20 @@ internal fun ArtifactViewerFullScreen(
                             message = message,
                             modifier = Modifier.fillMaxSize()
                         )
-                        ArtifactKind.PDF -> ArtifactHintCard(
-                            text = message
-                                ?: "PDF 交给手机上的阅读器：右上 ⋮「用其他应用打开」会把文件下载到本机，"
-                                + "交给 WPS / 系统 PDF 阅读器展示（可缩放、可搜文本）"
-                        )
+                        ArtifactKind.PDF -> {
+                            if (pdfFile != null) {
+                                PdfDocumentView(
+                                    file = pdfFile,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            } else {
+                                ArtifactHintCard(
+                                    text = message
+                                        ?: "PDF 交给手机上的阅读器：右上 ⋮「用其他应用打开」会把文件下载到本机，"
+                                        + "交给 WPS / 系统 PDF 阅读器展示（可缩放、可搜文本）"
+                                )
+                            }
+                        }
                         else -> Unit
                     }
 

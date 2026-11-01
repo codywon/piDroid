@@ -262,15 +262,44 @@ data class SlashCommand(
         }
 }
 
+/** 文件目录项（GET /api/files/<path>?type=list） */
+data class FileEntry(
+    val name: String,
+    val isDir: Boolean = false,
+    val size: Long = 0L,
+    val modified: String = "",
+    val outsideLinkTarget: String? = null,
+    val outsideLinkEncloses: Boolean = false,
+    val hidden: String? = null
+) {
+    val isOutsideLink: Boolean get() = !outsideLinkTarget.isNullOrBlank()
+}
+
+/** 目录列表结果 */
+data class FileDirectoryListing(
+    val path: String = "",
+    val entries: List<FileEntry> = emptyList()
+)
+
+/** 文件索引匹配项（GET /api/file-index?cwd=&q=） */
+data class FileIndexMatch(
+    val path: String,
+    val isDir: Boolean = false
+)
+
 /** 文件元信息（GET /api/files/<path>?type=meta） */
 data class FileMeta(
     val size: Long = 0L,
     val language: String = "",
-    val mime: String = ""
+    val mime: String = "",
+    val mtime: String? = null,
+    val previewKind: String? = null
 ) {
     val isImage: Boolean get() = mime.startsWith("image/")
     val sizeLabel: String
         get() = formatBytes(size)
+    val version: String?
+        get() = mtime?.let { "$size:$it" }
 }
 
 /**

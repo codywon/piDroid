@@ -359,11 +359,21 @@ private fun rememberMediaVisibility(): Pair<Boolean, Modifier> {
 }
 
 /**
+ * 计算大图全屏预览的目标长边像素。
+ */
+internal fun decodeTargetLongEdgePx(density: Density, screenWidthDp: Int, screenHeightDp: Int): Int {
+    val longDp = maxOf(screenWidthDp, screenHeightDp)
+    val longPx = if (longDp > 0) with(density) { longDp.dp.toPx().toInt() } else 0
+    return (longPx * MediaLoadPolicy.DECODE_TARGET_SCREEN_FACTOR)
+        .takeIf { it > 0 } ?: MediaLoadPolicy.FALLBACK_DECODE_TARGET_PX
+}
+
+/**
  * 按目标长边降采样解码：`inSampleSize` 取 2 的幂，解码后长边不超过目标值。
  * 旧实现是全尺寸 `decodeByteArray`：一张 4000×3000 的 CAD 出图要占≈48MB 堆内存，
  * 而卡片最大只显示 260dp。
  */
-private fun decodeSampledImage(bytes: ByteArray, maxLongEdgePx: Int): Pair<ImageBitmap, String>? {
+internal fun decodeSampledImage(bytes: ByteArray, maxLongEdgePx: Int): Pair<ImageBitmap, String>? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
     val options = BitmapFactory.Options().apply {
@@ -1014,10 +1024,7 @@ fun FullscreenMediaLightboxDialog(
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
     val decodeTargetPx = remember(density, configuration) {
-        val longDp = maxOf(configuration.screenWidthDp, configuration.screenHeightDp)
-        val longPx = if (longDp > 0) with(density) { longDp.dp.toPx().toInt() } else 0
-        (longPx * MediaLoadPolicy.DECODE_TARGET_SCREEN_FACTOR)
-            .takeIf { it > 0 } ?: MediaLoadPolicy.FALLBACK_DECODE_TARGET_PX
+        decodeTargetLongEdgePx(density, configuration.screenWidthDp, configuration.screenHeightDp)
     }
 
     var scale by remember { mutableFloatStateOf(1f) }

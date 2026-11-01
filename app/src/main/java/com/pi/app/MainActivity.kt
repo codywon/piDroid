@@ -36,6 +36,10 @@ import com.pi.app.ui.ErrorToastGate
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
 import com.pi.app.ui.chat.ThinkingLevelBottomSheet
+import com.pi.app.ui.chat.openFileWithOtherApp
+import com.pi.app.ui.files.FilesScreen
+import com.pi.app.data.storage.FileDownloader
+import com.pi.app.network.FileListParsing
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
 import com.pi.app.ui.settings.GlobalSettingsScreen
@@ -289,6 +293,8 @@ class MainActivity : ComponentActivity() {
         var currentSession by rememberSaveable(stateSaver = SessionSaver) {
             mutableStateOf<Session?>(null)
         }
+        var browsingWorkspaceCwd by rememberSaveable { mutableStateOf<String?>(null) }
+        var browsingWorkspaceName by rememberSaveable { mutableStateOf("") }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区
         var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf("") }
@@ -3089,6 +3095,72 @@ class MainActivity : ComponentActivity() {
                     )
                 }
             }
+            browsingWorkspaceCwd != null -> {
+                val cwd = browsingWorkspaceCwd!!
+                val wsName = browsingWorkspaceName
+                FilesScreen(
+                    workspaceCwd = cwd,
+                    workspaceName = wsName,
+                    onBack = { browsingWorkspaceCwd = null },
+                    onDownloadFile = { path ->
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在下载到手机…", Toast.LENGTH_SHORT).show()
+                            val fileName = FileListParsing.displayName(path)
+                            FileDownloader.downloadToDownloads(
+                                context = this@MainActivity,
+                                apiClient = apiClient,
+                                remotePath = path,
+                                displayFileName = fileName
+                            ).onSuccess { localPath ->
+                                Toast.makeText(this@MainActivity, "已下载到: $localPath", Toast.LENGTH_LONG).show()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "下载失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    onOpenExternal = { path ->
+                        lifecycleScope.launch {
+                            apiClient.downloadFileToCache(path)
+                                .onSuccess { file ->
+                                    val ext = FileListParsing.displayName(path).substringAfterLast('.', "").lowercase(java.util.Locale.ROOT)
+                                    val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext).orEmpty()
+                                    openFileWithOtherApp(this@MainActivity, file, mime)
+                                }
+                                .onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "下载失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                        }
+                    },
+                    onLoadDirectory = { dir, showHidden ->
+                        apiClient.listFileDirectory(dir, showHidden)
+                    },
+                    onSearchFiles = { dir, q ->
+                        apiClient.searchFileIndex(dir, q)
+                    },
+                    onLoadGitStatus = { dir ->
+                        apiClient.getGitStatus(dir)
+                    },
+                    onLoadFileMeta = { path ->
+                        apiClient.getFileMeta(path)
+                    },
+                    onLoadFileTextChunk = { path, offset ->
+                        apiClient.getFileTextChunk(path, offset)
+                    },
+                    onLoadFilePreviewHtml = { path ->
+                        apiClient.getFilePreviewHtml(path)
+                    },
+                    onLoadFileBytes = { path ->
+                        apiClient.getFileBytes(path)
+                    },
+                    onDownloadFileToCache = { path ->
+                        apiClient.downloadFileToCache(path)
+                    },
+                    onResolveFileSource = { path ->
+                        val url = apiClient.fileApiUrl(path)
+                        if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
+                    }
+                )
+            }
             else -> {
                 // 首页：工作区与任务管理
                 SessionListScreen(
@@ -3334,6 +3406,10 @@ class MainActivity : ComponentActivity() {
                         customWorkspaces = prefs.getCustomWorkspaces()
                         Toast.makeText(this@MainActivity, "已添加工作区目录：$finalPath", Toast.LENGTH_SHORT).show()
                         Result.success(finalPath)
+                    },
+                    onBrowseFiles = { path, name ->
+                        browsingWorkspaceCwd = path
+                        browsingWorkspaceName = name
                     }
                 )
             }

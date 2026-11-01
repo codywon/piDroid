@@ -2,6 +2,30 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.33] - 2026-11-02
+
+### 📁 完整移植 pi-web 文件管理能力：资源管理器、多格式预览与手机下载
+
+严格对齐 `@agegr/pi-web@0.13.0` 协议与行为，打通三类移动端文件使用场景：
+
+1. **以资源管理器方式浏览/操作文件**：
+   - 工作区长按菜单一键进入「浏览文件」全屏树视图；
+   - 目录逐级懒加载，内置 20 深度 LRU 展开记忆（`ExpandedPathsMemory`）；
+   - 支持隐藏文件（.gitignore）三态开关，内置大目录截断保护（防大文件夹卡顿）；
+   - 毫秒级 150ms 防抖文件索引搜索（`/api/file-index?cwd=&q=`）并自动折叠为目录树；
+   - Git 变更文件徽标与目录红点追踪。
+
+2. **在页面内直接打开远端文档/图片预览**：
+   - 抽象通用 `RemoteFilePreviewLoader`，解耦聊天与文件管理器的预览链路；
+   - 支持 TEXT / MARKDOWN / IMAGE / SVG / DOCX / AUDIO / VIDEO 分派；
+   - 图片预览走 `type=download` 避免 413 限制，全链路配合 `decodeSampledImage` 防 OOM；
+   - 新增原生 `PdfDocumentView` 支持 PDF 逐页翻页预览与高分辨率分页渲染。
+
+3. **安全流式下载到手机**：
+   - 新增 `FileDownloader`：采用 64KB 缓冲区流式写入公共下载目录（`Download/πDroid`），杜绝大文件 OOM；
+   - Android 10+ 适配 `MediaStore.Downloads` 与两段式 `IS_PENDING`；Android 9 优雅回退；
+   - 严格遵循伴侣网关 Bearer 鉴权通道。
+
 ## [1.8.32] - 2026-11-01
 
 ### ✨ 提示词增强去掉「六段式模板」，改为像人一样说话（pe-5）

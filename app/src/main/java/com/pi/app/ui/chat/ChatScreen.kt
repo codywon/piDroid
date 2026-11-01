@@ -10,6 +10,8 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.MediaController
 import android.widget.VideoView
+import com.pi.app.ui.files.FilePreviewDataSource
+import com.pi.app.ui.files.RemoteFilePreviewLoader
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -328,6 +330,7 @@ fun ChatScreen(
     var widgetOverlay by remember { mutableStateOf<WidgetPayload?>(null) }
     var artifactText by remember { mutableStateOf<String?>(null) }
     var artifactImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    var artifactPdfFile by remember { mutableStateOf<java.io.File?>(null) }
     var artifactMeta by remember { mutableStateOf<String?>(null) }
     var isLoadingArtifact by remember { mutableStateOf(false) }
     /** 当前预览的文件绝对路径（Markdown 文档里的相对链接以它所在目录为基准） */
@@ -730,6 +733,7 @@ fun ChatScreen(
         artifactTitle = name
         artifactText = null
         artifactImage = null
+        artifactPdfFile = null
         artifactMeta = null
         artifactPath = absPath
         artifactKind = ArtifactKind.TEXT
@@ -744,62 +748,32 @@ fun ChatScreen(
         isLoadingMoreArtifact = false
         isLoadingArtifact = true
         coroutineScope.launch {
-            val meta = onLoadFileMeta(absPath).getOrNull()
-            val metaMime = meta?.mime.orEmpty()
-            val kind = artifactKindOf(absPath, metaMime)
-            artifactMime = metaMime.ifBlank {
-                MimeTypeMap.getSingleton().getMimeTypeFromExtension(
-                    FileLinks.displayName(absPath).substringAfterLast('.', "").lowercase(Locale.ROOT)
-                ).orEmpty()
+            val dataSource = object : FilePreviewDataSource {
+                override suspend fun getFileMeta(path: String) = onLoadFileMeta(path)
+                override suspend fun getFileTextChunk(path: String, offset: Long) = onLoadFileTextChunk(path, offset)
+                override suspend fun getFilePreviewHtml(path: String) = onLoadFilePreviewHtml(path)
+                override suspend fun getFileBytes(path: String) = onLoadFileBytes(path)
+                override suspend fun downloadFileToCache(path: String) = onDownloadFileToCache(path)
             }
-            artifactKind = kind
-            artifactMeta = meta?.let { m ->
-                listOfNotNull(m.sizeLabel, m.language.ifBlank { null }, m.mime.ifBlank { null })
-                    .joinToString(" · ")
-            }
-            when (kind) {
-                ArtifactKind.IMAGE -> {
-                    onLoadFileBytes(absPath)
-                        .onSuccess { bytes ->
-                            artifactImage = runCatching {
-                                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                                    ?.asImageBitmap()
-                            }.getOrNull()
-                            if (artifactImage == null) artifactMessage = "图片解码失败（可能过大或格式不支持）"
-                        }
-                        .onFailure { artifactMessage = "读取图片失败：${it.message}" }
-                }
-                ArtifactKind.DOCX -> {
-                    // pi-web 的 docx 预览上限 10MB（DOCX_PREVIEW_MAX_BYTES），超了服务端会拒
-                    if (meta != null && meta.size > 10L * 1024 * 1024) {
-                        artifactMessage = "Word 预览上限 10MB，可用下方「用其他应用打开」交给 WPS"
-                    } else {
-                        onLoadFilePreviewHtml(absPath)
-                            .onSuccess { artifactDocxHtml = it }
-                            .onFailure { artifactMessage = "Word 预览失败：${it.message}" }
-                    }
-                }
-                ArtifactKind.PDF -> {
-                    // 手机端没有内置 PDF 渲染器（pi-web 是借桌面浏览器的），
-                    // 所以这里不做内嵌渲染，交给系统/WPS —— 见下方「用其他应用打开」
-                }
-                ArtifactKind.AUDIO, ArtifactKind.VIDEO -> {
-                    // 播放器自己按 URL 拉流（同 pi-web 的 <audio>/<video> src），无需预读
-                }
-                else -> {
-                    onLoadFileTextChunk(absPath, 0L)
-                        .onSuccess { chunk ->
-                            if (chunk.binary) {
-                                artifactText = null
-                                artifactMessage = "此文件为二进制文件（${formatBytes(chunk.size)}），不支持文本预览。可点击下方「用其他应用打开」调用外部工具查看。"
-                            } else {
-                                artifactText = chunk.content.ifBlank { "（空文件）" }
-                            }
-                            artifactNextOffset = chunk.nextOffset
-                            artifactTruncated = chunk.truncated
-                            artifactSizeBytes = chunk.size
-                        }
-                        .onFailure { artifactText = "读取文件失败：${it.message}" }
+            val preview = RemoteFilePreviewLoader.load(absPath, dataSource)
+            artifactTitle = preview.title
+            artifactKind = preview.kind
+            artifactMime = preview.mime
+            artifactMeta = preview.metaLabel
+            artifactDocxHtml = preview.docxHtml
+            artifactMessage = preview.message
+            artifactNextOffset = preview.nextOffset
+            artifactTruncated = preview.truncated
+            artifactSizeBytes = preview.sizeBytes
+            artifactPdfFile = preview.pdfFile
+            artifactText = preview.text
+            if (preview.imageBytes != null) {
+                artifactImage = runCatching {
+                    android.graphics.BitmapFactory.decodeByteArray(preview.imageBytes, 0, preview.imageBytes.size)
+                        ?.asImageBitmap()
+                }.getOrNull()
+                if (artifactImage == null && artifactMessage == null) {
+                    artifactMessage = "图片解码失败（可能过大或格式不支持）"
                 }
             }
             isLoadingArtifact = false
@@ -2561,6 +2535,7 @@ fun ChatScreen(
             kind = artifactKind,
             text = artifactText,
             image = artifactImage,
+            pdfFile = artifactPdfFile,
             docxHtml = artifactDocxHtml,
             message = artifactMessage,
             rawMode = artifactRawMode,
@@ -3693,30 +3668,6 @@ private val BUILTIN_SLASH_COMMANDS = listOf(
     SlashCommand(name = "auto-compact", description = "切换自动上下文压缩（全局设置）", source = "builtin")
 )
 
-private val IMAGE_FILE_EXTS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
-private val AUDIO_FILE_EXTS = setOf("mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "amr")
-private val VIDEO_FILE_EXTS = setOf("mp4", "m4v", "mov", "webm", "mkv", "3gp", "avi")
-
-/**
- * 判定预览类型：mime 优先，扩展名兜底（meta 拿不到时仍然能分派）。
- * `.svg` 故意不算图片 —— BitmapFactory 解不了矢量图，当文本看源码比「解码失败」有用。
- */
-private fun artifactKindOf(absPath: String, mime: String): ArtifactKind {
-    val ext = FileLinks.displayName(absPath).substringAfterLast('.', "").lowercase(Locale.ROOT)
-    val lowerMime = mime.lowercase(Locale.ROOT)
-    return when {
-        // SVG 是矢量图，必须交给渲染器而不是 BitmapFactory（那只会得到“解码失败”）
-        ext == "svg" || lowerMime.contains("svg") -> ArtifactKind.SVG
-        lowerMime.startsWith("image/") || ext in IMAGE_FILE_EXTS -> ArtifactKind.IMAGE
-        FileLinks.isMarkdownPath(absPath) -> ArtifactKind.MARKDOWN
-        lowerMime == "application/pdf" || ext == "pdf" -> ArtifactKind.PDF
-        lowerMime.contains("wordprocessingml") || ext == "docx" -> ArtifactKind.DOCX
-        lowerMime.startsWith("audio/") || ext in AUDIO_FILE_EXTS -> ArtifactKind.AUDIO
-        lowerMime.startsWith("video/") || ext in VIDEO_FILE_EXTS -> ArtifactKind.VIDEO
-        else -> ArtifactKind.TEXT
-    }
-}
-
 @Composable
 internal fun ArtifactHintCard(text: String) {
     val theme = LocalAppTheme.current
@@ -3938,7 +3889,7 @@ private fun formatClock(ms: Int): String {
  * 其 `internal_cache` 路径已在 res/xml/file_paths.xml 声明），
  * 与 AppUpdateManager 拉起安装器是同一套做法。
  */
-private fun openFileWithOtherApp(context: Context, file: File, mime: String): Boolean = try {
+internal fun openFileWithOtherApp(context: Context, file: File, mime: String): Boolean = try {
     val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
     val intent = Intent(Intent.ACTION_VIEW).apply {
         setDataAndType(uri, mime.ifBlank { "*/*" })

@@ -141,6 +141,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         .pingInterval(20, TimeUnit.SECONDS)
         .build()
 
+    internal val okHttpClient: OkHttpClient get() = client
+
     /**
      * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加硬超时。
      *
@@ -2010,7 +2012,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
 
-    /** 文件元信息：GET /api/files/<绝对路径>?type=meta → {size, language, mime, previewKind} */
+    /** 文件元信息：GET /api/files/<绝对路径>?type=meta → {size, language, mime, previewKind, mtime} */
     suspend fun getFileMeta(absPath: String, sessionId: String? = null): Result<FileMeta> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
@@ -2031,9 +2033,70 @@ class PiApiClient(private val prefs: AppPreferences) {
                     FileMeta(
                         size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
                         language = root.get("language")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                        mime = root.get("mime")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        mime = root.get("mime")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        mtime = root.get("mtime")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString,
+                        previewKind = root.get("previewKind")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
                     )
                 )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 目录列表：GET /api/files/<绝对路径>?type=list[&hidden=1]
+     */
+    suspend fun listFileDirectory(
+        dirPath: String,
+        showHidden: Boolean = false,
+        sessionId: String? = null
+    ): Result<FileDirectoryListing> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (dirPath.isBlank()) return@withContext Result.failure(Exception("缺少目录路径"))
+        try {
+            val hiddenQuery = if (showHidden) "&hidden=1" else ""
+            val url = fileApiUrl(dirPath, "list", sessionId) + hiddenQuery
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val err = FileListParsing.parseError(body) ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException(err))
+                }
+                val listing = FileListParsing.parseListing(body)
+                    ?: return@withContext Result.failure(IOException("解析目录列表失败"))
+                Result.success(listing)
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 文件索引搜索：GET /api/file-index?cwd=<工作目录>&q=<搜索词>
+     */
+    suspend fun searchFileIndex(
+        cwd: String,
+        query: String
+    ): Result<List<FileIndexMatch>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (cwd.isBlank()) return@withContext Result.failure(Exception("缺少工作目录"))
+        try {
+            val encCwd = URLEncoder.encode(cwd, "UTF-8")
+            val encQ = URLEncoder.encode(query, "UTF-8")
+            val url = "$baseUrl/api/file-index?cwd=$encCwd&q=$encQ"
+            val req = Request.Builder().url(url).get().build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val err = FileListParsing.parseError(body) ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException(err))
+                }
+                val matches = FileListParsing.parseIndexMatches(body)
+                Result.success(matches)
             }
         } catch (e: Exception) {
             Result.failure(e)
