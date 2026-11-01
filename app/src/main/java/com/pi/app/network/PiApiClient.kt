@@ -156,9 +156,9 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 不能复用 [readClient]（12s 会先于模型返回把请求掐断），也不能无限等。
      */
     private val enhanceClient = client.newBuilder()
-        // 服务端硬超时 30s（实测 P50 4.1s / P90 7.7s）。客户端 35s 只作「服务端没回话」的兜底，
-        // 比服务端多 5s，避免两边同时掐断时拿到半截响应；再长就是让用户白等。
-        .callTimeout(35, TimeUnit.SECONDS)
+        // 服务端硬超时 50s（预算放宽后单次生成更久）。客户端 55s 只作「服务端没回话」的兜底，
+        // 比服务端多 5s，避免两边同时掐断时拿到半截响应。
+        .callTimeout(55, TimeUnit.SECONDS)
         .build()
 
     /**

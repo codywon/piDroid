@@ -467,7 +467,9 @@ fun ChatScreen(
                             "MODEL_AUTH_FAILED" -> "当前模型凭据不可用，请检查 PC 端配置"
                             "UNSUPPORTED_MODEL" -> serverMessage ?: "该模型暂不支持增强"
                             "ENHANCEMENT_UNAVAILABLE" -> serverMessage ?: "当前网关不支持提示词增强"
-                            "INVALID_OUTPUT" -> "增强结果不可用，已保留原稿"
+                            // 服务端会说明具体是哪一种（输出被截断 / 改动了受保护片段 /
+                            // 为空 / 套了代码围栏）。压成一句笼统的话就再也查不出原因。
+                            "INVALID_OUTPUT" -> serverMessage ?: "增强结果不可用，已保留原稿"
                             // 客户端自己取消（切会话 / 点取消 / 连接被本机超时关掉）不该弹「失败」
                             "CANCELLED" -> null
                             else -> serverMessage ?: when (error) {
@@ -3946,7 +3948,7 @@ private fun buildPromptEnhancementContext(history: List<ChatItem>): List<PromptE
     // 注意：takeLast 是 List/Iterable 的扩展，Sequence 上没有；
     // 先裁出最近一段再转成上下文，不要写成 asSequence().takeLast(..)。
     val candidates = history
-        .takeLast(60)
+        .takeLast(120)
         .mapNotNull { item ->
             when (item.role) {
                 MessageRole.USER ->

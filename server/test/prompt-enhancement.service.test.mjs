@@ -135,7 +135,8 @@ test('rejects malformed or unsafe input without calling the model', async () => 
     [baseBody({ draft: '   ' }), 'INVALID_INPUT'],
     [baseBody({ draft: '/plan 继续' }), 'INVALID_INPUT'],
     [baseBody({ draft: '```kotlin\nval a = 1' }), 'INVALID_INPUT'],
-    [baseBody({ draft: 'x'.repeat(7000) }), 'INVALID_INPUT'],
+    // 草稿上限已放宽到 12000，这里要明显超过它才能触发拦截
+    [baseBody({ draft: 'x'.repeat(13000) }), 'INVALID_INPUT'],
     [baseBody({ provider: '' }), 'INVALID_INPUT'],
     [baseBody({ draftRevision: -1 }), 'INVALID_INPUT'],
   ];
@@ -350,4 +351,28 @@ test('accepts a compaction summary so long sessions keep their early decisions',
   const summary = captured.find((m) => m.role === 'summary');
   assert.ok(summary, JSON.stringify(captured));
   assert.match(summary.text, /最小侵入/);
+});
+
+test('tells the client which INVALID_OUTPUT case happened', async () => {
+  // 客户端以前把这一族错误压成一句「增强结果不可用」，用户和排查都无法区分
+  // 「输出被截断」和「改动了受保护片段」。服务端必须给出可区分的原因。
+  const reasons = new Map();
+  const cases = [
+    ['truncated', fakeModelClient({ stopReason: 'length' })],
+    ['empty', fakeModelClient({ transform: () => '   ' })],
+    ['toolUse', fakeModelClient({ stopReason: 'toolUse' })],
+    ['placeholder', fakeModelClient({ transform: () => '看 [[PE_1_aaaaaa]]' })],
+  ];
+  for (const [name, client] of cases) {
+    const service = createEnhancementService({
+      modelClient: client,
+      config: { ...readEnhancementConfig({ PROMPT_ENHANCE_RATE_LIMIT: '50' }) },
+    });
+    const result = await service.enhance(baseBody({ draft: '看 @A.kt 和 @B.kt' }), { subject: 'r-' + name });
+    assert.equal(result.code, 'INVALID_OUTPUT', name);
+    assert.ok(result.message && result.message !== '增强结果不可用', `${name}: ${result.message}`);
+    reasons.set(name, result.message);
+  }
+  // 四种原因必须彼此可区分（否则透出也没意义）
+  assert.equal(new Set(reasons.values()).size, reasons.size, JSON.stringify([...reasons]));
 });

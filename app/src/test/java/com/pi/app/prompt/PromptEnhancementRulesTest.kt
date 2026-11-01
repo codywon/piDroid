@@ -124,7 +124,7 @@ class PromptEnhancementRulesTest {
         PromptEnhancementContextMessage("user", "第一轮的需求"),
         PromptEnhancementContextMessage("assistant", "第一轮的回答"),
         PromptEnhancementContextMessage("user", "   "),
-        PromptEnhancementContextMessage("assistant", "y".repeat(3000)),
+        PromptEnhancementContextMessage("assistant", "y".repeat(6000)),
         PromptEnhancementContextMessage("user", "最后一轮的需求")
     )
 
@@ -134,7 +134,7 @@ class PromptEnhancementRulesTest {
         assertEquals("最后一轮的需求", picked.last().text)
         assertTrue(picked.none { it.text.isBlank() })
         assertTrue(picked.all { it.role == "user" || it.role == "assistant" })
-        assertTrue(picked.any { it.text.length <= 1201 && it.text.endsWith("…") })
+        assertTrue(picked.any { it.text.length <= 4001 && it.text.endsWith("…") })
     }
 
     @Test
@@ -166,10 +166,11 @@ class PromptEnhancementRulesTest {
 
     @Test
     fun `context budget constants match the gateway`() {
-        // 客户端与服务端必须同一口径，否则一方多裁、一方少裁
-        assertEquals(12, PromptEnhancementRules.MAX_CONTEXT_MESSAGES)
-        assertEquals(1200, PromptEnhancementRules.MAX_CONTEXT_MESSAGE_CHARS)
-        assertEquals(12000, PromptEnhancementRules.MAX_CONTEXT_TOTAL_CHARS)
+        // 客户端与服务端必须同一口径，否则一方多裁、一方少裁。
+        // 取值原则是「效果优先」：模型窗口 1M，预算不该比能力低一两个数量级。
+        assertEquals(24, PromptEnhancementRules.MAX_CONTEXT_MESSAGES)
+        assertEquals(4000, PromptEnhancementRules.MAX_CONTEXT_MESSAGE_CHARS)
+        assertEquals(40000, PromptEnhancementRules.MAX_CONTEXT_TOTAL_CHARS)
     }
 
     @Test

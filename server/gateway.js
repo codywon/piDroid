@@ -490,10 +490,20 @@ app.post(
     const modelId = typeof req.body?.modelId === 'string' ? req.body.modelId : '?';
     // 为响应头提供延时信息（客户端不依赖，但排障时一眼能看出是「模型慢」还是「网络慢」）
     res.setHeader('X-Prompt-Enhance-Started-At', String(startedAt));
+    // 记录失败原因码（仅 code + 稳定文案，绝不打印草稿或增强结果）。
+    // 手机上只能看到一句 Toast，真正的排查线索在这行日志里。
+    let failureCode = null;
+    const originalJson = res.json.bind(res);
+    res.json = (payload) => {
+      if (payload && typeof payload === 'object' && typeof payload.code === 'string') {
+        failureCode = payload.code;
+      }
+      return originalJson(payload);
+    };
     res.on('finish', () => {
-      // 只记元信息，绝不打印草稿或增强结果（可能含用户代码与密钥）
       const elapsed = Date.now() - startedAt;
-      console.log(`[prompt-enhance] ${provider}/${modelId} -> ${res.statusCode} ${elapsed}ms`);
+      const suffix = failureCode ? ` code=${failureCode}` : '';
+      console.log(`[prompt-enhance] ${provider}/${modelId} -> ${res.statusCode} ${elapsed}ms${suffix}`);
     });
     try {
       const { handler } = await loadPromptEnhancement();
