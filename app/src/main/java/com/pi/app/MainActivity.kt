@@ -3145,6 +3145,30 @@ class MainActivity : ComponentActivity() {
                                 }
                         }
                     },
+                    onAtMention = { relPath, isDir ->
+                        val mentionText = if (isDir) {
+                            val p = "${relPath.trimEnd('/')}/"
+                            if (p.contains(' ')) "@\"$p\" " else "@$p "
+                        } else {
+                            if (relPath.contains(' ')) "@\"$relPath\" " else "@$relPath "
+                        }
+                        val wsSession = sessions.firstOrNull {
+                            com.pi.app.data.model.WorkspacePaths.samePath(it.cwd, cwd) ||
+                                com.pi.app.data.model.WorkspacePaths.samePath(it.workspacePath, cwd)
+                        }
+                        if (wsSession != null) {
+                            val oldDraft = prefs.getSessionDraft(wsSession.id)
+                            val newDraft = if (oldDraft.isBlank() || oldDraft.endsWith(' ')) {
+                                oldDraft + mentionText
+                            } else {
+                                "$oldDraft $mentionText"
+                            }
+                            prefs.saveSessionDraftWithUndo(wsSession.id, newDraft, null)
+                        }
+                        val cm = getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        cm?.setPrimaryClip(android.content.ClipData.newPlainText("mention", mentionText.trim()))
+                        Toast.makeText(this@MainActivity, "已引用并复制: $mentionText", Toast.LENGTH_SHORT).show()
+                    },
                     onLoadDirectory = { dir, showHidden ->
                         apiClient.listFileDirectory(dir, showHidden)
                     },

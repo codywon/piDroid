@@ -67,6 +67,7 @@ internal fun FileRow(
     onDownload: () -> Unit,
     onOpenExternal: () -> Unit,
     onCopyPath: () -> Unit,
+    onAtMention: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
@@ -198,6 +199,13 @@ internal fun FileRow(
                     }
                 )
             }
+            DropdownMenuItem(
+                text = { Text("@ 引用到对话", color = theme.primary, fontSize = 13.sp) },
+                onClick = {
+                    menuExpanded = false
+                    onAtMention()
+                }
+            )
             DropdownMenuItem(
                 text = { Text("复制绝对路径", color = theme.textPrimary, fontSize = 13.sp) },
                 onClick = {

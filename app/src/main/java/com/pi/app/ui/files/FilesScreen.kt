@@ -95,6 +95,7 @@ internal fun FilesScreen(
     onBack: () -> Unit,
     onDownloadFile: (String) -> Unit,
     onOpenExternal: (String) -> Unit,
+    onAtMention: (relativePath: String, isDir: Boolean) -> Unit = { _, _ -> },
     onLoadDirectory: suspend (String, Boolean) -> Result<FileDirectoryListing>,
     onSearchFiles: suspend (String, String) -> Result<List<com.pi.app.data.model.FileIndexMatch>>,
     onLoadGitStatus: suspend (String) -> Result<GitStatusResult>,
@@ -526,6 +527,10 @@ internal fun FilesScreen(
                                         onCopyPath = {
                                             clipboardManager.setText(AnnotatedString(fullPath))
                                             Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
+                                        },
+                                        onAtMention = {
+                                            val rel = FileListParsing.relativePath(fullPath, workspaceCwd)
+                                            onAtMention(rel, node.isDir)
                                         }
                                     )
                                 }
@@ -611,6 +616,10 @@ internal fun FilesScreen(
                                     onCopyPath = {
                                         clipboardManager.setText(AnnotatedString(item.fullPath))
                                         Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onAtMention = {
+                                        val rel = FileListParsing.relativePath(item.fullPath, workspaceCwd)
+                                        onAtMention(rel, item.entry.isDir)
                                     }
                                 )
 
@@ -642,50 +651,56 @@ internal fun FilesScreen(
                 }
             }
         }
+    }
 
-        // 全屏文件查看器覆盖层
-        val activePreviewPath = previewPath
-        if (activePreviewPath != null) {
-            ArtifactViewerFullScreen(
-                title = previewTitle,
-                path = activePreviewPath,
-                meta = previewMeta,
-                kind = previewKind,
-                text = previewText,
-                image = previewImage,
-                pdfFile = previewPdfFile,
-                docxHtml = previewDocxHtml,
-                message = previewMessage,
-                rawMode = previewRawMode,
-                isLoading = isPreviewLoading,
-                isLoadingMore = isPreviewLoadingMore,
-                truncated = previewTruncated,
-                nextOffset = previewNextOffset,
-                sizeBytes = previewSizeBytes,
-                isOpeningExternally = false,
-                sessionCwd = workspaceCwd,
-                onResolveMediaSource = { p -> onResolveFileSource(p) },
-                onBack = { previewPath = null },
-                onToggleRawMode = { raw -> previewRawMode = raw },
-                onLoadMore = { loadMorePreviewText() },
-                onOpenExternal = { onOpenExternal(activePreviewPath) },
-                onReload = { openFilePreview(activePreviewPath) },
-                onOpenLink = { href, baseDir ->
-                    val resolved = com.pi.app.ui.components.FileLinks.resolveLocalFileHref(href, baseDir)
-                    if (resolved != null) {
-                        openFilePreview(resolved)
-                    } else if (com.pi.app.ui.components.FileLinks.isWebUrl(href)) {
-                        runCatching {
-                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href)))
-                        }
+    // 全屏文件查看器覆盖层（与 Scaffold 平级，覆盖整个屏幕）
+    val activePreviewPath = previewPath
+    if (activePreviewPath != null) {
+        ArtifactViewerFullScreen(
+            title = previewTitle,
+            path = activePreviewPath,
+            meta = previewMeta,
+            kind = previewKind,
+            text = previewText,
+            image = previewImage,
+            pdfFile = previewPdfFile,
+            docxHtml = previewDocxHtml,
+            message = previewMessage,
+            rawMode = previewRawMode,
+            isLoading = isPreviewLoading,
+            isLoadingMore = isPreviewLoadingMore,
+            truncated = previewTruncated,
+            nextOffset = previewNextOffset,
+            sizeBytes = previewSizeBytes,
+            isOpeningExternally = false,
+            sessionCwd = workspaceCwd,
+            onResolveMediaSource = { p -> onResolveFileSource(p) },
+            onBack = { previewPath = null },
+            onToggleRawMode = { raw -> previewRawMode = raw },
+            onLoadMore = { loadMorePreviewText() },
+            onOpenExternal = { onOpenExternal(activePreviewPath) },
+            onReload = { openFilePreview(activePreviewPath) },
+            onOpenLink = { href, baseDir ->
+                val resolved = com.pi.app.ui.components.FileLinks.resolveLocalFileHref(href, baseDir)
+                if (resolved != null) {
+                    openFilePreview(resolved)
+                } else if (com.pi.app.ui.components.FileLinks.isWebUrl(href)) {
+                    runCatching {
+                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href)))
                     }
-                },
-                onCopyText = { value ->
-                    clipboardManager.setText(AnnotatedString(value))
-                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
                 }
-            )
-        }
+            },
+            onCopyText = { value ->
+                clipboardManager.setText(AnnotatedString(value))
+                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+            },
+            onAtMention = { rel ->
+                onAtMention(rel, false)
+            },
+            onDownloadFile = { p ->
+                onDownloadFile(p)
+            }
+        )
     }
 }
 }

@@ -50,7 +50,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.automirrored.filled.WrapText
+import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.ui.text.style.TextAlign
+import com.pi.app.ui.files.CodeSyntaxHighlighter
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.FilePlaybackSource
@@ -113,12 +119,15 @@ internal fun ArtifactViewerFullScreen(
     onReload: () -> Unit,
     onOpenLink: (href: String, baseDir: String) -> Unit,
     onCopyText: (String) -> Unit,
+    onAtMention: ((String) -> Unit)? = null,
+    onDownloadFile: ((String) -> Unit)? = null,
 ) {
     val theme = LocalAppTheme.current
 
     // 沉浸态（隐藏顶栏）用 rememberSaveable：转屏后仍保持用户选的阅读模式
     var chromeVisible by rememberSaveable { mutableStateOf(true) }
     var menuOpen by remember { mutableStateOf(false) }
+    var wrapLines by rememberSaveable { mutableStateOf(false) }
 
     // 返回键/手势：先关查看器，不要漏到 ChatScreen 的「退回会话列表」
     BackHandler(enabled = true) { onBack() }
@@ -152,19 +161,34 @@ internal fun ArtifactViewerFullScreen(
                     },
                     title = {
                         Column {
+                            val displayPath = remember(path, sessionCwd) {
+                                if (path.isNullOrBlank()) title
+                                else FileLinks.relativePath(path, sessionCwd).removePrefix("./")
+                            }
                             Text(
-                                text = title,
-                                fontSize = 13.5.sp,
+                                text = displayPath,
+                                fontSize = 13.sp,
                                 fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace,
                                 color = theme.textPrimary,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
                             )
-                            meta?.takeIf { it.isNotBlank() }?.let {
+                            val subtitleText = remember(meta, text, sizeBytes, kind) {
+                                val lineCount = text?.count { it == '\n' }?.plus(1)
+                                if (lineCount != null && sizeBytes > 0L) {
+                                    val ext = path?.substringAfterLast('.', "")?.lowercase(java.util.Locale.ROOT) ?: "text"
+                                    "$ext · $lineCount lines · ${formatBytes(sizeBytes)}"
+                                } else {
+                                    meta?.takeIf { it.isNotBlank() }
+                                }
+                            }
+                            if (!subtitleText.isNullOrBlank()) {
                                 Text(
-                                    text = it,
+                                    text = subtitleText,
                                     fontSize = 10.5.sp,
                                     color = theme.textMuted,
+                                    fontFamily = FontFamily.Monospace,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
@@ -172,10 +196,66 @@ internal fun ArtifactViewerFullScreen(
                         }
                     },
                     actions = {
+                        // 1. 实时指示绿点
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 4.dp)
+                                .size(6.dp)
+                                .background(theme.success, CircleShape)
+                        )
+
+                        // 2. @ 引用按钮
+                        if (onAtMention != null && !path.isNullOrBlank()) {
+                            IconButton(
+                                onClick = {
+                                    val rel = FileLinks.relativePath(path, sessionCwd).removePrefix("./")
+                                    onAtMention(rel)
+                                },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AlternateEmail,
+                                    contentDescription = "引用到当前对话",
+                                    tint = theme.textSecondary,
+                                    modifier = Modifier.size(17.dp)
+                                )
+                            }
+                        }
+
+                        // 3. 自动折行切换（仅代码/文本源码视图生效）
+                        if (!showRenderedPreview && kind != ArtifactKind.IMAGE && kind != ArtifactKind.PDF && kind != ArtifactKind.AUDIO && kind != ArtifactKind.VIDEO) {
+                            IconButton(
+                                onClick = { wrapLines = !wrapLines },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.WrapText,
+                                    contentDescription = if (wrapLines) "禁用自动换行" else "启用自动换行",
+                                    tint = if (wrapLines) theme.primary else theme.textSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
+                        // 4. 一键下载按钮
+                        if (onDownloadFile != null && !path.isNullOrBlank()) {
+                            IconButton(
+                                onClick = { onDownloadFile(path) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FileDownload,
+                                    contentDescription = "下载到手机",
+                                    tint = theme.textSecondary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+
                         Box {
                             IconButton(
                                 onClick = { menuOpen = true },
-                                modifier = Modifier.size(48.dp)
+                                modifier = Modifier.size(36.dp)
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.MoreVert,
@@ -404,78 +484,201 @@ internal fun ArtifactViewerFullScreen(
                                     }
                                 }
                             } else {
-                                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                                    item {
-                                        // 源码/纯文本：横向可滚动。左右留出内边距，
-                                        // 避免起手就贴着系统的边缘返回热区（完整方案是
-                                        // Modifier.systemGestureExclusion，见设计文档 P2）。
-                                        Text(
-                                            text = body,
-                                            fontFamily = FontFamily.Monospace,
-                                            fontSize = 11.sp,
-                                            lineHeight = 15.sp,
-                                            color = theme.textPrimary,
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                                                .horizontalScroll(rememberScrollState())
-                                        )
-                                    }
-                                    if (richPreviewKind && truncated) {
-                                        item {
-                                            Text(
-                                                text = "内容尚未完整加载：先按源码显示，加载完才能切回预览",
-                                                fontSize = 10.5.sp,
-                                                color = theme.textMuted,
-                                                modifier = Modifier.padding(horizontal = 14.dp)
-                                            )
-                                        }
-                                    }
-                                    if (truncated) {
-                                        item {
-                                            // 对标 pi-web FileViewer 的 Load more：手动续读（不自动追加），
-                                            // 阅读器的「读到哪」必须可预期。
+                                val lines = remember(body) { body.split('\n') }
+                                val ext = path?.substringAfterLast('.', "") ?: ""
+                                val lang = remember(ext) { CodeSyntaxHighlighter.resolveLanguage(ext) }
+                                val maxDigits = remember(lines.size) { lines.size.toString().length.coerceAtLeast(2) }
+                                val isTooLarge = lines.size > CodeSyntaxHighlighter.MAX_HIGHLIGHT_LINES
+
+                                if (wrapLines) {
+                                    LazyColumn(modifier = Modifier.fillMaxSize().padding(vertical = 6.dp)) {
+                                        itemsIndexed(lines) { idx, line ->
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                    .padding(horizontal = 8.dp, vertical = 0.5.dp)
                                             ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(8.dp),
-                                                    color = theme.primary.copy(alpha = 0.14f),
-                                                    border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.45f)),
+                                                Text(
+                                                    text = "${idx + 1}".padStart(maxDigits, ' '),
+                                                    color = theme.textMuted.copy(alpha = 0.55f),
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = 11.sp,
+                                                    lineHeight = 16.sp,
+                                                    textAlign = TextAlign.End,
+                                                    modifier = Modifier.padding(end = 10.dp)
+                                                )
+                                                if (isTooLarge) {
+                                                    Text(
+                                                        text = line,
+                                                        color = theme.textPrimary,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 16.sp,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                } else {
+                                                    val tokens = remember(line, lang) { CodeSyntaxHighlighter.tokenizeLine(line, lang) }
+                                                    Text(
+                                                        text = CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme),
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 16.sp,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (richPreviewKind && truncated) {
+                                            item {
+                                                Text(
+                                                    text = "内容尚未完整加载：先按源码显示，加载完才能切回预览",
+                                                    fontSize = 10.5.sp,
+                                                    color = theme.textMuted,
+                                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                        if (truncated) {
+                                            item {
+                                                Row(
                                                     modifier = Modifier
-                                                        .height(40.dp)
-                                                        .clickable(enabled = !isLoadingMore) { onLoadMore() }
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                                 ) {
-                                                    Row(
-                                                        modifier = Modifier.padding(horizontal = 14.dp),
-                                                        verticalAlignment = Alignment.CenterVertically,
-                                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = theme.primary.copy(alpha = 0.14f),
+                                                        border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.45f)),
+                                                        modifier = Modifier
+                                                            .height(40.dp)
+                                                            .clickable(enabled = !isLoadingMore) { onLoadMore() }
                                                     ) {
-                                                        if (isLoadingMore) {
-                                                            CircularProgressIndicator(
-                                                                modifier = Modifier.size(12.dp),
-                                                                strokeWidth = 1.4.dp,
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 14.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            if (isLoadingMore) {
+                                                                CircularProgressIndicator(
+                                                                    modifier = Modifier.size(12.dp),
+                                                                    strokeWidth = 1.4.dp,
+                                                                    color = theme.primary
+                                                                )
+                                                            }
+                                                            Text(
+                                                                text = if (isLoadingMore) "加载中…" else "加载更多",
+                                                                fontSize = 12.sp,
+                                                                fontWeight = FontWeight.Medium,
                                                                 color = theme.primary
                                                             )
                                                         }
-                                                        Text(
-                                                            text = if (isLoadingMore) "加载中…" else "加载更多",
-                                                            fontSize = 12.sp,
-                                                            fontWeight = FontWeight.Medium,
-                                                            color = theme.primary
-                                                        )
                                                     }
+                                                    Text(
+                                                        text = "${formatBytes(nextOffset)} / ${formatBytes(sizeBytes)}",
+                                                        fontSize = 10.5.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        color = theme.textMuted
+                                                    )
                                                 }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    val horizontalScrollState = rememberScrollState()
+                                    LazyColumn(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(vertical = 6.dp)
+                                            .horizontalScroll(horizontalScrollState)
+                                    ) {
+                                        itemsIndexed(lines) { idx, line ->
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 0.5.dp)
+                                            ) {
                                                 Text(
-                                                    text = "${formatBytes(nextOffset)} / ${formatBytes(sizeBytes)}",
-                                                    fontSize = 10.5.sp,
+                                                    text = "${idx + 1}".padStart(maxDigits, ' '),
+                                                    color = theme.textMuted.copy(alpha = 0.55f),
                                                     fontFamily = FontFamily.Monospace,
-                                                    color = theme.textMuted
+                                                    fontSize = 11.sp,
+                                                    lineHeight = 16.sp,
+                                                    textAlign = TextAlign.End,
+                                                    modifier = Modifier.padding(end = 10.dp)
                                                 )
+                                                if (isTooLarge) {
+                                                    Text(
+                                                        text = line,
+                                                        color = theme.textPrimary,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 16.sp
+                                                    )
+                                                } else {
+                                                    val tokens = remember(line, lang) { CodeSyntaxHighlighter.tokenizeLine(line, lang) }
+                                                    Text(
+                                                        text = CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme),
+                                                        fontFamily = FontFamily.Monospace,
+                                                        fontSize = 11.sp,
+                                                        lineHeight = 16.sp
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        if (richPreviewKind && truncated) {
+                                            item {
+                                                Text(
+                                                    text = "内容尚未完整加载：先按源码显示，加载完才能切回预览",
+                                                    fontSize = 10.5.sp,
+                                                    color = theme.textMuted,
+                                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                                )
+                                            }
+                                        }
+                                        if (truncated) {
+                                            item {
+                                                Row(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Surface(
+                                                        shape = RoundedCornerShape(8.dp),
+                                                        color = theme.primary.copy(alpha = 0.14f),
+                                                        border = BorderStroke(0.7.dp, theme.primary.copy(alpha = 0.45f)),
+                                                        modifier = Modifier
+                                                            .height(40.dp)
+                                                            .clickable(enabled = !isLoadingMore) { onLoadMore() }
+                                                    ) {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 14.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                        ) {
+                                                            if (isLoadingMore) {
+                                                                CircularProgressIndicator(
+                                                                    modifier = Modifier.size(12.dp),
+                                                                    strokeWidth = 1.4.dp,
+                                                                    color = theme.primary
+                                                                )
+                                                            }
+                                                            Text(
+                                                                text = if (isLoadingMore) "加载中…" else "加载更多",
+                                                                fontSize = 12.sp,
+                                                                fontWeight = FontWeight.Medium,
+                                                                color = theme.primary
+                                                            )
+                                                        }
+                                                    }
+                                                    Text(
+                                                        text = "${formatBytes(nextOffset)} / ${formatBytes(sizeBytes)}",
+                                                        fontSize = 10.5.sp,
+                                                        fontFamily = FontFamily.Monospace,
+                                                        color = theme.textMuted
+                                                    )
+                                                }
                                             }
                                         }
                                     }

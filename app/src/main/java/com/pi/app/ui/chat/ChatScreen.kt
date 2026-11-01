@@ -2556,6 +2556,20 @@ fun ChatScreen(
             onCopyText = { value ->
                 clipboardManager.setText(AnnotatedString(value))
                 android.widget.Toast.makeText(context, "已复制", android.widget.Toast.LENGTH_SHORT).show()
+            },
+            onAtMention = { relPath ->
+                val mentionText = if (relPath.contains(' ')) "@\"$relPath\" " else "@$relPath "
+                inputText = if (inputText.isBlank() || inputText.endsWith(' ')) {
+                    inputText + mentionText
+                } else {
+                    "$inputText $mentionText"
+                }
+                draftPrefs.saveSessionDraftWithUndo(sessionId, inputText, null)
+                artifactTitle = null
+                android.widget.Toast.makeText(context, "已引用到输入框: $mentionText", Toast.LENGTH_SHORT).show()
+            },
+            onDownloadFile = { path ->
+                openArtifactExternally()
             }
         )
     }
