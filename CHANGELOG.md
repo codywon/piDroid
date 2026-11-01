@@ -2,6 +2,31 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.41] - 2026-11-02
+
+### 🔓 新会话默认权限改为 `full`（PC 端 `defaultTools` 同步钉成同样 7 个内置工具）
+
+之前新会话的权限胶囊默认显示 `configured`。「configured」的语义是**不钉工具清单**，
+由 pi 按 `settings.json` 的 `defaultTools` 解析 —— 但本机那份 `settings.json` 里**根本没有
+`defaultTools`**，于是 pi 落到自己的缺省 `read / bash / edit / write`（也就是 `default` 档，
+`settings-manager.js` 的 `DEFAULT_TOOL_NAMES`）。看起来像「什么都能干」，实际少了
+`grep / find / ls`。
+
+本版两处一起改：
+
+| 位置 | 改动 |
+| --- | --- |
+| `~/.pi/agent/settings.json`（PC，已备份） | 新增 `"defaultTools": ["bash","read","edit","write","grep","find","ls"]` —— 这样 `configured` 在 pi-web 桌面端解析出来的就是完整 7 个内置工具 |
+| `AppPreferences.defaultToolPreset` / `ChatScreen.currentToolPreset` | 手机端新会话默认档从 `configured` 改成 `full`，胶囊直接显示 `full`，不会被读成「没配」 |
+
+**这是有意偏离 pi-web 的一处默认值**（上游 #700 明确要求客户端不要偷偷钉死工具清单），
+所以代码里把两个前提写进了注释：① PC 端 `settings.json` 必须有同样 7 个内置工具；
+② `ToolPreset.fromToolNames(null) → configured` 这条**不能动** —— 服务端没返回 `toolNames`
+就是「这条会话没被钉住」，改掉会让所有已存在会话的胶囊在撒谎。
+
+注意：老会话不受影响（胶囊永远以服务端 `toolNames` 为准）；已被显式改过档位的用户
+仍沿用自己存的那个值，想立刻生效可在胶囊里重选一次 `full`。
+
 ## [1.8.40] - 2026-11-02
 
 ### 🎨 代码查看器与资源管理器深度对齐 pi-web：语法着色、行号、自动换行与 @ 引用 (修全屏顶栏覆盖与词法着色)

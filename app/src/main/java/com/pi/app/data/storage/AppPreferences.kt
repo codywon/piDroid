@@ -149,11 +149,21 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putString(KEY_DEFAULT_THINKING, value).apply()
 
     /**
-     * 新建会话用的工具权限模式偏好。默认 `configured`：没被用户显式选过时
-     * 让 pi 按 settings.json 的 defaultTools 解析，而不是默默钉死一套内置工具（pi-web #700）。
+     * 新建会话用的工具权限模式偏好。
+     *
+     * 默认 `full`（**有意偏离 pi-web**）。上游的缺省是 `configured`：不钉工具清单，让 pi 按
+     * `settings.json` 的 `defaultTools` 解析（pi-web #700）。这里改成 `full` 的前提是
+     * **本机 `~/.pi/agent/settings.json` 的 `defaultTools` 已经显式列出同样 7 个内置工具** ——
+     * 两边行为一致，只是手机端胶囊直接显示 `full`，不会被读成「没配」。
+     *
+     * 两个必须一起遵守的约束：
+     *  - [com.pi.app.data.model.ToolPreset.fromToolNames] 的 `null → configured` **不能动**：
+     *    服务端没返回 toolNames 就是「这条会话没被钉住」，改掉会让所有老会话的胶囊在撒谎；
+     *  - 若哪天不再往 settings.json 写 `defaultTools`，这里必须改回 `configured`，
+     *    否则 PC 端（configured → pi 自己的 4 个内置）与手机端（full → 7 个）会真的分叉。
      */
     var defaultToolPreset: String
-        get() = prefs.getString(KEY_DEFAULT_TOOL_PRESET, "configured") ?: "configured"
+        get() = prefs.getString(KEY_DEFAULT_TOOL_PRESET, "full") ?: "full"
         set(value) = prefs.edit().putString(KEY_DEFAULT_TOOL_PRESET, value).apply()
 
     fun getSkillAlias(skillName: String): String? {

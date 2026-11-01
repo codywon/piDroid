@@ -232,7 +232,12 @@ fun ChatScreen(
      */
     recallRequest: RecallToComposerRequest? = null,
     onRecallConsumed: () -> Unit = {},
-    currentToolPreset: ToolPreset = ToolPreset.CONFIGURED,
+    /**
+     * 新会话的默认权限档。与 [com.pi.app.data.storage.AppPreferences.defaultToolPreset] 一致取 `full`：
+     * 上游 pi-web 的缺省是 `configured`（见该字段的注释），这里是有意的本机默认，
+     * 前提是 PC 端 `settings.json` 的 `defaultTools` 已显式列出同样 7 个内置工具。
+     */
+    currentToolPreset: ToolPreset = ToolPreset.FULL,
     onToolPresetChange: (ToolPreset) -> Unit = {},
     /**
      * 每次切权限/会话被服务端重建都 +1：斜杠命令清单是从旧会话拉来的，
