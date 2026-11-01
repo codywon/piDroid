@@ -125,6 +125,21 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_DEFAULT_MODEL, "gpt-6.1-sol") ?: "gpt-6.1-sol"
         set(value) = prefs.edit().putString(KEY_DEFAULT_MODEL, value).apply()
 
+    /**
+     * 提示词增强专用模型（可空 = 跟随当前会话模型）。
+     *
+     * 依据：同一套 pe-5 提示词下，claude-opus 会把「查一下这个符号在哪定义」这类
+     * 诊断路径写进去，而 flash 级模型只写「帮我修一下」。增强质量的瓶颈在模型，
+     * 不在提示词。留空时行为与以前完全一致。
+     */
+    var enhanceModelProvider: String
+        get() = prefs.getString(KEY_ENHANCE_PROVIDER, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_ENHANCE_PROVIDER, value.trim()).apply()
+
+    var enhanceModelId: String
+        get() = prefs.getString(KEY_ENHANCE_MODEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_ENHANCE_MODEL, value.trim()).apply()
+
     var defaultProvider: String
         get() = prefs.getString(KEY_DEFAULT_PROVIDER, "") ?: ""
         set(value) = prefs.edit().putString(KEY_DEFAULT_PROVIDER, value).apply()
@@ -489,6 +504,8 @@ class AppPreferences(context: Context) {
         private const val KEY_USE_UPDATE_MIRRORS = "key_use_update_mirrors"
         private const val KEY_GIT_DIFF_SOFT_WRAP = "key_git_diff_soft_wrap"
         private const val KEY_DEFAULT_MODEL = "key_default_model"
+        private const val KEY_ENHANCE_PROVIDER = "enhance_model_provider"
+        private const val KEY_ENHANCE_MODEL = "enhance_model_id"
         private const val KEY_DEFAULT_PROVIDER = "key_default_provider"
         private const val KEY_DEFAULT_THINKING = "key_default_thinking"
         private const val KEY_DEFAULT_TOOL_PRESET = "key_default_tool_preset"

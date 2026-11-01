@@ -125,6 +125,10 @@ fun GlobalSettingsScreen(
     completionSoundEnabled: Boolean = true,
     onToggleCompletionSound: (Boolean) -> Unit = {},
     onTestCompletionSound: () -> Unit = {},
+    /** 提示词增强专用模型：provider 为空表示跟随当前会话 */
+    enhanceModelProvider: String = "",
+    enhanceModelId: String = "",
+    onSetEnhanceModel: (provider: String, modelId: String) -> Unit = { _, _ -> },
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -150,6 +154,7 @@ fun GlobalSettingsScreen(
     var editingSkillAlias by remember { mutableStateOf<SkillInfo?>(null) }
     var aliasInput by remember { mutableStateOf("") }
     var showServerConfigDialog by remember { mutableStateOf(false) }
+    var showEnhanceModelPicker by remember { mutableStateOf(false) }
 
     // 应用内更新状态
     var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
@@ -477,6 +482,50 @@ fun GlobalSettingsScreen(
         )
     }
 
+    if (showEnhanceModelPicker) {
+        AlertDialog(
+            onDismissRequest = { showEnhanceModelPicker = false },
+            title = { Text("增强模型") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    // 「跟随会话」永远是第一项：留空即回到旧行为
+                    Text(
+                        text = "跟随当前会话",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                onSetEnhanceModel("", "")
+                                showEnhanceModelPicker = false
+                            }
+                            .padding(vertical = 10.dp),
+                        fontSize = 14.sp,
+                        fontWeight = if (enhanceModelProvider.isBlank()) FontWeight.SemiBold else FontWeight.Normal,
+                        color = if (enhanceModelProvider.isBlank()) LocalAppTheme.current.primary
+                                else LocalAppTheme.current.textPrimary
+                    )
+                    models.forEach { model ->
+                        val selected = enhanceModelProvider == model.provider && enhanceModelId == model.id
+                        Text(
+                            text = "${model.displayName}  ·  ${model.provider}",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onSetEnhanceModel(model.provider, model.id)
+                                    showEnhanceModelPicker = false
+                                }
+                                .padding(vertical = 10.dp),
+                            fontSize = 14.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) LocalAppTheme.current.primary else LocalAppTheme.current.textPrimary
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showEnhanceModelPicker = false }) { Text("关闭") }
+            }
+        )
+    }
     if (showServerConfigDialog) {
         ServerConfigDialog(
             initialUrl = serverUrl.ifBlank { ServerDefaults.gatewayUrlHint },
@@ -3194,6 +3243,20 @@ fun GlobalSystemSettingsTab(
                                 SettingsInlineAction(text = "试听", onClick = onTestCompletionSound)
                                 SettingsSwitch(checked = completionSoundEnabled, onCheckedChange = onToggleCompletionSound)
                             }
+                        }
+                    )
+                    SettingsRow(
+                        title = "增强模型",
+                        // 显示的是当前实际生效的模型：数据/状态，不是解释
+                        subtitle = if (enhanceModelProvider.isBlank()) "跟随当前会话"
+                                   else "$enhanceModelProvider/$enhanceModelId",
+                        monoSubtitle = enhanceModelProvider.isNotBlank(),
+                        topDivider = true,
+                        trailing = {
+                            SettingsInlineAction(
+                                text = if (enhanceModelProvider.isBlank()) "选择" else "更改",
+                                onClick = { showEnhanceModelPicker = true }
+                            )
                         }
                     )
                 }

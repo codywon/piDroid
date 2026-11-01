@@ -2385,6 +2385,14 @@ class MainActivity : ComponentActivity() {
                         hapticsAndNotify.playTaskCompletedSound(force = true)
                         Toast.makeText(this@MainActivity, "已播放提示音", Toast.LENGTH_SHORT).show()
                     },
+                    enhanceModelProvider = prefs.enhanceModelProvider,
+                    enhanceModelId = prefs.enhanceModelId,
+                    onSetEnhanceModel = { provider, modelId ->
+                        prefs.enhanceModelProvider = provider
+                        prefs.enhanceModelId = modelId
+                        val label = if (provider.isBlank()) "跟随当前会话" else "$provider/$modelId"
+                        Toast.makeText(this@MainActivity, "增强模型：$label", Toast.LENGTH_SHORT).show()
+                    },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
                     deviceName = prefs.deviceName,
@@ -2428,10 +2436,16 @@ class MainActivity : ComponentActivity() {
                     // 轮换后，旧会话的增强结果与撤销点都会自动失效。
                     promptEnhancementCapability = promptEnhancementCapability,
                     promptEnhancementTarget = promptEnhancementCapability?.let {
+                        // 增强专用模型可空：留空就跟随当前会话（行为与以前一致）。
+                        // 实测同一套提示词下，强模型会写出诊断路径，flash 级只写"帮我修一下"，
+                        // 所以把选择权交给用户，而不是在提示词里继续堆技巧。
+                        val overrideProvider = prefs.enhanceModelProvider
+                        val overrideModelId = prefs.enhanceModelId
+                        val useOverride = overrideProvider.isNotBlank() && overrideModelId.isNotBlank()
                         com.pi.app.prompt.PromptEnhancementTarget(
                             connectionKey = buildPromptEnhancementConnectionKey(),
-                            provider = selectedModel.provider,
-                            modelId = selectedModel.id
+                            provider = if (useOverride) overrideProvider else selectedModel.provider,
+                            modelId = if (useOverride) overrideModelId else selectedModel.id
                         )
                     },
                     onEnhancePrompt = { request ->
