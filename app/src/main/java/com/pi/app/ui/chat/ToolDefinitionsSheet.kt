@@ -180,7 +180,10 @@ fun ToolDefinitionsSheet(
                     modifier = Modifier.heightIn(max = 460.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(tools.orEmpty(), key = { it.name }) { tool ->
+                    // 服务端理论上不会给重名工具，但 LazyColumn 的 key 一旦重复就会直接抛
+                    // IllegalArgumentException（整个面板白屏），新面板不应该有这个崩点。
+                    val unique = remember(tools) { tools.orEmpty().distinctBy { it.name } }
+                    items(unique, key = { it.name }) { tool ->
                         ToolDefinitionRow(tool)
                     }
                 }
@@ -204,7 +207,10 @@ private fun ToolDefinitionRow(tool: ToolDefinition) {
     }
     Surface(
         shape = RoundedCornerShape(10.dp),
-        color = theme.surfaceContainer,
+        // 卡片底必须用 background：本行的参数行用 textMuted，而 docs/DESIGN-labels 与
+        // ColorContrastTest 只把「textMuted 画在 background / surfaceContainerLow」算达标
+        // （3.72:1）；换到 surfaceContainer 会掉到 3.3–3.4:1。
+        color = theme.background,
         border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.45f)),
         modifier = Modifier.fillMaxWidth()
     ) {

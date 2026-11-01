@@ -1008,6 +1008,18 @@ fun FullscreenMediaLightboxDialog(
     val context = LocalContext.current
     val gateway = LocalMediaGatewayConfig.current
 
+    // 全屏预览也必须降采样。卡片早已换成 decodeSampledImage，但查看器这里仍是全尺寸
+    // decodeByteArray：一张 4000×3000 的 CAD 出图要≈48MB 堆，正是本仓库赔过的那次
+    // 「一打开大图就闪退」。目标长边沿用 MediaLoadPolicy 的口径（屏宽 × 2）。
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val decodeTargetPx = remember(density, configuration) {
+        val longDp = maxOf(configuration.screenWidthDp, configuration.screenHeightDp)
+        val longPx = if (longDp > 0) with(density) { longDp.dp.toPx().toInt() } else 0
+        (longPx * MediaLoadPolicy.DECODE_TARGET_SCREEN_FACTOR)
+            .takeIf { it > 0 } ?: MediaLoadPolicy.FALLBACK_DECODE_TARGET_PX
+    }
+
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
 
@@ -1025,7 +1037,7 @@ fun FullscreenMediaLightboxDialog(
                 if (attachment.kind == MediaKind.IMAGE) {
                     currentBitmap = withContext(Dispatchers.IO) {
                         try {
-                            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                            decodeSampledImage(bytes, decodeTargetPx)?.first
                         } catch (_: Exception) {
                             null
                         }

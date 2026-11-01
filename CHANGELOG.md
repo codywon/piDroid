@@ -2,6 +2,32 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.30] - 2026-11-01
+
+### 🛡 代码评审修掉的两个真问题
+
+**一、全屏看图会 OOM（高危）**：卡片解码早就在用 `decodeSampledImage` 降采样，但
+`FullscreenMediaLightboxDialog` 里仍是全尺寸 `BitmapFactory.decodeByteArray` —— 一张
+4000×3000 的 CAD 出图约占 48MB 堆，正是这个仓库赔过一次的「一打开大图就闪退」。
+现在查看器按屏幕长边 ×2（`MediaLoadPolicy` 的既有口径）降采样，缩放到 6× 仍够看清。
+
+**二、泄露密钥的护栏会静默失效（安全）**：`Refuse the compromised keystore` 原来只在
+「解析出指纹且**正好等于**泄露那把」时才红。keytool 失败、密码错、输出格式变化或大小写不同，
+`FP` 就是空的或对不上，护栏照样放行。现在指纹解析不出来直接让流水线失败（失败即关闭），
+比较前两边都归一化成小写去分隔符；顺带把取指纹的方式从 `awk -F': '` 换成对空格更宽容的 `sed`。
+
+### 🧹 评审里顺手修的小问题
+
+- 工具定义面板：`LazyColumn` 的 key 用工具名，服务端一旦给重名就会抛
+  `IllegalArgumentException`（整块白屏），改为先 `distinctBy`；卡片底色从 `surfaceContainer`
+  换成 `background` —— 本行参数用的是 `textMuted`，而 `ColorContrastTest` 只把
+  「textMuted 画在 background / surfaceContainerLow」算达标（3.72:1），换到
+  `surfaceContainer` 会掉到 3.3–3.4:1。
+- 工具卡的策略拒绝提示改用 `remember(tool.isError, tool.output)` 缓存：`explain()` 是几次全文
+  扫描，几十 KB 的工具输出在流式期间每帧重算一次并不便宜。
+- 工具定义面板在会话消失（新建对话/会话被重建）时自动关闭，不再留在「已开启」状态等下一个
+  会话出现时突然弹出。
+
 ## [1.8.29] - 2026-11-01
 
 ### 🎨 配色收尾：业务组件裸色真正清零 + 首次加 CI 守卫

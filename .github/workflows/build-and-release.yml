@@ -73,10 +73,17 @@ jobs:
         run: |
           FP=$(keytool -list -v -keystore keystore/release.jks \
                  -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
-               | awk -F': ' '/SHA256:/{print $2; exit}' | tr -d ' ')
+               | sed -n 's/.*SHA256:[[:space:]]*//p' | head -n 1 | tr -d ' ')
           echo "keystore SHA-256 = ${FP:-<unparsed>}"
-          LEAKED="07:B4:1E:74:8B:B9:85:4A:13:F5:33:38:BC:57:5D:AF:22:A8:02:72:79:44:15:8D:E2:6B:BD:9C:86:0A:70:C7"
-          if [ -n "${FP:-}" ] && [ "$FP" = "$(echo "$LEAKED" | tr -d ' ')" ]; then
+          # 失败即关闭：解析不出指纹（密码错、keytool 失败、输出格式变了）时不能当"不是泄露那把"放行，
+          # 否则这道护栏会在没有任何人知情的情况下静默失效。
+          if [ -z "${FP:-}" ]; then
+            echo "::error::Could not read the keystore SHA-256 (wrong password or unexpected keytool output); refusing to sign blind."
+            exit 1
+          fi
+          LEAKED="07B41E748BB9854A13F53338BC575DAF22A802727944158DE26BBD9C860A70C7"
+          FP_NORM=$(echo "$FP" | tr -d ': ' | tr 'A-F' 'a-f')
+          if [ "$FP_NORM" = "$(echo "$LEAKED" | tr -d ': ' | tr 'A-F' 'a-f')" ]; then
             echo "::error::Refusing to sign with the compromised keystore (leaked to a public repository)."
             exit 1
           fi

@@ -2536,6 +2536,11 @@ fun ChatScreen(
 
     // 工具定义面板：回答「这一档预设到底装进了哪些工具」
     val toolDefinitionsLoader = onLoadToolDefinitions
+    // 会话没了（新建对话/会话被重建）就顺手关掉：否则它会一直留在「开启」状态，
+    // 等下一个会话出现时突然弹出来。
+    LaunchedEffect(toolDefinitionsLoader == null) {
+        if (toolDefinitionsLoader == null) showToolDefinitionsSheet = false
+    }
     if (showToolDefinitionsSheet && toolDefinitionsLoader != null) {
         ToolDefinitionsSheet(
             load = toolDefinitionsLoader,
@@ -3389,7 +3394,11 @@ fun PiWebToolCallCard(
                     if (!tool.output.isNullOrBlank()) {
                         // 服务端「策略性拒绝」的中文解释：原文很长且是英文，直接摆在第一行
                         // （典型：只读权限下 MCP 工具没有 readOnlyHint 被挡）。未命中时不增加任何行。
-                        val policyHint = if (tool.isError) ToolErrorMessages.explain(tool.output) else null
+                        // 用 remember 缓存：tool.output 可能几十 KB，而 explain() 是几次全文
+                        // 扫描，流式刷新时每帧重算一次并不便宜。
+                        val policyHint = remember(tool.isError, tool.output) {
+                            if (tool.isError) ToolErrorMessages.explain(tool.output) else null
+                        }
                         if (policyHint != null) {
                             Surface(
                                 color = theme.warningContainer,
