@@ -236,6 +236,11 @@ fun ChatScreen(
      * 重建后（尤其是跨过「仅聊天」边界）必须作废重拉（pi-web 同样 clearSlashCommands）。
      */
     commandsRevision: Int = 0,
+    /**
+     * 读取本会话的工具定义（agent `get_tools`）。传 null 表示没有会话可问，
+     * 此时权限面板里不会出现「查看工具定义」入口。
+     */
+    onLoadToolDefinitions: (suspend () -> Result<List<ToolDefinition>>)? = null,
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
@@ -315,6 +320,7 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
+    var showToolDefinitionsSheet by remember { mutableStateOf(false) }
     // 通用查看器（bash 完整输出 / 文件内容 / 图片）：一个面板复用，避免各处各弹一种 UI
     var artifactTitle by remember { mutableStateOf<String?>(null) }
     /** 生成式 UI 微组件（`show_widget`）：非空时弹出全屏查看页 */
@@ -2520,7 +2526,19 @@ fun ChatScreen(
             onPresetSelected = { preset ->
                 onToolPresetChange(preset)
             },
-            onDismissRequest = { showToolPresetSheet = false }
+            onDismissRequest = { showToolPresetSheet = false },
+            onOpenToolDefinitions = onLoadToolDefinitions?.let {
+                { showToolDefinitionsSheet = true }
+            }
+        )
+    }
+
+    // 工具定义面板：回答「这一档预设到底装进了哪些工具」
+    val toolDefinitionsLoader = onLoadToolDefinitions
+    if (showToolDefinitionsSheet && toolDefinitionsLoader != null) {
+        ToolDefinitionsSheet(
+            load = toolDefinitionsLoader,
+            onDismissRequest = { showToolDefinitionsSheet = false }
         )
     }
 
@@ -3368,6 +3386,25 @@ fun PiWebToolCallCard(
 
                     // 2. 配对执行结果 (PairedResult)
                     if (!tool.output.isNullOrBlank()) {
+                        // 服务端「策略性拒绝」的中文解释：原文很长且是英文，直接摆在第一行
+                        // （典型：只读权限下 MCP 工具没有 readOnlyHint 被挡）。未命中时不增加任何行。
+                        val policyHint = if (tool.isError) ToolErrorMessages.explain(tool.output) else null
+                        if (policyHint != null) {
+                            Surface(
+                                color = theme.warningContainer,
+                                shape = RoundedCornerShape(5.dp),
+                                modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)
+                            ) {
+                                Text(
+                                    text = policyHint,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 11.sp,
+                                    lineHeight = 15.sp,
+                                    color = theme.textPrimary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+                                )
+                            }
+                        }
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(top = 2.dp),
                             horizontalArrangement = Arrangement.SpaceBetween,

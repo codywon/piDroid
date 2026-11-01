@@ -2,6 +2,41 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.26] - 2026-11-01
+
+### 📋 权限面板补上「这一档到底装进了哪些工具」
+
+权限胶囊以前只说「当前是 read-only」，但用户看不到这一档实际装进了什么 —— 尤其内置工具之外
+还有 MCP/扩展工具时，「为什么这个命令能跑、那个不能」就没有答案。现在权限面板底部多了一行
+**查看工具定义…**，列出本会话每条工具的启用状态（已启用 / 未启用 / 脚本内）、描述与参数摘要。
+
+数据走 pi 的 `get_tools`（`POST /api/agent/{id}`），与 pi-web 的 Tool definitions 同源：
+`declarationHidden`（codemode 的 "only" 模式下启用但请求不带声明）单独标成「脚本内」，
+不和「未启用」混为一谈。新建对话还没有会话可问，入口不出现。
+
+### 🧭 服务端「策略性拒绝」翻译成人话
+
+三条拒绝原文都是英文长句，以前会原样糊在工具卡或 toast 里：
+
+| 原文 | 现在 |
+| --- | --- |
+| `Cannot change tools while the session is running` | 任务运行中不能切换权限模式，等本轮结束再切 |
+| `Subagent tool selection is fixed by its profile` | 子代理的工具由它自己的 agent 配置决定，手机上不能改 |
+| `... read-only tool selection ... does not mark ... read-only (readOnlyHint) ...` | 本会话是只读权限：只放行服务端标记为只读的 MCP 工具，要写操作先切到 default 或 full |
+
+映射收在 `ToolErrorMessages` 一处，切权限失败的 toast 与聊天里工具卡的错误提示共用；
+不认识的服务端错误仍然原样展示，不猜。
+
+### 🔢 不再编造 MCP 工具数量
+
+新添加的 MCP 服务以前在本地先写死「1 个工具」，随后服务端刷新失败时这个假数字会一直留着。
+现在本地只写已知信息（0），真实数量等服务端回读；添加失败也不再报「已更新」而是明说没生效。
+
+### ✅ 单元测试
+
+`ToolDefinitionsParsingTest`（RPC 包装层、裸数组、`declarationHidden`、错误响应不当空清单）
+与 `ToolErrorMessagesTest`（三条拒绝 + 未知错误原样放行）。
+
 ## [1.8.25] - 2026-11-01
 
 ### 🩹 桌面图标「巨字」修复：前景层按可见区定比例，不再按 108 画布

@@ -4822,17 +4822,14 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    // pi 在会话运行中会明确拒绝（HTTP 500 + "Cannot change tools while the session is running"），
-                    // 这不是故障，翻译成人话，别把 500 直接糊到用户脸上
+                    // 这三种拒绝都不是故障（运行中 / 子代理固定 / 只读拦截），翻译成人话，
+                    // 别把 500 原文直接糊到用户脸上。
                     val serverMsg = runCatching {
                         JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
                     }.getOrNull() ?: ""
-                    val friendly = when {
-                        serverMsg.contains("while the session is running", ignoreCase = true) ->
-                            "任务运行中不能切换权限模式，请等本轮结束后再切换"
-                        serverMsg.isNotBlank() -> serverMsg
-                        else -> "权限切换失败 (HTTP ${resp.code})"
-                    }
+                    val friendly = ToolErrorMessages.explain(serverMsg)
+                        ?: serverMsg.takeIf { it.isNotBlank() }
+                        ?: "权限切换失败 (HTTP ${resp.code})"
                     Result.failure(IOException(friendly))
                 } else {
                     val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
@@ -4841,6 +4838,37 @@ data class CatalogPreset(
                     val recreated = dataObj?.get("recreated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
                     Result.success(SetToolsResult(sessionId = newSid, recreated = recreated))
                 }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 读本会话的工具定义 (POST /api/agent/{id} {"type":"get_tools"})。
+     * 空闲会话也能答（服务端会临时起一个 wrapper），但不该为此新建会话，
+     * 所以调用方要保证 sessionId 非空。
+     */
+    suspend fun getSessionTools(sessionId: String): Result<List<ToolDefinition>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("没有活跃会话"))
+        try {
+            val body = gson.toJson(mapOf("type" to "get_tools")).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val msg = runCatching {
+                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                    }.getOrNull()
+                    return@withContext Result.failure(
+                        IOException(msg?.takeIf { it.isNotBlank() } ?: "读取工具定义失败 (HTTP ${resp.code})")
+                    )
+                }
+                val tools = ToolDefinitionsParsing.parse(bodyStr)
+                    ?: return@withContext Result.failure(IOException("读取工具定义失败：响应格式不符"))
+                Result.success(tools)
             }
         } catch (e: Exception) {
             Result.failure(e)

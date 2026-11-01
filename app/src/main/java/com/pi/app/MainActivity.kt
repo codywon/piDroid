@@ -2256,7 +2256,7 @@ class MainActivity : ComponentActivity() {
                             transport = transport,
                             url = endpoint,
                             enabled = true,
-                            toolExposureCount = 1
+                            toolExposureCount = 0
                         )
                         val existingIdx = mcpServers.indexOfFirst { it.name == name }
                         mcpServers = if (existingIdx >= 0) {
@@ -2268,8 +2268,13 @@ class MainActivity : ComponentActivity() {
                             apiClient.addMcpServer(name, transport, endpoint, description, scope, currentProject).onSuccess {
                                 Toast.makeText(this@MainActivity, "已保存 MCP 服务：$name", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
-                            }.onFailure {
-                                Toast.makeText(this@MainActivity, "已更新 MCP 节点配置：$name", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                // 以前这里不管成败都报「已更新」，服务端没写进去也看不出来
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "MCP 服务未生效：${err.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
                             }
                         }
                     },
@@ -2622,6 +2627,10 @@ class MainActivity : ComponentActivity() {
                     onLoadCommands = {
                         val sid = activeSessionId
                         if (sid.isBlank()) Result.success(emptyList()) else apiClient.getCommands(sid)
+                    },
+                    // 新建对话还没有会话可问，传 null 让权限面板不显示「查看工具定义」入口
+                    onLoadToolDefinitions = if (activeSessionId.isBlank()) null else {
+                        { apiClient.getSessionTools(activeSessionId) }
                     },
                     onUploadFiles = { files ->
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）

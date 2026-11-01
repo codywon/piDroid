@@ -30,7 +30,9 @@ import com.pi.app.ui.theme.LocalAppTheme
 fun ToolPresetBottomSheet(
     currentPreset: ToolPreset,
     onPresetSelected: (ToolPreset) -> Unit,
-    onDismissRequest: () -> Unit
+    onDismissRequest: () -> Unit,
+    /** 传空表示当前没有会话（新建对话时没有工具定义可看），入口不显示 */
+    onOpenToolDefinitions: (() -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -231,6 +233,39 @@ fun ToolPresetBottomSheet(
                                 )
                             }
                         }
+                    }
+                }
+            }
+
+            if (onOpenToolDefinitions != null) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = theme.surfaceContainer,
+                    border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.45f)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onOpenToolDefinitions() }
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.List,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp),
+                            tint = theme.textSecondary
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "查看工具定义…",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = theme.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
                     }
                 }
             }
