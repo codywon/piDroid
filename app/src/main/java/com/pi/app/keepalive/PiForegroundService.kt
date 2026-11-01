@@ -146,6 +146,32 @@ class PiForegroundService : Service() {
         var isRunning: Boolean = false
             private set
 
+        /** 上次刷新通知图标时的 App 版本。*/
+        private const val PREFS_NOTIFY = "pidroid_notify_prefs"
+        private const val KEY_LAST_ICON_VERSION = "key_last_notified_app_version"
+
+        private fun appVersionName(context: Context): String = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: ""
+        }.getOrDefault("")
+
+        /**
+         * 通知图标在版本升级后不刷新，是两个原因叠在一起：
+         * 1. 覆盖安装只会杀掉进程，**不会**撤掉 setOngoing(true) 的那条通知，旧通知会一直挂在通知栏里；
+         * 2. 同一个通知 ID 再 notify 时，部分 SystemUI 会沿用缓存的图标位图。
+         *
+         * 所以只要发现 App 版本变了，就先 cancel 掉旧通知，让随后的 startForeground / notify
+         * 真正重建一条。平常（版本未变）不会走这里，不会额外闪烁。
+         */
+        private fun dropStaleNotification(context: Context) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                ?: return
+            val prefs = context.getSharedPreferences(PREFS_NOTIFY, Context.MODE_PRIVATE)
+            val version = appVersionName(context)
+            if (prefs.getString(KEY_LAST_ICON_VERSION, null) == version) return
+            manager.cancel(NOTIFICATION_ID)
+            prefs.edit().putString(KEY_LAST_ICON_VERSION, version).apply()
+        }
+
         fun start(
             context: Context,
             title: String = "πDroid · 网关守护已就绪",
@@ -189,6 +215,7 @@ class PiForegroundService : Service() {
                         if (!bigText.isNullOrBlank()) {
                             builder.setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
                         }
+                        dropStaleNotification(context)
                         manager.notify(NOTIFICATION_ID, builder.build())
                         return
                     }
@@ -203,8 +230,10 @@ class PiForegroundService : Service() {
                     putExtra(EXTRA_TARGET_SESSION_ID, targetSessionId)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    dropStaleNotification(context)
                     context.startForegroundService(intent)
                 } else {
+                    dropStaleNotification(context)
                     context.startService(intent)
                 }
             } catch (e: Exception) {
