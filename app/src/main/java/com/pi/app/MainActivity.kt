@@ -249,7 +249,7 @@ class MainActivity : ComponentActivity() {
                 apiClient.ping(url, token).onSuccess {
                     prefs.saveConnection(url, token, name)
                     syncPersistentForegroundService(isBusy = false, project = "默认工作区")
-                    Toast.makeText(this@MainActivity, "已成功绑定设备: $name", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已绑定设备：$name", Toast.LENGTH_SHORT).show()
                 }.onFailure {
                     Toast.makeText(this@MainActivity, connectErrorMessage(it), Toast.LENGTH_LONG).show()
                 }
@@ -580,7 +580,7 @@ class MainActivity : ComponentActivity() {
                     isGatewayOnline = false
                     android.util.Log.e("PiSync", "loadSessions failed", e)
                     if (!silent) {
-                        Toast.makeText(this@MainActivity, "同步会话列表失败: ${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "同步会话列表失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
                     }
                 } finally {
                     // 闸门放开就收尾：只要没有在飞的全量拉取，右上角就不该还在转圈。
@@ -760,7 +760,7 @@ class MainActivity : ComponentActivity() {
 
         fun autoGenerateTitleForSession(sessionId: String) {
             lifecycleScope.launch {
-                Toast.makeText(this@MainActivity, "正在调用大模型分析任务上下文并生成标题...", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "正在用当前上下文生成标题…", Toast.LENGTH_SHORT).show()
                 val result = apiClient.autoGenerateSessionTitle(sessionId)
                 result.onSuccess { generatedTitle ->
                     if (generatedTitle.isNotBlank()) {
@@ -769,7 +769,7 @@ class MainActivity : ComponentActivity() {
                         if (currentSession?.id == sessionId) {
                             currentSession = currentSession?.copy(name = generatedTitle)
                         }
-                        Toast.makeText(this@MainActivity, "✨ 大模型已生成标题: ${generatedTitle}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已生成标题：${generatedTitle}", Toast.LENGTH_SHORT).show()
                         loadSessions(silent = true)
                     }
                 }.onFailure { err ->
@@ -785,10 +785,10 @@ class MainActivity : ComponentActivity() {
                         if (currentSession?.id == sessionId) {
                             currentSession = currentSession?.copy(name = fallbackTitle)
                         }
-                        Toast.makeText(this@MainActivity, "上下文不足，已使用提要: ${fallbackTitle}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "上下文不足，改用提要：${fallbackTitle}", Toast.LENGTH_SHORT).show()
                         loadSessions(silent = true)
                     } else {
-                        Toast.makeText(this@MainActivity, "生成标题失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "生成标题失败：${err.message}", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -2004,7 +2004,7 @@ class MainActivity : ComponentActivity() {
                 apiClient.ping(url, token).onSuccess {
                     prefs.saveConnection(url, token, name)
                     syncPersistentForegroundService(isBusy = false, project = currentProject)
-                    Toast.makeText(this@MainActivity, "连接成功: $name", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "已连接：$name", Toast.LENGTH_SHORT).show()
                     loadSessions()
                     loadCapabilitiesAndModels()
                 }.onFailure {
@@ -2053,16 +2053,16 @@ class MainActivity : ComponentActivity() {
                         currentDefaultModelId = model.id
                         currentDefaultProvider = model.provider
                         if (currentSession == null) selectedModel = model
-                        Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已设为全局默认模型：${model.displayName}", Toast.LENGTH_SHORT).show()
                     },
                     onSetDefaultThinkingLevel = { level ->
                         prefs.defaultThinkingLevel = level.value
                         if (currentSession == null) currentThinkingLevel = level
-                        Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已设为全局默认思考档位：${level.value}", Toast.LENGTH_SHORT).show()
                     },
                     onRefreshModels = {
                         lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在从网关刷新模型目录...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "正在刷新模型目录…", Toast.LENGTH_SHORT).show()
                             apiClient.refreshModelsCatalog().onSuccess { catalog ->
                                 dynamicCatalog = catalog
                                 Toast.makeText(this@MainActivity, "已同步 ${catalog.models.size} 个模型", Toast.LENGTH_SHORT).show()
@@ -2077,7 +2077,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this@MainActivity, "已保存 $provider API Key", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "保存失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "保存失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -2117,10 +2117,10 @@ class MainActivity : ComponentActivity() {
                                 reasoning = reasoning,
                                 supportsVision = supportsVision
                             ).onSuccess {
-                                Toast.makeText(this@MainActivity, "已保存模型配置: $modelId", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已保存模型配置：$modelId", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
-                                Toast.makeText(this@MainActivity, "已更新本地模型配置: $modelId", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已更新本地模型配置：$modelId", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
@@ -2130,13 +2130,13 @@ class MainActivity : ComponentActivity() {
                         )
                         lifecycleScope.launch {
                             apiClient.deleteCustomModel(providerName, modelId).onSuccess {
-                                Toast.makeText(this@MainActivity, "已删除模型: $modelId", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已删除模型：$modelId", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure { err ->
                                 // 已从手机本地列表移除，但网关未生效（模型会在下次同步时回来）
                                 Toast.makeText(
                                     this@MainActivity,
-                                    "网关未生效，$modelId 仍保留在 PC 上: ${err.message}",
+                                    "未同步到网关，$modelId 仍留在 PC 上：${err.message}",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -2151,7 +2151,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this@MainActivity, "已保存 models.json 并刷新目录", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "保存 models.json 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "保存 models.json 失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -2163,7 +2163,7 @@ class MainActivity : ComponentActivity() {
                             apiClient.toggleSkillOnServer(skill.filePath, disableModelInvocation = !enabled).onSuccess {
                                 Toast.makeText(
                                     this@MainActivity,
-                                    if (enabled) "已开启模型调用: ${skill.name}" else "已设为对模型隐藏(仍可手动调用): ${skill.name}",
+                                    if (enabled) "已开启模型调用：${skill.name}" else "已对模型隐藏（仍可手动调用）：${skill.name}",
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }
@@ -2177,7 +2177,7 @@ class MainActivity : ComponentActivity() {
                             apiClient.toggleSkillsBatchOnServer(filePaths, disableModelInvocation = !enabled).onSuccess {
                                 Toast.makeText(
                                     this@MainActivity,
-                                    if (enabled) "已批量开启 ${skillList.size} 项技能" else "已批量对模型隐藏 ${skillList.size} 项技能",
+                                    if (enabled) "已开启 ${skillList.size} 项技能" else "已对模型隐藏 ${skillList.size} 项技能",
                                     Toast.LENGTH_SHORT
                                 ).show()
                                 loadCapabilitiesAndModels()
@@ -2190,7 +2190,7 @@ class MainActivity : ComponentActivity() {
                     onUpdateSkillAlias = { name, alias ->
                         prefs.saveSkillAlias(name, alias)
                         skills = skills.map { if (it.name == name) it.copy(alias = alias) else it }
-                        Toast.makeText(this@MainActivity, "已保存别名: $alias", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已保存别名：$alias", Toast.LENGTH_SHORT).show()
                     },
                     onLoadSkillContent = { skill ->
                         apiClient.getSkillContent(skill, currentProject).getOrNull()
@@ -2207,12 +2207,12 @@ class MainActivity : ComponentActivity() {
                     },
                     onInstallSkill = { pkgSource, scope ->
                         lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在安装技能包: $pkgSource...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "正在安装技能包：$pkgSource…", Toast.LENGTH_SHORT).show()
                             apiClient.installSkill(pkgSource, scope, currentProject).onSuccess {
-                                Toast.makeText(this@MainActivity, "已成功安装技能包: $pkgSource", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已安装技能包：$pkgSource", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "安装失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "安装失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -2226,10 +2226,10 @@ class MainActivity : ComponentActivity() {
                         }
                         lifecycleScope.launch {
                             apiClient.managePluginAction(action, source, scope, currentProject).onSuccess {
-                                Toast.makeText(this@MainActivity, "插件操作已生效 ($action): $source", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已同步插件操作：$source", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
-                                Toast.makeText(this@MainActivity, "插件状态已更新 ($action)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "插件状态已存本地，同步到 PC 失败：$source", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
@@ -2248,7 +2248,7 @@ class MainActivity : ComponentActivity() {
                         }
                         lifecycleScope.launch {
                             apiClient.managePluginAction("install", newSource, newScope, currentProject)
-                            Toast.makeText(this@MainActivity, "已保存插件配置: $updatedName", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "已保存插件配置：$updatedName", Toast.LENGTH_SHORT).show()
                         }
                     },
                     mcpConfig = mcpConfig,
@@ -2270,10 +2270,10 @@ class MainActivity : ComponentActivity() {
                         }
                         lifecycleScope.launch {
                             apiClient.addMcpServer(name, transport, endpoint, description, scope, currentProject).onSuccess {
-                                Toast.makeText(this@MainActivity, "已保存 MCP 服务: $name", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已保存 MCP 服务：$name", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
-                                Toast.makeText(this@MainActivity, "已更新 MCP 节点配置: $name", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已更新 MCP 节点配置：$name", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
@@ -2285,10 +2285,10 @@ class MainActivity : ComponentActivity() {
                         }
                         lifecycleScope.launch {
                             apiClient.manageMcpServerAction(action, name, cwd = currentProject).onSuccess {
-                                Toast.makeText(this@MainActivity, "MCP 操作已生效: $name", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已同步 MCP 操作：$name", Toast.LENGTH_SHORT).show()
                                 loadCapabilitiesAndModels()
                             }.onFailure {
-                                Toast.makeText(this@MainActivity, "已更新 MCP 节点状态: $name", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "MCP 状态已存本地，同步到 PC 失败：$name", Toast.LENGTH_SHORT).show()
                             }
                         }
                     },
@@ -2313,7 +2313,7 @@ class MainActivity : ComponentActivity() {
                         prefs.taskCompletedNotifyEnabled = enabled
                         Toast.makeText(
                             this@MainActivity,
-                            if (enabled) "已开启常驻通知栏保活守护" else "已关闭常驻通知栏（仅在任务运行时启动前台服务）",
+                            if (enabled) "任务完成时会发通知" else "任务完成后不再通知",
                             Toast.LENGTH_SHORT
                         ).show()
                     },
@@ -2327,7 +2327,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onTestHaptics = {
                         hapticsAndNotify.vibrateTaskCompleted()
-                        Toast.makeText(this@MainActivity, "已触发任务完成双连震动测试", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已震动两下", Toast.LENGTH_SHORT).show()
                     },
                     completionSoundEnabled = completionSoundEnabled,
                     onToggleCompletionSound = { enabled ->
@@ -2339,7 +2339,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onTestCompletionSound = {
                         hapticsAndNotify.playTaskCompletedSound(force = true)
-                        Toast.makeText(this@MainActivity, "已播放任务完成提示音", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已播放提示音", Toast.LENGTH_SHORT).show()
                     },
                     serverUrl = prefs.serverUrl,
                     authToken = prefs.authToken,
@@ -2435,7 +2435,7 @@ class MainActivity : ComponentActivity() {
                                 pinnedSessionIds = prefs.getPinnedSessionIds()
                                 Toast.makeText(
                                     this@MainActivity,
-                                    "同步到 PC 失败: ${err.message}",
+                                    "同步到 PC 失败：${err.message}",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -2500,11 +2500,11 @@ class MainActivity : ComponentActivity() {
                             val sid = activeSessionId
                             lifecycleScope.launch {
                                 isCompacting = true
-                                Toast.makeText(this@MainActivity, "正在智能压缩上下文...", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "正在压缩上下文…", Toast.LENGTH_SHORT).show()
                                 try {
                                     apiClient.compactContext(sid)
                                         .onSuccess {
-                                            Toast.makeText(this@MainActivity, "上下文压缩完成！", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(this@MainActivity, "上下文已压缩", Toast.LENGTH_SHORT).show()
                                             apiClient.getSessionStats(sid).onSuccess {
                                                 if (currentSession?.id == sid) tokenStats = it
                                             }
@@ -2513,7 +2513,7 @@ class MainActivity : ComponentActivity() {
                                         .onFailure { err ->
                                             Toast.makeText(
                                                 this@MainActivity,
-                                                "压缩失败: ${err.message ?: "未知错误"}",
+                                                "压缩失败：${err.message ?: "未知错误"}",
                                                 Toast.LENGTH_LONG
                                             ).show()
                                         }
@@ -2617,7 +2617,7 @@ class MainActivity : ComponentActivity() {
                                     onSubmissionRestore?.invoke()
                                     Toast.makeText(
                                         this@MainActivity,
-                                        "读取自动压缩状态失败: ${readError.message}",
+                                        "读取自动压缩状态失败：${readError.message}",
                                         Toast.LENGTH_LONG
                                     ).show()
                                     return@launch
@@ -2636,7 +2636,7 @@ class MainActivity : ComponentActivity() {
                                         onSubmissionRestore?.invoke()
                                         Toast.makeText(
                                             this@MainActivity,
-                                            "切换自动压缩失败: ${err.message}",
+                                            "切换自动压缩失败：${err.message}",
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }
@@ -2669,7 +2669,7 @@ class MainActivity : ComponentActivity() {
                                     // pi-web：导航失败就回滚到编辑态并把正文退还输入框，绝不丢草稿
                                     onSubmissionRestore?.invoke()
                                     val err = navResult.exceptionOrNull()?.message ?: "未知错误"
-                                    Toast.makeText(this@MainActivity, "回退分支失败: $err", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "回退分支失败：$err", Toast.LENGTH_LONG).show()
                                     return@launch
                                 }
                                 // 分支已切：立刻用服务端活跃分支**整体替换**本地历史（pi-web 的 loadSession），
@@ -2795,7 +2795,7 @@ class MainActivity : ComponentActivity() {
                                     Toast.LENGTH_SHORT
                                 ).show()
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "引导下发失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "引导下发失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -2814,7 +2814,7 @@ class MainActivity : ComponentActivity() {
                                 ).show()
                             }.onFailure { err ->
                                 if (currentSession?.id == sid) queuedMessages.removeAll { it.text == followText }
-                                Toast.makeText(this@MainActivity, "排入队列失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "排入队列失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -2859,7 +2859,7 @@ class MainActivity : ComponentActivity() {
                             ).show()
                         } else {
                             lifecycleScope.launch {
-                                Toast.makeText(this@MainActivity, "正在从此处创建新会话分支...", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "正在从此处新建分支…", Toast.LENGTH_SHORT).show()
                                 apiClient.forkAtEntry(currentSid, entryId).onSuccess { newSid ->
                                     loadSessions(silent = true)
                                     val forkedSession = Session(
@@ -2870,9 +2870,9 @@ class MainActivity : ComponentActivity() {
                                         projectRoot = currentSession?.projectRoot
                                     )
                                     openSessionWithHistory(forkedSession)
-                                    Toast.makeText(this@MainActivity, "已切换至新会话分支！", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "已切换到新分支", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "创建新会话失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "创建新会话失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -2889,9 +2889,9 @@ class MainActivity : ComponentActivity() {
                                         currentSession = updatedSession
                                         startListeningEvents(res.sessionId)
                                     }
-                                    Toast.makeText(this@MainActivity, "已切换权限模式: ${preset.displayName}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "已切换权限模式：${preset.displayName}", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "权限切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "权限切换失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -2945,13 +2945,13 @@ class MainActivity : ComponentActivity() {
                                                 val suffix = if (SessionModelSelection.isProviderAmbiguous(dynamicCatalog.models, model.id)) {
                                                     " (${model.provider})"
                                                 } else ""
-                                                Toast.makeText(this@MainActivity, "已切换模型: ${model.displayName}$suffix", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(this@MainActivity, "已切换模型：${model.displayName}$suffix", Toast.LENGTH_SHORT).show()
                                             }
                                             .onFailure { err ->
                                                 if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {
                                                     selectedModel = previous
                                                 }
-                                                Toast.makeText(this@MainActivity, "模型切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(this@MainActivity, "模型切换失败：${err.message}", Toast.LENGTH_LONG).show()
                                             }
                                     } finally {
                                         pendingModelMetaChanges--
@@ -2967,9 +2967,9 @@ class MainActivity : ComponentActivity() {
                             prefs.defaultProvider = model.provider
                             lifecycleScope.launch {
                                 apiClient.setDefaultModel(model.provider, model.id).onSuccess {
-                                    Toast.makeText(this@MainActivity, "已设为全局默认模型: ${model.displayName}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "已设为全局默认模型：${model.displayName}", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "设置默认模型失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "设置默认模型失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         },
@@ -2992,13 +2992,13 @@ class MainActivity : ComponentActivity() {
                                     try {
                                         apiClient.updateThinkingLevel(sess.id, level)
                                             .onSuccess {
-                                                Toast.makeText(this@MainActivity, "已切换思考级别: ${level.value}", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(this@MainActivity, "已切换思考级别：${level.value}", Toast.LENGTH_SHORT).show()
                                             }
                                             .onFailure { err ->
                                                 if (currentSession?.id == sess.id && modelMetaRevision == selectionRevision) {
                                                     currentThinkingLevel = previous
                                                 }
-                                                Toast.makeText(this@MainActivity, "思考级别切换失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(this@MainActivity, "思考级别切换失败：${err.message}", Toast.LENGTH_LONG).show()
                                             }
                                     } finally {
                                         pendingModelMetaChanges--
@@ -3011,9 +3011,9 @@ class MainActivity : ComponentActivity() {
                             prefs.defaultThinkingLevel = level.value
                             lifecycleScope.launch {
                                 apiClient.setDefaultThinkingLevel(level.value).onSuccess {
-                                    Toast.makeText(this@MainActivity, "已设为全局默认思考档位: ${level.value}", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(this@MainActivity, "已设为全局默认思考档位：${level.value}", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "设置默认思考档位失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "设置默认思考档位失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         },
@@ -3043,7 +3043,7 @@ class MainActivity : ComponentActivity() {
                             apiClient.setSessionPinned(sid, willPin).onFailure { err ->
                                 prefs.togglePinSession(sid)
                                 pinnedSessionIds = prefs.getPinnedSessionIds()
-                                Toast.makeText(this@MainActivity, "同步到 PC 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "同步到 PC 失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                         Toast.makeText(
@@ -3061,7 +3061,7 @@ class MainActivity : ComponentActivity() {
                                     loadSessions(silent = true)
                                     Toast.makeText(this@MainActivity, "已归档 ${sids.size} 个会话", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "归档失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "归档失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -3075,7 +3075,7 @@ class MainActivity : ComponentActivity() {
                                     loadSessions(silent = true)
                                     Toast.makeText(this@MainActivity, "已恢复 ${sids.size} 个会话", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
-                                    Toast.makeText(this@MainActivity, "恢复失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(this@MainActivity, "恢复失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
                         }
@@ -3099,7 +3099,7 @@ class MainActivity : ComponentActivity() {
                                 serverPinnedWorkspaceKeys =
                                     if (willPin) serverPinnedWorkspaceKeys + key else serverPinnedWorkspaceKeys - key
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "项目置顶同步失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "项目置顶同步失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -3114,7 +3114,7 @@ class MainActivity : ComponentActivity() {
                                     serverWorkspaceOrder = ui.projectOrder
                                 }
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "项目排序同步失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "项目排序同步失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -3126,7 +3126,7 @@ class MainActivity : ComponentActivity() {
                             apiClient.setSessionArchived(sid, willArchive).onFailure { err ->
                                 prefs.toggleArchiveSession(sid)
                                 archivedSessionIds = prefs.getArchivedSessionIds()
-                                Toast.makeText(this@MainActivity, "同步到 PC 失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "同步到 PC 失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                         Toast.makeText(
@@ -3144,7 +3144,7 @@ class MainActivity : ComponentActivity() {
                             }.onFailure { err ->
                                 Toast.makeText(
                                     this@MainActivity,
-                                    "改名已存本地，同步到 PC 失败: ${err.message}",
+                                    "改名已存本地，同步到 PC 失败：${err.message}",
                                     Toast.LENGTH_LONG
                                 ).show()
                             }
@@ -3154,9 +3154,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onForkSession = { session ->
                         lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在分叉任务分支...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "正在分叉分支…", Toast.LENGTH_SHORT).show()
                             apiClient.forkSession(session.id).onSuccess { res ->
-                                Toast.makeText(this@MainActivity, "已成功分叉出新会话！", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(this@MainActivity, "已分叉出新会话", Toast.LENGTH_SHORT).show()
                                 loadSessions(silent = true)
                                 val forkedSession = Session(
                                     id = res.sessionId,
@@ -3166,13 +3166,13 @@ class MainActivity : ComponentActivity() {
                                 )
                                 openSessionWithHistory(forkedSession)
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "分叉失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "分叉失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
                     onDeleteSession = { sid ->
                         lifecycleScope.launch {
-                            Toast.makeText(this@MainActivity, "正在删除会话...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "正在删除会话…", Toast.LENGTH_SHORT).show()
                             apiClient.deleteSessions(listOf(sid)).onSuccess {
                                 prefs.removeSessionLocalData(sid)
                                 pinnedSessionIds = prefs.getPinnedSessionIds()
@@ -3182,7 +3182,7 @@ class MainActivity : ComponentActivity() {
                                 sessions = sessions.filter { it.id != sid }
                                 Toast.makeText(this@MainActivity, "会话已彻底删除", Toast.LENGTH_SHORT).show()
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "删除失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "删除失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -3201,7 +3201,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this@MainActivity, "请先选择或添加有效的工作区目录", Toast.LENGTH_SHORT).show()
                                 return@launch
                             }
-                            Toast.makeText(this@MainActivity, "正在当前工作区创建新任务...", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "正在当前工作区新建任务…", Toast.LENGTH_SHORT).show()
                             val createResult = apiClient.createRemoteSessionInWorkspace(
                                 cwd = targetCwd,
                                 provider = selectedModel.provider,
@@ -3237,7 +3237,7 @@ class MainActivity : ComponentActivity() {
                                 startListeningEvents(realSessionId)
                                 loadSessions(silent = true)
                             }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "创建新任务失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this@MainActivity, "创建新任务失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     },
@@ -3261,7 +3261,7 @@ class MainActivity : ComponentActivity() {
                             } else targetPath
                         prefs.addCustomWorkspace(finalPath)
                         customWorkspaces = prefs.getCustomWorkspaces()
-                        Toast.makeText(this@MainActivity, "已添加工作区目录: $finalPath", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "已添加工作区目录：$finalPath", Toast.LENGTH_SHORT).show()
                         Result.success(finalPath)
                     }
                 )

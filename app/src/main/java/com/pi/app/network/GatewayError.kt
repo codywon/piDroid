@@ -65,7 +65,7 @@ data class GatewayFailure(
             GatewayErrorKind.TunnelDown -> "公网隧道暂时断开，正在自动重连（稍等几秒）"
             GatewayErrorKind.LocalPiWebDown -> "网关连不上本机 pi-web，请确认它已启动"
             GatewayErrorKind.AuthRejected -> "密钥无效或访问被拒绝（401/403），请重新扫码配对"
-            GatewayErrorKind.NotFound -> "网关没有这个接口（HTTP 404），请确认 pi-web 与 App 版本"
+            GatewayErrorKind.NotFound -> "网关没有这个接口（HTTP 404），可能是 pi-web 与 App 版本不匹配"
             GatewayErrorKind.ServerError -> "网关内部错误（HTTP ${code ?: 500}），请查看 PC 端日志"
             GatewayErrorKind.Timeout -> "网关响应超时（已自动重试一次），请检查网络"
             GatewayErrorKind.Network -> "连不上网关：请检查手机网络与服务器地址"

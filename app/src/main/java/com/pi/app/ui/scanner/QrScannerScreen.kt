@@ -161,14 +161,14 @@ fun QrScannerScreen(
                     }
                 }
                 .addOnFailureListener { e ->
-                    Toast.makeText(context, "解析图片失败: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "解析图片失败：${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                 }
                 .addOnCompleteListener {
                     // 相册识别用的解码器是一次性的，任务结束后必须关闭
                     runCatching { scanner.close() }
                 }
         } catch (e: Exception) {
-            Toast.makeText(context, "读取图片异常: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "读取图片失败：${e.localizedMessage}", Toast.LENGTH_SHORT).show()
         }
     }
 

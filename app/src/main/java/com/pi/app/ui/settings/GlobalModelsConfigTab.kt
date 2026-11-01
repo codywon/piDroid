@@ -193,8 +193,8 @@ fun GlobalModelsConfigTab(
                         if (isManual) {
                             Toast.makeText(
                                 context,
-                                if (synced.degraded) "已获取部分最新配置"
-                                else "已同步最新模型配置 (${data.providers.size} 个提供商)",
+                                if (synced.degraded) "已同步部分配置"
+                                else "已同步最新模型配置（${data.providers.size} 个提供商）",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
@@ -202,9 +202,9 @@ fun GlobalModelsConfigTab(
                     .onFailure { err ->
                         if (seq != syncSeq) return@onFailure
                         if (providers.isEmpty()) {
-                            Toast.makeText(context, "读取模型配置失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "读取模型配置失败：${err.message}", Toast.LENGTH_LONG).show()
                         } else if (isManual) {
-                            Toast.makeText(context, "同步失败: ${err.message}，已展示本地缓存", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "同步失败：${err.message}，已显示本地缓存", Toast.LENGTH_SHORT).show()
                         }
                     }
             } finally {
@@ -278,13 +278,13 @@ fun GlobalModelsConfigTab(
                     serverProviders = providers
                     rawConfigRoot = serialized
                     syncNotice = null
-                    Toast.makeText(context, "已成功保存模型配置并刷新生效！", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "模型配置已保存并刷新", Toast.LENGTH_SHORT).show()
                     onModelsConfigChanged()
                 }.onFailure { err ->
-                    Toast.makeText(context, "保存失败: ${err.message}", Toast.LENGTH_LONG).show()
+                    Toast.makeText(context, "保存失败：${err.message}", Toast.LENGTH_LONG).show()
                 }
             } catch (e: Exception) {
-                Toast.makeText(context, "序列化配置出错: ${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "配置序列化失败：${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 isSaving = false
             }
@@ -676,11 +676,11 @@ fun GlobalModelsConfigTab(
                                                     coroutineScope.launch {
                                                         apiClient.deleteProviderApiKey(currentProvider.name)
                                                             .onSuccess {
-                                                                Toast.makeText(context, "已清除 ${currentProvider.name} 的已保存 Key", Toast.LENGTH_SHORT).show()
+                                                                Toast.makeText(context, "已清除 ${currentProvider.name} 保存的 Key", Toast.LENGTH_SHORT).show()
                                                                 loadAuthStates()
                                                             }
                                                             .onFailure { err ->
-                                                                Toast.makeText(context, "清除失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                                                Toast.makeText(context, "清除失败：${err.message}", Toast.LENGTH_LONG).show()
                                                             }
                                                     }
                                                 }
@@ -1174,12 +1174,12 @@ fun GlobalModelsConfigTab(
                                                                 costCacheWrite = preset.costCacheWrite ?: old.costCacheWrite
                                                             )
                                                         }
-                                                        Toast.makeText(context, "已从 models.dev 自动匹配并填入规格！", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, "已填入 models.dev 匹配到的规格", Toast.LENGTH_SHORT).show()
                                                     } else {
-                                                        Toast.makeText(context, "models.dev 中未找到精准匹配，保留现有值", Toast.LENGTH_SHORT).show()
+                                                        Toast.makeText(context, "models.dev 里没有精确匹配，保留原值", Toast.LENGTH_SHORT).show()
                                                     }
                                                 }.onFailure { err ->
-                                                    Toast.makeText(context, "获取推荐失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                                                    Toast.makeText(context, "获取推荐失败：${err.message}", Toast.LENGTH_SHORT).show()
                                                 }
                                                 isCatalogFilling = false
                                             }
@@ -1597,7 +1597,7 @@ fun GlobalModelsConfigTab(
                             coroutineScope.launch {
                                 apiClient.setProviderApiKey(pAuth.providerId, key)
                                     .onSuccess {
-                                        Toast.makeText(context, "已成功接入 ${pAuth.displayName}！", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(context, "已接入 ${pAuth.displayName}", Toast.LENGTH_SHORT).show()
                                         selectedProviderName = pAuth.providerId
                                         showAddProviderDialog = false
                                         selectedBuiltIn = null
@@ -1605,7 +1605,7 @@ fun GlobalModelsConfigTab(
                                         onModelsConfigChanged()
                                     }
                                     .onFailure { err ->
-                                        Toast.makeText(context, "接入失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "接入失败：${err.message}", Toast.LENGTH_LONG).show()
                                     }
                                 isActivatingBuiltIn = false
                             }
@@ -1910,7 +1910,7 @@ fun GlobalModelsConfigTab(
                                         onModelsConfigChanged()
                                     }
                                     .onFailure { err ->
-                                        Toast.makeText(context, "断开失败: ${err.message}", Toast.LENGTH_LONG).show()
+                                        Toast.makeText(context, "断开失败：${err.message}", Toast.LENGTH_LONG).show()
                                     }
                                 showDeleteProviderDialog = false
                             }
@@ -2183,7 +2183,7 @@ fun GlobalModelsConfigTab(
                         providers = providers.map { if (it.name == currentProvider.name) updatedProv else it }
                         selectedModelId = toAdd.first().id
                         showDiscoverDialog = false
-                        Toast.makeText(context, "已成功批量添加 ${toAdd.size} 个模型，保存配置后即可生效！", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "已添加 ${toAdd.size} 个模型，保存配置后生效", Toast.LENGTH_SHORT).show()
                     },
                     enabled = selectedDiscoverIds.isNotEmpty(),
                     colors = ButtonDefaults.buttonColors(containerColor = theme.primary)
@@ -2223,9 +2223,9 @@ fun GlobalModelsConfigTab(
                             rawConfigRoot = parsed
                             providers = ModelConfigConverter.parseProvidersConfig(parsed)
                             showRawJsonDialog = false
-                            Toast.makeText(context, "已从 JSON 源码同步更新界面", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已按 JSON 源码更新界面", Toast.LENGTH_SHORT).show()
                         } catch (e: Exception) {
-                            Toast.makeText(context, "JSON 语法错误: ${e.message}", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "JSON 语法错误：${e.message}", Toast.LENGTH_LONG).show()
                         }
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = theme.primary)

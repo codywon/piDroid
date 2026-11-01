@@ -335,17 +335,17 @@ fun GlobalSettingsScreen(
                     onCheckUpdate = {
                         if (isCheckingUpdate) return@GlobalSystemSettingsTab
                         isCheckingUpdate = true
-                        Toast.makeText(context, "正在检查最新发布版本...", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, "正在检查更新…", Toast.LENGTH_SHORT).show()
                         coroutineScope.launch {
                             when (val result = AppUpdateManager.checkUpdate(context, isManual = true)) {
                                 is UpdateCheckResult.HasUpdate -> {
                                     updateUiState = UpdateUiState.HasUpdate(result.info)
                                 }
                                 is UpdateCheckResult.NoUpdate -> {
-                                    Toast.makeText(context, "当前已是最新版本 (v${result.currentVersion})", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "已是最新版本（v${result.currentVersion}）", Toast.LENGTH_SHORT).show()
                                 }
                                 is UpdateCheckResult.Error -> {
-                                    Toast.makeText(context, "检查更新失败: ${result.message}", Toast.LENGTH_LONG).show()
+                                    Toast.makeText(context, "检查更新失败：${result.message}", Toast.LENGTH_LONG).show()
                                 }
                                 else -> {}
                             }
@@ -1202,12 +1202,12 @@ fun GlobalSkillsTab(
                 val updateCount = list.count { it.state == "update-available" }
                 Toast.makeText(
                     context,
-                    if (updateCount > 0) "发现 $updateCount 项技能可更新" else "所有技能均为最新版本",
+                    if (updateCount > 0) "发现 $updateCount 项技能可更新" else "技能都已是最新版本",
                     Toast.LENGTH_SHORT
                 ).show()
             }.onFailure { err ->
                 isCheckingUpdates = false
-                Toast.makeText(context, "检查更新失败: ${err.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "检查更新失败：${err.message}", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -1218,14 +1218,14 @@ fun GlobalSkillsTab(
         if (updatingPackage != null || apiClient == null) return
         updatingPackage = pkg
         coroutineScope.launch {
-            Toast.makeText(context, "正在更新技能: ${skill.name}...", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "正在更新技能：${skill.name}…", Toast.LENGTH_SHORT).show()
             apiClient.updateSkill(pkg, scope, currentProject).onSuccess {
-                Toast.makeText(context, "已成功更新技能: ${skill.name}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "已更新技能：${skill.name}", Toast.LENGTH_SHORT).show()
                 updatingPackage = null
                 onRefreshSkills()
             }.onFailure { err ->
                 updatingPackage = null
-                Toast.makeText(context, "更新失败: ${err.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, "更新失败：${err.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
@@ -3285,7 +3285,7 @@ fun GlobalSystemSettingsTab(
                                             clipboard?.setPrimaryClip(
                                                 android.content.ClipData.newPlainText("piDroid Token", authToken)
                                             )
-                                            Toast.makeText(context, "访问令牌已复制", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, "已复制访问令牌", Toast.LENGTH_SHORT).show()
                                         }
                                     )
                                 }

@@ -391,7 +391,7 @@ fun ChatScreen(
             enhanced = result.enhancedText
         )
         updateDraft(result.enhancedText)
-        android.widget.Toast.makeText(context, "✨ 提示词已增强", android.widget.Toast.LENGTH_SHORT).show()
+        android.widget.Toast.makeText(context, "提示词已增强", android.widget.Toast.LENGTH_SHORT).show()
     }
 
     fun startPromptEnhancement() {
@@ -592,14 +592,14 @@ fun ChatScreen(
                         if (r.errors.isNotEmpty()) {
                             android.widget.Toast.makeText(
                                 context,
-                                "部分文件上传失败: ${r.errors.joinToString("; ").take(120)}",
+                                "部分文件上传失败：${r.errors.joinToString("; ").take(120)}",
                                 android.widget.Toast.LENGTH_LONG
                             ).show()
                         }
                     }.onFailure { err ->
                         android.widget.Toast.makeText(
                             context,
-                            "文件上传失败: ${err.message}",
+                            "文件上传失败：${err.message}",
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     }
@@ -821,7 +821,7 @@ fun ChatScreen(
         }
         android.widget.Toast.makeText(
             context,
-            "无法打开的链接：${trimmed.take(80)}",
+            "打不开这个链接：${trimmed.take(80)}",
             android.widget.Toast.LENGTH_SHORT
         ).show()
     }

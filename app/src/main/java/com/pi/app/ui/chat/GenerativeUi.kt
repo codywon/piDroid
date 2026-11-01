@@ -848,10 +848,10 @@ private fun SvgExportButton(
                     if (bmp != null) {
                         WidgetExportHelper.saveImageToGallery(context, bmp, payload.title)
                             .onSuccess { path ->
-                                Toast.makeText(context, "已保存到相册 ($path)", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "已保存到相册（$path）", Toast.LENGTH_SHORT).show()
                             }
                             .onFailure { e ->
-                                Toast.makeText(context, "保存图片失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "保存图片失败：${e.message}", Toast.LENGTH_SHORT).show()
                             }
                     } else {
                         Toast.makeText(context, "图片渲染中，请稍后再试", Toast.LENGTH_SHORT).show()
@@ -873,10 +873,10 @@ private fun SvgExportButton(
                     val svg = serializeSelfContainedSvg(payload, isDark)
                     WidgetExportHelper.saveSvgToDownloads(context, svg, payload.title)
                         .onSuccess { path ->
-                            Toast.makeText(context, "已保存矢量图 ($path)", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "已保存矢量图（$path）", Toast.LENGTH_SHORT).show()
                         }
                         .onFailure { e ->
-                            Toast.makeText(context, "保存 SVG 失败: ${e.message}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "保存 SVG 失败：${e.message}", Toast.LENGTH_SHORT).show()
                         }
                 }
             )
