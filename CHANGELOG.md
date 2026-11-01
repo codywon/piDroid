@@ -2,6 +2,14 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.35] - 2026-11-02
+
+### 🎨 资源管理器颜色对齐工程 Token 体系（docs/DESIGN-color-tokens.md）
+
+- 彻底替换 `FileRow` 与 `FilesScreen` 中的硬编码裸色值，改为接入 `AppTheme`（`theme.success`, `theme.warning`, `theme.primary`, `theme.featureThinking`）与 M3 `MaterialTheme.colorScheme.error`；
+- 完美适配 πDroid 5 套深浅主题体系（Light Paper, Ice Blue, Emerald, Amber, Dark Slate）；
+- 通过 CI `Guard hardcoded colors` 门禁。
+
 ## [1.8.34] - 2026-11-02
 
 ### ✨ 提示词增强可以指定专用模型（质量瓶颈在模型，不在提示词）

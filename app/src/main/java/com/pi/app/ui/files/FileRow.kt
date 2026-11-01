@@ -28,6 +28,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -37,7 +38,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -128,7 +128,7 @@ internal fun FileRow(
 
             // 图标
             val icon = resolveFileIcon(entry)
-            val iconTint = resolveIconTint(entry, isExpanded, theme.primary, theme.textMuted)
+            val iconTint = resolveIconTint(entry, isExpanded, theme)
             Icon(
                 imageVector = icon,
                 contentDescription = null,
@@ -164,7 +164,7 @@ internal fun FileRow(
                 Box(
                     modifier = Modifier
                         .size(6.dp)
-                        .background(Color(0xFFD6A84B), CircleShape)
+                        .background(theme.warning, CircleShape)
                 )
             }
         }
@@ -239,6 +239,7 @@ internal fun ErrorDirectoryRow(
     onRetry: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val theme = LocalAppTheme.current
     val indentDp = (depth * 16).dp
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -249,7 +250,7 @@ internal fun ErrorDirectoryRow(
     ) {
         Text(
             text = "加载失败: $errorMessage",
-            color = Color(0xFFF87171),
+            color = MaterialTheme.colorScheme.error,
             fontSize = 12.sp,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -257,7 +258,7 @@ internal fun ErrorDirectoryRow(
         )
         Text(
             text = "重试",
-            color = Color(0xFF60A5FA),
+            color = theme.primary,
             fontSize = 12.sp,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(start = 8.dp)
@@ -270,6 +271,7 @@ internal fun TruncatedNoticeRow(
     depth: Int,
     modifier: Modifier = Modifier
 ) {
+    val theme = LocalAppTheme.current
     val indentDp = (depth * 16).dp
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -279,7 +281,7 @@ internal fun TruncatedNoticeRow(
     ) {
         Text(
             text = "已达单级显示上限（最多展示前 500 项）",
-            color = Color(0xFFF59E0B),
+            color = theme.warning,
             fontSize = 11.5.sp
         )
     }
@@ -287,14 +289,14 @@ internal fun TruncatedNoticeRow(
 
 @Composable
 private fun GitBadge(status: String) {
-    val (label, color) = when (status.lowercase(Locale.ROOT)) {
-        "modified" -> "M" to Color(0xFFD6A84B)
-        "added" -> "A" to Color(0xFF4ADE80)
-        "deleted" -> "D" to Color(0xFFF87171)
-        "renamed" -> "R" to Color(0xFF60A5FA)
-        "untracked" -> "U" to Color(0xFF4ADE80)
-        "conflict" -> "C" to Color(0xFFF87171)
-        else -> status.take(1).uppercase(Locale.ROOT) to Color(0xFFD6A84B)
+    val theme = LocalAppTheme.current
+    val isDeleted = status.equals("deleted", ignoreCase = true) || status.equals("conflict", ignoreCase = true)
+    val isAdded = status.equals("added", ignoreCase = true) || status.equals("untracked", ignoreCase = true)
+    val (label, color) = when {
+        isDeleted -> (if (status.equals("conflict", ignoreCase = true)) "C" else "D") to MaterialTheme.colorScheme.error
+        isAdded -> (if (status.equals("untracked", ignoreCase = true)) "U" else "A") to theme.success
+        status.equals("renamed", ignoreCase = true) -> "R" to theme.primary
+        else -> "M" to theme.warning
     }
 
     Text(
@@ -324,19 +326,17 @@ private fun resolveFileIcon(entry: FileEntry): ImageVector {
 private fun resolveIconTint(
     entry: FileEntry,
     isExpanded: Boolean,
-    primaryColor: Color,
-    mutedColor: Color
-): Color {
+    theme: com.pi.app.ui.theme.AppTheme
+): androidx.compose.ui.graphics.Color {
     if (entry.isDir) {
-        return if (isExpanded) primaryColor else primaryColor.copy(alpha = 0.85f)
+        return if (isExpanded) theme.primary else theme.primary.copy(alpha = 0.85f)
     }
     val ext = entry.name.substringAfterLast('.', "").lowercase(Locale.ROOT)
     return when (ext) {
-        "kt", "java", "ts", "tsx", "js", "jsx", "py", "rs", "go" -> Color(0xFF60A5FA)
-        "json", "yaml", "yml", "toml", "xml" -> Color(0xFFFBBF24)
-        "md", "markdown" -> Color(0xFF34D399)
-        "png", "jpg", "jpeg", "svg" -> Color(0xFFA78BFA)
-        "pdf", "docx" -> Color(0xFFF87171)
-        else -> mutedColor
+        "kt", "java", "ts", "tsx", "js", "jsx", "py", "rs", "go" -> theme.primary
+        "json", "yaml", "yml", "toml", "xml" -> theme.warning
+        "md", "markdown" -> theme.success
+        "png", "jpg", "jpeg", "svg" -> theme.featureThinking
+        else -> theme.textMuted
     }
 }
