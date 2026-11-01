@@ -42,3 +42,6 @@ server/server.log
 
 # 本地诊断脚本（不入库）
 server/.diag-*.mjs
+
+# CI 查询用的临时响应（勿入库）
+server/.ci/
