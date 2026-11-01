@@ -148,6 +148,11 @@ fun ToolDefinitionsSheet(
                 }
             }
 
+            // 服务端理论上不会给重名工具，但 LazyColumn 的 key 一旦重复就会直接抛
+            // IllegalArgumentException（整个面板白屏），新面板不应该有这个崩点。
+            // 注意：LazyColumn 的 content 不是 @Composable，remember 必须提到外面来。
+            val uniqueTools = remember(tools) { tools.orEmpty().distinctBy { it.name } }
+
             when {
                 isLoading -> Box(
                     modifier = Modifier
@@ -180,10 +185,7 @@ fun ToolDefinitionsSheet(
                     modifier = Modifier.heightIn(max = 460.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // 服务端理论上不会给重名工具，但 LazyColumn 的 key 一旦重复就会直接抛
-                    // IllegalArgumentException（整个面板白屏），新面板不应该有这个崩点。
-                    val unique = remember(tools) { tools.orEmpty().distinctBy { it.name } }
-                    items(unique, key = { it.name }) { tool ->
+                    items(uniqueTools, key = { it.name }) { tool ->
                         ToolDefinitionRow(tool)
                     }
                 }
