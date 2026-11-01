@@ -218,8 +218,9 @@ object PromptEnhancementRules {
         return picked.toList()
     }
 
-    /** 允许进入参考上下文的角色：对话双方 + 工具结果。 */
-    fun String.isContextRole(): Boolean = this == "user" || this == "assistant" || this == "tool"
+    /** 允许进入参考上下文的角色：对话双方 + 工具结果 + 更早历史的压缩摘要。 */
+    fun String.isContextRole(): Boolean =
+        this == "user" || this == "assistant" || this == "tool" || this == "summary"
 
     private fun clip(text: String, maxChars: Int): String {
         if (maxChars <= 0) return ""

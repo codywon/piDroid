@@ -18,8 +18,9 @@ const DEFAULTS = {
   // 实测 WorkBuddy 风格的六段式输出落在 250~700 字，1600 token 足够且能早停，
   // 4096 只会拉长可能的生成时间与账单。
   outputTokens: 1600,
-  // 客户端等不起 45 秒：4~7 秒正常，超过 25 秒基本就是网络/凭据出问题，早失败早提示。
-  timeoutMs: 25000,
+  // 实测 P50 4.1s / P90 7.7s（上下文含工具结果与摘要）。定 30s：约 4 倍 P90 余量，
+  // 既给长尾留机会，又不至于让用户干等到一分钟还以为卡死。
+  timeoutMs: 30000,
   rateLimitPerMinute: 10,
   maxConcurrentRequests: 2,
 };

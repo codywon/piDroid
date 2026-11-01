@@ -152,13 +152,13 @@ class PiApiClient(private val prefs: AppPreferences) {
         .build()
 
     /**
-     * 提示词增强专用客户端：服务端硬超时 45s，这里留 5s 余量。
+     * 提示词增强专用客户端。
      * 不能复用 [readClient]（12s 会先于模型返回把请求掐断），也不能无限等。
      */
     private val enhanceClient = client.newBuilder()
-        // 服务端硬超时 25s（实测正常 4~7s）。客户端 30s 仅作为「服务端没回话」的兵底，
-        // 不能设成 50s：那会让用户盯着转圈等上一分钟才看到失败。
-        .callTimeout(30, TimeUnit.SECONDS)
+        // 服务端硬超时 30s（实测 P50 4.1s / P90 7.7s）。客户端 35s 只作「服务端没回话」的兜底，
+        // 比服务端多 5s，避免两边同时掐断时拿到半截响应；再长就是让用户白等。
+        .callTimeout(35, TimeUnit.SECONDS)
         .build()
 
     /**

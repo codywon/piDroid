@@ -326,3 +326,28 @@ test('reports CANCELLED (not TIMEOUT) when the client walks away', async () => {
   const result = await pending;
   assert.equal(result.code, 'CANCELLED');
 });
+
+test('accepts a compaction summary so long sessions keep their early decisions', async () => {
+  let captured = null;
+  const modelClient = {
+    async generate(input) {
+      const payload = parsePayload(input.userText);
+      captured = payload.context;
+      return { text: payload.draft, stopReason: 'stop', usage: null, provider: input.provider, modelId: input.modelId };
+    },
+  };
+  const service = serviceWith(modelClient);
+  // pi 压缩后的早前历史摘要：读盘上的 jsonl 也能拿到，但摘要本来就在内存里
+  const result = await service.enhance(baseBody({
+    draft: '继续按之前定的做',
+    context: [
+      { role: 'summary', text: '早期约定：保持最小侵入，不引入新依赖。' },
+      { role: 'user', text: '继续' },
+    ],
+  }), { subject: 's-summary' });
+
+  assert.equal(result.ok, true);
+  const summary = captured.find((m) => m.role === 'summary');
+  assert.ok(summary, JSON.stringify(captured));
+  assert.match(summary.text, /最小侵入/);
+});

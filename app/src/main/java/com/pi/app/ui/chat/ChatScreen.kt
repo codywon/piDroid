@@ -3964,12 +3964,22 @@ private fun buildPromptEnhancementContext(history: List<ChatItem>): List<PromptE
                             call.command?.trim()?.takeIf { it.isNotEmpty() }?.let { append(' ').append(it) }
                             val body = call.output?.trim()?.takeIf { it.isNotEmpty() }
                                 ?: call.preview?.trim()?.takeIf { it.isNotEmpty() }
-                            if (body != null) append('
-').append(body)
-                            if (call.isError) append("
-(命令/工具以错误结束)")
+                            if (body != null) append('\n').append(body)
+                            if (call.isError) append("\n(命令/工具以错误结束)")
                         }
                     )
+                }
+                // 被 pi 压缩掉的那段历史只剩摘要（SYSTEM 角色、以 📦 开头）。
+                // 不注入的话，长会话里"一开始定的方案"对增强模型等于不存在。
+                // 读盘上的 jsonl 也能达到同样目的，但代价是路径编码/分支重建/并发写，
+                // 而摘要本来就在内存里 —— 这里只做最低成本的补救。
+                MessageRole.SYSTEM -> {
+                    val summary = item.content
+                        .lineSequence()
+                        .filterNot { it.startsWith("📦") }   // 去掉「上下文已归档压缩」这类界面文案
+                        .joinToString("\n")
+                        .trim()
+                    if (summary.isEmpty()) null else PromptEnhancementContextMessage("summary", summary)
                 }
                 else -> null
             }

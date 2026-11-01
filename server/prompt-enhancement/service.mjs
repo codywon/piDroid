@@ -70,7 +70,10 @@ function fitContextBudget(rawContext, config) {
   for (const item of rawContext) {
     if (!isPlainObject(item)) continue;
     // tool = 工具执行结果（报错、读到的代码、命令输出），是「这个报错」的真实出处
-    const role = item.role === 'user' || item.role === 'assistant' || item.role === 'tool' ? item.role : null;
+    // summary = 更早历史的压缩摘要（pi compaction），防止长会话丢失早期决定
+    const role = item.role === 'user' || item.role === 'assistant' || item.role === 'tool' || item.role === 'summary'
+      ? item.role
+      : null;
     if (!role || typeof item.text !== 'string') continue;
     const text = item.text.trim();
     if (!text) continue;
