@@ -21,6 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import com.pi.app.ui.theme.ArgbContrast
+import com.pi.app.ui.theme.ThemePalette
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
@@ -165,13 +168,22 @@ private val BadgeTextStyle = TextStyle(
     platformStyle = PlatformTextStyle(includeFontPadding = false)
 )
 
-/** pi-web 阈值：>=50 青、>=30 绿、>=15 黄、其余红 */
-private fun tpsColor(v: Double): Color = when {
-    v >= 50.0 -> Color(0xFF53B3CB)
-    v >= 30.0 -> Color(0xFF9BC53D)
-    v >= 15.0 -> Color(0xFFF9C22E)
-    else -> Color(0xFFE01A4F)
+/**
+ * pi-web 阈值：>=50 青、>=30 绿、>=15 黄、其余红。**色相保持不变**（对齐 pi-web）。
+ *
+ * 前景不再固定白字：白字压 #F9C22E 只有 1.64:1、#9BC53D 2.01:1、#53B3CB 2.42:1，
+ * 全部低于 AA。改为按底色亮度取白 / 深墨——前三个自动变深墨（8.00~11.79:1），
+ * 红色 #E01A4F 保留白字（4.74:1）。
+ */
+private fun tpsBackground(v: Double): Color = when {
+    v >= 50.0 -> Color(ThemePalette.TpsFast)
+    v >= 30.0 -> Color(ThemePalette.TpsNormal)
+    v >= 15.0 -> Color(ThemePalette.TpsSlow)
+    else -> Color(ThemePalette.TpsLag)
 }
+
+/** 对应底色上对比度更高的前景色 */
+private fun tpsForeground(v: Double): Color = Color(ArgbContrast.bestOn(tpsBackground(v).toArgb()))
 
 /** 参与估算的正文：对齐 pi-web 的 text + thinking + toolCall(rawInput)，不含工具结果 output */
 private fun ChatItem.streamingMetricText(): String {
@@ -262,13 +274,13 @@ fun StreamingSpeedBadge(item: ChatItem, modifier: Modifier = Modifier) {
             Spacer(modifier = Modifier.width(5.dp))
             Box(
                 modifier = Modifier
-                    .background(tpsColor(v), RoundedCornerShape(3.dp))
+                    .background(tpsBackground(v), RoundedCornerShape(3.dp))
                     .padding(horizontal = 5.dp, vertical = 0.5.dp)
             ) {
                 Text(
                     text = "${String.format(Locale.US, "%.1f", v)} t/s",
                     style = BadgeTextStyle,
-                    color = Color.White
+                    color = tpsForeground(v)
                 )
             }
         }

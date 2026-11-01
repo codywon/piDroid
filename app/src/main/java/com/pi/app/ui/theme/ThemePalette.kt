@@ -160,6 +160,40 @@ object ThemePalette {
     val DarkFeatureThinking: Int = 0xFFA78BFA.toInt()
 
     // ══════════════════════════════════════════════════════════════
+    // 代码块 / Diff 行（浅色走 Primer 基准，深色沿用 Catppuccin Mocha）
+    //
+    // 原来两个代码块卡片把 Catppuccin 暗底写死，浅色模式下等于在白色对话流里
+    // 嵌了一块 17.6:1 明度断层的黑砖。现在按主题分支：
+    // 浅色 正文 #1F2328 on #F6F8FA = 14.84:1，表头 #57606A on #EAECEF = 5.40:1。
+    // ══════════════════════════════════════════════════════════════
+    val CodeBgLight: Int = 0xFFF6F8FA.toInt()
+    val CodeHeaderLight: Int = 0xFFEAECEF.toInt()
+
+    val CodeBgDark: Int = 0xFF181825.toInt()
+    val CodeHeaderDark: Int = 0xFF11111B.toInt()
+    val CodeBorderDark: Int = 0xFF313244.toInt()
+    val CodeTextDark: Int = 0xFFCDD6F4.toInt()
+    val CodeMutedDark: Int = 0xFFA6ADC8.toInt()
+
+    /** Diff 行（浅色，Primer 基准；实测 4.81 / 4.67 / 4.56:1） */
+    val DiffAddBgLight: Int = 0xFFE6FFEC.toInt()
+    val DiffAddFgLight: Int = 0xFF1A7F37.toInt()
+    val DiffDelBgLight: Int = 0xFFFFEBE9.toInt()
+    val DiffDelFgLight: Int = 0xFFCF222E.toInt()
+    val DiffHunkBgLight: Int = 0xFFDDF4FF.toInt()
+    val DiffHunkFgLight: Int = 0xFF0969DA.toInt()
+
+    // ══════════════════════════════════════════════════════════════
+    // 流速徽章四个档位的底色（保留 pi-web 色相，前景由 ArgbContrast.bestOn 决定）
+    // 实测 bestOn：青 #53B3CB→深墨 8.00 / 绿 #9BC53D→深墨 9.63 /
+    //              黄 #F9C22E→深墨 11.79 / 红 #E01A4F→白 4.74
+    // ══════════════════════════════════════════════════════════════
+    val TpsFast: Int = 0xFF53B3CB.toInt()
+    val TpsNormal: Int = 0xFF9BC53D.toInt()
+    val TpsSlow: Int = 0xFFF9C22E.toInt()
+    val TpsLag: Int = 0xFFE01A4F.toInt()
+
+    // ══════════════════════════════════════════════════════════════
     // 品牌（theme-invariant：logo 不随主题变色，避免 AMBER 主题下出现亮黄块）
     // ══════════════════════════════════════════════════════════════
     val BrandLogoBackground: Int = 0xFF1E293B.toInt() // 与白 π 对比度 14.6:1

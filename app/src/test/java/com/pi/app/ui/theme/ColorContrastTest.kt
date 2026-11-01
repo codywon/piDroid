@@ -276,6 +276,47 @@ class ColorContrastTest {
         assertAtLeast("brand.logoGlyph", glyph, ThemePalette.BrandLogoBackground, 7.0)
     }
 
+    /** ⑫ 链接色必须跟随主题（原先写死 #3B82F6，白底仅 3.68:1） */
+    @Test
+    fun linksUseThemePrimaryAndMeetAa() {
+        allSchemes.forEach { s ->
+            assertAtLeast("${s.name}.link/surfaceContainerLow", s.primary, s.surfaceLow, 4.5)
+        }
+    }
+
+    /** ⑬ 代码块：浅色 Primer 基准 / 深色 Catppuccin，正文都要 >= 7:1 */
+    @Test
+    fun codeBlocksMeetContrast() {
+        assertAtLeast("code.light.body", ThemePalette.TextLightPrimary, ThemePalette.CodeBgLight, 7.0)
+        assertAtLeast("code.light.header", ThemePalette.TextLightSecondary, ThemePalette.CodeHeaderLight, 4.5)
+        assertAtLeast("code.dark.body", ThemePalette.CodeTextDark, ThemePalette.CodeBgDark, 7.0)
+        assertAtLeast("code.dark.header", ThemePalette.CodeMutedDark, ThemePalette.CodeHeaderDark, 4.5)
+    }
+
+    /** ⑭ Diff 行（浅色实底实字；深色沿用半透明叠色，用亮色字保证可读） */
+    @Test
+    fun diffLinesMeetContrast() {
+        assertAtLeast("diff.add.light", ThemePalette.DiffAddFgLight, ThemePalette.DiffAddBgLight, 4.5)
+        assertAtLeast("diff.del.light", ThemePalette.DiffDelFgLight, ThemePalette.DiffDelBgLight, 4.5)
+        assertAtLeast("diff.hunk.light", ThemePalette.DiffHunkFgLight, ThemePalette.DiffHunkBgLight, 4.5)
+        // 深色：16% 叠色后的近似底色
+        assertAtLeast("diff.add.dark", 0xFF86EFAC.toInt(), 0xFF203834.toInt(), 4.5)
+        assertAtLeast("diff.del.dark", 0xFFFCA5A5.toInt(), 0xFF3C2631.toInt(), 4.5)
+    }
+
+    /** ⑮ 流速徽章：色相对齐 pi-web，前景由 bestOn 决定（黄档白字曾只有 1.64:1） */
+    @Test
+    fun rateBadgesMeetContrast() {
+        listOf(
+            "fast" to ThemePalette.TpsFast,
+            "normal" to ThemePalette.TpsNormal,
+            "slow" to ThemePalette.TpsSlow,
+            "lag" to ThemePalette.TpsLag
+        ).forEach { (name, bg) ->
+            assertAtLeast("tps.$name", ArgbContrast.bestOn(bg), bg, 4.5)
+        }
+    }
+
     /** ⑪ 公式自检：黑白极值必须是 21:1，同色必须是 1:1 */
     @Test
     fun contrastFormulaSanity() {

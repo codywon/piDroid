@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaKind
 import com.pi.app.ui.theme.LocalAppTheme
+import com.pi.app.ui.theme.ThemePalette
 import org.commonmark.ext.autolink.AutolinkExtension
 import org.commonmark.ext.gfm.strikethrough.Strikethrough
 import org.commonmark.ext.gfm.strikethrough.StrikethroughExtension
@@ -434,7 +435,7 @@ private fun RenderAstBlockNode(
                 3 -> 14.sp
                 else -> 13.sp
             }
-            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink)
+            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -464,7 +465,7 @@ private fun RenderAstBlockNode(
             val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
             // 音频/视频不归相册管：交给已有的全屏查看器（那里有真正的播放器）
             val playbackLinks = remember(node) { extractPlaybackLinksFromNode(node) }
-            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink)
+            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
                 MathFormulaBlockCard(formula = rawTrimmed.removeSurrounding("$$").trim())
@@ -927,10 +928,12 @@ private fun extractInlineMediaFromNode(parentNode: Node): List<MediaAttachment> 
 private fun buildInlineAnnotatedString(
     parentNode: Node,
     isUser: Boolean,
-    onOpenLink: ((String) -> Unit)? = null
+    onOpenLink: ((String) -> Unit)? = null,
+    /** 链接色：由调用方注入 theme.primary，保证跟随 5 套主题（原先写死 #3B82F6，白底仅 3.68:1） */
+    linkColor: Color = Color(ThemePalette.LightPrimary)
 ): AnnotatedString {
     val initial = buildAnnotatedString {
-        appendInlineChildren(parentNode, this, isUser, onOpenLink)
+        appendInlineChildren(parentNode, this, isUser, onOpenLink, linkColor)
     }
     return fixUnrenderedBoldInAnnotatedString(initial)
 }
@@ -969,7 +972,8 @@ private fun appendInlineChildren(
     parent: Node,
     builder: AnnotatedString.Builder,
     isUser: Boolean,
-    onOpenLink: ((String) -> Unit)? = null
+    onOpenLink: ((String) -> Unit)? = null,
+    linkColor: Color = Color(ThemePalette.LightPrimary)
 ) {
     var child = parent.firstChild
     var isFirstChild = true
@@ -985,17 +989,17 @@ private fun appendInlineChildren(
             }
             is StrongEmphasis -> {
                 builder.pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-                appendInlineChildren(child, builder, isUser, onOpenLink)
+                appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
                 builder.pop()
             }
             is Emphasis -> {
                 builder.pushStyle(SpanStyle(fontStyle = FontStyle.Italic))
-                appendInlineChildren(child, builder, isUser, onOpenLink)
+                appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
                 builder.pop()
             }
             is Strikethrough -> {
                 builder.pushStyle(SpanStyle(textDecoration = TextDecoration.LineThrough))
-                appendInlineChildren(child, builder, isUser, onOpenLink)
+                appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
                 builder.pop()
             }
             is Code -> {
@@ -1017,7 +1021,7 @@ private fun appendInlineChildren(
             is Link -> {
                 val href = child.destination?.trim().orEmpty()
                 val linkStyle = SpanStyle(
-                    color = Color(0xFF3B82F6),
+                    color = linkColor,
                     fontWeight = FontWeight.Medium,
                     textDecoration = TextDecoration.Underline
                 )
@@ -1028,7 +1032,7 @@ private fun appendInlineChildren(
                     // 用 AnnotatedString 上的 LinkAnnotation（Compose 1.7 的官方链接 API，
                     // 文字自带点击命中与无障碍「链接」语义），范围用 addLink 显式标出。
                     val linkStart = builder.length
-                    appendInlineChildren(child, builder, isUser, onOpenLink)
+                    appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
                     if (builder.length > linkStart) {
                         builder.addLink(
                             LinkAnnotation.Clickable(
@@ -1041,7 +1045,7 @@ private fun appendInlineChildren(
                         )
                     }
                 } else {
-                    appendInlineChildren(child, builder, isUser, onOpenLink)
+                    appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
                 }
                 builder.pop()
             }
@@ -1050,7 +1054,7 @@ private fun appendInlineChildren(
             }
             is SoftLineBreak -> builder.append(" ")
             is HardLineBreak -> builder.append("\n")
-            else -> appendInlineChildren(child, builder, isUser, onOpenLink)
+            else -> appendInlineChildren(child, builder, isUser, onOpenLink, linkColor)
         }
         isFirstChild = false
         child = child.next
@@ -1782,24 +1786,32 @@ private fun cleanMermaidNodeLabel(raw: String): String {
 @Composable
 private fun DiffCodeBlockCard(code: String, language: String) {
     val context = LocalContext.current
+    val theme = LocalAppTheme.current
+    // 浅色模式不再套 Catppuccin 暗底（白底对话流里是一块 17.6:1 明度断层的黑砖），
+    // 改走 Primer 基准：底 #F6F8FA + 边框 outline + 正文 #1F2328（14.84:1）。
+    val cardBg = if (theme.isDark) Color(ThemePalette.CodeBgDark) else Color(ThemePalette.CodeBgLight)
+    val headerBg = if (theme.isDark) Color(ThemePalette.CodeHeaderDark) else Color(ThemePalette.CodeHeaderLight)
+    val borderColor = if (theme.isDark) Color(ThemePalette.CodeBorderDark) else theme.outline
+    val mutedFg = if (theme.isDark) Color(ThemePalette.CodeMutedDark) else theme.textSecondary
+    val bodyFg = if (theme.isDark) Color(ThemePalette.CodeTextDark) else theme.textPrimary
     Card(
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF181825)),
-        border = BorderStroke(0.6.dp, Color(0xFF313244)),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(0.6.dp, borderColor),
         modifier = Modifier.fillMaxWidth()
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color(0xFF11111B))
+                    .background(headerBg)
                     .padding(horizontal = 10.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = language.uppercase(Locale.ROOT),
-                    style = TextStyle(fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFA6ADC8))
+                    style = TextStyle(fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = mutedFg)
                 )
                 IconButton(
                     onClick = {
@@ -1811,7 +1823,7 @@ private fun DiffCodeBlockCard(code: String, language: String) {
                     Icon(
                         imageVector = Icons.Default.ContentCopy,
                         contentDescription = "复制",
-                        tint = Color(0xFFA6ADC8),
+                        tint = mutedFg,
                         modifier = Modifier.size(13.dp)
                     )
                 }
@@ -1824,11 +1836,18 @@ private fun DiffCodeBlockCard(code: String, language: String) {
                 verticalArrangement = Arrangement.spacedBy(1.dp)
             ) {
                 code.lines().forEach { line ->
+                    // 浅色用 Primer 的实底/实字（4.81 / 4.67 / 4.56:1），深色保持原有的半透明叠色
                     val (bgColor, txtColor) = when {
-                        line.startsWith("+") && !line.startsWith("+++") -> Color(0xFF22C55E).copy(alpha = 0.16f) to Color(0xFF86EFAC)
-                        line.startsWith("-") && !line.startsWith("---") -> Color(0xFFEF4444).copy(alpha = 0.16f) to Color(0xFFFCA5A5)
-                        line.startsWith("@@") -> Color(0xFF3B82F6).copy(alpha = 0.15f) to Color(0xFF93C5FD)
-                        else -> Color.Transparent to Color(0xFFCDD6F4)
+                        line.startsWith("+") && !line.startsWith("+++") ->
+                            if (theme.isDark) Color(ThemePalette.DarkSuccess).copy(alpha = 0.16f) to Color(0xFF86EFAC)
+                            else Color(ThemePalette.DiffAddBgLight) to Color(ThemePalette.DiffAddFgLight)
+                        line.startsWith("-") && !line.startsWith("---") ->
+                            if (theme.isDark) Color(ThemePalette.DarkError).copy(alpha = 0.16f) to Color(0xFFFCA5A5)
+                            else Color(ThemePalette.DiffDelBgLight) to Color(ThemePalette.DiffDelFgLight)
+                        line.startsWith("@@") ->
+                            if (theme.isDark) Color(0xFF3B82F6).copy(alpha = 0.15f) to Color(0xFF93C5FD)
+                            else Color(ThemePalette.DiffHunkBgLight) to Color(ThemePalette.DiffHunkFgLight)
+                        else -> Color.Transparent to bodyFg
                     }
                     Text(
                         text = line,
@@ -1870,7 +1889,7 @@ private fun AstTableCard(
                         var cellNode = rowNode.firstChild
                         while (cellNode != null) {
                             if (cellNode is TableCell) {
-                                headerCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink))
+                                headerCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
                             }
                             cellNode = cellNode.next
                         }
@@ -1887,7 +1906,7 @@ private fun AstTableCard(
                         var cellNode = rowNode.firstChild
                         while (cellNode != null) {
                             if (cellNode is TableCell) {
-                                rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink))
+                                rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
                             }
                             cellNode = cellNode.next
                         }
@@ -1986,10 +2005,18 @@ private fun AstTableCard(
 @Composable
 private fun CodeBlockCard(code: String, language: String) {
     val context = LocalContext.current
+    val theme = LocalAppTheme.current
+    // 浅色模式走 Primer 基准（底 #F6F8FA / 表头 #EAECEF / 正文 #1F2328 = 14.84:1），
+    // 深色模式保持 Catppuccin Mocha，不再让白底对话流里出现一块黑砖。
+    val cardBg = if (theme.isDark) Color(ThemePalette.CodeBgDark) else Color(ThemePalette.CodeBgLight)
+    val headerBg = if (theme.isDark) Color(ThemePalette.CodeHeaderDark) else Color(ThemePalette.CodeHeaderLight)
+    val borderColor = if (theme.isDark) Color(ThemePalette.CodeBorderDark) else theme.outline
+    val mutedFg = if (theme.isDark) Color(ThemePalette.CodeMutedDark) else theme.textSecondary
+    val bodyFg = if (theme.isDark) Color(ThemePalette.CodeTextDark) else theme.textPrimary
     Card(
         shape = RoundedCornerShape(8.dp),
-        colors = CardDefaults.cardColors(containerColor = Color(0xFF181825)),
-        border = BorderStroke(0.6.dp, Color(0xFF313244)),
+        colors = CardDefaults.cardColors(containerColor = cardBg),
+        border = BorderStroke(0.6.dp, borderColor),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -1998,14 +2025,14 @@ private fun CodeBlockCard(code: String, language: String) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFF11111B))
+                        .background(headerBg)
                         .padding(horizontal = 10.dp, vertical = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         text = language.ifBlank { "shell" },
-                        style = TextStyle(fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = Color(0xFFA6ADC8))
+                        style = TextStyle(fontSize = 10.5.sp, fontFamily = FontFamily.Monospace, color = mutedFg)
                     )
                     IconButton(
                         onClick = {
@@ -2017,7 +2044,7 @@ private fun CodeBlockCard(code: String, language: String) {
                         Icon(
                             imageVector = Icons.Default.ContentCopy,
                             contentDescription = "复制",
-                            tint = Color(0xFFA6ADC8),
+                            tint = mutedFg,
                             modifier = Modifier.size(13.dp)
                         )
                     }
@@ -2028,7 +2055,7 @@ private fun CodeBlockCard(code: String, language: String) {
                 style = TextStyle(
                     fontSize = 11.5.sp,
                     fontFamily = FontFamily.Monospace,
-                    color = Color(0xFFCDD6F4),
+                    color = bodyFg,
                     lineHeight = 16.sp
                 ),
                 modifier = Modifier
