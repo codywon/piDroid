@@ -263,3 +263,46 @@ test('clips assistant replies harder so user constraints survive the budget', as
   const assistant = captured.find((m) => m.role === 'assistant');
   assert.ok(assistant.text.length <= 401, `assistant clipped to ${assistant.text.length}`);
 });
+
+test('returns TIMEOUT on its own even when the provider ignores the abort signal', async () => {
+  // 现场：某些 provider 卡在 DNS/TCP/排队时不会检查 signal，
+  // 只发 abort 信号的话 await 会一直挂着，客户端 30s 先超时 → 用户看到 499。
+  const stubborn = {
+    async generate() {
+      await new Promise((resolve) => setTimeout(resolve, 5000)); // 故意忽略 signal
+      return { text: 'never used', stopReason: 'stop', usage: null, provider: 'p', modelId: 'm' };
+    },
+  };
+  // 直接改 config.timeoutMs：环境变量的下限是 5000ms，这里要一个能快速跑完的短超时
+  const service = createEnhancementService({
+    modelClient: stubborn,
+    config: { ...readEnhancementConfig({ PROMPT_ENHANCE_RATE_LIMIT: '50' }), timeoutMs: 300 },
+  });
+  const startedAt = Date.now();
+  const result = await service.enhance(baseBody(), { subject: 's-timeout' });
+  const elapsed = Date.now() - startedAt;
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'TIMEOUT');
+  // 必须在超时后不久就返回，而不是等到假模型睡满 5 秒
+  assert.ok(elapsed < 2000, `returned after ${elapsed}ms`);
+});
+
+test('reports CANCELLED (not TIMEOUT) when the client walks away', async () => {
+  const hanging = {
+    async generate({ signal }) {
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+      if (signal.aborted) throw new Error('aborted');
+      return { text: 'x', stopReason: 'stop', usage: null, provider: 'p', modelId: 'm' };
+    },
+  };
+  const service = createEnhancementService({
+    modelClient: hanging,
+    config: { ...readEnhancementConfig({ PROMPT_ENHANCE_RATE_LIMIT: '50' }), timeoutMs: 10000 },
+  });
+  const controller = new AbortController();
+  const pending = service.enhance(baseBody(), { subject: 's-cancel', signal: controller.signal });
+  setTimeout(() => controller.abort(), 50);
+  const result = await pending;
+  assert.equal(result.code, 'CANCELLED');
+});

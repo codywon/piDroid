@@ -5068,10 +5068,16 @@ data class CatalogPreset(
      * 这里复用 `/api/ping`，不额外制造一个探测请求。
      */
     suspend fun getPromptEnhancementCapability(): Result<PromptEnhancementCapability?> = withContext(Dispatchers.IO) {
-        // 旧网关 / 直连 pi-web：没有 capabilities 字段 → null（入口隐藏）
-        Result.success(
-            com.pi.app.prompt.PromptEnhancementCapabilityParser.parse(ping().getOrNull())
-        )
+        // 三种结果必须分开，不能都压成 null：
+        //   success(capability) —— 网关报了这个能力（可能 available=false）
+        //   success(null)       —— 网关正常应答但没有 capabilities 字段（旧网关 / 直连 pi-web）→ 入口隐藏
+        //   failure             —— 这次没连上（网络抖动）→ 调用方应保留上一次结果，别误关入口
+        val pingResult = ping()
+        val body = pingResult.getOrNull()
+            ?: return@withContext Result.failure(
+                pingResult.exceptionOrNull() ?: IOException("能力探测失败")
+            )
+        Result.success(com.pi.app.prompt.PromptEnhancementCapabilityParser.parse(body))
     }
 
     /**
@@ -5147,9 +5153,13 @@ data class CatalogPreset(
                                 Result.failure(PromptEnhancementException("INVALID_OUTPUT", "增强结果为空"))
                             }
                         } else {
-                            val code = json?.get("code")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP_${resp.code}"
+                            // 499（网关侧判定「客户端已断开」）通常是因为本地 callTimeout 先到、
+                            // 或用户切走而连接被关掉；对用户而言就是「已取消」，不该出现裸状态码。
+                            val statusCode = resp.code
+                            val code = json?.get("code")?.takeIf { !it.isJsonNull }?.asString
+                                ?: if (statusCode == 499) "CANCELLED" else "HTTP_$statusCode"
                             val message = json?.get("message")?.takeIf { !it.isJsonNull }?.asString
-                                ?: "增强失败 (HTTP ${resp.code})"
+                                ?: if (statusCode == 499) "增强已取消" else "增强失败 (HTTP $statusCode)"
                             Result.failure(PromptEnhancementException(code, message))
                         }
                     }

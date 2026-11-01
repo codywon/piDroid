@@ -229,15 +229,32 @@ export function createEnhancementService({ modelClient, config = readEnhancement
 
     const controller = new AbortController();
     let timedOut = false;
-    const onExternalAbort = () => controller.abort();
+    let externallyAborted = false;
+    const onExternalAbort = () => {
+      externallyAborted = true;
+      controller.abort();
+    };
     if (options.signal) {
-      if (options.signal.aborted) controller.abort();
+      if (options.signal.aborted) onExternalAbort();
       else options.signal.addEventListener('abort', onExternalAbort, { once: true });
     }
+    // 超时**必须自己先返回**，不能只发 abort 信号：
+    // 某些 provider 不检查 signal（卡在 DNS / TCP 握手 / 上游排队时尤其常见），
+    // 此时 abort 只是个标记，await 会一直挂着 —— 服务端迟迟不回则客户端 30s
+    // callTimeout 先到，用户看到的是 499「客户端断开」而不是 504「超时」。
     const timer = setTimeout(() => {
       timedOut = true;
       controller.abort();
     }, config.timeoutMs);
+    const deadline = new Promise((_, reject) => {
+      setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        const error = new Error('enhancement deadline exceeded');
+        error.code = 'TIMEOUT';
+        reject(error);
+      }, config.timeoutMs + 500).unref?.();
+    });
 
     try {
       const { masked, protections } = maskProtectedSegments(request.draft);
@@ -245,24 +262,30 @@ export function createEnhancementService({ modelClient, config = readEnhancement
 
       let generated;
       try {
-        generated = await modelClient.generate({
-          provider: request.provider,
-          modelId: request.modelId,
-          systemPrompt: SYSTEM_PROMPT,
-          userText,
-          maxTokens: config.outputTokens,
-          signal: controller.signal,
-        });
+        generated = await Promise.race([
+          modelClient.generate({
+            provider: request.provider,
+            modelId: request.modelId,
+            systemPrompt: SYSTEM_PROMPT,
+            userText,
+            maxTokens: config.outputTokens,
+            signal: controller.signal,
+          }),
+          deadline,
+        ]);
       } catch (error) {
         const mapped = mapModelError(error);
-        if (mapped.code === 'CANCELLED' || mapped.code === 'TIMEOUT') {
-          return failure(timedOut ? 'TIMEOUT' : 'CANCELLED', timedOut ? '增强请求超时' : '增强请求已取消');
+        if (mapped.code === 'CANCELLED' || mapped.code === 'TIMEOUT' || error?.code === 'TIMEOUT') {
+          if (timedOut) return failure('TIMEOUT', '增强请求超时');
+          // 客户端主动走了：回一个可审计的 CANCELLED，而不是假超时
+          return failure('CANCELLED', '增强请求已取消');
         }
         return failure(mapped.code, mapped.message);
       }
 
       if (controller.signal.aborted) {
-        return failure(timedOut ? 'TIMEOUT' : 'CANCELLED', timedOut ? '增强请求超时' : '增强请求已取消');
+        if (timedOut) return failure('TIMEOUT', '增强请求超时');
+        if (externallyAborted) return failure('CANCELLED', '增强请求已取消');
       }
       if (generated?.stopReason === 'length') {
         return failure('INVALID_OUTPUT', '模型输出被截断，已保留原稿');

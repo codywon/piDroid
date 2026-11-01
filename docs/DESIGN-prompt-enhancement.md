@@ -91,7 +91,22 @@ ChatScreen 增强按钮
 | `RATE_LIMITED` | 429 | 限流 / 同会话已有请求 / 并发已满 |
 | `TIMEOUT` | 504 | 45s 硬超时 |
 | `ENHANCEMENT_UNAVAILABLE` | 503 | 网关关闭该能力或 SDK 未安装 |
-| `CANCELLED` | 499 | 客户端离开，仅结束连接 |
+| `CANCELLED` | 499 | 客户端主动离开，仅结束连接，不写响应体 |
+
+### 499 的含义与坑（v1.8.11 修复）
+
+499 是网关自己产生的「客户端已断开」码，**不是模型错误**。实测两种来源：
+
+1. 用户点了取消 / 切走会话 → 客户端 `call.cancel()` → 网关 `res` close → abort；
+2. **能力探测抖动误伤**（已修）：客户端曾把「一次 ping 失败」当成「网关不再支持增强」，
+   于是 `promptEnhancementTarget` 变 null，连带 `LaunchedEffect` 取消在飞请求。
+   现在能力探测分三态（成功 / 明确不支持 / 本次没连上），失败时保留上一次结果；
+   连接与模型身份也粘住最后一次有效值，探测抖动不再取消请求、也不会让回填因
+   `modelKey` 变空而被拒。
+
+此外超时不再只发 abort 信号：某些 provider 不检查 signal（卡在 DNS/TCP/上游排队），
+只发信号会让 `await` 一直挂着，服务端迟迟不回 → 客户端 30s 先超时 → 表现成 499。
+现在服务端在 `timeoutMs + 500ms` 强制返回 `TIMEOUT`(504)。
 
 能力探测：`GET /api/ping` → `capabilities.promptEnhancement`。
 

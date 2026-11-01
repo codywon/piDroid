@@ -251,10 +251,29 @@ fun ChatScreen(
 
     // ── 提示词增强状态 ───────────────────────────────────────────────
     // 目标/能力任一缺失就不展示入口（旧网关、直连 pi-web、服务端关闭）。
-    val enhancementConnectionKey = promptEnhancementTarget?.connectionKey
     val enhancementEnabled = promptEnhancementTarget != null &&
         promptEnhancementCapability?.available == true
-    val enhancementModelKey = promptEnhancementTarget?.modelKey ?: ""
+    /**
+     * 增强目标（连接 + 模型）必须**粘住最后一次的有效值**。
+     *
+     * 它同时是下面所有 remember 的 key 和「换目标就取消在飞请求」的触发条件。
+     * 若直接取 `promptEnhancementTarget`，一次能力探测失败（ping 超时 / 网络抖动）
+     * 就会让它变成 null，于是：
+     * 1) LaunchedEffect 重跑 → 正在飞的增强被 cancel；
+     * 2) 服务端看到连接断开 → 回 499（客户端表现为「增强失败 (HTTP 499)」）；
+     * 3) 即使请求侥幸成功，modelKey 变成空串也会让 canApply 拒绝回填。
+     * 用户点了魔棒什么都没改却「莫名其妙报错」，根因就在这里。
+     */
+    var stickyTarget by remember(sessionId) {
+        mutableStateOf(promptEnhancementTarget)
+    }
+    LaunchedEffect(promptEnhancementTarget) {
+        // 只有拿到新的有效目标才覆盖；能力探测抖动（target 变 null）不清空，
+        // 否则回填会因 modelKey 变成空串而被 canApply 拒绝。
+        promptEnhancementTarget?.let { stickyTarget = it }
+    }
+    val enhancementConnectionKey = stickyTarget?.connectionKey
+    val enhancementModelKey = stickyTarget?.modelKey ?: ""
     // 修订号只用于「请求是否过期」判定，不是业务数据。
     var draftRevision by remember(sessionId, enhancementConnectionKey) { mutableStateOf(0L) }
     var branchRevision by remember(sessionId, enhancementConnectionKey) { mutableStateOf(0L) }
@@ -271,7 +290,7 @@ fun ChatScreen(
     val enhanceJobHolder = remember { mutableStateOf<Job?>(null) }
     /** 当前待从此处编辑并切分支的消息条目 ID（对标 pi-web 的 editEntryId）：发送时切分支 */
     var editingEntryId by remember(sessionId) { mutableStateOf<String?>(null) }
-    // 切会话 / 切连接：上一个会话的在飞增强必须真正取消，而不是只靠「回填被拦」。
+    // 只有「换会话 / 换连接」才该取消在飞请求；能力探测的抖动不算换连接。
     LaunchedEffect(sessionId, enhancementConnectionKey) {
         enhanceJobHolder.value?.cancel()
         enhanceJobHolder.value = null
@@ -447,9 +466,17 @@ fun ChatScreen(
                             "UNSUPPORTED_MODEL" -> serverMessage ?: "该模型暂不支持增强"
                             "ENHANCEMENT_UNAVAILABLE" -> serverMessage ?: "当前网关不支持提示词增强"
                             "INVALID_OUTPUT" -> "增强结果不可用，已保留原稿"
-                            else -> serverMessage ?: "增强失败，已保留原稿"
+                            // 客户端自己取消（切会话 / 点取消 / 连接被本机超时关掉）不该弹「失败」
+                            "CANCELLED" -> null
+                            else -> serverMessage ?: when (error) {
+                                is java.net.SocketTimeoutException -> "增强超时，已保留原稿"
+                                is java.io.InterruptedIOException -> "增强超时，已保留原稿"
+                                else -> "增强失败，已保留原稿"
+                            }
                         }
-                        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+                        if (message != null) {
+                            android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_LONG).show()
+                        }
                     }
             } finally {
                 // 新请求已接管时（requestId 已换）不要重置它的状态

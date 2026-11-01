@@ -480,9 +480,14 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 // 能力探测与模型目录并行：探测失败只影响增强入口，不影响模型列表。
                 lifecycleScope.launch {
-                    promptEnhancementCapability = apiClient.getPromptEnhancementCapability()
-                        .getOrNull()
-                        ?.takeIf { it.available }
+                    apiClient.getPromptEnhancementCapability()
+                        .onSuccess { cap ->
+                            // 明确应答：要么网关支持（按 available 决定可见性），要么明确不支持
+                            promptEnhancementCapability = cap?.takeIf { it.available }
+                        }
+                        // 探测失败（ping 超时 / 断网）**保留上一次结果**。
+                        // 这里曾经直接把失败当成 null，于是网络抖一下入口就消失；
+                        // 更糟的是它会连带取消正在进行的增强请求，服务端随后返回 499。
                 }
                 apiClient.getDynamicModels().onSuccess { catalog ->
                     dynamicCatalog = catalog
