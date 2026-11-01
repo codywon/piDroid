@@ -376,3 +376,20 @@ test('tells the client which INVALID_OUTPUT case happened', async () => {
   // 四种原因必须彼此可区分（否则透出也没意义）
   assert.equal(new Set(reasons.values()).size, reasons.size, JSON.stringify([...reasons]));
 });
+
+test('does not force the six-section report template on short drafts', async () => {
+  // 回归：pe-4 把【目标】【输入】【动作】【约束】【输出】【验收】完整列进提示词，
+  // 模型的已知行为是「枚举即清单，清单即填满」——7 字输入被扩成 480~719 字、
+  // 6~8 个小节，还带「验收标准/清单/待确认」。pe-5 改为长度锚点 + 禁元话术。
+  const { SYSTEM_PROMPT } = await import('../prompt-enhancement/prompt.mjs');
+  // 关键不是「不出现这些词」，而是「不再作为带解释的模板清单出现」。
+  // 旧版是「【目标】要达成什么，交付给谁用」这样逐条列举，模型于是逐条填满。
+  const templateLines = ['【目标】要', '【输入】涉及', '【动作】先', '【约束】不能', '【输出】要什么', '【验收】怎么'];
+  for (const line of templateLines) {
+    assert.equal(SYSTEM_PROMPT.includes(line), false, `提示词不该再枚举小节模板: ${line}`);
+  }
+  assert.match(SYSTEM_PROMPT, /不要写【目标】【输入】【动作】这类小标题/);
+  assert.match(SYSTEM_PROMPT, /1\.5~3 倍/);
+  assert.match(SYSTEM_PROMPT, /验收标准/);      // 明确禁止，而不是鼓励
+  assert.match(SYSTEM_PROMPT, /【待确认】清单/); // 同上
+});
