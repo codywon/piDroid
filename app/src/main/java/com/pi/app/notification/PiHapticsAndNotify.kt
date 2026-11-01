@@ -15,6 +15,7 @@ import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
 import androidx.core.app.NotificationCompat
+import com.pi.app.R
 import com.pi.app.MainActivity
 import com.pi.app.data.storage.AppPreferences
 
@@ -120,7 +121,7 @@ class PiHapticsAndNotify(private val context: Context) {
             )
 
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setSmallIcon(R.drawable.ic_stat_pi)
                 .setContentTitle("✓ 任务已完成 · $sessionTitle")
                 .setContentText("项目: $project · 所有步骤已执行完毕")
                 .setContentIntent(pendingIntent)
@@ -140,7 +141,7 @@ class PiHapticsAndNotify(private val context: Context) {
         if (!prefs.taskCompletedNotifyEnabled) return
         try {
             val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setSmallIcon(R.drawable.ic_stat_pi)
                 .setContentTitle(title)
                 .setContentText(content)
                 .setPriority(NotificationCompat.PRIORITY_LOW)

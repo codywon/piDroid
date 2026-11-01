@@ -22,7 +22,7 @@ import com.pi.app.ui.theme.ThemePalette
 /**
  * πDroid 品牌标识：纯色圆角底块 + 居中衬线字母 π（横梁两端下折、竖腿带衬脚）。
  *
- * 字形来源是 `res/drawable/ic_pi_glyph.xml`（108 视口，字形 51.7×47.1，占画布 48%）。
+ * 字形来源是 `res/drawable/ic_pi_glyph.xml`（108 视口，字形 58.3×53.1，占画布 54%）。
  * 桌面图标不能用这一份：adaptive icon 只显示中心 72 区域、等于放大 1.5 倍，
  * 所以 launcher 走单独的 `ic_launcher_foreground.xml`（字形 36×32.8）。
  *

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.pi.app.R
 import com.pi.app.MainActivity
 
 class PiForegroundService : Service() {
@@ -90,7 +91,7 @@ class PiForegroundService : Service() {
         )
 
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setSmallIcon(R.drawable.ic_stat_pi)
             .setContentTitle(title)
             .setContentText(content)
             .setContentIntent(pendingIntent)
@@ -171,7 +172,7 @@ class PiForegroundService : Service() {
                             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
                         )
                         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
-                            .setSmallIcon(android.R.drawable.stat_notify_sync)
+                            .setSmallIcon(R.drawable.ic_stat_pi)
                             .setContentTitle(title)
                             .setContentText(content)
                             .setContentIntent(pendingIntent)
