@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -1397,8 +1398,13 @@ fun SessionListScreen(
                         }
 
                         // 状态过滤标签：全部 | 未读 (带未读圆点) | 运行中 (带动态旋转 Spinner) | 已完成 (带完成图标)
+                        // 窄屏 / 大字号下四个胶囊必然放不下，这里必须单行 + 横向滚动：
+                        // 一旦让 Row 去压缩最后一个胶囊，标签就会在胶囊内部折成两行（「已完成」/「(71)」），
+                        // 撑高整行、把右侧视觉重心顶歪。滚动测量给的是无界宽度，胶囊永远按内容单行展开。
                         Row(
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
@@ -2645,11 +2651,15 @@ private fun FilterPill(
             horizontalArrangement = Arrangement.spacedBy(5.dp)
         ) {
             leadingIcon?.invoke()
+            // 胶囊标签永远单行：折行会让整个胶囊变形，宁可整行横向滚动
             Text(
                 text = label,
                 fontSize = 11.5.sp,
                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                color = if (selected) highlight else theme.textSecondary
+                color = if (selected) highlight else theme.textSecondary,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Clip
             )
         }
     }
