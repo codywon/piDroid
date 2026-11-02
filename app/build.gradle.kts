@@ -5,7 +5,7 @@ plugins {
 }
 
 /**
- * R8 逆送开关。默认开启压缩与混淆。
+ * R8 压缩与混淆开关。默认开启。
  *
  * 审计结论（代码层面的反射面）：
  *  - 唯一的 Gson 反射反序列化目标是 TypeToken<List<Session>>，Session 位于
@@ -16,7 +16,21 @@ plugins {
  * 因此 R8 风险可控。但若某次依赖升级引入了默认规则覆盖不到的反射，
  * 可先用 ./gradlew assembleRelease -Ppidroid.minify=false 出货，再排查。
  */
-val minifyRelease = (project.findProperty("pidroid.minify") as String?)?.toBoolean() ?: true
+val minifyRelease = when (val raw = project.findProperty("pidroid.minify") as String?) {
+    null -> true
+    "true" -> true
+    "false" -> false
+    // 以前用 `toBoolean()`：任何拼错的值（flase / no / 0 / …）都会静默变成 false，
+    // 于是一次手滑就发出去一个没压缩、没混淆的 release 包。宁可在配置阶段就红。
+    else -> error("pidroid.minify 只能是 'true' 或 'false'，实际收到：'$raw'")
+}
+
+// 发布签名材料：全部来自环境变量（CI 用 secrets 注入，说明见 docs/SIGNING.md）。
+// 缺哪项由下面的 taskGraph 校验在「真的要出 release 包」时报错，不在此处卡住配置阶段。
+val releaseKeystoreFile = file("${rootDir}/keystore/release.jks")
+val releaseStorePassword = System.getenv("KEYSTORE_PASSWORD")
+val releaseKeyAlias = System.getenv("KEY_ALIAS")
+val releaseKeyPassword = System.getenv("KEY_PASSWORD")
 
 android {
     namespace = "com.pi.app"
@@ -26,8 +40,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 149
-        versionName = "1.8.43"
+        versionCode = 150
+        versionName = "1.8.44"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -42,15 +56,14 @@ android {
                 keyPassword = "android"
             }
         }
-        // 发布签名完全由环境变量提供，不再内置任何默认密码。
-        // 缺少 keystore/密码时 AGP 的 validateSigning 会直接失败，
-        // 而不是静默产出一个未签名的 APK。配置方法见 docs/SIGNING.md。
+        // 发布签名完全由环境变量提供，不再内置任何默认密码/别名。
+        // 以前 KEY_ALIAS 有个硬编码兜底 "pidroid"：keystore 换代之后照样用它签，
+        // 报错是「别名不存在」，把真正的病因（少配了一个 secret）藏了起来。
         create("release") {
-            val keystoreFile = file("${rootDir}/keystore/release.jks")
-            storeFile = keystoreFile.takeIf { it.exists() }
-            storePassword = System.getenv("KEYSTORE_PASSWORD")
-            keyAlias = System.getenv("KEY_ALIAS") ?: "pidroid"
-            keyPassword = System.getenv("KEY_PASSWORD")
+            storeFile = releaseKeystoreFile.takeIf { it.exists() }
+            storePassword = releaseStorePassword
+            keyAlias = releaseKeyAlias
+            keyPassword = releaseKeyPassword
         }
     }
 
@@ -80,6 +93,36 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+}
+
+/**
+ * 发布签名材料的硬校验，只在「本次构建真的要出 release 包」时生效。
+ *
+ * 不在配置阶段无条件 error：`testDebugUnitTest` 一样会配置整个工程，
+ * 那样会让 CI 的单测步骤在缺 secret 时直接崩掉，而它跟签名根本无关。
+ * 这里缺项直接失败，不让流水线带一个没签名或签错名的包往下走。
+ */
+val releasePackagingTaskNames = setOf(
+    "assembleRelease",
+    "bundleRelease",
+    "packageRelease",
+    "validateSigningRelease"
+)
+gradle.taskGraph.whenReady {
+    val wantsRelease = it.allTasks.any { task -> task.name in releasePackagingTaskNames }
+    if (wantsRelease) {
+        val missing = buildList {
+            if (!releaseKeystoreFile.exists()) add("keystore/release.jks")
+            if (releaseStorePassword.isNullOrBlank()) add("KEYSTORE_PASSWORD")
+            if (releaseKeyAlias.isNullOrBlank()) add("KEY_ALIAS")
+            if (releaseKeyPassword.isNullOrBlank()) add("KEY_PASSWORD")
+        }
+        if (missing.isNotEmpty()) {
+            throw GradleException(
+                "Release signing is not configured: missing ${missing.joinToString(", ")}. See docs/SIGNING.md."
+            )
+        }
     }
 }
 
