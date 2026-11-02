@@ -65,6 +65,16 @@ import java.util.Locale
 private const val LIST_AUTO_REFRESH_MIN_INTERVAL_MS = 15_000L
 
 /**
+ * 压缩请求「UI 宽限」：超过这个时长，且服务端状态明确说「不在压缩」时，
+ * 就只清掉界面上的转圈标记。
+ *
+ * 为什么需要：压缩请求本身**没有客户端超时**（对齐 pi-web 的裸 fetch），回执丢了的话
+ * 它可能永远不返回。但“不超时”不等于“界面可以永远转圈”：只要这次状态读成功拿到
+ * `isCompacting=false`，就已经能证明压缩结束了。30s 是留给「请求刚发出、pi 还没开始压」的余量。
+ */
+private const val COMPACT_REQUEST_UI_GRACE_MS = 30_000L
+
+/**
  * 断流持续多久才提示「连不上网关」。
  *
  * SSE 自带退避重连，短暂抖动应自己恢复；只有持续连不上（通常意味着 PC 端网关/隧道
@@ -472,6 +482,10 @@ class MainActivity : ComponentActivity() {
         val pendingPromptSentAt = remember { mutableMapOf<String, Long>() }
         // 提交请求还未返回的乐观气泡：结果未定，结算时一律不动。
         val pendingPromptSends = remember { mutableSetOf<String>() }
+        // 本次压缩请求的发起时刻：压缩请求本身**没有超时**（对齐 pi-web 的裸 fetch），
+        // 但回执真的丢了的时候，不能让它把界面永远锁在「正在压缩」——服务端状态明确说
+        // 「不在压」且请求已超过宽限，就只清 UI 标记（不取消请求）。
+        val compactionRequestStartedAt = remember { mutableMapOf<String, Long>() }
         var isGatewayOnline by remember { mutableStateOf(true) }
         var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
         // 断流起点（0 表示当前是连着的）/ 是否已提示过一次：用于“连不上网关”的一次性诊断，不刷屏
@@ -1033,6 +1047,18 @@ class MainActivity : ComponentActivity() {
             runtime?.let { st ->
                 val wasCompacting = compactionState.isCompacting(sessionId)
                 compactionState = compactionState.serverChanged(sessionId, st.isCompacting)
+                // 回执丢失兜底：服务端已经明确「不在压缩」时，一条超过宽限仍未返回的 compact 请求
+                // 不再代表「正在压缩」（它可能只是因为隧道断了永远拿不到回执）。
+                // 只清界面标记，不取消请求 —— 这仍然符合 pi-web「请求不设超时」的语义。
+                if (!st.isCompacting) {
+                    val startedAt = compactionRequestStartedAt[sessionId]
+                    if (startedAt != null &&
+                        System.currentTimeMillis() - startedAt >= COMPACT_REQUEST_UI_GRACE_MS
+                    ) {
+                        compactionState = compactionState.requestFinished(sessionId)
+                        compactionRequestStartedAt.remove(sessionId)
+                    }
+                }
                 // 断流时收不到 compaction_end：用「之前在压、现在不在压且没在跑」兜底收尾。
                 // 手动压缩不会接着跑，`!st.running` 保证自动压缩后继续的回合不被误判成结束。
                 if (wasCompacting && !st.isCompacting && !st.running &&
@@ -1277,6 +1303,79 @@ class MainActivity : ComponentActivity() {
                     }
                 } else {
                     consecutiveIdlePolls = 0
+                }
+            }
+        }
+
+        /**
+         * 发起一次手动压缩。按钮与 `/compact [自定义指令]` 共用同一条路径（对齐 pi-web 的 `handleCompact`）。
+         *
+         * 三个对齐点：
+         * 1) 请求本身**没有客户端超时**（pi-web 就是裸 fetch），卡住时的出口是「停止压缩」；
+         * 2) 失败分三类：取消 / 服务端明确拒收 / 结果未确认（见下面的 onFailure）；
+         * 3) 服务端明确拒收时把命令文本还回输入框（pi-web 的 `prependText(`/compact ...`)`）。
+         */
+        fun startCompaction(
+            sid: String,
+            customInstructions: String? = null,
+            onRejected: (() -> Unit)? = null
+        ) {
+            // 先占位再发请求：状态只跟着这条会话走，不污染其它会话；
+            // 压缩中按钮会变成「停止压缩」（abort_compaction）。
+            compactionState = compactionState.requestStarted(sid)
+            compactionRequestStartedAt[sid] = System.currentTimeMillis()
+            Toast.makeText(this@MainActivity, "正在压缩上下文…", Toast.LENGTH_SHORT).show()
+            lifecycleScope.launch {
+                try {
+                    apiClient.compactContext(sid, customInstructions)
+                        .onSuccess {
+                            compactionState = compactionState.serverFinished(sid)
+                            Toast.makeText(this@MainActivity, "上下文已压缩", Toast.LENGTH_SHORT).show()
+                            apiClient.getSessionStats(sid).onSuccess {
+                                if (currentSession?.id == sid) tokenStats = it
+                            }
+                            syncSessionSnapshot(sid, allowCompletionTransition = false)
+                        }
+                        .onFailure { err ->
+                            // 三种结局必须分开说，否则会把「服务端还在压」或「用户自己停的」报成失败：
+                            // · 取消：用户按了「停止压缩」，pi 以 Compaction cancelled 拒绝；
+                            // · 服务端真回了 JSON 错误（Compaction failed / Already compacted /
+                            //   Nothing to compact）：真失败，命令文本还给输入框；
+                            // · 其它（断流 / 隧道或 nginx 的错误页）：结果未知，服务端很可能仍在压，
+                            //   保留 serverCompacting，等 SSE compaction_end 或 isCompacting 收尾。
+                            val serverRejected = err is AgentCommandException && err.fromServerJson
+                            if (CompactionFailure.isCancellation(err.message)) {
+                                compactionState = compactionState.serverFinished(sid)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "已取消压缩",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                syncSessionSnapshot(sid, allowCompletionTransition = false)
+                            } else if (serverRejected) {
+                                compactionState = compactionState.serverFinished(sid)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "压缩失败：${err.message ?: "未知错误"}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                onRejected?.invoke()
+                            } else {
+                                compactionState = compactionState.requestFinished(sid)
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "压缩仍在服务端进行（回执丢失），完成后会自动同步",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                                // 立刻对一次账：若服务端其实已经压完，这里就能把它收尾
+                                syncSessionSnapshot(sid, allowCompletionTransition = false)
+                            }
+                        }
+                } finally {
+                    // 请求自身的转圈必须有出口（异常时不能永远转下去）；
+                    // serverCompacting 不动 —— 是否真在压缩由服务端事实决定。
+                    compactionState = compactionState.requestFinished(sid)
+                    compactionRequestStartedAt.remove(sid)
                 }
             }
         }
@@ -2610,9 +2709,9 @@ class MainActivity : ComponentActivity() {
                                 "没有活跃会话",
                                 Toast.LENGTH_SHORT
                             ).show()
-                            // 防重入：压缩耗时实测 71s~333s，按钮转圈时仍然可点，
-                            // 第二下会让 pi 在「分支最后一条已经是 compaction」时抛 Already compacted，
-                            // 或者与第一轮并发写两条 compaction entry。
+                            // 防重入（pi-web 的 handleCompact 也是 `if (!sid || isCompacting) return`）：
+                            // 压缩按钮在压缩中已经变成「停止压缩」，这里再兜一道，避免第二路调用
+                            // 让 pi 抛 Already compacted 或并发写两条 compaction entry。
                             compactionState.isCompacting(sid) -> Toast.makeText(
                                 this@MainActivity,
                                 "正在压缩上下文，请稍候",
@@ -2623,56 +2722,29 @@ class MainActivity : ComponentActivity() {
                                 "任务执行中，压缩会中断当前回合；请等本轮结束或先停止任务",
                                 Toast.LENGTH_LONG
                             ).show()
-                            else -> {
-                                // 先占位再发请求：这一次 POST 走的是 10 分钟时限的 compactClient，
-                                // 转圈状态只跟着「这次请求」走，不再影响其它会话。
-                                compactionState = compactionState.requestStarted(sid)
-                                Toast.makeText(this@MainActivity, "正在压缩上下文…", Toast.LENGTH_SHORT).show()
-                                lifecycleScope.launch {
-                                    try {
-                                        apiClient.compactContext(sid)
-                                            .onSuccess {
-                                                compactionState = compactionState.serverFinished(sid)
-                                                Toast.makeText(this@MainActivity, "上下文已压缩", Toast.LENGTH_SHORT).show()
-                                                apiClient.getSessionStats(sid).onSuccess {
-                                                    if (currentSession?.id == sid) tokenStats = it
-                                                }
-                                                syncSessionSnapshot(sid, allowCompletionTransition = false)
-                                            }
-                                            .onFailure { err ->
-                                                // 两种失败必须分开说，否则会把「服务端还在压、只是回执丢了」报成失败：
-                                                // · 服务端真的回了 JSON 错误（Compaction failed / Already compacted /
-                                                //   Nothing to compact）：是真失败；
-                                                // · 其它（超时 / 断流 / 隧道或 nginx 的错误页）：结果未知，
-                                                //   服务端很可能仍在压，保留 serverCompacting，等 SSE compaction_end
-                                                //   或状态里的 isCompacting 收尾。
-                                                val serverRejected = err is AgentCommandException && err.fromServerJson
-                                                if (serverRejected) {
-                                                    // 服务端明确拒收（Compaction failed / Already compacted /
-                                                    // Nothing to compact）：压缩没有发生，直接收尾。
-                                                    compactionState = compactionState.serverFinished(sid)
-                                                    Toast.makeText(
-                                                        this@MainActivity,
-                                                        "压缩失败：${err.message ?: "未知错误"}",
-                                                        Toast.LENGTH_LONG
-                                                    ).show()
-                                                } else {
-                                                    compactionState = compactionState.requestFinished(sid)
-                                                    Toast.makeText(
-                                                        this@MainActivity,
-                                                        "压缩仍在服务端进行（回执丢失），完成后会自动同步",
-                                                        Toast.LENGTH_LONG
-                                                    ).show()
-                                                    // 立刻对一次账：若服务端其实已经压完，这里就能把它收尾
-                                                    syncSessionSnapshot(sid, allowCompletionTransition = false)
-                                                }
-                                            }
-                                    } finally {
-                                        // 请求自身的转圈必须有出口（异常时不能永远转下去）；
-                                        // serverCompacting 不动 —— 是否真在压缩由服务端事实决定。
-                                        compactionState = compactionState.requestFinished(sid)
+                            else -> startCompaction(sid)
+                        }
+                    },
+                    // 对齐 pi-web：压缩中把压缩按钮就地变成「停止压缩」，发 abort_compaction。
+                    // 这也是「没设客户端超时」的前提：卡住时的逃生口是主动停止，而不是等超时。
+                    onAbortCompaction = {
+                        val sid = activeSessionId
+                        if (sid.isNotBlank()) {
+                            lifecycleScope.launch {
+                                apiClient.abortCompaction(sid)
+                                    .onSuccess {
+                                        // pi 会发 compaction_end（aborted=true），并把在飞的 compact 请求以
+                                        // "Compaction cancelled" 拒掉；那边会统一提示「已取消压缩」。
+                                        // 这里只收状态（按钮立刻变回压缩图标），不重复弹 toast。
+                                        compactionState = compactionState.serverFinished(sid)
                                     }
-                                }
+                                    .onFailure { err ->
+                                        Toast.makeText(
+                                            this@MainActivity,
+                                            "停止压缩失败：${err.message ?: "未知错误"}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
                             }
                         }
                     },
@@ -2757,6 +2829,35 @@ class MainActivity : ComponentActivity() {
                         // set_auto_compaction → 回一条提示，这里亦然；唯一差异是失败时把
                         // 草稿还回输入框（pi-web 只弹报错，正文就丢了）。
                         val builtin = SLASH_COMMAND_PATTERN.find(prompt.trim())
+                        // `/compact [自定义指令]`：与 pi-web 的 slash dispatcher 同构 —— 客户端拦截执行，
+                        // 绝不把命令文本当普通提问发给模型。
+                        if (builtin != null && builtin.groupValues[1] == "compact") {
+                            val cmdSessionId = activeSessionId
+                            val instructions = builtin.groupValues.getOrNull(2)
+                                ?.trim()?.takeIf { it.isNotBlank() }
+                            when {
+                                cmdSessionId.isBlank() -> {
+                                    onSubmissionRestore?.invoke()
+                                    Toast.makeText(this@MainActivity, "没有活跃会话", Toast.LENGTH_SHORT).show()
+                                }
+                                compactionState.isCompacting(cmdSessionId) -> {
+                                    onSubmissionRestore?.invoke()
+                                    Toast.makeText(this@MainActivity, "正在压缩上下文，请稍候", Toast.LENGTH_SHORT).show()
+                                }
+                                isAgentBusy || isToolExecuting -> {
+                                    onSubmissionRestore?.invoke()
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "任务执行中，压缩会中断当前回合；请等本轮结束或先停止任务",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                                // 服务端明确拒收（Already compacted / Nothing to compact）时，
+                                // 把 `/compact …` 原样还给输入框，与 pi-web 的 prependText 一致。
+                                else -> startCompaction(cmdSessionId, instructions, onRejected = onSubmissionRestore)
+                            }
+                            return@ChatScreen
+                        }
                         if (builtin != null && builtin.groupValues[1] == "auto-compact") {
                             val cmdSessionId = activeSessionId
                             lifecycleScope.launch {

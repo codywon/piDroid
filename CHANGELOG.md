@@ -2,6 +2,43 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.48] - 2026-11-02
+
+### 🧭 压缩链路改为 1:1 对齐 pi-web：不设客户端超时，压缩中可「停止压缩」
+
+上一版（1.8.47）虽然消除了「压缩假失败」，但仍有一处**有意偏离**：给压缩配了 10 分钟超时。
+按「原则上必须对齐 pi-web」重新核对了 pi-web 0.13.0 的**前端包与服务端产物**，实际行为如下：
+
+| 维度 | pi-web 的真实行为 |
+| --- | --- |
+| 客户端超时 | **完全没有**。agent 命令客户端是一个裸 `fetch()`：无 AbortController、无 signal、无 timeout（`async function aI(id,payload){await fetch(...)}`） |
+| 压缩中状态 | 会话 store 的 `run.compacting`（服务端 `get_state.isCompacting`）+ 一次请求标记，**按会话**；状态行文案 `chat.compacting` / `chat.compactingQueued` |
+| 重入保护 | `handleCompact` 开头 `if (!sessionId \|\| isCompacting) return true` —— 已在压缩就直接忽略 |
+| 卡住/太久怎么办 | 同一按钮就地变成红色「停止压缩」（`chat.stopCompaction`）→ `{"type":"abort_compaction"}` |
+| 异常展示 | 输入区上方的红色 inline alert（`role="alert"`）+ ✕ 关闭（`chat.dismissCompactError`），不走 toast |
+| 输入框 | 压缩中 placeholder =「正在压缩…消息会排队，压缩结束后发送」 |
+
+据此对齐：
+
+- **去掉压缩的所有客户端超时**（`readTimeout(0)` = 不超时）—— pi-web 等多久我们就等多久；
+  网络真正断开时仍有 OkHttp HTTP/2 ping（20s）与连接错误兜底。
+- **新增「停止压缩」：压缩中同一个圆圈按钮变红，点一下发 `{"type":"abort_compaction"}`**（pi 会
+  同时 abort 手动/自动压缩控制器）；卡住的压缩不再只能干等，也不再弹假失败。
+- **取消不当失败**：新增 `CompactionFailure.isCancellation()`，用户自己停的压缩（pi 会把
+  `compact()` 以 `Compaction cancelled` 拒绝）提示「已取消压缩」；真失败（`Compaction failed` /
+  `Already compacted` / `Nothing to compact`）仍原样报错。
+- 输入框 placeholder 对齐：压缩中显示「正在压缩…消息会排队，压缩结束后发送」。
+- 底部状态行对齐 `chat.compactingQueued`：压缩中带排队数（「正在压缩上下文… · N 条排队中」）。
+- 补上 `/compact [自定义指令]` 内置命令（与按钮共用 `startCompaction`）：以前手敲 `/compact` 会被当成
+  普通提问发给模型；服务端明确拒收时命令文本还给输入框（对齐 pi-web 的 `prependText`）。
+- 单测：`CompactionUiStateTest` 补 1 例取消分类（8 个断言）。
+
+**保留的两个有意差异**（均为移动端适配，不影响协议）
+
+- pi-web 用可关闭的 inline alert；手机端沿用 Toast（不占正文空间）。
+- 已修复的 per-session 压缩状态仍然保留 —— pi-web 本来就是这个语义（`run.compacting` 属于单条
+  会话），App 之前才是那个全局单例。
+
 ## [1.8.47] - 2026-11-02
 
 ### 🗜️ 修复「一个会话压缩，所有会话都在压缩」与「压缩假失败」，以及重复的未送达提问

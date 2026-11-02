@@ -92,4 +92,18 @@ class CompactionUiStateTest {
 
         assertEquals(CompactionUiState(), state)
     }
+
+    @Test
+    fun `compaction cancelled by the user is not a failure`() {
+        // 用户按了「停止压缩」后 pi 拒绝的两种文案（见 pi 的 compact() 与摘要 signal）
+        assertTrue(CompactionFailure.isCancellation("Compaction cancelled"))
+        assertTrue(CompactionFailure.isCancellation("Compaction canceled"))
+        assertTrue(CompactionFailure.isCancellation("This operation was aborted"))
+        assertTrue(CompactionFailure.isCancellation("aborted"))
+        // 真正的失败不能被当成取消
+        assertFalse(CompactionFailure.isCancellation("Compaction failed: Nothing to compact (session too small)"))
+        assertFalse(CompactionFailure.isCancellation("Already compacted"))
+        assertFalse(CompactionFailure.isCancellation(null))
+        assertFalse(CompactionFailure.isCancellation(""))
+    }
 }

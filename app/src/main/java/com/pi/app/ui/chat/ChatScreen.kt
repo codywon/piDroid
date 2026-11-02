@@ -175,6 +175,12 @@ fun ChatScreen(
     onOpenModelSheet: () -> Unit,
     onOpenThinkingSheet: () -> Unit = {},
     onCompactContext: () -> Unit,
+    /**
+     * 停止正在进行的压缩（pi 的 `{"type":"abort_compaction"}`）。
+     *
+     * 对齐 pi-web：压缩中压缩按钮就地变成「停止压缩」，而不是给请求加超时。
+     */
+    onAbortCompaction: () -> Unit = {},
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
@@ -1552,23 +1558,26 @@ fun ChatScreen(
                                 }
                             }
                         }
-                        // 1. 圆圈 + 压缩图标按钮
-                        // 压缩本身可能跑几分钟（服务端同步生成摘要），转圈期间必须禁用重复点击：
-                        // 第二下会让 pi 在「分支最后一条已是 compaction」时抛 Already compacted。
+                        // 1. 圆圈 + 压缩 / 停止压缩按钮
+                        // 对齐 pi-web：同一位置在压缩中变成红色「停止压缩」
+                        // （`{type:"abort_compaction"}`），而不是把按钮置灰。
+                        // 压缩请求本身没有客户端超时（pi-web 就是裸 fetch），卡住时的逃生口就是这个按钮。
                         Surface(
                             shape = CircleShape,
-                            color = theme.surfaceContainer,
-                            border = BorderStroke(1.dp, theme.outline),
+                            color = if (isCompacting) MaterialTheme.colorScheme.error else theme.surfaceContainer,
+                            border = BorderStroke(1.dp, if (isCompacting) MaterialTheme.colorScheme.error else theme.outline),
                             modifier = Modifier
                                 .size(28.dp)
-                                .clickable(enabled = !isCompacting) { onCompactContext() }
+                                .clickable {
+                                    if (isCompacting) onAbortCompaction() else onCompactContext()
+                                }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 if (isCompacting) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(13.dp),
-                                        strokeWidth = 1.5.dp,
-                                        color = theme.primary
+                                    Box(
+                                        modifier = Modifier
+                                            .size(9.dp)
+                                            .background(Color.White, RoundedCornerShape(1.5.dp))
                                     )
                                 } else {
                                     Icon(
@@ -1899,7 +1908,13 @@ fun ChatScreen(
                             ) {
                                 if (inputText.isEmpty()) {
                                     Text(
-                                        text = if (isAgentBusy) "输入指令后点击上方引导/排队图标..." else "向 Agent 发送指令...",
+                                        text = when {
+                                            // 对齐 pi-web 的占位文案：压缩期间的普通消息会被 pi-web park，
+                                            // 压缩结束后按 FIFO 下发，不会丢。
+                                            isCompacting -> "正在压缩…消息会排队，压缩结束后发送"
+                                            isAgentBusy -> "输入指令后点击上方引导/排队图标..."
+                                            else -> "向 Agent 发送指令..."
+                                        },
                                         color = theme.textMuted,
                                         fontSize = 14.sp,
                                         maxLines = 1,
@@ -2372,6 +2387,9 @@ fun ChatScreen(
                         item(key = "pi_web_agent_phase_indicator") {
                             PiWebPhaseIndicator(
                                 text = when {
+                                    // 对齐 pi-web 的 `chat.compactingQueued`：「正在压缩… · N 条排队中」
+                                    isCompacting && queuedMessages.isNotEmpty() ->
+                                        "正在压缩上下文… · ${queuedMessages.size} 条排队中"
                                     isCompacting -> "正在压缩上下文..."
                                     !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
                                     else -> "正在等待模型..."
@@ -3685,12 +3703,14 @@ internal enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO,
 /**
  * App 侧内置的斜杠命令（对标 pi-web 的 `source:"builtin"` 命令表）。
  *
- * 它们不来自网关：pi 内核没有这些命令，发上去只会变成一条普通用户消息，
- * 所以由客户端拦截执行（/auto-compact → get_state → set_auto_compaction）。
+ * 它们不来自网关：pi 内核没有这些命令（`get_commands` 只回扩展 / 模板 / 技能），
+ * 发上去只会变成一条普通用户消息，所以由客户端拦截执行
+ * （/auto-compact → get_state → set_auto_compaction；/compact → POST {"type":"compact"}）。
  * 仍然放进面板，是为了手机上也能发现；描述文案直接沿用 pi-web 的 zh-CN。
  */
 private val BUILTIN_SLASH_COMMANDS = listOf(
-    SlashCommand(name = "auto-compact", description = "切换自动上下文压缩（全局设置）", source = "builtin")
+    SlashCommand(name = "auto-compact", description = "切换自动上下文压缩（全局设置）", source = "builtin"),
+    SlashCommand(name = "compact", description = "压缩上下文（可附自定义摘要指令）", source = "builtin")
 )
 
 @Composable

@@ -179,19 +179,26 @@ class PiApiClient(private val prefs: AppPreferences) {
         .build()
 
     /**
-     * 手动压缩上下文专用：`POST /api/agent/{id} {"type":"compact"}` 是**同步长请求**。
+     * 手动压缩上下文专用。
      *
-     * pi-web 的 wrapper 是 `case "compact": await this.inner.compact(...)`，摘要生成完、
-     * compaction entry 写盘之后才回第一个字节，中间不会有任何进度字节。本机实测同一个大会话的
-     * 四次手动压缩耗时 71s / 189s / 296s / 333s（摘要沿用会话的 thinkingLevel，max 档更慢），
-     * 而主 [client] 的 readTimeout 只有 120s —— 超过一半的压缩会被客户端判成 `timeout`，
-     * 界面弹「压缩失败」，服务端却仍在继续并很快写盘成功。
+     * **刻意没有任何客户端超时**，与 pi-web 完全一致：它的 agent 命令客户端就是一个裸
+     * `fetch()`（无 AbortController / 无 signal / 无超时），压缩跑多久就等多久。
+     * 对齐依据（pi-web 0.13.0 前端包）：
+     * ```js
+     * async function aI(id, payload) {
+     *   const res = await fetch(`/api/agent/${id}`, { method: "POST", ... })
+     *   ...
+     * }
+     * ```
+     * 而这正是之前「压缩假失败」的来源：主 [client] 的 readTimeout 只有 120s，而本机实测同一
+     * 大会话的四次压缩耗时 71s / 189s / 296s / 333s（摘要沿用会话 thinkingLevel，max 档更慢），
+     * 超过一半会被客户端判成 `timeout`，界面报「压缩失败」，服务端却写盘成功。
      *
-     * 所以给压缩一条独立的、足够长的时限：宁可多等，也不要报一个假失败。
+     * OkHttp 的 `readTimeout(0)` 就是「不超时」。真正的逃生口与 pi-web 一致：压缩中把压缩
+     * 按钮换成「停止压缩」，发 `{"type":"abort_compaction"}`（见 [abortCompaction]）。
      */
     private val compactClient = client.newBuilder()
-        .readTimeout(10, TimeUnit.MINUTES)
-        .callTimeout(10, TimeUnit.MINUTES)
+        .readTimeout(0, TimeUnit.SECONDS)
         .build()
 
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
@@ -2557,8 +2564,36 @@ class PiApiClient(private val prefs: AppPreferences) {
             .map { data -> AgentCommandPayload.recalledOf(data) }
     }
 
-    suspend fun compactContext(sessionId: String): Result<Boolean> =
-        sendAgentAction(sessionId, mapOf("type" to "compact"), httpClient = compactClient)
+    /**
+     * 手动压缩上下文（可带自定义摘要指令）：`POST /api/agent/{id} {"type":"compact","customInstructions":"…"}`。
+     *
+     * 对齐 pi-web 的 `/compact [instructions]`：pi 的 `compact(customInstructions)` 会把它原样交给
+     * 摘要器。不设客户端超时（见 [compactClient]）。
+     */
+    suspend fun compactContext(
+        sessionId: String,
+        customInstructions: String? = null
+    ): Result<Boolean> {
+        val payload = buildMap<String, Any> {
+            put("type", "compact")
+            customInstructions?.takeIf { it.isNotBlank() }?.let { put("customInstructions", it) }
+        }
+        return sendAgentAction(sessionId, payload, httpClient = compactClient)
+    }
+
+    /**
+     * 停止正在进行的压缩（含自动压缩）：`POST /api/agent/{id} {"type":"abort_compaction"}`。
+     *
+     * 对齐 pi-web 的 `abortCompaction()`（wrapper：`case "abort_compaction": this.inner.abortCompaction()`，
+     * 返回 null）：pi 会同时 abort 手动与自动两条压缩控制器，随后 `compact()` 以
+     * "Compaction cancelled" 拒绝，并照常发 `compaction_end`。
+     *
+     * 这是「压缩很久/看起来卡住」的正确出口 —— pi-web 的前端也是把压缩按钮就地变成
+     * 「停止压缩」，而不是给请求加超时。
+     */
+    suspend fun abortCompaction(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        sendAgentAction(sessionId, mapOf("type" to "abort_compaction"))
+    }
 
     suspend fun updateModel(sessionId: String, provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "set_model", "provider" to provider, "modelId" to modelId))

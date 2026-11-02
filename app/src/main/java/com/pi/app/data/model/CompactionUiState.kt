@@ -80,3 +80,22 @@ data class CompactionUiState(
         )
     }
 }
+
+/**
+ * 压缩失败文案的分类（纯 JVM，可单测）。
+ *
+ * pi 在压缩被 `abort_compaction` 打断时，`compact()` 会以 `"Compaction cancelled"` 拒绝
+ * （摘要流被 signal 中断时也可能是 `"This operation was aborted"`）。这不是失败，而是用户
+ * 自己按了「停止压缩」的预期结果，不能弹「压缩失败」。
+ */
+object CompactionFailure {
+
+    /** 用户主动停止 / 被 abort 导致的「取消」。 */
+    fun isCancellation(message: String?): Boolean {
+        val text = message?.lowercase()?.trim() ?: return false
+        if (text.isEmpty()) return false
+        return text.contains("compaction cancel") ||
+            text.contains("operation was aborted") ||
+            text == "aborted"
+    }
+}
