@@ -2,7 +2,9 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.49] - 2026-11-02
+## [1.8.50] - 2026-11-02
+
+> `v1.8.49` 的 tag 因测试用例对归档类文件的特定描述断言与分词分类不一致未产出安装包，本版为修复后的同内容首发。
 
 ### 📱 优化文件管理与预览体验：全屏独立漫游、手势返回、PDF 缩放翻页与 Office 优雅兜底
 

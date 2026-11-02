@@ -173,7 +173,21 @@ class LoadFilePreviewTest {
     }
 
     @Test
-    fun `load binary file sets isBinary and informative message`() = runBlocking {
+    fun `load archive zip sets office kind with compression description`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 5000L, mime = "application/zip")
+        )
+
+        val result = RemoteFilePreviewLoader.load("archive.zip", ds)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
+        assertTrue(result.isBinary)
+        assertNull(result.text)
+        assertNotNull(result.message)
+        assertTrue(result.message!!.contains("压缩包"))
+    }
+
+    @Test
+    fun `load unknown binary file sets office kind with binary message`() = runBlocking {
         val ds = FakeDataSource(
             meta = FileMeta(size = 5000L, mime = "application/octet-stream"),
             textChunk = FileTextChunk(
@@ -185,7 +199,7 @@ class LoadFilePreviewTest {
             )
         )
 
-        val result = RemoteFilePreviewLoader.load("archive.zip", ds)
+        val result = RemoteFilePreviewLoader.load("firmware.bin", ds)
         assertEquals(ArtifactKind.OFFICE, result.kind)
         assertTrue(result.isBinary)
         assertNull(result.text)
