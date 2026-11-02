@@ -756,39 +756,177 @@ internal fun SvgWebViewCanvas(
     modifier: Modifier = Modifier
 ) {
     val isDark = LocalAppTheme.current.isDark
-    val html = remember(svgContent, isDark) {
+    val cleanSvg = remember(svgContent) {
+        // 安全防护：彻底剥除 SVG 中可能夹带的 <script> 标签
+        svgContent.replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
+    }
+
+    val html = remember(cleanSvg, isDark, enableZoom) {
         val bgHex = if (isDark) "#14161F" else "#F8FAFC"
         val fgHex = if (isDark) "#E2E8F0" else "#1E293B"
         val tokens = widgetTokens(isDark)
-        """
-        <!DOCTYPE html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=${if (enableZoom) "yes" else "no"}">
-        <style>
-          $tokens
-        </style>
-        <style>
-          html, body {
-            margin: 0; padding: 8px;
-            background: $bgHex; color: $fgHex;
-            display: flex; align-items: center; justify-content: center;
-            min-height: calc(100vh - 16px);
-            box-sizing: border-box;
-          }
-          svg {
-            display: block;
-            width: 100%;
-            height: auto;
-            max-height: 92vh;
-          }
-        </style>
-        </head>
-        <body>
-        $svgContent
-        </body>
-        </html>
-        """.trimIndent()
+
+        if (!enableZoom) {
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+            <style>
+              $tokens
+              html, body {
+                margin: 0; padding: 8px;
+                background: $bgHex; color: $fgHex;
+                display: flex; align-items: center; justify-content: center;
+                min-height: calc(100vh - 16px);
+                box-sizing: border-box;
+              }
+              svg { display: block; width: 100%; height: auto; max-height: 92vh; }
+            </style>
+            </head>
+            <body>$cleanSvg</body>
+            </html>
+            """.trimIndent()
+        } else {
+            val badgeBg = if (isDark) "rgba(30, 41, 59, 0.85)" else "rgba(241, 245, 249, 0.85)"
+            val badgeBorder = if (isDark) "rgba(148, 163, 184, 0.3)" else "rgba(148, 163, 184, 0.4)"
+            val badgeFg = if (isDark) "#94A3B8" else "#64748B"
+            """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            <style>
+              $tokens
+              * { box-sizing: border-box; }
+              html, body {
+                margin: 0; padding: 0; width: 100%; height: 100%;
+                overflow: hidden; background: $bgHex; color: $fgHex;
+                touch-action: none; -webkit-touch-callout: none;
+                -webkit-user-select: none; user-select: none;
+              }
+              #viewport {
+                width: 100%; height: 100%;
+                display: flex; align-items: center; justify-content: center;
+                position: relative; overflow: hidden;
+              }
+              #canvas {
+                transform-origin: 0 0;
+                will-change: transform;
+                display: flex; align-items: center; justify-content: center;
+              }
+              svg {
+                display: block;
+                max-width: 95vw;
+                max-height: 90vh;
+                width: auto;
+                height: auto;
+                pointer-events: none;
+              }
+              #zoom-badge {
+                position: fixed; bottom: 14px; right: 14px;
+                background: $badgeBg;
+                border: 1px solid $badgeBorder;
+                color: $badgeFg; border-radius: 14px;
+                padding: 4px 10px; font-size: 11px;
+                font-family: monospace; z-index: 100;
+                backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+                pointer-events: auto; cursor: pointer;
+              }
+            </style>
+            </head>
+            <body>
+            <div id="viewport">
+              <div id="canvas">
+                $cleanSvg
+              </div>
+            </div>
+            <div id="zoom-badge" onclick="resetZoom()">100%</div>
+            <script>
+            (function() {
+              var viewport = document.getElementById('viewport');
+              var canvas = document.getElementById('canvas');
+              var badge = document.getElementById('zoom-badge');
+
+              var scale = 1;
+              var posX = 0;
+              var posY = 0;
+              var startDist = 0;
+              var startScale = 1;
+              var startX = 0;
+              var startY = 0;
+              var isPanning = false;
+              var lastTap = 0;
+
+              function updateTransform() {
+                canvas.style.transform = 'translate(' + posX + 'px, ' + posY + 'px) scale(' + scale + ')';
+                if (badge) badge.innerText = Math.round(scale * 100) + '%';
+              }
+
+              window.resetZoom = function() {
+                scale = 1;
+                posX = 0;
+                posY = 0;
+                updateTransform();
+              };
+
+              viewport.addEventListener('touchstart', function(e) {
+                if (e.touches.length === 2) {
+                  isPanning = false;
+                  var dx = e.touches[0].clientX - e.touches[1].clientX;
+                  var dy = e.touches[0].clientY - e.touches[1].clientY;
+                  startDist = Math.sqrt(dx * dx + dy * dy);
+                  startScale = scale;
+                } else if (e.touches.length === 1) {
+                  isPanning = true;
+                  startX = e.touches[0].clientX - posX;
+                  startY = e.touches[0].clientY - posY;
+
+                  var now = Date.now();
+                  if (now - lastTap < 300) {
+                    if (scale > 1.2) {
+                      resetZoom();
+                    } else {
+                      scale = 2.5;
+                      var rect = viewport.getBoundingClientRect();
+                      var cx = e.touches[0].clientX - rect.left - rect.width / 2;
+                      var cy = e.touches[0].clientY - rect.top - rect.height / 2;
+                      posX = -cx * 1.5;
+                      posY = -cy * 1.5;
+                      updateTransform();
+                    }
+                    lastTap = 0;
+                  } else {
+                    lastTap = now;
+                  }
+                }
+              }, { passive: false });
+
+              viewport.addEventListener('touchmove', function(e) {
+                e.preventDefault();
+                if (e.touches.length === 2 && startDist > 0) {
+                  var dx = e.touches[0].clientX - e.touches[1].clientX;
+                  var dy = e.touches[0].clientY - e.touches[1].clientY;
+                  var dist = Math.sqrt(dx * dx + dy * dy);
+                  scale = Math.min(Math.max(startScale * (dist / startDist), 0.5), 10);
+                  updateTransform();
+                } else if (e.touches.length === 1 && isPanning) {
+                  posX = e.touches[0].clientX - startX;
+                  posY = e.touches[0].clientY - startY;
+                  updateTransform();
+                }
+              }, { passive: false });
+
+              viewport.addEventListener('touchend', function(e) {
+                if (e.touches.length < 2) startDist = 0;
+                if (e.touches.length === 0) isPanning = false;
+              }, { passive: false });
+            })();
+            </script>
+            </body>
+            </html>
+            """.trimIndent()
+        }
     }
 
     AndroidView(
@@ -800,9 +938,11 @@ internal fun SvgWebViewCanvas(
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 settings.apply {
-                    javaScriptEnabled = false
-                    loadWithOverviewMode = true
-                    useWideViewPort = true
+                    javaScriptEnabled = enableZoom
+                    domStorageEnabled = false
+                    allowFileAccess = false
+                    allowContentAccess = false
+                    setSupportZoom(enableZoom)
                     builtInZoomControls = enableZoom
                     displayZoomControls = false
                     cacheMode = WebSettings.LOAD_NO_CACHE
@@ -814,6 +954,98 @@ internal fun SvgWebViewCanvas(
             webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
         }
     )
+}
+
+/**
+ * 高性能手势缩放图片画布：支持双指自由捏合缩放（0.75x~6x）、放大后拖动平移、双击在 1x 与 2.5x 之间复位与放大。
+ */
+@Composable
+internal fun ZoomableImageCanvas(
+    bitmap: ImageBitmap,
+    contentDescription: String?,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    var scale by remember(bitmap) { mutableFloatStateOf(1f) }
+    var offset by remember(bitmap) { mutableStateOf(Offset.Zero) }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(bitmap) {
+                detectTapGestures(
+                    onDoubleTap = { tapOffset ->
+                        if (scale > 1.05f) {
+                            scale = 1f
+                            offset = Offset.Zero
+                        } else {
+                            scale = 2.5f
+                            val center = Offset(size.width / 2f, size.height / 2f)
+                            offset = (center - tapOffset) * 1.5f
+                        }
+                    }
+                )
+            }
+            .pointerInput(bitmap, scale) {
+                if (scale > 1.05f) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val newScale = (scale * zoom).coerceIn(0.75f, 6f)
+                        scale = newScale
+                        offset = if (newScale > 1.05f) {
+                            Offset(offset.x + pan.x, offset.y + pan.y)
+                        } else {
+                            Offset.Zero
+                        }
+                    }
+                } else {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        if (zoom > 1.02f) {
+                            scale = (scale * zoom).coerceIn(1f, 6f)
+                        }
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = bitmap,
+            contentDescription = contentDescription,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp)
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = offset.x
+                    translationY = offset.y
+                },
+            contentScale = ContentScale.Fit
+        )
+
+        // 放大时右下角显示复位胶囊
+        if (scale > 1.15f) {
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = theme.surfaceContainer.copy(alpha = 0.88f),
+                border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+                    .clickable {
+                        scale = 1f
+                        offset = Offset.Zero
+                    }
+            ) {
+                Text(
+                    text = "${(scale * 100).toInt()}% · 点击复位",
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = theme.textPrimary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                )
+            }
+        }
+    }
 }
 
 /**

@@ -80,6 +80,7 @@ import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.PdfDocumentView
 import com.pi.app.ui.components.SvgWebViewCanvas
+import com.pi.app.ui.components.ZoomableImageCanvas
 import com.pi.app.ui.files.CodeSyntaxHighlighter
 import com.pi.app.ui.files.OfficePreview
 import com.pi.app.ui.files.OfficeXmlPreview
@@ -494,13 +495,10 @@ internal fun ArtifactViewerFullScreen(
                     }
 
                     image?.let { bmp ->
-                        Image(
+                        ZoomableImageCanvas(
                             bitmap = bmp,
                             contentDescription = title,
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(12.dp),
-                            contentScale = ContentScale.Fit
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                     // 图片读取失败：给「重试 / 用其他应用打开」，而不是误报成「办公文档」
