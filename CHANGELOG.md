@@ -2,6 +2,17 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.55] - 2026-11-02
+
+### 🎯 修复文件管理器与预览器左上角返回箭头点击无响应的问题
+
+- **根因分析**：
+  在 `FilesScreen` 与 `ArtifactViewerFullScreen` 中，此前全屏边缘滑动返回组件 `EdgeSwipeBackArea` 被置于根布局 `Box` 最外层（覆盖在 `Scaffold` 之上），其高度为 `fillMaxHeight()`。由于 Compose 的手势拦截机制，位于 (0,0) 至 (32dp, 屏幕底端) 整个竖直长条的手势检测层直接截获并吸收了所有指针点击事件，导致位于左上角的导航图标按钮 `IconButton` 无法接收到触摸点击（表现为“点击左上角箭头没反应，而右滑边缘却能正常返回”）。
+- **改动**：
+  1. **层级下沉与隔离**：将 `EdgeSwipeBackArea` 移入 `Scaffold` 的内容区域（`padding(innerPadding)`），完全避开顶栏 `TopAppBar` 区域，使得左上角返回箭头（`IconButton`）能够 100% 顺畅接收点击；
+  2. **顶栏按钮热区优化**：显式设定左上角返回按钮热区为标准 `48.dp`，提升手指轻触容错率；
+  3. **查看器同步修复**：在全屏代码/文档查看器（`ArtifactViewerFullScreen`）中做同步层级隔离，彻底消除顶栏与边缘手势的触摸冲突。
+
 ## [1.8.54] - 2026-11-02
 
 ### 🐛 修复磁盘根目录（如 D:\、C:\）因末尾斜杠编码导致 Nginx/网关报 HTTP 404 的问题

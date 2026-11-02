@@ -326,7 +326,10 @@ internal fun FilesScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = { handleBack() }) {
+                        IconButton(
+                            onClick = { handleBack() },
+                            modifier = Modifier.size(48.dp)
+                        ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                                 contentDescription = if (canGoUp) "返回上一级" else "退出文件管理器",
@@ -418,11 +421,14 @@ internal fun FilesScreen(
                 )
             }
         ) { innerPadding ->
-            Column(
+            Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
             ) {
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
                 // 搜索输入栏
                 if (searchOpen) {
                     Surface(
@@ -669,14 +675,16 @@ internal fun FilesScreen(
                     }
                 }
             }
-        }
 
-        // 屏幕左侧边缘右滑手势返回区（32dp 边缘热区，不干扰正文滚动）
-        EdgeSwipeBackArea(
-            onSwipeBack = { handleBack() },
-            edgeWidth = 32.dp,
-            modifier = Modifier.align(Alignment.CenterStart)
-        )
+            // 屏幕左侧边缘右滑手势返回区（置于 Scaffold 内容区内，避开顶栏，绝不遮挡左上角返回按钮！）
+            EdgeSwipeBackArea(
+                onSwipeBack = { handleBack() },
+                edgeWidth = 28.dp,
+                topPadding = 0.dp,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
+        }
+    }
 
         // 全屏文件查看器覆盖层（与 Scaffold 平级覆盖整个屏幕）
         val activePreviewPath = previewPath

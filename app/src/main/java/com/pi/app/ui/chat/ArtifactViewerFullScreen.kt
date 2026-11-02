@@ -330,11 +330,14 @@ internal fun ArtifactViewerFullScreen(
             }
         }
     ) { padding ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            Column(
+                modifier = Modifier.fillMaxSize()
+            ) {
             // 预览/源码：这是「模式开关」而不是动作，所以留在正文上方常驻，
             // 不进 ⋮ 菜单（与 pi-web FileViewer 的分段控件同义）。
             if (showRenderedPreview && chromeVisible) {
@@ -734,15 +737,17 @@ internal fun ArtifactViewerFullScreen(
                     }
                 }
             }
+
+            // 屏幕左侧边缘右滑手势退出预览（置于 Scaffold 内容区内，避开顶栏，绝不遮挡左上角返回按钮！）
+            EdgeSwipeBackArea(
+                onSwipeBack = onBack,
+                edgeWidth = 28.dp,
+                topPadding = 0.dp,
+                modifier = Modifier.align(Alignment.CenterStart)
+            )
         }
     }
-
-    // 屏幕左侧边缘右滑手势退出预览
-    EdgeSwipeBackArea(
-        onSwipeBack = onBack,
-        edgeWidth = 32.dp,
-        modifier = Modifier.align(Alignment.CenterStart)
-    )
+}
 }
 }
 
