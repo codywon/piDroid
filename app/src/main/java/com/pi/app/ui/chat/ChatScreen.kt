@@ -1431,12 +1431,14 @@ fun ChatScreen(
                                         .background(theme.outline.copy(alpha = 0.8f))
                                 )
 
-                                // 2. 右侧：思考等级独立热区 (无 token 括号，高档位琥珀橙醒目预警，杜绝浪费)
+                                // 2. 右侧：思考等级独立热区 (无 token 括号，三级色彩阶梯直观预警)
                                 val isHighThinking = thinkingLevel.isHighBudget
                                 val thinkingTint = when {
                                     !selectedModel.supportsThinking -> theme.textMuted
                                     thinkingLevel == ThinkingLevel.OFF -> theme.textSecondary
-                                    isHighThinking -> theme.warning // 琥珀橙醒目警示
+                                    thinkingLevel == ThinkingLevel.HIGH -> theme.thinkingHigh
+                                    thinkingLevel == ThinkingLevel.XHIGH -> theme.thinkingXHigh
+                                    thinkingLevel == ThinkingLevel.MAX -> theme.thinkingMax
                                     else -> theme.primary
                                 }
 

@@ -355,6 +355,23 @@ class ColorContrastTest {
         assertAtLeast("scrim.onSurface/ScrimSurface", ThemePalette.ScrimOnSurface, ThemePalette.ScrimSurface, 4.5)
     }
 
+    /**
+     * ⑱ 思考等级阶梯色：high (深金) -> xhigh (炽暖橙) -> max (烈焰珊瑚红)。
+     * 每一级都必须在卡片背景上过 WCAG AA (>= 4.5:1)。
+     */
+    @Test
+    fun thinkingLevelTiersMeetContrast() {
+        allSchemes.forEach { s ->
+            val high = if (s.isDark) ThemePalette.ThinkingHighDark else ThemePalette.ThinkingHighLight
+            val xhigh = if (s.isDark) ThemePalette.ThinkingXHighDark else ThemePalette.ThinkingXHighLight
+            val max = if (s.isDark) ThemePalette.ThinkingMaxDark else ThemePalette.ThinkingMaxLight
+
+            assertAtLeast("${s.name}.thinkingHigh/surfaceContainerLow", high, s.surfaceLow, 4.5)
+            assertAtLeast("${s.name}.thinkingXHigh/surfaceContainerLow", xhigh, s.surfaceLow, 4.5)
+            assertAtLeast("${s.name}.thinkingMax/surfaceContainerLow", max, s.surfaceLow, 4.5)
+        }
+    }
+
     /** ⑪ 公式自检：黑白极值必须是 21:1，同色必须是 1:1 */
     @Test
     fun contrastFormulaSanity() {

@@ -56,6 +56,7 @@ AA 不是 Token 的属性，而是 **Token × 表面** 的属性。实测不存�
 | 图表分类色 | `ChartBlue/Green/Amber/Red/Pink/Cyan/Violet` | **否**（数据色，表达"第几类"） |
 | 行内代码底纹 | `InlineCodeTint`（`0x1F88888F`，12% 中性灰） | 否 |
 | 品牌 logo | `BrandLogoBackground` + `bestOn` 推导的 π | **否** |
+| 思考等级阶梯色 | `thinkingHigh` (深金) / `thinkingXHigh` (炽橙) / `thinkingMax` (烈焰红) | **是**（浅色 Rose-700/Orange-700，深色 Rose-400/Orange-400，均 >= 5.18:1） |
 
 「否」的这几组不是「还没做主题化」，而是**不该主题化**：换主题时同一份数据的颜色映射、
 相机取景的对比度、品牌标识都不应该变。写在这里是为了让后来者不必重新论证一遍。

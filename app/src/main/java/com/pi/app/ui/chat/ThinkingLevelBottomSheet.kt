@@ -91,7 +91,6 @@ fun ThinkingLevelBottomSheet(
                 ThinkingLevel.entries.forEach { level ->
                     val isSelected = level == currentLevel
                     val isDefault = defaultLevel != null && level == defaultLevel
-                    val isHigh = level.isHighBudget
 
                     Surface(
                         shape = RoundedCornerShape(10.dp),
@@ -132,6 +131,12 @@ fun ThinkingLevelBottomSheet(
                                 modifier = Modifier.weight(1f),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
+                                val tierColor = when (level) {
+                                    ThinkingLevel.HIGH -> theme.thinkingHigh
+                                    ThinkingLevel.XHIGH -> theme.thinkingXHigh
+                                    ThinkingLevel.MAX -> theme.thinkingMax
+                                    else -> null
+                                }
                                 Text(
                                     text = level.value,
                                     style = MaterialTheme.typography.bodyMedium,
@@ -139,9 +144,7 @@ fun ThinkingLevelBottomSheet(
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.SemiBold,
                                     color = when {
                                         isSelected -> theme.primary
-                                        // 原裸写 #F59E0B（浅色白底仅 2.16:1），改用语义 warning：
-                                        // 浅 #92400E = 7.09:1 / 深 #FBBF24 = 10.25:1
-                                        isHigh -> theme.warning
+                                        tierColor != null -> tierColor
                                         else -> theme.textPrimary
                                     }
                                 )
@@ -149,25 +152,13 @@ fun ThinkingLevelBottomSheet(
                                 Text(
                                     text = level.cleanLabel,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (isSelected) theme.primary.copy(alpha = 0.85f) else theme.textSecondary
-                                )
-
-                                if (isHigh) {
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Surface(
-                                        color = theme.warningContainer,
-                                        shape = RoundedCornerShape(4.dp),
-                                        border = BorderStroke(0.5.dp, theme.warning.copy(alpha = 0.4f))
-                                    ) {
-                                        Text(
-                                            text = "深度推理",
-                                            fontSize = 10.sp,
-                                            fontWeight = FontWeight.Medium,
-                                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                                            color = theme.warning
-                                        )
+                                    fontWeight = if (tierColor != null) FontWeight.Medium else FontWeight.Normal,
+                                    color = when {
+                                        isSelected -> theme.primary.copy(alpha = 0.85f)
+                                        tierColor != null -> tierColor
+                                        else -> theme.textSecondary
                                     }
-                                }
+                                )
                             }
 
                             // 右侧：默认星标（对标模型选择列表）

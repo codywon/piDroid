@@ -168,6 +168,19 @@ enum class AppTheme(
     val featureThinking: Color
         get() = Color(if (isDark) ThemePalette.DarkFeatureThinking else ThemePalette.LightFeatureThinking)
 
+    // ── 思考等级梯级色 ──────────────────────────────────────────
+    /** 深度推理 (16k) 档位提示色：深金 / 琥珀 */
+    val thinkingHigh: Color
+        get() = Color(if (isDark) ThemePalette.ThinkingHighDark else ThemePalette.ThinkingHighLight)
+
+    /** 超深推理 (32k) 档位提示色：炽暖橙 */
+    val thinkingXHigh: Color
+        get() = Color(if (isDark) ThemePalette.ThinkingXHighDark else ThemePalette.ThinkingXHighLight)
+
+    /** 极限算力 (64k) 档位提示色：烈焰珊瑚红 */
+    val thinkingMax: Color
+        get() = Color(if (isDark) ThemePalette.ThinkingMaxDark else ThemePalette.ThinkingMaxLight)
+
     companion object {
         fun fromId(id: String): AppTheme = entries.find { it.id == id } ?: LIGHT_PAPER
     }

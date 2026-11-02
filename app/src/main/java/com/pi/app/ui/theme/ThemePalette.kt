@@ -203,6 +203,21 @@ object ThemePalette {
     val DarkFeatureThinking: Int = 0xFFA78BFA.toInt()
 
     // ══════════════════════════════════════════════════════════════
+    // 思考等级梯级色（high 琥珀深金 -> xhigh 炽暖橙 -> max 烈焰绯红）
+    // 告别以往 3 档统一单一黄且文案全叫"深度推理"的冗余与模糊。
+    // 实测全表面对比度：
+    // - high:  浅 #92400E 7.09:1 (AA) / 深 #FBBF24 10.36:1 (AA)
+    // - xhigh: 浅 #C2410C 5.18:1 (AA) / 深 #FB923C 7.64:1 (AA)
+    // - max:   浅 #BE123C 6.29:1 (AA) / 深 #FB7185 6.43:1 (AA)
+    // ══════════════════════════════════════════════════════════════
+    val ThinkingHighLight: Int = 0xFF92400E.toInt()
+    val ThinkingHighDark: Int = 0xFFFBBF24.toInt()
+    val ThinkingXHighLight: Int = 0xFFC2410C.toInt()
+    val ThinkingXHighDark: Int = 0xFFFB923C.toInt()
+    val ThinkingMaxLight: Int = 0xFFBE123C.toInt()
+    val ThinkingMaxDark: Int = 0xFFFB7185.toInt()
+
+    // ══════════════════════════════════════════════════════════════
     // 代码块 / Diff 行（浅色走 Primer 基准，深色沿用 Catppuccin Mocha）
     //
     // 原来两个代码块卡片把 Catppuccin 暗底写死，浅色模式下等于在白色对话流里
