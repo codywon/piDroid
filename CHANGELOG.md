@@ -2,6 +2,44 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.56] - 2026-11-02
+
+> `v1.8.55` 的 tag 因 `ArtifactViewerFullScreen` 里遗留的 `Modifier.align(...)` 位于非 BoxScope 作用域
+> 而编译失败，未产出安装包；本版是修复后的同内容首发（返回键 + 图片 + Office 一并解决）。
+
+### 🎯 返回箭头点不动、PNG 打不开、Office 只能跳外部应用 —— 三件事一起修
+
+#### 1. 左上角返回箭头失灵：不再用「透明热区盖在页面上」实现边缘右滑
+
+- **根因**：`EdgeSwipeBackArea` 是一个 `Box(width = 28.dp, fillMaxHeight)` 的叠加层。Compose 的命中测试
+  只把指针事件交给**最上层命中的兄弟节点**，所以这条 28dp 宽的热区会把所有落在它上面的点击全部吞掉。
+  之前试图靠「把热区挪到顶栏下方」绕开，但只要尺寸/内边距算错一点，返回按钮就再次失效 ——
+  这就是「点一下没反应，左滑却正常」的直接原因。
+- **改法**：新增 `Modifier.edgeSwipeBack(...)`，把边缘手势挂在**根容器**上：事件从父节点流过，
+  子节点（包括顶栏 `IconButton`）照常收到点击；只有「起点在左边缘 28dp 内 + 横向位移超过 48dp」
+  的手势才会被拦截并触发返回，纯点击不消费任何事件。旧的叠加层组件因此整体移除。
+
+#### 2. PNG（尤其 4K 大图）打不开：`stream was reset: INTERNAL_ERROR`
+
+- **根因一**：公网链路是 `App → nginx(h2) → frp → 网关 → pi-web`。实测 nginx 在向前端推送数 MB 二进制
+  流时会偶发 `RST_STREAM(INTERNAL_ERROR)`，同一请求改成 HTTP/1.1 则稳定返回完整正文。
+- **根因二**：读完才解码。6.1MB 的 4K PNG 直接 `decodeByteArray` 会产出 4096×4096 ARGB_8888（约 67MB）
+  位图，手机上大概率直接 OOM，表现出来也是「图片打不开」。
+- **改法**：新增大文件专用 OkHttp 客户端（强制 HTTP/1.1 + 90s 读写超时），图片/PDF/Office 原始字节
+  均走它，并在失败时**整份重试一次**；图片解码改为先读尺寸、按 2 的幂次降采样到≤2048px 再解码。
+  失败时的兜底 UI 也从误标的「办公 / 外部文档」改成「图片预览失败 + 重试 / 用其他应用打开」。
+
+#### 3. Office 预览：xlsx / pptx 端内真预览（对标并补全 pi-web 的缺口）
+
+- pi-web 只有 `.docx` 走服务端 mammoth 转 HTML，`.xlsx` / `.pptx` 在 pi-web 侧同样只能「外部打开」。
+- 新增纯 JVM 的 `OfficeXmlPreview`：xlsx / pptx 本质是 zip + XML，直接用 `java.util.zip` 解包并
+  扫描 OOXML 文本即可，**不需要服务端新增任何接口**（网关是纯反代，也不允许自造接口）：
+  - `.xlsx` → 读出工作表名、共享字符串 / 内联字符串 / 数值，渲染成可横向滚动的等宽表格
+    （首行表头样式，最多 200 行 × 24 列，超出提示截断）；
+  - `.pptx` → 按页码顺序抽取每页文本（标题 + 要点），渲染成幻灯片卡片；
+  - `.docx` 仍走服务端 mammoth HTML 预览；旧版二进制 `.doc/.xls/.ppt` 与压缩包保留
+    「用 WPS / 系统 Office 打开 + 下载到手机」卡片。
+
 ## [1.8.55] - 2026-11-02
 
 ### 🎯 修复文件管理器与预览器左上角返回箭头点击无响应的问题

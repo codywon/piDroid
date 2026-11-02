@@ -234,6 +234,75 @@ class LoadFilePreviewTest {
     }
 
     @Test
+    fun `load xlsx parses sheet preview in app instead of external card`() = runBlocking {
+        val xlsx = zipOf(
+            mapOf(
+                "xl/workbook.xml" to
+                    """<?xml version="1.0"?><workbook><sheets><sheet name="预算" sheetId="1"/></sheets></workbook>""",
+                "xl/sharedStrings.xml" to
+                    """<?xml version="1.0"?><sst><si><t>项目</t></si><si><t>金额</t></si></sst>""",
+                "xl/worksheets/sheet1.xml" to
+                    """<?xml version="1.0"?><worksheet><sheetData>
+                       <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+                       <row r="2"><c r="A2" t="inlineStr"><is><t>服务器</t></is></c><c r="B2"><v>999</v></c></row>
+                       </sheetData></worksheet>"""
+            )
+        )
+        val ds = FakeDataSource(
+            meta = FileMeta(
+                size = xlsx.size.toLong(),
+                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ),
+            bytes = xlsx
+        )
+
+        val result = RemoteFilePreviewLoader.load("budget.xlsx", ds)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
+        val sheet = result.officePreview as OfficePreview.Sheet
+        assertEquals("预算", sheet.sheetName)
+        assertEquals(listOf("项目", "金额"), sheet.rows[0])
+        assertEquals(listOf("服务器", "999"), sheet.rows[1])
+        // 能端内解析就不再需要「用 WPS 打开」的提示
+        assertNull(result.message)
+        assertEquals(0, ds.textChunkCallCount)
+    }
+
+    @Test
+    fun `load pptx parses slide text in app`() = runBlocking {
+        val pptx = zipOf(
+            mapOf(
+                "ppt/slides/slide1.xml" to
+                    """<?xml version="1.0"?><p:sld><a:p><a:r><a:t>季度汇报</a:t></a:r></a:p></p:sld>"""
+            )
+        )
+        val ds = FakeDataSource(
+            meta = FileMeta(
+                size = pptx.size.toLong(),
+                mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            bytes = pptx
+        )
+
+        val result = RemoteFilePreviewLoader.load("deck.pptx", ds)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
+        val slides = (result.officePreview as OfficePreview.Slides).slides
+        assertEquals(1, slides.size)
+        assertEquals(listOf("季度汇报"), slides[0].lines)
+    }
+
+    private fun zipOf(entries: Map<String, String>): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        java.util.zip.ZipOutputStream(out).use { zip ->
+            for ((name, content) in entries) {
+                zip.putNextEntry(java.util.zip.ZipEntry(name))
+                zip.write(content.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+        }
+        return out.toByteArray()
+    }
+
+    @Test
     fun `load archive zip sets office kind with compression description`() = runBlocking {
         val ds = FakeDataSource(
             meta = FileMeta(size = 5000L, mime = "application/zip")

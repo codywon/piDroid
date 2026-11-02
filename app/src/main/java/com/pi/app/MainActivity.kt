@@ -3695,7 +3695,12 @@ class MainActivity : ComponentActivity() {
                                 }
                             }
 
-                            if (resolved != null && resolved != browsingWorkspaceCwd) {
+                            // 只有在用户还没退出文件浏览器时才回写：否则「点了左上角返回」后
+                            // 这个正在飞的校验会把 browsingWorkspaceCwd 重新赋上，页面又弹回来，
+                            // 用户感知就是「返回箭头点了没反应」。
+                            if (resolved != null && browsingWorkspaceCwd != null &&
+                                !resolved.equals(browsingWorkspaceCwd, ignoreCase = true)
+                            ) {
                                 browsingWorkspaceCwd = resolved
                                 browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(resolved).ifBlank { resolved } }
                                 prefs.lastBrowsedDirectory = resolved

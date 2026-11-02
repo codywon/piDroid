@@ -7,12 +7,14 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -45,6 +47,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
@@ -72,12 +75,14 @@ import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.FilePlaybackSource
 import com.pi.app.data.model.formatBytes
 import com.pi.app.network.FileListParsing
-import com.pi.app.ui.components.EdgeSwipeBackArea
+import com.pi.app.ui.components.edgeSwipeBack
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.PdfDocumentView
 import com.pi.app.ui.components.SvgWebViewCanvas
 import com.pi.app.ui.files.CodeSyntaxHighlighter
+import com.pi.app.ui.files.OfficePreview
+import com.pi.app.ui.files.OfficeXmlPreview
 import com.pi.app.ui.theme.LocalAppTheme
 import java.io.File
 
@@ -115,6 +120,7 @@ internal fun ArtifactViewerFullScreen(
     image: ImageBitmap?,
     pdfFile: File? = null,
     docxHtml: String?,
+    officePreview: OfficePreview? = null,
     message: String?,
     rawMode: Boolean,
     isLoading: Boolean,
@@ -154,7 +160,12 @@ internal fun ArtifactViewerFullScreen(
     val showRenderedPreview = richPreviewReady && !rawMode && !isErrorBody
     val docDir = path?.let { FileLinks.parentDirectory(it) }.orEmpty()
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            // 左边缘右滑返回：挂在根容器上（不叠透明热区），顶栏返回按钮照常可点
+            .edgeSwipeBack(onSwipeBack = onBack)
+    ) {
         Scaffold(
             containerColor = theme.surfaceContainerLow,
             topBar = {
@@ -442,21 +453,32 @@ internal fun ArtifactViewerFullScreen(
                             }
                         }
                         ArtifactKind.OFFICE -> {
-                            ExternalDocumentCard(
-                                title = title,
-                                path = path,
-                                sizeBytes = sizeBytes,
-                                message = message,
-                                isOpeningExternally = isOpeningExternally,
-                                onOpenExternal = onOpenExternal,
-                                onDownload = { path?.let { onDownloadFile?.invoke(it) } }
-                            )
+                            when (val preview = officePreview) {
+                                is OfficePreview.Sheet -> SheetTablePreview(
+                                    preview = preview,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                is OfficePreview.Slides -> SlidesPreview(
+                                    preview = preview,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                null -> ExternalDocumentCard(
+                                    title = title,
+                                    path = path,
+                                    sizeBytes = sizeBytes,
+                                    message = message,
+                                    isOpeningExternally = isOpeningExternally,
+                                    onOpenExternal = onOpenExternal,
+                                    onDownload = { path?.let { onDownloadFile?.invoke(it) } }
+                                )
+                            }
                         }
                         else -> Unit
                     }
 
                     if (kind != ArtifactKind.OFFICE && kind != ArtifactKind.AUDIO && kind != ArtifactKind.VIDEO &&
-                        kind != ArtifactKind.PDF && text == null && image == null && docxHtml == null && !isLoading
+                        kind != ArtifactKind.PDF && kind != ArtifactKind.IMAGE &&
+                        text == null && image == null && docxHtml == null && !isLoading
                     ) {
                         ExternalDocumentCard(
                             title = title,
@@ -479,8 +501,15 @@ internal fun ArtifactViewerFullScreen(
                             contentScale = ContentScale.Fit
                         )
                     }
-                    if (kind == ArtifactKind.IMAGE && message != null) {
-                        ArtifactHintCard(text = message)
+                    // 图片读取失败：给「重试 / 用其他应用打开」，而不是误报成「办公文档」
+                    if (kind == ArtifactKind.IMAGE && image == null && !isLoading) {
+                        ArtifactErrorState(
+                            message = message ?: "图片读取失败",
+                            path = path,
+                            canOpenExternally = !path.isNullOrBlank() && !isOpeningExternally,
+                            onReload = onReload,
+                            onOpenExternal = onOpenExternal
+                        )
                     }
 
                     text?.let { body ->
@@ -737,14 +766,6 @@ internal fun ArtifactViewerFullScreen(
                     }
                 }
             }
-
-            // 屏幕左侧边缘右滑手势退出预览（置于 Scaffold 内容区内，避开顶栏，绝不遮挡左上角返回按钮！）
-            EdgeSwipeBackArea(
-                onSwipeBack = onBack,
-                edgeWidth = 28.dp,
-                topPadding = 0.dp,
-                modifier = Modifier.align(Alignment.CenterStart)
-            )
         }
     }
 }
@@ -961,6 +982,160 @@ private fun ExternalDocumentCard(
                     Icon(Icons.Default.FileDownload, contentDescription = null, tint = theme.textPrimary, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("下载保存到手机", fontSize = 13.sp, color = theme.textPrimary)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * xlsx 表格预览。
+ *
+ * Excel 在手机上真正要看的是「表格本身」，所以端内解析 OOXML 后直接渲染成
+ * 等宽网格（首行为表头样式），横向可滚动、纵向懒加载，而不是丢一张
+ * 「请用 WPS 打开」的卡片。超出 [OfficeXmlPreview.MAX_ROWS] / `MAX_COLS`
+ * 的部分会提示被截断。
+ */
+@Composable
+private fun SheetTablePreview(
+    preview: OfficePreview.Sheet,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    val tableScrollState = rememberScrollState()
+    val columnCount = preview.rows.maxOfOrNull { it.size }?.coerceAtLeast(1) ?: 1
+    val widthPerColumn = 128.dp
+
+    Column(modifier = modifier) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 8.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.TableChart,
+                contentDescription = null,
+                tint = theme.success,
+                modifier = Modifier.size(15.dp)
+            )
+            Text(
+                text = preview.sheetName,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = theme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${preview.rows.size} 行 · $columnCount 列",
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                color = theme.textMuted
+            )
+        }
+        if (preview.truncated) {
+            Text(
+                text = "仅展示前 ${OfficeXmlPreview.MAX_ROWS} 行 / ${OfficeXmlPreview.MAX_COLS} 列",
+                fontSize = 10.5.sp,
+                color = theme.textMuted,
+                modifier = Modifier.padding(horizontal = 14.dp)
+            )
+        }
+        HorizontalDivider(color = theme.outline.copy(alpha = 0.35f), thickness = 0.5.dp)
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .horizontalScroll(tableScrollState)
+        ) {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                itemsIndexed(preview.rows) { rowIndex, row ->
+                    val isHeader = rowIndex == 0
+                    Row(
+                        modifier = Modifier
+                            .background(
+                                if (isHeader) theme.surfaceContainer
+                                else if (rowIndex % 2 == 0) androidx.compose.ui.graphics.Color.Transparent
+                                else theme.surfaceContainerLow
+                            )
+                    ) {
+                        for (col in 0 until columnCount) {
+                            Text(
+                                text = row.getOrNull(col).orEmpty(),
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                fontWeight = if (isHeader) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isHeader) theme.textPrimary else theme.textSecondary,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier
+                                    .width(widthPerColumn)
+                                    .border(
+                                        width = 0.5.dp,
+                                        color = theme.outline.copy(alpha = 0.3f)
+                                    )
+                                    .padding(horizontal = 6.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * pptx 幻灯片预览：按页抽出文本（标题 + 要点），保留页码顺序。
+ * 图形/图片版面无法在端内还原，但文字大纲已足够「看一眼讲什么」。
+ */
+@Composable
+private fun SlidesPreview(
+    preview: OfficePreview.Slides,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    LazyColumn(
+        modifier = modifier,
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        itemsIndexed(preview.slides) { _, slide ->
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = theme.surfaceContainer,
+                border = BorderStroke(0.8.dp, theme.outline.copy(alpha = 0.5f)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Slideshow,
+                            contentDescription = null,
+                            tint = theme.warning,
+                            modifier = Modifier.size(14.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "第 ${slide.index} 页",
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    slide.lines.forEachIndexed { lineIndex, line ->
+                        Text(
+                            text = line,
+                            fontSize = if (lineIndex == 0) 13.5.sp else 12.5.sp,
+                            fontWeight = if (lineIndex == 0) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (lineIndex == 0) theme.textPrimary else theme.textSecondary,
+                            lineHeight = 19.sp,
+                            modifier = Modifier.padding(vertical = 1.dp)
+                        )
+                    }
                 }
             }
         }

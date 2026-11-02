@@ -23,6 +23,7 @@ import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
@@ -107,6 +108,9 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** pi 允许单条消息携带的图片上限（服务端校验：最多 10 张、每张 ≤10MB）。 */
         const val MAX_PROMPT_IMAGES = 10
+
+        /** 大文件传输的重试次数（首次 + 1 次重试）。见 [getFileBytes]。 */
+        private const val FILE_TRANSFER_ATTEMPTS = 2
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
 
@@ -176,6 +180,23 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     private val snapshotClient = client.newBuilder()
         .callTimeout(30, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 大文件传输专用客户端（图片 / PDF / Office 的原始字节）。
+     *
+     * 为什么不能用 [client]：
+     * 公网链路是「App → nginx(h2, TLS) → frp → 网关 → pi-web」。实测经由 nginx 的 HTTP/2
+     * 在向前端持续推送几 MB 的二进制流时，偶发 `stream was reset: INTERNAL_ERROR`
+     * （ngx_http_v2 在 upstream 分段写出/超时时会发 RST_STREAM），而同一请求改成
+     * HTTP/1.1 则稳定返回完整 200 正文。文件下载走的是幂等 GET、没有多路复用收益，
+     * 因此这里显式降级到 HTTP/1.1；另外 readTimeout 放宽到 90s（弱网下 6MB 图片
+     * 单次 read 间隔可能远超主 client 的 120s 之外的写入停顿）。
+     */
+    private val fileClient = client.newBuilder()
+        .protocols(listOf(Protocol.HTTP_1_1))
+        .readTimeout(90, TimeUnit.SECONDS)
+        .writeTimeout(90, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -2259,52 +2280,62 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 缓存键带「连接身份 + 完整路径」的哈希：不同目录、不同网关下的同名文件
         // （README.md、image.png）以前会互相覆盖，后下载的静默替掉前一个。
         val target = File(dir, "${MediaLoadPolicy.sha1Hex("${connectionKey()}\u0000$absPath").take(12)}_$name")
-        try {
-            val req = Request.Builder().url(fileApiUrl(absPath, "download", sessionId)).get().build()
-            client.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) {
-                    return@withContext Result.failure(IOException("下载失败 (${resp.code})"))
-                }
-                val body = resp.body ?: return@withContext Result.failure(IOException("响应为空"))
-                if (body.contentLength() > maxBytes) {
-                    return@withContext Result.failure(IOException("文件过大，暂不支持外部打开"))
-                }
-                body.byteStream().use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var total = 0L
-                        while (true) {
-                            val read = input.read(buffer)
-                            if (read <= 0) break
-                            total += read
-                            if (total > maxBytes) throw IOException("文件过大，暂不支持外部打开")
-                            output.write(buffer, 0, read)
+        var lastError: Throwable? = null
+        // 与 [getFileBytes] 同理：HTTP/1.1 + 一次重试，避开 nginx h2 的 RST_STREAM。
+        repeat(FILE_TRANSFER_ATTEMPTS) { attempt ->
+            try {
+                val req = Request.Builder().url(fileApiUrl(absPath, "download", sessionId)).get().build()
+                fileClient.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) {
+                        return@withContext Result.failure(IOException("下载失败 (${resp.code})"))
+                    }
+                    val body = resp.body ?: return@withContext Result.failure(IOException("响应为空"))
+                    if (body.contentLength() > maxBytes) {
+                        return@withContext Result.failure(IOException("文件过大，暂不支持外部打开"))
+                    }
+                    body.byteStream().use { input ->
+                        target.outputStream().use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            var total = 0L
+                            while (true) {
+                                val read = input.read(buffer)
+                                if (read <= 0) break
+                                total += read
+                                if (total > maxBytes) throw IOException("文件过大，暂不支持外部打开")
+                                output.write(buffer, 0, read)
+                            }
                         }
                     }
                 }
+                return@withContext Result.success(target)
+            } catch (e: Exception) {
+                lastError = e
+                runCatching { target.delete() }
+                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) Thread.sleep(250L * (attempt + 1))
             }
-            Result.success(target)
-        } catch (e: Exception) {
-            runCatching { target.delete() }
-            Result.failure(e)
         }
+        Result.failure(lastError ?: IOException("下载失败"))
     }
 
-    /** 文件原始字节（图片预览用）：GET /api/files/<绝对路径>?type=download */
+    /**
+     * 文件原始字节（图片/Office 预览用）：GET /api/files/<绝对路径>?type=download
+     *
+     * 传输层使用 [fileClient]（HTTP/1.1）并在 `stream was reset` / 连接中断时重试一次；
+     * 这两点都是公网隧道下大文件必需的，否则 6MB 的 4K 图片会随机失败。
+     */
     suspend fun getFileBytes(
         absPath: String,
         maxBytes: Long = 12L * 1024 * 1024,
         sessionId: String? = null
-    ): Result<ByteArray> =
-        withContext(Dispatchers.IO) {
-            val baseUrl = prefs.serverUrl
-            if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val url = fileApiUrl(absPath, "download", sessionId)
+        var lastError: Throwable? = null
+        repeat(FILE_TRANSFER_ATTEMPTS) { attempt ->
             try {
-                val req = Request.Builder()
-                    .url(fileApiUrl(absPath, "download", sessionId))
-                    .get()
-                    .build()
-                client.newCall(req).execute().use { resp ->
+                val req = Request.Builder().url(url).get().build()
+                fileClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) {
                         return@withContext Result.failure(IOException("读取文件失败 (${resp.code})"))
                     }
@@ -2314,11 +2345,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                         return@withContext Result.failure(IOException("文件过大（${cl / 1024 / 1024} MB），暂不预览"))
                     }
                     val stream = body.byteStream()
-                    val output = java.io.ByteArrayOutputStream()
-                    val buffer = ByteArray(32 * 1024)
+                    val output = java.io.ByteArrayOutputStream(cl.coerceIn(0L, maxBytes).toInt().coerceAtLeast(8 * 1024))
+                    val buffer = ByteArray(64 * 1024)
                     var total = 0L
                     while (true) {
-                        val read = stream.read(buffer)
+                        val read = try {
+                            stream.read(buffer)
+                        } catch (e: IOException) {
+                            // 读到一半被 reset：已收到的字节不完整，只能整份重试
+                            throw FileStreamResetException(e)
+                        }
                         if (read <= 0) break
                         total += read
                         if (total > maxBytes) {
@@ -2326,12 +2362,19 @@ class PiApiClient(private val prefs: AppPreferences) {
                         }
                         output.write(buffer, 0, read)
                     }
-                    Result.success(output.toByteArray())
+                    return@withContext Result.success(output.toByteArray())
                 }
             } catch (e: Exception) {
-                Result.failure(e)
+                lastError = e
+                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) Thread.sleep(250L * (attempt + 1))
             }
         }
+        Result.failure(lastError ?: IOException("读取文件失败"))
+    }
+
+    /** 读到一半被链路重置（HTTP/2 RST_STREAM / 隧道断流），整份重试即可恢复 */
+    private class FileStreamResetException(cause: Throwable) :
+        IOException("stream was reset", cause)
 
     /** 开关 pi 的自动上下文压缩（agent {"type":"set_auto_compaction","enabled":bool}） */
     suspend fun setAutoCompaction(sessionId: String, enabled: Boolean): Result<Boolean> =

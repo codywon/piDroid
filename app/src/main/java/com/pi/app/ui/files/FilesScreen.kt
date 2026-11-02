@@ -73,7 +73,7 @@ import com.pi.app.data.model.RemoteDirEntry
 import com.pi.app.network.FileListParsing
 import com.pi.app.ui.chat.ArtifactKind
 import com.pi.app.ui.chat.ArtifactViewerFullScreen
-import com.pi.app.ui.components.EdgeSwipeBackArea
+import com.pi.app.ui.components.edgeSwipeBack
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -144,6 +144,7 @@ internal fun FilesScreen(
     var previewImage by remember { mutableStateOf<ImageBitmap?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
     var previewDocxHtml by remember { mutableStateOf<String?>(null) }
+    var previewOffice by remember { mutableStateOf<OfficePreview?>(null) }
     var previewMessage by remember { mutableStateOf<String?>(null) }
     var previewRawMode by remember { mutableStateOf(false) }
     var isPreviewLoading by remember { mutableStateOf(false) }
@@ -229,6 +230,7 @@ internal fun FilesScreen(
         previewImage = null
         previewPdfFile = null
         previewDocxHtml = null
+        previewOffice = null
         previewMessage = null
         previewRawMode = false
         previewNextOffset = 0L
@@ -250,6 +252,7 @@ internal fun FilesScreen(
             previewKind = data.kind
             previewMeta = data.metaLabel
             previewDocxHtml = data.docxHtml
+            previewOffice = data.officePreview
             previewMessage = data.message
             previewNextOffset = data.nextOffset
             previewTruncated = data.truncated
@@ -258,9 +261,7 @@ internal fun FilesScreen(
             previewText = data.text
 
             data.imageBytes?.let { bytes ->
-                previewImage = runCatching {
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
-                }.getOrNull()
+                previewImage = decodeDownsampledBitmap(bytes, maxDimension = 2048)
                 if (previewImage == null && previewMessage == null) {
                     previewMessage = "图片解码失败（可能过大或格式不支持）"
                 }
@@ -297,7 +298,12 @@ internal fun FilesScreen(
         FileTreeState.calculateChangedDirectoryPaths(files, currentPath)
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            // 左边缘右滑返回：挂在根容器上（不叠透明热区），点击事件照常下发给顶栏返回按钮
+            .then(if (previewPath == null) Modifier.edgeSwipeBack(onSwipeBack = { handleBack() }) else Modifier)
+    ) {
         Scaffold(
             containerColor = theme.background,
             topBar = {
@@ -675,14 +681,6 @@ internal fun FilesScreen(
                     }
                 }
             }
-
-            // 屏幕左侧边缘右滑手势返回区（置于 Scaffold 内容区内，避开顶栏，绝不遮挡左上角返回按钮！）
-            EdgeSwipeBackArea(
-                onSwipeBack = { handleBack() },
-                edgeWidth = 28.dp,
-                topPadding = 0.dp,
-                modifier = Modifier.align(Alignment.CenterStart)
-            )
         }
     }
 
@@ -698,6 +696,7 @@ internal fun FilesScreen(
                 image = previewImage,
                 pdfFile = previewPdfFile,
                 docxHtml = previewDocxHtml,
+                officePreview = previewOffice,
                 message = previewMessage,
                 rawMode = previewRawMode,
                 isLoading = isPreviewLoading,
@@ -787,4 +786,25 @@ internal fun ParentDirectoryRow(
             )
         }
     }
+}
+
+/**
+ * 按最长边降采样解码图片。
+ *
+ * 4K PNG（6.1MB）直接 `decodeByteArray` 会产出一张 4096×4096 的 ARGB_8888 位图，
+ * 即 67MB 堆内存 —— 在手机上大概率 OOM，表现出来就是「图片打不开」。
+ * 这里先读尺寸、按 2 的幂次降采样到 [maxDimension] 以内再真正解码。
+ */
+private fun decodeDownsampledBitmap(bytes: ByteArray, maxDimension: Int): ImageBitmap? {
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sampleSize = 1
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longest > 0 && longest / sampleSize > maxDimension) {
+            sampleSize *= 2
+        }
+        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
+    }.getOrNull()
 }

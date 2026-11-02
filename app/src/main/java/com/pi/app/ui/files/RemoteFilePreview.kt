@@ -47,6 +47,12 @@ internal interface FilePreviewDataSource {
     suspend fun getFilePreviewHtml(path: String): Result<String>
     suspend fun getFileBytes(path: String): Result<ByteArray>
     suspend fun downloadFileToCache(path: String): Result<File>
+
+    /**
+     * 按上限取原始字节（xlsx / pptx 端内解包预览用）。
+     * 默认实现转发到 [getFileBytes]，保持已有实现（含单测里的假数据源）无需修改。
+     */
+    suspend fun getFileBytesLimited(path: String, maxBytes: Long): Result<ByteArray> = getFileBytes(path)
 }
 
 /**
@@ -62,6 +68,7 @@ internal data class RemoteFilePreviewData(
     val imageBytes: ByteArray? = null,
     val pdfFile: File? = null,
     val docxHtml: String? = null,
+    val officePreview: OfficePreview? = null,
     val message: String? = null,
     val nextOffset: Long = 0L,
     val sizeBytes: Long = 0L,
@@ -70,6 +77,27 @@ internal data class RemoteFilePreviewData(
 )
 
 internal object RemoteFilePreviewLoader {
+
+    /** xlsx / pptx 端内解包预览的大小上限（超过就走外部应用，避免占内存） */
+    private const val OFFICE_INLINE_MAX_BYTES = 12L * 1024 * 1024
+
+    /** 图片、PDF 这类格式不带「语言」语义 */
+    private fun resolvedKindHint(absPath: String): Boolean {
+        val ext = absPath.substringAfterLast('.', "").lowercase(Locale.ROOT)
+        return ext !in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif", "svg", "pdf")
+    }
+
+    private fun officeFallbackMessage(ext: String, sizeBytes: Long, error: String?): String {
+        val desc = when (ext) {
+            "xls", "xlsx", "et" -> "Excel 工作表"
+            "ppt", "pptx", "dps" -> "PowerPoint 演示文稿"
+            "doc", "wps" -> "Word 文档"
+            "zip", "rar", "7z", "tar", "gz", "apk" -> "压缩包 / 安装包"
+            else -> "办公 / 二进制文档"
+        }
+        val reason = if (error.isNullOrBlank()) "" else "（$error）"
+        return "此文件为 $desc（${formatBytes(sizeBytes)}）$reason，推荐使用下方按钮调用系统应用（WPS / Office）打开查阅。"
+    }
 
     /**
      * 加载远端文件预览所需数据并完成类型分派。
@@ -87,9 +115,11 @@ internal object RemoteFilePreviewLoader {
         val kind = artifactKindOf(absPath, metaMime)
 
         val metaLabel = meta?.let { m ->
+            // 代码/文本类才带 language；图片、PDF 的 language 恒为 "text"，写出来只会误导
+            val showLanguage = resolvedKindHint(absPath)
             listOfNotNull(
                 m.sizeLabel.takeIf { it.isNotBlank() },
-                m.language.takeIf { it.isNotBlank() },
+                m.language.takeIf { it.isNotBlank() && showLanguage },
                 m.mime.takeIf { it.isNotBlank() }
             ).joinToString(" · ")
         }
@@ -99,6 +129,7 @@ internal object RemoteFilePreviewLoader {
         var imageBytes: ByteArray? = null
         var pdfFile: File? = null
         var docxHtml: String? = null
+        var officePreview: OfficePreview? = null
         var message: String? = null
         var nextOffset = 0L
         var sizeBytes = meta?.size ?: 0L
@@ -142,14 +173,19 @@ internal object RemoteFilePreviewLoader {
             }
             ArtifactKind.OFFICE -> {
                 isBinary = true
-                val desc = when (ext) {
-                    "xls", "xlsx", "et" -> "Excel 工作表"
-                    "ppt", "pptx", "dps" -> "PowerPoint 演示文稿"
-                    "doc", "wps" -> "Word 文档"
-                    "zip", "rar", "7z", "tar", "gz", "apk" -> "压缩包 / 安装包"
-                    else -> "办公 / 二进制文档"
+                // xlsx / pptx 本质是 zip + XML：本机解包就能给出真预览，不必退回外部应用
+                if (OfficeXmlPreview.isSupportedExtension(ext) && sizeBytes in 0..OFFICE_INLINE_MAX_BYTES) {
+                    val bytesRes = dataSource.getFileBytesLimited(absPath, OFFICE_INLINE_MAX_BYTES)
+                    val parsed = bytesRes.getOrNull()?.let { OfficeXmlPreview.extract(it, title) }
+                    if (parsed != null) {
+                        officePreview = parsed
+                        isBinary = false
+                    } else {
+                        message = officeFallbackMessage(ext, sizeBytes, bytesRes.exceptionOrNull()?.message)
+                    }
+                } else {
+                    message = officeFallbackMessage(ext, sizeBytes, null)
                 }
-                message = "此文件为 $desc（${formatBytes(sizeBytes)}），推荐使用下方按钮调用系统应用（WPS / Office）打开查阅。"
             }
             ArtifactKind.AUDIO, ArtifactKind.VIDEO -> {
                 // 音视频无需预读正文，直接由播放器流式播放
@@ -184,6 +220,7 @@ internal object RemoteFilePreviewLoader {
             imageBytes = imageBytes,
             pdfFile = pdfFile,
             docxHtml = docxHtml,
+            officePreview = officePreview,
             message = message,
             nextOffset = nextOffset,
             sizeBytes = sizeBytes,
