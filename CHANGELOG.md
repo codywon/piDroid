@@ -2,6 +2,29 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.58] - 2026-11-02
+
+### 🖼️ 修复 SVG 打不开（「读取文件失败: HTTP 200」）+ 浏览电脑文件记住上次位置并可一直向上退到盘符根
+
+#### 1. SVG 能按代码路径打开了
+
+- **根因**：pi-web 的 `GET /api/files/<path>?type=read` 只对**文本类**回 `{content,nextOffset,...}`；
+  一旦 `getImageMime()` 命中（**包括 SVG**）就直接把文件原样流回来，`Content-Type: image/svg+xml`。
+  客户端旧实现一律把响应当 JSON 解，于是 SVG 必然报「读取文件失败: HTTP 200」——
+  状态码是 200 却读不出内容，正是这个错位的直接证据。
+- **改法**：新增 `FileListParsing.isJsonBody(contentType, body)`，响应成功但不是 JSON 时直接当原始文本用
+  （`truncated=false`、`nextOffset=size`），并附带 NUL 嗅探（`looksBinary`）避免把二进制当文本渲染。
+  现在 `.svg` 会走已有的 `SvgWebViewCanvas` 矢量渲染（可缩放、可切源码视图）。
+
+#### 2. 浏览电脑文件：记住上次目录，并且可以一直退到盘符根
+
+- **会记住**：每次切目录都会写入 `prefs.lastBrowsedDirectory`，下次点「浏览电脑文件...」直接从那里继续；
+  路径失效时自动回落到家目录 / 首个可用盘符。
+- **之前记得太死**：`FilesScreen` 把「起始目录」也当成了导航边界，于是在 `D:/a/b` 重新进入后
+  「..（返回上一级）」是隐形的、按返回直接退出页面。本次给该模式加 `allowRoam`：
+  「浏览电脑文件」入口下向上退只受 `parentPath()` 约束（到 `D:/` 、`/` 或 UNC 共享根才退出），
+  而工作区长按菜单的「浏览文件」仍然锁在工作区内，不改变原有边界语义。
+
 ## [1.8.57] - 2026-11-02
 
 > `v1.8.55`（`Modifier.align(...)` 在非 BoxScope 作用域编译失败）与 `v1.8.56`（单测里

@@ -101,6 +101,29 @@ object FileListParsing {
     }
 
     /**
+     * `type=read` 的响应是不是 JSON（文本块），而不是原始文件流。
+     *
+     * pi-web 的 `GET /api/files/<path>?type=read` 只对**文本类**回 `{content,nextOffset,...}`；
+     * 一旦 `getImageMime()` 命中（**包括 SVG**）就直接把文件原样流回（`Content-Type: image/svg+xml`）。
+     * 早期客户端一律当 JSON 解，于是 SVG 永远报「读取文件失败: HTTP 200」—— 状态码是 200，
+     * 内容却是 XML。这里把判定抽成纯函数，便于单测。
+     */
+    fun isJsonBody(contentType: String, body: String): Boolean {
+        if (contentType.contains("json", ignoreCase = true)) return true
+        val firstMeaningful = body.firstOrNull { !it.isWhitespace() } ?: return false
+        return firstMeaningful == '{'
+    }
+
+    /** 原始字节里是否出现了 NUL（与 pi-web `lib/text-preview.ts` 的二进制嗅探同义） */
+    fun looksBinary(raw: String, sniffChars: Int = 8000): Boolean {
+        val limit = minOf(raw.length, sniffChars)
+        for (i in 0 until limit) {
+            if (raw[i].code == 0) return true
+        }
+        return false
+    }
+
+    /**
      * 解析文件索引搜索结果。
      * 服务端格式：{ "matches": [ { "path": "src/App.tsx", "isDir": false } ] }
      */

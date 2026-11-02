@@ -108,6 +108,11 @@ internal fun FilesScreen(
     onResolveFileSource: (String) -> FilePlaybackSource?,
     onLoadDrives: (suspend () -> List<RemoteDirEntry>)? = null,
     onDirectoryChanged: ((String) -> Unit)? = null,
+    /**
+     * 「浏览电脑文件」模式：起始目录只是**上次记住的位置**，不是边界，
+     * 因此可以一直向上退到盘符根（如 `D:/`）才退出页面。
+     */
+    allowRoam: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
@@ -153,9 +158,13 @@ internal fun FilesScreen(
     var previewNextOffset by remember { mutableStateOf(0L) }
     var previewSizeBytes by remember { mutableStateOf(0L) }
 
-    // 判断当前是否还能向上退回父级目录
+    // 判断当前是否还能向上退回父级目录。
+    // 工作区浏览（allowRoam=false）不得越过工作区；电脑文件浏览（allowRoam=true）
+    // 一直可以退到 `parentPath() == null`（盘符根 / POSIX 根 / UNC 共享根）为止。
     val parentOfCurrent = remember(currentPath) { FileListParsing.parentPath(currentPath) }
-    val canGoUp = navigationStack.isNotEmpty() || (parentOfCurrent != null && !currentPath.equals(workspaceCwd, ignoreCase = true))
+    val canStepUp = parentOfCurrent != null &&
+        (allowRoam || !currentPath.equals(workspaceCwd, ignoreCase = true))
+    val canGoUp = navigationStack.isNotEmpty() || canStepUp
 
     // 统一处理返回操作（预览 -> 搜索 -> 上一级 -> 退出页面）
     fun handleBack() {
@@ -168,7 +177,7 @@ internal fun FilesScreen(
             val prev = navigationStack.removeAt(navigationStack.lastIndex)
             currentPath = prev
             onDirectoryChanged?.invoke(prev)
-        } else if (parentOfCurrent != null && !currentPath.equals(workspaceCwd, ignoreCase = true)) {
+        } else if (canStepUp && parentOfCurrent != null) {
             currentPath = parentOfCurrent
             onDirectoryChanged?.invoke(parentOfCurrent)
         } else {

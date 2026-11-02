@@ -212,6 +212,28 @@ class FileListParsingTest {
     }
 
     @Test
+    fun `isJsonBody distinguishes text chunk json from raw svg stream`() {
+        // 文本类：pi-web 回 {content,nextOffset,...}
+        assertTrue(FileListParsing.isJsonBody("application/json", """{"content":"hi"}"""))
+        assertTrue(FileListParsing.isJsonBody("", """  {"content":"hi"}"""))
+
+        // SVG：type=read 直接流回原文件，Content-Type 是 image/svg+xml
+        val svg = """<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>"""
+        assertFalse(FileListParsing.isJsonBody("image/svg+xml", svg))
+        assertFalse(FileListParsing.isJsonBody("", svg))
+        // XML 声明开头的 SVG 同样不能被当成 JSON
+        assertFalse(FileListParsing.isJsonBody("image/svg+xml", """<?xml version="1.0"?><svg/>"""))
+        assertFalse(FileListParsing.isJsonBody("", ""))
+    }
+
+    @Test
+    fun `looksBinary sniffs NUL bytes`() {
+        assertFalse(FileListParsing.looksBinary("plain text"))
+        assertFalse(FileListParsing.looksBinary("<svg/>"))
+        assertTrue(FileListParsing.looksBinary("abc\u0000def"))
+    }
+
+    @Test
     fun `encodeFilePath accurately encodes paths and strips trailing slashes`() {
         // Windows 盘符根目录：绝不能带尾随斜杠（尾随斜杠会导致反向代理 404）
         assertEquals("D%3A", FileListParsing.encodeFilePath("D:\\"))

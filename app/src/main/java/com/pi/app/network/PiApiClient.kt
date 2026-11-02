@@ -2174,7 +2174,28 @@ class PiApiClient(private val prefs: AppPreferences) {
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->
+                    val contentType = resp.header("Content-Type").orEmpty()
                     val body = resp.body?.string() ?: "{}"
+                    val isJsonBody = FileListParsing.isJsonBody(contentType, body)
+
+                    // pi-web 的 `type=read` 只对「文本类」回 JSON；`getImageMime()` 命中时
+                    // （**包括 SVG**）直接回原文件流。以前这里无脑当 JSON 解，于是 SVG 一律
+                    // 报「读取文件失败: HTTP 200」—— 状态码 200 却读不出内容，就是这个原因。
+                    if (resp.isSuccessful && !isJsonBody) {
+                        val bytes = body.toByteArray(Charsets.UTF_8)
+                        val isBinary = FileListParsing.looksBinary(body)
+                        return@withContext Result.success(
+                            FileTextChunk(
+                                content = if (isBinary) "" else body,
+                                nextOffset = bytes.size.toLong(),
+                                truncated = false,
+                                size = resp.header("Content-Length")?.toLongOrNull() ?: bytes.size.toLong(),
+                                binary = isBinary,
+                                mtime = null
+                            )
+                        )
+                    }
+
                     val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
                     if (!resp.isSuccessful || root == null) {
                         val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"

@@ -305,6 +305,8 @@ class MainActivity : ComponentActivity() {
         }
         var browsingWorkspaceCwd by rememberSaveable { mutableStateOf<String?>(null) }
         var browsingWorkspaceName by rememberSaveable { mutableStateOf("") }
+        // true = 「浏览电脑文件」入口（可一直向上退到盘符根）；false = 工作区「浏览文件」
+        var browsingWorkspaceRoam by rememberSaveable { mutableStateOf(false) }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区
         var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf("") }
@@ -3322,6 +3324,7 @@ class MainActivity : ComponentActivity() {
                 FilesScreen(
                     workspaceCwd = cwd,
                     workspaceName = wsName,
+                    allowRoam = browsingWorkspaceRoam,
                     onBack = { browsingWorkspaceCwd = null },
                     onDownloadFile = { path ->
                         lifecycleScope.launch {
@@ -3416,6 +3419,7 @@ class MainActivity : ComponentActivity() {
                         dirs
                     },
                     onDirectoryChanged = { newDir ->
+                        // 记住上次所在目录（下次从这里继续）+ 顺手加白，保证父级目录也能列出来
                         prefs.lastBrowsedDirectory = newDir
                         lifecycleScope.launch {
                             apiClient.validateRemoteDirectory(newDir)
@@ -3669,7 +3673,9 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "已添加工作区目录：$finalPath", Toast.LENGTH_SHORT).show()
                         Result.success(finalPath)
                     },
-                    onBrowseFiles = { path, name ->
+                    onBrowseFiles = { path, name, roam ->
+                        // 「浏览电脑文件」入口：记住上次所在目录，但把它当作「起点」而不是边界
+                        browsingWorkspaceRoam = roam
                         val fallback = sessions.firstOrNull()?.cwd?.takeIf { it.isNotBlank() }
                             ?: sessions.firstOrNull()?.workspacePath?.takeIf { it.isNotBlank() }
                             ?: customWorkspaces.firstOrNull()?.takeIf { it.isNotBlank() }

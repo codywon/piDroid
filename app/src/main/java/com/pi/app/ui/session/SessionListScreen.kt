@@ -172,7 +172,8 @@ fun SessionListScreen(
     customWorkspaces: List<String> = emptyList(),
     onBrowseRemoteDir: suspend (String) -> RemoteBrowseData? = { null },
     onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) },
-    onBrowseFiles: (workspacePath: String, workspaceName: String) -> Unit = { _, _ -> },
+    /** [roam] = true 表示「浏览电脑文件」入口：起始目录只是上次位置，可一直向上退到盘符根 */
+    onBrowseFiles: (workspacePath: String, workspaceName: String, roam: Boolean) -> Unit = { _, _, _ -> },
     initialBrowsePath: String = ""
 ) {
     val context = LocalContext.current
@@ -1046,7 +1047,7 @@ fun SessionListScreen(
                                                 }
                                             }
                                         }
-                                        onBrowseFiles(defaultPath, "电脑文件")
+                                        onBrowseFiles(defaultPath, "电脑文件", true)
                                         coroutineScope.launch {
                                             drawerState.close()
                                         }
@@ -1857,7 +1858,7 @@ fun SessionListScreen(
                         val path = targetWs.path
                         val name = wsDisplayName
                         selectedMenuWorkspace = null
-                        onBrowseFiles(path, name)
+                        onBrowseFiles(path, name, false)
                         coroutineScope.launch {
                             drawerState.close()
                         }
