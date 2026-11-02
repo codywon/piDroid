@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.46] - 2026-11-02
+
+### 📁 左侧抽屉底栏增加全局「浏览电脑文件」入口（全盘目录漫游）
+
+1. **左侧抽屉底栏常驻「浏览电脑文件...」入口**：
+   - 在左侧抽屉底部操作区（`footer`）新增常驻项，无需进入具体会话，一键呼出全局目录漫游；
+   - 支持自由穿透浏览 PC 上的全盘目录与所有驱动器盘符（`C:\`、`D:\`、家目录等）；
+   - 支持自动记忆「最近一次浏览的目录」，二次打开秒级就绪。
+2. **权威目录校验与安全授权（对齐 pi-web）**：
+   - 接入 `POST /api/cwd/validate`，选中目录自动进入服务端 `allowFileRoot` 白名单；
+   - 目录切换与远程驱动器盘符（`drives`）解析全量打通，无缝拉起全功能资源管理器 `FilesScreen`。
+3. **快照对账与流式状态深度优化**：
+   - 完善 `SessionSnapshotMerge`，保护在途流式助手消息的 `streamMessageId`、`mediaList` 与思考耗时，杜绝气泡分裂。
+
 ## [1.8.45] - 2026-11-02
 
 > `v1.8.44` 的 tag 因 `build.gradle.kts` 里 `taskGraph.whenReady { it… }` 在 Kotlin DSL 下解析不到

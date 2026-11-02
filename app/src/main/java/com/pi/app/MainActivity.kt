@@ -3387,9 +3387,17 @@ class MainActivity : ComponentActivity() {
                         Result.success(finalPath)
                     },
                     onBrowseFiles = { path, name ->
-                        browsingWorkspaceCwd = path
-                        browsingWorkspaceName = name
-                    }
+                        lifecycleScope.launch {
+                            apiClient.validateRemoteDirectory(path).onSuccess { validatedPath ->
+                                prefs.lastBrowsedDirectory = validatedPath
+                                browsingWorkspaceCwd = validatedPath
+                                browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(validatedPath).ifBlank { validatedPath } }
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "访问目录失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    },
+                    initialBrowsePath = prefs.lastBrowsedDirectory.ifBlank { prefs.lastSelectedCwd }
                 )
             }
         }

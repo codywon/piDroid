@@ -322,4 +322,111 @@ class SessionTreeNavigationTest {
         assertEquals("第二轮提问", local[2].content)
         assertEquals("流式文字", local[3].content)
     }
+
+    @Test
+    fun `incremental sync matches uncommitted tool and agent without duplicate bubbles`() {
+        // 本地包含正在执行的工具和流式助手消息，服务端快照追赶上后，正确匹配并回填 entryId，不产生重复条目
+        val toolCall = ToolCallInfo(toolCallId = "call_abc", toolName = "bash", command = "ls -la", isRunning = false)
+        val local = mutableListOf(
+            ChatItem(id = "1", entryId = "u1", role = MessageRole.USER, content = "执行命令"),
+            ChatItem(id = "local_tool", entryId = null, role = MessageRole.TOOL, content = "输出", toolCall = toolCall),
+            ChatItem(id = "local_a1", entryId = null, role = MessageRole.AGENT, content = "执行完毕", isStreaming = true)
+        )
+        val serverToolCall = ToolCallInfo(toolCallId = "call_abc", toolName = "bash", command = "ls -la", isRunning = false)
+        val synced = listOf(
+            ChatItem(id = "h1", entryId = "u1", role = MessageRole.USER, content = "执行命令"),
+            ChatItem(id = "srv_t1", entryId = "entry_t1", role = MessageRole.TOOL, content = "输出", toolCall = serverToolCall),
+            ChatItem(id = "srv_a1", entryId = "entry_a1", role = MessageRole.AGENT, content = "执行完毕", isStreaming = false)
+        )
+
+        incrementalSync(local, synced, effectiveRunning = false)
+
+        assertEquals(3, local.size)
+        assertEquals("local_tool", local[1].id)
+        assertEquals("entry_t1", local[1].entryId)
+        assertEquals("local_a1", local[2].id)
+        assertEquals("entry_a1", local[2].entryId)
+    }
+
+    @Test
+    fun `isSameBase64 handles tab-indented and multi-space base64 strings`() {
+        val b64A = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAE=\n\t\r "
+        val b64B = "  iVBORw0KGgoAAAANSUhEUgAAAAE=  "
+
+        val localMedia = listOf(MediaAttachment(id = "1", dataBase64 = b64A))
+        val diskMedia = listOf(MediaAttachment(id = "2", dataBase64 = b64B))
+
+        val local = ChatItem(id = "l1", role = MessageRole.USER, content = "看图", mediaList = localMedia)
+        val disk = ChatItem(id = "d1", role = MessageRole.USER, content = "看图", mediaList = diskMedia)
+
+        assertTrue(SessionSnapshotMerge.isSameChatContent(local, disk))
+    }
+
+    @Test
+    fun `isSameMediaAttachment normalizes Windows backslash and forward slash path separators`() {
+        val mediaA = listOf(MediaAttachment(id = "1", filePath = "D:\\workspace\\project\\image.png", mimeType = "image/png"))
+        val mediaB = listOf(MediaAttachment(id = "2", filePath = "D:/workspace/project/image.png", mimeType = "image/png"))
+
+        val local = ChatItem(id = "l1", role = MessageRole.USER, content = "文件", mediaList = mediaA)
+        val disk = ChatItem(id = "d1", role = MessageRole.USER, content = "文件", mediaList = mediaB)
+
+        assertTrue(SessionSnapshotMerge.isSameChatContent(local, disk))
+    }
+
+    @Test
+    fun `incremental sync preserves streamMessageId mediaList and duration when merging streaming agent`() {
+        val localMedia = listOf(MediaAttachment(id = "loc_img", mimeType = "image/png", dataBase64 = "abc"))
+        val local = mutableListOf(
+            ChatItem(
+                id = "agent_stream_1",
+                role = MessageRole.AGENT,
+                content = "流式长文本",
+                thinking = "深度思考中...",
+                thinkingDurationSec = 10,
+                modelName = "claude-3-7-sonnet",
+                isStreaming = true,
+                streamMessageId = "msg_stream_42",
+                mediaList = localMedia
+            )
+        )
+        val synced = listOf(
+            ChatItem(
+                id = "disk_agent_1",
+                entryId = "entry_agent_42",
+                role = MessageRole.AGENT,
+                content = "流式短文本",
+                thinking = "深度思考",
+                thinkingDurationSec = 12,
+                modelName = "claude-3-7-sonnet",
+                isStreaming = false,
+                mediaList = emptyList()
+            )
+        )
+
+        incrementalSync(local, synced, effectiveRunning = true)
+
+        assertEquals(1, local.size)
+        val result = local[0]
+        assertEquals("agent_stream_1", result.id)
+        assertEquals("entry_agent_42", result.entryId)
+        assertEquals("msg_stream_42", result.streamMessageId) // 保护本地在途身份
+        assertEquals("流式长文本", result.content) // 保留本地更新的内容
+        assertEquals("深度思考中...", result.thinking)
+        assertEquals(12, result.thinkingDurationSec) // 采纳服务端更新的耗时
+        assertEquals("claude-3-7-sonnet", result.modelName)
+        assertEquals(1, result.mediaList.size) // 保护本地媒体附件
+        assertTrue(result.isStreaming)
+    }
+
+    @Test
+    fun `mergeItem updates thinkingDurationSec and modelName when populated from server`() {
+        val local = ChatItem(id = "l1", role = MessageRole.AGENT, content = "回答完毕", thinking = "思考", thinkingDurationSec = null, modelName = null)
+        val disk = ChatItem(id = "d1", role = MessageRole.AGENT, content = "回答完毕", thinking = "思考", thinkingDurationSec = 15, modelName = "gemini-flash")
+
+        val merged = SessionSnapshotMerge.mergeItem(local, disk)
+
+        assertEquals("l1", merged.id)
+        assertEquals(15, merged.thinkingDurationSec)
+        assertEquals("gemini-flash", merged.modelName)
+    }
 }

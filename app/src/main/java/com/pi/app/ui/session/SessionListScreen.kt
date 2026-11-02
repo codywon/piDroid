@@ -172,7 +172,8 @@ fun SessionListScreen(
     customWorkspaces: List<String> = emptyList(),
     onBrowseRemoteDir: suspend (String) -> RemoteBrowseData? = { null },
     onAddWorkspace: suspend (targetPath: String, newFolderName: String?, createIfMissing: Boolean) -> Result<String> = { p, _, _ -> Result.success(p) },
-    onBrowseFiles: (workspacePath: String, workspaceName: String) -> Unit = { _, _ -> }
+    onBrowseFiles: (workspacePath: String, workspaceName: String) -> Unit = { _, _ -> },
+    initialBrowsePath: String = ""
 ) {
     val context = LocalContext.current
     val prefs = remember(context) { AppPreferences(context) }
@@ -182,6 +183,7 @@ fun SessionListScreen(
     val haptic = LocalHapticFeedback.current
     var showManualDialog by remember { mutableStateOf(false) }
     var showAddWorkspaceDialog by remember { mutableStateOf(false) }
+    var showBrowseComputerDialog by remember { mutableStateOf(false) }
     var selectedMenuWorkspace by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var showRenameWsDialog by remember { mutableStateOf<WorkspaceInfo?>(null) }
     var renameWsInput by remember { mutableStateOf("") }
@@ -1026,6 +1028,38 @@ fun SessionListScreen(
                                 thickness = 0.5.dp,
                                 modifier = Modifier.padding(top = 4.dp, bottom = 2.dp)
                             )
+                        }
+
+                        // 0. 小图标 + 浏览电脑文件... (对标 pi-web SessionSidebar 文件管理器与 DirectoryPicker)
+                        item(key = "footer_browse_files") {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = Color.Transparent,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showBrowseComputerDialog = true }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Folder,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.primary
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text(
+                                        text = "浏览电脑文件...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontSize = 12.5.sp,
+                                        color = theme.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
                         }
 
                         // 1. 小图标 + 打开其他项目... (对标 pi-web footer-open)
@@ -2150,6 +2184,23 @@ fun SessionListScreen(
         )
     }
 
+    if (showBrowseComputerDialog) {
+        val defaultPath = initialBrowsePath.ifBlank { prefs.lastBrowsedDirectory.ifBlank { prefs.lastSelectedCwd } }
+        BrowseComputerDialog(
+            initialPath = defaultPath,
+            onBrowseRemoteDir = onBrowseRemoteDir,
+            onDismiss = { showBrowseComputerDialog = false },
+            onConfirm = { chosenPath ->
+                showBrowseComputerDialog = false
+                val name = com.pi.app.network.FileListParsing.displayName(chosenPath).ifBlank { chosenPath }
+                coroutineScope.launch {
+                    drawerState.close()
+                    onBrowseFiles(chosenPath, name)
+                }
+            }
+        )
+    }
+
     // ✏️ 重命名会话对话框
     renamingSession?.let { sess ->
         AlertDialog(
@@ -3086,6 +3137,213 @@ private fun WorkspaceMenuActionItem(
             }
         }
     }
+}
+
+@Composable
+private fun BrowseComputerDialog(
+    initialPath: String,
+    onBrowseRemoteDir: suspend (String) -> RemoteBrowseData?,
+    onDismiss: () -> Unit,
+    onConfirm: (targetPath: String) -> Unit
+) {
+    val theme = LocalAppTheme.current
+    val scope = rememberCoroutineScope()
+    var pathInput by remember { mutableStateOf(initialPath) }
+    var isBrowsing by remember { mutableStateOf(false) }
+    var browseData by remember { mutableStateOf<RemoteBrowseData?>(null) }
+
+    fun loadDirectory(dirPath: String) {
+        scope.launch {
+            isBrowsing = true
+            val res = onBrowseRemoteDir(dirPath)
+            if (res != null) {
+                browseData = res
+                if (res.currentPath.isNotBlank()) {
+                    pathInput = res.currentPath
+                }
+            }
+            isBrowsing = false
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        loadDirectory(initialPath)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.surfaceContainerLow,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Icon(Icons.Default.Folder, contentDescription = null, tint = theme.primary, modifier = Modifier.size(20.dp))
+                Text(
+                    text = "浏览电脑文件",
+                    color = theme.textPrimary,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.5.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text(
+                    text = "输入或点选 PC 上的任意文件夹（如 C:\\、D:\\、家目录），直接浏览其文件：",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 11.sp,
+                    color = theme.textSecondary
+                )
+
+                OutlinedTextField(
+                    value = pathInput,
+                    onValueChange = { pathInput = it },
+                    label = { Text("目标目录路径", fontSize = 11.5.sp, color = theme.textSecondary, maxLines = 1, softWrap = false) },
+                    placeholder = { Text("如 D:\\ 或 ~/projects", fontSize = 11.5.sp, color = theme.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = theme.textPrimary),
+                    singleLine = true,
+                    trailingIcon = {
+                        IconButton(onClick = { loadDirectory(pathInput) }) {
+                            Icon(Icons.Default.FolderOpen, contentDescription = "浏览该路径", tint = theme.primary, modifier = Modifier.size(18.dp))
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // 远程目录浏览器面板
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = theme.surfaceContainer,
+                    border = BorderStroke(1.dp, theme.outline),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = "PC 目录列表",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = theme.textSecondary,
+                                fontSize = 11.sp
+                            )
+                            val parentPath = browseData?.parentPath
+                            if (!parentPath.isNullOrBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = theme.surfaceContainerLow,
+                                    border = BorderStroke(0.8.dp, theme.outline),
+                                    modifier = Modifier.clickable { loadDirectory(parentPath) }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(3.dp)
+                                    ) {
+                                        Icon(Icons.Default.ArrowUpward, contentDescription = null, modifier = Modifier.size(12.dp), tint = theme.primary)
+                                        Text("上一级", fontSize = 10.5.sp, color = theme.primary, maxLines = 1, softWrap = false)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        if (isBrowsing) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(110.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = theme.primary)
+                            }
+                        } else {
+                            val dirs = browseData?.directories.orEmpty()
+                            if (dirs.isEmpty()) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 14.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "该目录下无子文件夹，可直接点击下方进入浏览",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = theme.textMuted,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            } else {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 160.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    items(dirs, key = { it.path }) { dirEntry ->
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = theme.surfaceContainerLow,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clickable {
+                                                    pathInput = dirEntry.path
+                                                    loadDirectory(dirEntry.path)
+                                                }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                            ) {
+                                                Icon(Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(15.dp), tint = theme.primary)
+                                                Text(
+                                                    text = dirEntry.name,
+                                                    fontSize = 11.5.sp,
+                                                    fontFamily = FontFamily.Monospace,
+                                                    color = theme.textPrimary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                    modifier = Modifier.weight(1f)
+                                                )
+                                                Icon(Icons.Default.ChevronRight, contentDescription = null, modifier = Modifier.size(14.dp), tint = theme.textMuted)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", fontSize = 12.sp, color = theme.textSecondary)
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (pathInput.isNotBlank()) {
+                        onConfirm(pathInput.trim())
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = theme.primary, contentColor = theme.onPrimary),
+                shape = RoundedCornerShape(8.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp)
+            ) {
+                Text("进入浏览", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, softWrap = false)
+            }
+        }
+    )
 }
 
 private fun parseSessionTimeMillis(timeStr: String?): Long {

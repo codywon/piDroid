@@ -34,6 +34,13 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_LAST_SELECTED_CWD, "") ?: ""
         set(value) = prefs.edit().putString(KEY_LAST_SELECTED_CWD, value.trim()).apply()
 
+    /**
+     * 最近一次主动浏览过的远程电脑目录。
+     */
+    var lastBrowsedDirectory: String
+        get() = prefs.getString(KEY_LAST_BROWSED_DIRECTORY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_LAST_BROWSED_DIRECTORY, value.trim()).apply()
+
     // 语音播报开关：默认关闭自动播报，支持手动按需点击播报
     var autoSpeakEnabled: Boolean
         get() = prefs.getBoolean(KEY_AUTO_SPEAK, false)
@@ -526,6 +533,7 @@ class AppPreferences(context: Context) {
     private const val KEY_WORKSPACE_ORDER = "workspace_order"
     private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
     private const val KEY_LAST_SELECTED_CWD = "key_last_selected_cwd"
+    private const val KEY_LAST_BROWSED_DIRECTORY = "key_last_browsed_directory"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     private const val KEY_SESSION_MODEL_IDENTITIES = "key_session_model_identities"
     }

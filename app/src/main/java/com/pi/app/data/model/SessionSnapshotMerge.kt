@@ -24,14 +24,14 @@ object SessionSnapshotMerge {
         val lenA = rawA.length
         val lenB = rawB.length
         while (i < lenA || j < lenB) {
-            while (i < lenA && (rawA[i] == '\r' || rawA[i] == '\n' || rawA[i] == ' ')) i++
-            while (j < lenB && (rawB[j] == '\r' || rawB[j] == '\n' || rawB[j] == ' ')) j++
+            while (i < lenA && (rawA[i] == '\r' || rawA[i] == '\n' || rawA[i] == ' ' || rawA[i] == '\t')) i++
+            while (j < lenB && (rawB[j] == '\r' || rawB[j] == '\n' || rawB[j] == ' ' || rawB[j] == '\t')) j++
             val hasA = i < lenA
             val hasB = j < lenB
             if (hasA != hasB) return false
             if (hasA && rawA[i] != rawB[j]) return false
-            i++
-            j++
+            if (hasA) i++
+            if (hasB) j++
         }
         return true
     }
@@ -39,7 +39,7 @@ object SessionSnapshotMerge {
     private fun isSameMediaAttachment(a: MediaAttachment, b: MediaAttachment): Boolean {
         if (a.kind != b.kind) return false
         if (!a.mimeType.equals(b.mimeType, ignoreCase = true)) return false
-        if (a.filePath != b.filePath) return false
+        if (a.filePath?.replace('\\', '/') != b.filePath?.replace('\\', '/')) return false
         if (a.url != b.url) return false
         if (a.rawContent != b.rawContent) return false
         if (!isSameBase64(a.dataBase64, b.dataBase64)) return false
@@ -59,6 +59,8 @@ object SessionSnapshotMerge {
         return a.role == b.role &&
             a.content == b.content &&
             a.thinking == b.thinking &&
+            a.thinkingDurationSec == b.thinkingDurationSec &&
+            a.modelName == b.modelName &&
             a.isStreaming == b.isStreaming &&
             a.toolCall == b.toolCall &&
             a.usageSummary == b.usageSummary &&
@@ -110,11 +112,15 @@ object SessionSnapshotMerge {
                 localItem.role == diskItem.role && localItem.mediaList.isNotEmpty() -> localItem.mediaList
                 else -> emptyList()
             }
+            val keepDuration = diskItem.thinkingDurationSec ?: localItem.thinkingDurationSec
+            val keepModelName = diskItem.modelName ?: localItem.modelName
             diskItem.copy(
                 id = keepId,
                 timestamp = keepTs,
                 streamMessageId = keepStreamId,
-                mediaList = resolvedMedia
+                mediaList = resolvedMedia,
+                thinkingDurationSec = keepDuration,
+                modelName = keepModelName
             )
         } else if (localItem.entryId.isNullOrBlank() && !diskItem.entryId.isNullOrBlank()) {
             localItem.copy(entryId = diskItem.entryId)
@@ -170,11 +176,57 @@ object SessionSnapshotMerge {
                     if (matchedLocalIndices.contains(i)) continue
                     val item = local[i]
                     if (item.role != MessageRole.USER) continue
+                    if (!item.entryId.isNullOrBlank()) continue
                     val localContent = item.content.trim()
                     if (localContent == diskContent || localContent.removePrefix("➔ [引导] ").trim() == diskContent) {
                         localMatchIdx = i
                         break
                     }
+                }
+            }
+
+            // 若 entryId 未匹配，针对本地在途工具卡片按 toolCallId 或工具名/命令精确匹配
+            if (localMatchIdx < 0 && diskItem.role == MessageRole.TOOL) {
+                val diskTcId = diskItem.toolCall?.toolCallId
+                for (i in local.indices) {
+                    if (matchedLocalIndices.contains(i)) continue
+                    val item = local[i]
+                    if (item.role != MessageRole.TOOL) continue
+                    if (!item.entryId.isNullOrBlank()) continue
+                    if (!diskTcId.isNullOrBlank() && item.toolCall?.toolCallId == diskTcId) {
+                        localMatchIdx = i
+                        break
+                    }
+                }
+                if (localMatchIdx < 0) {
+                    val diskToolName = diskItem.toolCall?.toolName
+                    val diskCmd = diskItem.toolCall?.command
+                    if (!diskToolName.isNullOrBlank()) {
+                        for (i in local.indices) {
+                            if (matchedLocalIndices.contains(i)) continue
+                            val item = local[i]
+                            if (item.role != MessageRole.TOOL) continue
+                            if (!item.entryId.isNullOrBlank()) continue
+                            if (item.toolCall?.toolName == diskToolName &&
+                                (diskCmd.isNullOrBlank() || item.toolCall?.command == diskCmd)
+                            ) {
+                                localMatchIdx = i
+                                break
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 若 entryId 未匹配，针对在途或流式生成的助手消息按角色顺序匹配
+            if (localMatchIdx < 0 && diskItem.role == MessageRole.AGENT) {
+                for (i in local.indices) {
+                    if (matchedLocalIndices.contains(i)) continue
+                    val item = local[i]
+                    if (item.role != MessageRole.AGENT) continue
+                    if (!item.entryId.isNullOrBlank()) continue
+                    localMatchIdx = i
+                    break
                 }
             }
 
@@ -185,13 +237,21 @@ object SessionSnapshotMerge {
                 if (localItem.isStreaming && localItem.role == MessageRole.AGENT && diskItem.role == MessageRole.AGENT) {
                     val mergedContent = if (localItem.content.length >= diskItem.content.length) localItem.content else diskItem.content
                     val mergedThinking = if ((localItem.thinking?.length ?: 0) >= (diskItem.thinking?.length ?: 0)) localItem.thinking else diskItem.thinking
+                    val keepStreamId = localItem.streamMessageId ?: diskItem.streamMessageId
+                    val resolvedMedia = if (diskItem.mediaList.isNotEmpty()) diskItem.mediaList else localItem.mediaList
+                    val keepDuration = diskItem.thinkingDurationSec ?: localItem.thinkingDurationSec
+                    val keepModelName = diskItem.modelName ?: localItem.modelName
                     reconciledCommitted.add(
                         diskItem.copy(
                             id = localItem.id,
                             timestamp = localItem.timestamp,
                             content = mergedContent,
                             thinking = mergedThinking,
-                            isStreaming = effectiveRunning
+                            isStreaming = effectiveRunning,
+                            streamMessageId = keepStreamId,
+                            mediaList = resolvedMedia,
+                            thinkingDurationSec = keepDuration,
+                            modelName = keepModelName
                         )
                     )
                 } else {
@@ -205,13 +265,16 @@ object SessionSnapshotMerge {
         // 2. 提取本地尚未包含在服务端快照中的有效在途消息 (In-Flight Items)
         // 包含：
         // a) 用户刚发送但服务端尚未记录的乐观消息 (role == USER, entryId == null)
-        // b) 正在通过 SSE 实时流式接收的助手消息 (isStreaming == true)
-        // c) 正在执行的工具卡片 (toolCall?.isRunning == true)
+        // b) 运行中时，任何尚未落盘的本地消息（提问、助手流式/分段、工具卡片）都是当前在途内容，绝不丢弃
+        // c) 正在通过 SSE 实时流式接收的助手消息 (isStreaming == true)
+        // d) 正在执行的工具卡片 (toolCall?.isRunning == true)
         val inFlightItems = local.filterIndexed { idx, item ->
             if (matchedLocalIndices.contains(idx)) return@filterIndexed false
             when {
                 // 尚未落盘的乐观用户消息：无论是否 running 都绝不能丢
                 item.role == MessageRole.USER && item.entryId.isNullOrBlank() -> true
+                // 运行中时，尚未落盘的本地消息（提问、助手、工具）都是当前活跃回合在途产物，绝不丢弃
+                effectiveRunning && item.entryId.isNullOrBlank() -> true
                 // 正在实时生成的助手消息：保留
                 item.role == MessageRole.AGENT && item.isStreaming -> true
                 // 正在执行的工具：保留

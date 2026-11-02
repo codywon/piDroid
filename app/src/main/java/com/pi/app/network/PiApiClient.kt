@@ -4685,7 +4685,7 @@ data class CatalogPreset(
                     ?: json.get("parent")?.takeIf { !it.isJsonNull }?.asString
 
                 val dirs = mutableListOf<RemoteDirEntry>()
-                val arrKeys = listOf("directories", "dirs", "entries", "children", "subdirs", "items")
+                val arrKeys = listOf("directories", "dirs", "drives", "entries", "children", "subdirs", "items")
                 for (k in arrKeys) {
                     if (json.has(k) && json.get(k).isJsonArray) {
                         val arr = json.getAsJsonArray(k)
@@ -4721,6 +4721,38 @@ data class CatalogPreset(
                     }
                 }
                 Result.success(RemoteBrowseData(currentPath = currentPath, parentPath = parentPath, directories = dirs))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 校验远程目录并加入服务端可读写白名单 (POST /api/cwd/validate)
+     */
+    suspend fun validateRemoteDirectory(dirPath: String): Result<String> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val clean = dirPath.trim()
+        if (clean.isBlank()) return@withContext Result.failure(Exception("路径不能为空"))
+        try {
+            val payload = mapOf("cwd" to clean)
+            val req = Request.Builder()
+                .url("$baseUrl/api/cwd/validate")
+                .post(gson.toJson(payload).toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val err = runCatching { JsonParser.parseString(body).asJsonObject.get("error")?.asString }.getOrNull()
+                        ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException(err))
+                }
+                val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val resolved = obj?.get("cwd")?.takeIf { !it.isJsonNull }?.asString
+                    ?: obj?.get("path")?.takeIf { !it.isJsonNull }?.asString
+                    ?: clean
+                Result.success(resolved)
             }
         } catch (e: Exception) {
             Result.failure(e)
