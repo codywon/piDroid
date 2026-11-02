@@ -2,7 +2,11 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.44] - 2026-11-02
+## [1.8.45] - 2026-11-02
+
+> `v1.8.44` 的 tag 因 `build.gradle.kts` 里 `taskGraph.whenReady { it… }` 在 Kotlin DSL 下解析不到
+> `it`（脚本编译失败）而没有产出安装包，本版为修复后的同内容首发。
+
 
 ### 🔒 构建配置的两处「静默失败」改成显式失败
 

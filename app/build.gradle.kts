@@ -40,8 +40,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 150
-        versionName = "1.8.44"
+        versionCode = 151
+        versionName = "1.8.45"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -109,9 +109,9 @@ val releasePackagingTaskNames = setOf(
     "packageRelease",
     "validateSigningRelease"
 )
-gradle.taskGraph.whenReady {
-    val wantsRelease = it.allTasks.any { task -> task.name in releasePackagingTaskNames }
-    if (wantsRelease) {
+tasks.matching { task -> task.name in releasePackagingTaskNames }.configureEach {
+    // doFirst 只在这些任务**真的被执行**时跑，因此单测/日常配置仍然不受影响。
+    doFirst {
         val missing = buildList {
             if (!releaseKeystoreFile.exists()) add("keystore/release.jks")
             if (releaseStorePassword.isNullOrBlank()) add("KEYSTORE_PASSWORD")
