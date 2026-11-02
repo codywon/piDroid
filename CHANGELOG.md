@@ -2,10 +2,11 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.56] - 2026-11-02
+## [1.8.57] - 2026-11-02
 
-> `v1.8.55` 的 tag 因 `ArtifactViewerFullScreen` 里遗留的 `Modifier.align(...)` 位于非 BoxScope 作用域
-> 而编译失败，未产出安装包；本版是修复后的同内容首发（返回键 + 图片 + Office 一并解决）。
+> `v1.8.55`（`Modifier.align(...)` 在非 BoxScope 作用域编译失败）与 `v1.8.56`（单测里
+> `assertEquals(Int, Int, String)` 无匹配重载导致测试源集编译失败）两个 tag 都未产出安装包，
+> 本版是修复后的同内容首发。
 
 ### 🎯 返回箭头点不动、PNG 打不开、Office 只能跳外部应用 —— 三件事一起修
 

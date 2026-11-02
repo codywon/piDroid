@@ -70,7 +70,8 @@ class OfficeXmlPreviewTest {
         assertNotNull(preview)
         val sheet = preview as OfficePreview.Sheet
         assertEquals("预算表", sheet.sheetName)
-        assertEquals(3, sheet.rows.size, "尾部全空行应被去掉")
+        // 第 4 行是格式刷出来的空行，应被裁掉
+        assertEquals(3, sheet.rows.size)
         assertEquals(listOf("项目", "金额"), sheet.rows[0])
         assertEquals(listOf("服务器 & 存储", "1234.5"), sheet.rows[1])
         // 第三行：A 列在 inlineStr、C 列富文本，中间 B 列补空串
