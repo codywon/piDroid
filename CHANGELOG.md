@@ -2,6 +2,22 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.59] - 2026-11-02
+
+### 🛡️ 代码质量与可靠性优化：同路径规范化防重置、下载走 HTTP/1.1 防断流与非阻塞重试
+
+1. **同目录比对使用 `WorkspacePaths.samePath` 防止状态意外重置 (`MainActivity.kt`)**：
+   - 修复在 Windows 宿主机上 `D:/` 与 `D:\` 因斜杠字符不同被普通 `equals` 判为不同目录，导致在进入子目录后被在途校验重新覆盖重置为根目录的问题；
+2. **普通目录导航消除冗余网络校验 (`MainActivity.kt`)**：
+   - 普通子目录导航优先直接获取目录列表（1 RTT），仅当遭遇 403 权限拒访时才触发加白重试（2 RTT），降低多层级浏览延迟；
+3. **文件下载接入 HTTP/1.1 连接池 (`FileDownloader.kt`)**：
+   - 将系统「下载」与 SAF 保存文件流程切换至大文件专用的 `fileOkHttpClient`（HTTP/1.1），杜绝公网 Nginx 代理下的 `stream was reset: INTERNAL_ERROR` 异常断流；
+4. **大文件重试延迟改为非阻塞 `delay` (`PiApiClient.kt`)**：
+   - 将重试等待从阻塞线程的 `Thread.sleep` 改为协程原生的非阻塞 `delay`，避免线程饥饿；
+5. **Office XML 解析防御加固 (`OfficeXmlPreview.kt`)**：
+   - 限制 Zip 解包最大条目数量（`MAX_ZIP_ENTRIES = 1000`），并在列序号解析中增加大数值截断保护，防御极端异常文件；
+   - 优化全屏查看器顶栏操作，避免在 Office 视图中显示文本换行按钮。
+
 ## [1.8.58] - 2026-11-02
 
 ### 🖼️ 修复 SVG 打不开（「读取文件失败: HTTP 200」）+ 浏览电脑文件记住上次位置并可一直向上退到盘符根

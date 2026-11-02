@@ -38,6 +38,8 @@ internal object OfficeXmlPreview {
     const val MAX_SLIDES = 60
     /** 解包后单条目上限（防止 zip 炸弹把内存吃穿） */
     private const val MAX_ENTRY_BYTES = 24 * 1024 * 1024
+    /** 解包条目数量上限 */
+    private const val MAX_ZIP_ENTRIES = 1000
 
     fun isSupportedExtension(ext: String): Boolean {
         return ext.lowercase(Locale.ROOT) in setOf("xlsx", "pptx")
@@ -63,9 +65,11 @@ internal object OfficeXmlPreview {
 
     private fun readZipEntries(bytes: ByteArray): Map<String, String> {
         val result = HashMap<String, String>()
+        var entryCount = 0
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
+                if (++entryCount > MAX_ZIP_ENTRIES) break
                 if (entry.isDirectory) continue
                 val name = entry.name
                 val interesting = name.startsWith("xl/") || name.startsWith("ppt/")
@@ -167,6 +171,7 @@ internal object OfficeXmlPreview {
         var seen = false
         for (ch in ref) {
             if (ch.isLetter()) {
+                if (value > 1000) break
                 value = value * 26 + (ch.uppercaseChar() - 'A' + 1)
                 seen = true
             } else {

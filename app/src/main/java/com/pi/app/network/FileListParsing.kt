@@ -116,7 +116,7 @@ object FileListParsing {
 
     /** 原始字节里是否出现了 NUL（与 pi-web `lib/text-preview.ts` 的二进制嗅探同义） */
     fun looksBinary(raw: String, sniffChars: Int = 8000): Boolean {
-        val limit = minOf(raw.length, sniffChars)
+        val limit = minOf(raw.length, maxOf(0, sniffChars))
         for (i in 0 until limit) {
             if (raw[i].code == 0) return true
         }

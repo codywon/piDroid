@@ -248,7 +248,9 @@ internal fun ArtifactViewerFullScreen(
                         }
 
                         // 3. 自动折行切换（仅代码/文本源码视图生效）
-                        if (!showRenderedPreview && kind != ArtifactKind.IMAGE && kind != ArtifactKind.PDF && kind != ArtifactKind.AUDIO && kind != ArtifactKind.VIDEO) {
+                        if (!showRenderedPreview && kind != ArtifactKind.IMAGE && kind != ArtifactKind.PDF &&
+                            kind != ArtifactKind.AUDIO && kind != ArtifactKind.VIDEO && kind != ArtifactKind.OFFICE
+                        ) {
                             IconButton(
                                 onClick = { wrapLines = !wrapLines },
                                 modifier = Modifier.size(36.dp)

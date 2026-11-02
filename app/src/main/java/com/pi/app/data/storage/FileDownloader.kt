@@ -102,7 +102,7 @@ object FileDownloader {
         val resolver = context.contentResolver
 
         try {
-            apiClient.okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
+            apiClient.fileOkHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(IOException("下载失败 (HTTP ${resp.code})"))
                 }
@@ -192,7 +192,7 @@ object FileDownloader {
         }
 
         try {
-            apiClient.okHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
+            apiClient.fileOkHttpClient.newCall(requestBuilder.build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(IOException("下载失败 (HTTP ${resp.code})"))
                 }

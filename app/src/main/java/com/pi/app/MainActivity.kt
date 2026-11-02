@@ -3381,8 +3381,14 @@ class MainActivity : ComponentActivity() {
                     },
                     onLoadDirectory = { dir, showHidden ->
                         val targetDir = dir.ifBlank { "~" }
-                        val validated = apiClient.validateRemoteDirectory(targetDir).getOrNull() ?: targetDir
-                        apiClient.listFileDirectory(validated, showHidden)
+                        // 性能优化：普通子目录导航优先直接列出（1 RTT），仅当 403 拒访时才走加白重试（2 RTT）
+                        val firstTry = apiClient.listFileDirectory(targetDir, showHidden)
+                        if (firstTry.isFailure && firstTry.exceptionOrNull()?.message?.contains("403") == true) {
+                            val validated = apiClient.validateRemoteDirectory(targetDir).getOrNull() ?: targetDir
+                            apiClient.listFileDirectory(validated, showHidden)
+                        } else {
+                            firstTry
+                        }
                     },
                     onSearchFiles = { dir, q ->
                         apiClient.searchFileIndex(dir, q)
@@ -3704,8 +3710,10 @@ class MainActivity : ComponentActivity() {
                             // 只有在用户还没退出文件浏览器时才回写：否则「点了左上角返回」后
                             // 这个正在飞的校验会把 browsingWorkspaceCwd 重新赋上，页面又弹回来，
                             // 用户感知就是「返回箭头点了没反应」。
+                            // 必须用 samePath 比较：Windows 上 `D:/` 与 `D:\` 只是斜杠不同，
+                            // 普通 equals 会误判为不同并重新赋值，导致 Compose 状态重置。
                             if (resolved != null && browsingWorkspaceCwd != null &&
-                                !resolved.equals(browsingWorkspaceCwd, ignoreCase = true)
+                                !com.pi.app.data.model.WorkspacePaths.samePath(resolved, browsingWorkspaceCwd)
                             ) {
                                 browsingWorkspaceCwd = resolved
                                 browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(resolved).ifBlank { resolved } }

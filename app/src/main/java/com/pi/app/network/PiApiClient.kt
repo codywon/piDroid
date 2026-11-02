@@ -16,6 +16,7 @@ import com.pi.app.prompt.PromptEnhancementResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -146,6 +147,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         .build()
 
     internal val okHttpClient: OkHttpClient get() = client
+    internal val fileOkHttpClient: OkHttpClient get() = fileClient
 
     /**
      * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加硬超时。
@@ -2332,7 +2334,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             } catch (e: Exception) {
                 lastError = e
                 runCatching { target.delete() }
-                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) Thread.sleep(250L * (attempt + 1))
+                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) delay(250L * (attempt + 1))
             }
         }
         Result.failure(lastError ?: IOException("下载失败"))
@@ -2387,7 +2389,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
             } catch (e: Exception) {
                 lastError = e
-                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) Thread.sleep(250L * (attempt + 1))
+                if (attempt < FILE_TRANSFER_ATTEMPTS - 1) delay(250L * (attempt + 1))
             }
         }
         Result.failure(lastError ?: IOException("读取文件失败"))
