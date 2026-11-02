@@ -805,22 +805,17 @@ internal fun SvgWebViewCanvas(
                 touch-action: none; -webkit-touch-callout: none;
                 -webkit-user-select: none; user-select: none;
               }
-              #viewport {
+              #container {
                 width: 100%; height: 100%;
                 display: flex; align-items: center; justify-content: center;
                 position: relative; overflow: hidden;
               }
-              #canvas {
-                transform-origin: 0 0;
-                will-change: transform;
-                display: flex; align-items: center; justify-content: center;
-              }
               svg {
                 display: block;
-                max-width: 95vw;
-                max-height: 90vh;
-                width: auto;
-                height: auto;
+                width: 100% !important;
+                height: 100% !important;
+                max-width: 100% !important;
+                max-height: 100% !important;
                 pointer-events: none;
               }
               #zoom-badge {
@@ -836,64 +831,103 @@ internal fun SvgWebViewCanvas(
             </style>
             </head>
             <body>
-            <div id="viewport">
-              <div id="canvas">
-                $cleanSvg
-              </div>
+            <div id="container">
+              $cleanSvg
             </div>
             <div id="zoom-badge" onclick="resetZoom()">100%</div>
             <script>
             (function() {
-              var viewport = document.getElementById('viewport');
-              var canvas = document.getElementById('canvas');
+              var svg = document.querySelector('svg');
+              if (!svg) return;
+
+              var container = document.getElementById('container');
               var badge = document.getElementById('zoom-badge');
 
-              var scale = 1;
-              var posX = 0;
-              var posY = 0;
-              var startDist = 0;
-              var startScale = 1;
-              var startX = 0;
-              var startY = 0;
-              var isPanning = false;
-              var lastTap = 0;
-
-              function updateTransform() {
-                canvas.style.transform = 'translate(' + posX + 'px, ' + posY + 'px) scale(' + scale + ')';
-                if (badge) badge.innerText = Math.round(scale * 100) + '%';
+              // 1. 初始化并保证 viewBox 存在。
+              // 关键：通过直接操作 SVG 的 viewBox 进行缩放与平移，由浏览器矢量渲染管线
+              // 实时按屏幕物理像素重新光栅化路径，彻底杜绝 CSS scale(...) 导致的位图拉伸模糊！
+              var initX = 0, initY = 0, initW = 0, initH = 0;
+              var vb = svg.viewBox && svg.viewBox.baseVal;
+              if (vb && vb.width > 0 && vb.height > 0) {
+                initX = vb.x; initY = vb.y; initW = vb.width; initH = vb.height;
+              } else {
+                var rawW = parseFloat(svg.getAttribute('width'));
+                var rawH = parseFloat(svg.getAttribute('height'));
+                var bbox = null;
+                try { bbox = svg.getBBox(); } catch(e) {}
+                if (bbox && bbox.width > 0 && bbox.height > 0) {
+                  initX = bbox.x; initY = bbox.y; initW = bbox.width; initH = bbox.height;
+                } else if (rawW > 0 && rawH > 0) {
+                  initX = 0; initY = 0; initW = rawW; initH = rawH;
+                } else {
+                  var rect = svg.getBoundingClientRect();
+                  initX = 0; initY = 0;
+                  initW = rect.width || 300;
+                  initH = rect.height || 150;
+                }
               }
 
+              var curX = initX, curY = initY, curW = initW, curH = initH;
+              var scale = 1.0;
+
+              function applyViewBox() {
+                svg.setAttribute('viewBox', curX + ' ' + curY + ' ' + curW + ' ' + curH);
+                if (badge) {
+                  badge.innerText = Math.round(scale * 100) + '%';
+                }
+              }
+
+              svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+              applyViewBox();
+
               window.resetZoom = function() {
-                scale = 1;
-                posX = 0;
-                posY = 0;
-                updateTransform();
+                scale = 1.0;
+                curX = initX; curY = initY; curW = initW; curH = initH;
+                applyViewBox();
               };
 
-              viewport.addEventListener('touchstart', function(e) {
+              function zoomTo(targetScale, focalX, focalY, viewW, viewH) {
+                targetScale = Math.min(Math.max(targetScale, 0.5), 20.0);
+                var normX = focalX / viewW;
+                var normY = focalY / viewH;
+                var svgFocalX = curX + normX * curW;
+                var svgFocalY = curY + normY * curH;
+
+                scale = targetScale;
+                curW = initW / scale;
+                curH = initH / scale;
+                curX = svgFocalX - normX * curW;
+                curY = svgFocalY - normY * curH;
+                applyViewBox();
+              }
+
+              var lastDist = 0;
+              var lastPan = null;
+              var lastTap = 0;
+
+              function dist(t1, t2) {
+                var dx = t1.clientX - t2.clientX;
+                var dy = t1.clientY - t2.clientY;
+                return Math.sqrt(dx * dx + dy * dy);
+              }
+
+              container.addEventListener('touchstart', function(e) {
                 if (e.touches.length === 2) {
-                  isPanning = false;
-                  var dx = e.touches[0].clientX - e.touches[1].clientX;
-                  var dy = e.touches[0].clientY - e.touches[1].clientY;
-                  startDist = Math.sqrt(dx * dx + dy * dy);
-                  startScale = scale;
+                  lastDist = dist(e.touches[0], e.touches[1]);
+                  lastPan = null;
                 } else if (e.touches.length === 1) {
-                  isPanning = true;
-                  startX = e.touches[0].clientX - posX;
-                  startY = e.touches[0].clientY - posY;
+                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                  lastDist = 0;
 
                   var now = Date.now();
                   if (now - lastTap < 300) {
+                    var rect = container.getBoundingClientRect();
+                    var tapX = e.touches[0].clientX - rect.left;
+                    var tapY = e.touches[0].clientY - rect.top;
                     if (scale > 1.2) {
                       resetZoom();
                     } else {
-                      scale = 2.5;
-                      var rect = viewport.getBoundingClientRect();
-                      var cx = e.touches[0].clientX - rect.left - rect.width / 2;
-                      var cy = e.touches[0].clientY - rect.top - rect.height / 2;
-                      posX = -cx * 1.5;
-                      posY = -cy * 1.5;
-                      updateTransform();
+                      zoomTo(2.5, tapX, tapY, rect.width, rect.height);
                     }
                     lastTap = 0;
                   } else {
@@ -902,24 +936,39 @@ internal fun SvgWebViewCanvas(
                 }
               }, { passive: false });
 
-              viewport.addEventListener('touchmove', function(e) {
+              container.addEventListener('touchmove', function(e) {
                 e.preventDefault();
-                if (e.touches.length === 2 && startDist > 0) {
-                  var dx = e.touches[0].clientX - e.touches[1].clientX;
-                  var dy = e.touches[0].clientY - e.touches[1].clientY;
-                  var dist = Math.sqrt(dx * dx + dy * dy);
-                  scale = Math.min(Math.max(startScale * (dist / startDist), 0.5), 10);
-                  updateTransform();
-                } else if (e.touches.length === 1 && isPanning) {
-                  posX = e.touches[0].clientX - startX;
-                  posY = e.touches[0].clientY - startY;
-                  updateTransform();
+                var rect = container.getBoundingClientRect();
+
+                if (e.touches.length === 2 && lastDist > 0) {
+                  var newDist = dist(e.touches[0], e.touches[1]);
+                  var factor = newDist / lastDist;
+                  lastDist = newDist;
+
+                  var cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
+                  var cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
+                  zoomTo(scale * factor, cx, cy, rect.width, rect.height);
+                } else if (e.touches.length === 1 && lastPan) {
+                  var dx = e.touches[0].clientX - lastPan.x;
+                  var dy = e.touches[0].clientY - lastPan.y;
+                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+
+                  var svgDx = dx * (curW / rect.width);
+                  var svgDy = dy * (curH / rect.height);
+                  curX -= svgDx;
+                  curY -= svgDy;
+                  applyViewBox();
                 }
               }, { passive: false });
 
-              viewport.addEventListener('touchend', function(e) {
-                if (e.touches.length < 2) startDist = 0;
-                if (e.touches.length === 0) isPanning = false;
+              container.addEventListener('touchend', function(e) {
+                if (e.touches.length === 1) {
+                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+                  lastDist = 0;
+                } else if (e.touches.length === 0) {
+                  lastPan = null;
+                  lastDist = 0;
+                }
               }, { passive: false });
             })();
             </script>
