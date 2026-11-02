@@ -3377,7 +3377,9 @@ class MainActivity : ComponentActivity() {
                         Toast.makeText(this@MainActivity, "已引用并复制: $mentionText", Toast.LENGTH_SHORT).show()
                     },
                     onLoadDirectory = { dir, showHidden ->
-                        apiClient.listFileDirectory(dir, showHidden)
+                        val targetDir = dir.ifBlank { "~" }
+                        val validated = apiClient.validateRemoteDirectory(targetDir).getOrNull() ?: targetDir
+                        apiClient.listFileDirectory(validated, showHidden)
                     },
                     onSearchFiles = { dir, q ->
                         apiClient.searchFileIndex(dir, q)
@@ -3405,10 +3407,19 @@ class MainActivity : ComponentActivity() {
                         if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
                     },
                     onLoadDrives = {
-                        apiClient.browseRemoteDirectories("").getOrNull()?.directories ?: emptyList()
+                        val res = apiClient.browseRemoteDirectories("").getOrNull()
+                        val dirs = res?.directories?.toMutableList() ?: mutableListOf()
+                        val home = apiClient.validateRemoteDirectory("~").getOrNull()
+                        if (home != null && dirs.none { it.path.equals(home, ignoreCase = true) }) {
+                            dirs.add(0, RemoteDirEntry(name = "用户主目录 (~)", path = home))
+                        }
+                        dirs
                     },
                     onDirectoryChanged = { newDir ->
                         prefs.lastBrowsedDirectory = newDir
+                        lifecycleScope.launch {
+                            apiClient.validateRemoteDirectory(newDir)
+                        }
                     }
                 )
             }
@@ -3659,17 +3670,43 @@ class MainActivity : ComponentActivity() {
                         Result.success(finalPath)
                     },
                     onBrowseFiles = { path, name ->
+                        val fallback = sessions.firstOrNull()?.cwd?.takeIf { it.isNotBlank() }
+                            ?: sessions.firstOrNull()?.workspacePath?.takeIf { it.isNotBlank() }
+                            ?: customWorkspaces.firstOrNull()?.takeIf { it.isNotBlank() }
+                            ?: prefs.lastSelectedCwd.takeIf { it.isNotBlank() }
+                            ?: "~"
+                        val initial = path.ifBlank { fallback }
+                        // 1. 同步立即激活 FilesScreen，杜绝「抽屉退出了但全屏页面没出来」的卡顿或失败阻断
+                        browsingWorkspaceCwd = initial
+                        browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(initial).ifBlank { "电脑文件" } }
+                        prefs.lastBrowsedDirectory = initial
+
+                        // 2. 异步校验并加入白名单；若初始路径不可达，自动平滑修正为可用路径
                         lifecycleScope.launch {
-                            apiClient.validateRemoteDirectory(path).onSuccess { validatedPath ->
-                                prefs.lastBrowsedDirectory = validatedPath
-                                browsingWorkspaceCwd = validatedPath
-                                browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(validatedPath).ifBlank { validatedPath } }
-                            }.onFailure { err ->
-                                Toast.makeText(this@MainActivity, "访问目录失败: ${err.message}", Toast.LENGTH_LONG).show()
+                            val candidate = path.ifBlank { "" }
+                            val validated = if (candidate.isNotBlank()) {
+                                apiClient.validateRemoteDirectory(candidate).getOrNull()
+                            } else null
+
+                            val resolved = validated ?: run {
+                                val home = apiClient.validateRemoteDirectory("~").getOrNull()
+                                home ?: apiClient.browseRemoteDirectories("").getOrNull()?.directories?.firstOrNull()?.path?.let {
+                                    apiClient.validateRemoteDirectory(it).getOrNull()
+                                }
+                            }
+
+                            if (resolved != null && resolved != browsingWorkspaceCwd) {
+                                browsingWorkspaceCwd = resolved
+                                browsingWorkspaceName = name.ifBlank { FileListParsing.displayName(resolved).ifBlank { resolved } }
+                                prefs.lastBrowsedDirectory = resolved
                             }
                         }
                     },
-                    initialBrowsePath = prefs.lastBrowsedDirectory.ifBlank { prefs.lastSelectedCwd }
+                    initialBrowsePath = prefs.lastBrowsedDirectory.ifBlank {
+                        prefs.lastSelectedCwd.ifBlank {
+                            sessions.firstOrNull()?.cwd.orEmpty()
+                        }
+                    }
                 )
             }
         }

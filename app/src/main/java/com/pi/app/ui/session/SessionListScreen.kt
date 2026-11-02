@@ -1039,12 +1039,16 @@ fun SessionListScreen(
                                     .clickable {
                                         val defaultPath = initialBrowsePath.ifBlank {
                                             prefs.lastBrowsedDirectory.ifBlank {
-                                                prefs.lastSelectedCwd.ifBlank { "D:/" }
+                                                prefs.lastSelectedCwd.ifBlank {
+                                                    sessions.firstOrNull()?.cwd?.takeIf { it.isNotBlank() }
+                                                        ?: customWorkspaces.firstOrNull()?.takeIf { it.isNotBlank() }
+                                                        ?: ""
+                                                }
                                             }
                                         }
+                                        onBrowseFiles(defaultPath, "电脑文件")
                                         coroutineScope.launch {
                                             drawerState.close()
-                                            onBrowseFiles(defaultPath, "电脑文件")
                                         }
                                     }
                             ) {
@@ -1853,9 +1857,9 @@ fun SessionListScreen(
                         val path = targetWs.path
                         val name = wsDisplayName
                         selectedMenuWorkspace = null
+                        onBrowseFiles(path, name)
                         coroutineScope.launch {
                             drawerState.close()
-                            onBrowseFiles(path, name)
                         }
                     }
                 )
