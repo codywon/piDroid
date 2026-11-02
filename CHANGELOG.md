@@ -2,6 +2,17 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.51] - 2026-11-02
+
+### 🧪 补齐文件预览异常链路单测与构建脚本容错增强
+
+1. **预览分派与异常处理单测加固 (`LoadFilePreviewTest`)**：
+   - 图片字节断言由长度匹配升级为 `assertArrayEquals` 全量内容精确匹配；
+   - 补齐 `RemoteFilePreviewLoader` 全部 4 个异常降级分支的纯 JVM 单元测试覆盖（图片拉取失败、PDF 下载缓存失败、文本分块读取失败、DOCX HTML 转换异常降级）；
+   - PDF 临时测试文件添加 `deleteOnExit()`，防止测试进程非正常退出时文件残留。
+2. **构建脚本容错性增强 (`app/build.gradle.kts`)**：
+   - `-Ppidroid.minify` 参数解析增加不区分大小写与空白字符修剪（`trim().lowercase()`），包容命令行输入 `True` / `TRUE`，同时坚决阻断 `flase` / `0` 等非法拼写。
+
 ## [1.8.50] - 2026-11-02
 
 > `v1.8.49` 的 tag 因测试用例对归档类文件的特定描述断言与分词分类不一致未产出安装包，本版为修复后的同内容首发。

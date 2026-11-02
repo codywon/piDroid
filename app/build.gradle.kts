@@ -16,13 +16,13 @@ plugins {
  * 因此 R8 风险可控。但若某次依赖升级引入了默认规则覆盖不到的反射，
  * 可先用 ./gradlew assembleRelease -Ppidroid.minify=false 出货，再排查。
  */
-val minifyRelease = when (val raw = project.findProperty("pidroid.minify") as String?) {
+val minifyRelease = when (val raw = (project.findProperty("pidroid.minify") as String?)?.trim()?.lowercase()) {
     null -> true
     "true" -> true
     "false" -> false
     // 以前用 `toBoolean()`：任何拼错的值（flase / no / 0 / …）都会静默变成 false，
     // 于是一次手滑就发出去一个没压缩、没混淆的 release 包。宁可在配置阶段就红。
-    else -> error("pidroid.minify 只能是 'true' 或 'false'，实际收到：'$raw'")
+    else -> error("pidroid.minify 只能是 'true' 或 'false'（不区分大小写），实际收到：'$raw'")
 }
 
 // 发布签名材料：全部来自环境变量（CI 用 secrets 注入，说明见 docs/SIGNING.md）。
@@ -40,8 +40,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 156
-        versionName = "1.8.50"
+        versionCode = 157
+        versionName = "1.8.51"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

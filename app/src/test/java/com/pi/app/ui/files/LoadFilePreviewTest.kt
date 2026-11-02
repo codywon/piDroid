@@ -4,6 +4,7 @@ import com.pi.app.data.model.FileMeta
 import com.pi.app.data.model.FileTextChunk
 import com.pi.app.ui.chat.ArtifactKind
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -85,8 +86,23 @@ class LoadFilePreviewTest {
         assertEquals("image.png", result.title)
         assertEquals(1, ds.bytesCallCount)
         assertNotNull(result.imageBytes)
-        assertEquals(3, result.imageBytes!!.size)
+        assertArrayEquals(fakeBytes, result.imageBytes)
         assertNull(result.message)
+    }
+
+    @Test
+    fun `load image when getFileBytes fails sets message and null bytes`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 3L, mime = "image/png"),
+            bytes = null
+        )
+
+        val result = RemoteFilePreviewLoader.load("/path/to/image.png", ds)
+        assertEquals(ArtifactKind.IMAGE, result.kind)
+        assertEquals(1, ds.bytesCallCount)
+        assertNull(result.imageBytes)
+        assertNotNull(result.message)
+        assertTrue(result.message!!.contains("读取图片失败"))
     }
 
     @Test
@@ -119,6 +135,22 @@ class LoadFilePreviewTest {
     }
 
     @Test
+    fun `load docx when html preview fails falls back to office`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 5000L, mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            html = null
+        )
+
+        val result = RemoteFilePreviewLoader.load("broken.docx", ds)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
+        assertTrue(result.isBinary)
+        assertEquals(1, ds.htmlCallCount)
+        assertNull(result.docxHtml)
+        assertNotNull(result.message)
+        assertTrue(result.message!!.contains("Word 预览转换不可用"))
+    }
+
+    @Test
     fun `load excel sheet classifies as office kind and provides external app guidance`() = runBlocking {
         val ds = FakeDataSource(
             meta = FileMeta(size = 50000L, mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -134,7 +166,7 @@ class LoadFilePreviewTest {
 
     @Test
     fun `load pdf downloads file to cache for local rendering`() = runBlocking {
-        val temp = File.createTempFile("test_pdf_", ".pdf")
+        val temp = File.createTempFile("test_pdf_", ".pdf").apply { deleteOnExit() }
         try {
             val ds = FakeDataSource(
                 meta = FileMeta(size = 2048L, mime = "application/pdf"),
@@ -149,6 +181,21 @@ class LoadFilePreviewTest {
         } finally {
             temp.delete()
         }
+    }
+
+    @Test
+    fun `load pdf when download fails sets message and null file`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 2048L, mime = "application/pdf"),
+            downloadedFile = null
+        )
+
+        val result = RemoteFilePreviewLoader.load("missing.pdf", ds)
+        assertEquals(ArtifactKind.PDF, result.kind)
+        assertEquals(1, ds.downloadCallCount)
+        assertNull(result.pdfFile)
+        assertNotNull(result.message)
+        assertTrue(result.message!!.contains("PDF 加载失败"))
     }
 
     @Test
@@ -170,6 +217,20 @@ class LoadFilePreviewTest {
         assertEquals(256L, result.nextOffset)
         assertTrue(result.truncated)
         assertFalse(result.isBinary)
+    }
+
+    @Test
+    fun `load text chunk when chunk read fails sets error text`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 1000L, mime = "text/plain"),
+            textChunk = null
+        )
+
+        val result = RemoteFilePreviewLoader.load("error.txt", ds)
+        assertEquals(ArtifactKind.TEXT, result.kind)
+        assertEquals(1, ds.textChunkCallCount)
+        assertNotNull(result.text)
+        assertTrue(result.text!!.contains("读取文件失败"))
     }
 
     @Test
