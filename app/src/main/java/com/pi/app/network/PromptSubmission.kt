@@ -46,7 +46,15 @@ class AgentCommandException(
     message: String,
     val code: String? = null,
     val accepted: Boolean? = null,
-    val missingCwd: String? = null
+    val missingCwd: String? = null,
+    /**
+     * 正文是不是 pi 自己回的 JSON。
+     *
+     * 必须区分：隧道/nginx 掉线时会用自己的 HTML 404/502 页应答每个路径，这类响应会被
+     * 归一成 `HTTP <code>` 的 message。只有**真的解析到 JSON** 才能当成服务端明确表态，
+     * 否则会把「回执丢了」当成「服务端拒收」（压缩那类长请求尤其致命：服务端可能还在干活）。
+     */
+    val fromServerJson: Boolean = false
 ) : IOException(message) {
 
     /** pi-web 的 `isPromptRejectedError()`：服务端明确回了 `code: "prompt_rejected", accepted: false`。 */
@@ -123,7 +131,8 @@ object AgentCommandPayload {
             message = error,
             code = obj?.get("code")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString,
             accepted = obj?.get("accepted")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asBoolean,
-            missingCwd = cwd?.takeIf { reason == CWD_MISSING_REASON && it.isNotBlank() }
+            missingCwd = cwd?.takeIf { reason == CWD_MISSING_REASON && it.isNotBlank() },
+            fromServerJson = obj != null
         )
     }
 

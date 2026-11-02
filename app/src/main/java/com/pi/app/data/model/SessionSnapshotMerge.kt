@@ -136,7 +136,9 @@ object SessionSnapshotMerge {
      * 1) 以服务端提交历史为权威基准，匹配到的本地项保留本地稳定的 UI 标识与时间戳（避免 Compose 重组闪烁）；
      * 2) 本地正在在途的乐观用户消息（尚未包含在服务端快照中）、正在流式接收的助手消息、或正在执行的工具卡片，
      *    **绝不可被截断抹除**，无论此时网络轮询判定运行态与否；
-     * 3) 仅在会话真正空闲且已无未提交内容时，才剔除已被远端抛弃的过时分支历史。
+     * 3) 仅在会话真正空闲且已无未提交内容时，才剔除已被远端抛弃的过时分支历史；
+     * 4) 未落盘候选的内容匹配从**最新一条往前**找，避免陈旧的同文本气泡抢走服务端刚落盘的提问；
+     *    这些气泡的最终去留由 [PendingPromptSettlement] 判定（超时未确认即撤回）。
      */
     fun reconcileList(
         local: List<ChatItem>,
@@ -154,8 +156,14 @@ object SessionSnapshotMerge {
         }
 
         // 1. 服务端权威历史对账
+        //
+        // 「未落盘候选」的内容匹配一律**从列表尾部往前找**（最新的优先）。
+        // 从头部找会把服务端刚落盘的那条提问，配给更早遗留的同文本气泡（例如压缩开头 abort 掉的
+        // 一次提问、或回执丢过一次的提问）：旧气泡被「认领」，新气泡反而没有归属，于是被当作
+        // in-flight 追加到末尾 —— 界面上就是同一条指令显示两遍（「继续」这类高频短句最容易踩中）。
         val matchedLocalIndices = mutableSetOf<Int>()
         val reconciledCommitted = ArrayList<ChatItem>(synced.size)
+        val newestFirst = local.indices.reversed()
 
         for (diskItem in synced) {
             // 优先按 entryId 精确匹配
@@ -172,7 +180,7 @@ object SessionSnapshotMerge {
             // 若 entryId 未匹配，针对乐观用户消息尝试按角色与正文内容匹配
             if (localMatchIdx < 0 && diskItem.role == MessageRole.USER) {
                 val diskContent = diskItem.content.trim()
-                for (i in local.indices) {
+                for (i in newestFirst) {
                     if (matchedLocalIndices.contains(i)) continue
                     val item = local[i]
                     if (item.role != MessageRole.USER) continue
@@ -188,7 +196,7 @@ object SessionSnapshotMerge {
             // 若 entryId 未匹配，针对本地在途工具卡片按 toolCallId 或工具名/命令精确匹配
             if (localMatchIdx < 0 && diskItem.role == MessageRole.TOOL) {
                 val diskTcId = diskItem.toolCall?.toolCallId
-                for (i in local.indices) {
+                for (i in newestFirst) {
                     if (matchedLocalIndices.contains(i)) continue
                     val item = local[i]
                     if (item.role != MessageRole.TOOL) continue
@@ -202,7 +210,7 @@ object SessionSnapshotMerge {
                     val diskToolName = diskItem.toolCall?.toolName
                     val diskCmd = diskItem.toolCall?.command
                     if (!diskToolName.isNullOrBlank()) {
-                        for (i in local.indices) {
+                        for (i in newestFirst) {
                             if (matchedLocalIndices.contains(i)) continue
                             val item = local[i]
                             if (item.role != MessageRole.TOOL) continue
@@ -220,7 +228,7 @@ object SessionSnapshotMerge {
 
             // 若 entryId 未匹配，针对在途或流式生成的助手消息按角色顺序匹配
             if (localMatchIdx < 0 && diskItem.role == MessageRole.AGENT) {
-                for (i in local.indices) {
+                for (i in newestFirst) {
                     if (matchedLocalIndices.contains(i)) continue
                     val item = local[i]
                     if (item.role != MessageRole.AGENT) continue

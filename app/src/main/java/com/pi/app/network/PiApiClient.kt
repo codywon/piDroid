@@ -178,6 +178,22 @@ class PiApiClient(private val prefs: AppPreferences) {
         .callTimeout(30, TimeUnit.SECONDS)
         .build()
 
+    /**
+     * 手动压缩上下文专用：`POST /api/agent/{id} {"type":"compact"}` 是**同步长请求**。
+     *
+     * pi-web 的 wrapper 是 `case "compact": await this.inner.compact(...)`，摘要生成完、
+     * compaction entry 写盘之后才回第一个字节，中间不会有任何进度字节。本机实测同一个大会话的
+     * 四次手动压缩耗时 71s / 189s / 296s / 333s（摘要沿用会话的 thinkingLevel，max 档更慢），
+     * 而主 [client] 的 readTimeout 只有 120s —— 超过一半的压缩会被客户端判成 `timeout`，
+     * 界面弹「压缩失败」，服务端却仍在继续并很快写盘成功。
+     *
+     * 所以给压缩一条独立的、足够长的时限：宁可多等，也不要报一个假失败。
+     */
+    private val compactClient = client.newBuilder()
+        .readTimeout(10, TimeUnit.MINUTES)
+        .callTimeout(10, TimeUnit.MINUTES)
+        .build()
+
     private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
 
     /** 只读 GET 的结果：状态码 + 已解压的响应正文。 */
@@ -2541,9 +2557,8 @@ class PiApiClient(private val prefs: AppPreferences) {
             .map { data -> AgentCommandPayload.recalledOf(data) }
     }
 
-    suspend fun compactContext(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
-        sendAgentAction(sessionId, mapOf("type" to "compact"))
-    }
+    suspend fun compactContext(sessionId: String): Result<Boolean> =
+        sendAgentAction(sessionId, mapOf("type" to "compact"), httpClient = compactClient)
 
     suspend fun updateModel(sessionId: String, provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "set_model", "provider" to provider, "modelId" to modelId))
@@ -2897,14 +2912,18 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 失败时返回 [AgentCommandException]（带 `code` / `accepted` / `missingCwd`），
      * 传输层异常原样上抛 —— 调用方据此区分「确定没收到」与「回执丢了」。
      */
-    private suspend fun sendAgentCommandData(sessionId: String, payload: Map<String, Any>): Result<JsonElement?> =
+    private suspend fun sendAgentCommandData(
+        sessionId: String,
+        payload: Map<String, Any>,
+        httpClient: OkHttpClient = client
+    ): Result<JsonElement?> =
         withContext(Dispatchers.IO) {
             val baseUrl = prefs.serverUrl
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
             try {
                 val body = gson.toJson(payload).toRequestBody(jsonMediaType)
                 val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
-                client.newCall(req).execute().use { response ->
+                httpClient.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) {
                         val errBody = runCatching { response.body?.string() }.getOrNull()
                         return@withContext Result.failure(
@@ -2920,8 +2939,12 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
 
-    private suspend fun sendAgentAction(sessionId: String, payload: Map<String, Any>): Result<Boolean> =
-        sendAgentCommandData(sessionId, payload).map { true }
+    private suspend fun sendAgentAction(
+        sessionId: String,
+        payload: Map<String, Any>,
+        httpClient: OkHttpClient = client
+    ): Result<Boolean> =
+        sendAgentCommandData(sessionId, payload, httpClient).map { true }
 
     /**
      * 续租会话（`POST /api/agent/{id}/lease`）：重置服务端的空闲倒计时，并回报脚下在干什么。

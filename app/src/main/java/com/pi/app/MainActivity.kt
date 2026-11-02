@@ -464,7 +464,14 @@ class MainActivity : ComponentActivity() {
         var consecutiveIdlePolls by remember { mutableStateOf(0) }
         var hasNotifiedCompletionForCurrentRun by remember { mutableStateOf(false) }
         var completionSettleJob by remember { mutableStateOf<Job?>(null) }
-        var isCompacting by remember { mutableStateOf(false) }
+        // 压缩上下文是**按会话**的状态（见 CompactionUiState）：以前这里是一个全局 Boolean，
+        // 手动压缩的 POST 在飞时切到任何会话，界面都显示「正在压缩上下文...」。
+        var compactionState by remember { mutableStateOf(CompactionUiState()) }
+        // 本机乐观气泡 id → 发送时刻：用于判定「服务端到底收没收到」（见 PendingPromptSettlement）。
+        // 不需要触发重组，所以用普通 map。
+        val pendingPromptSentAt = remember { mutableMapOf<String, Long>() }
+        // 提交请求还未返回的乐观气泡：结果未定，结算时一律不动。
+        val pendingPromptSends = remember { mutableSetOf<String>() }
         var isGatewayOnline by remember { mutableStateOf(true) }
         var sseConnectionState by remember { mutableStateOf(SseConnectionState.DISCONNECTED) }
         // 断流起点（0 表示当前是连着的）/ 是否已提示过一次：用于“连不上网关”的一次性诊断，不刷屏
@@ -901,6 +908,31 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
+         * 手动压缩收尾（SSE `compaction_end`）。
+         *
+         * pi 的手动 `compact()` 入口就是 `await this.abort()`，压缩结束后**不会**继续跑到一半的回合，
+         * 所以这里必须把运行态一起收掉。不收的话，[markAgentRunActive] 在 `compaction_start` 时设下的
+         * `isAgentBusy` 要等 60s 启动宽限 + 2 次空闲巡检才会翻回空闲，期间发消息会被当成「任务执行中」。
+         *
+         * 与 [completeAgentSessionRun] 的区别：压缩不是任务回合，不响铃、不震动、不标未读。
+         */
+        fun finishManualCompaction(sessionId: String) {
+            if (currentSession?.id != sessionId) return
+            completionSettleJob?.cancel()
+            completionSettleJob = null
+            // abort 掉的回合不该再补一条「任务完成」通知；新一轮发送会把它复位。
+            hasNotifiedCompletionForCurrentRun = true
+            isAgentBusy = false
+            isAutoRetrying = false
+            isToolExecuting = false
+            agentPhaseLabel = null
+            consecutiveIdlePolls = 0
+            keepAliveManager.releaseWakeLock()
+            syncPersistentForegroundService(isBusy = false, project = currentProject)
+            markSessionNotRunning(sessionId)
+        }
+
+        /**
          * 停止本轮。服务端会把压缩期间被 park 住的提示词一并退回（`{steering, followUp, images}`），
          * 这些内容必须还给输入框 —— 与 pi TUI 的 abort、pi-web 的 handleAbort 一致。
          */
@@ -978,6 +1010,9 @@ class MainActivity : ComponentActivity() {
             replaceHistory: Boolean = false
         ) {
             val requestedModelMetaRevision = modelMetaRevision
+            // 这份快照是什么时候**发起**的：判定「乐观提问有没有被服务端收下」时必须用它，
+            // 而不是响应到达时刻（否则「快照比发送晚」这条前提会被响应延迟伪造）。
+            val snapshotStartedAt = System.currentTimeMillis()
             // 运行态改由 `GET /api/agent/{id}?systemPrompt=0` 判定（同理的轻量状态读，不带系统提示词），
             // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
             // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
@@ -992,6 +1027,20 @@ class MainActivity : ComponentActivity() {
             if (currentSession?.id != sessionId) return
             val runtime = runtimeResult.getOrNull()
             val history = histResult.getOrNull()
+            // 压缩事实以服务端为准：`get_state.isCompacting` 覆盖「PC 端触发 / 自动压缩 / 本机超时
+            // 但服务端仍在压」三种本地请求标记根本看不到的情况。状态读失败时不动本地值（不能把
+            // 「没问到」当成「没在压」）。
+            runtime?.let { st ->
+                val wasCompacting = compactionState.isCompacting(sessionId)
+                compactionState = compactionState.serverChanged(sessionId, st.isCompacting)
+                // 断流时收不到 compaction_end：用「之前在压、现在不在压且没在跑」兜底收尾。
+                // 手动压缩不会接着跑，`!st.running` 保证自动压缩后继续的回合不被误判成结束。
+                if (wasCompacting && !st.isCompacting && !st.running &&
+                    sessionId !in compactionState.requestInFlight
+                ) {
+                    finishManualCompaction(sessionId)
+                }
+            }
             // 与 pi-web 一致：本地切换 > 存活 runtime > 会话历史；每次同步均对齐 PC 的选择。
             // 元数据独立于历史正文处理，历史请求失败时仍可使用 runtime。
             if (pendingModelMetaChanges == 0 && modelMetaRevision == requestedModelMetaRevision) {
@@ -1155,6 +1204,52 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            // ── 未确认提问的结算：把「永久乐观气泡」收回来 ──
+            // 压缩开头会 `await abort()`，刚发的提问可能被丢掉；回执也可能在隧道里丢；
+            // 都已落盘的提问还可能被压缩折进摘要（快照里从此没有它）。这些气泡以前既不会被清掉，
+            // 又会抢走服务端快照的内容匹配（同一条指令显示两遍），还会把下面的
+            // `hasUncommittedUserMessage` 永久置真（本轮永远收不了尾、不通知、唤醒锁不放）。
+            // 判定规则见 [PendingPromptSettlement]：发送后发起的快照 + 已过宽限 + 服务端不 running + 不在队列。
+            if (runningResult.isSuccess && histResult.isSuccess && !serverRunning) {
+                val stale = PendingPromptSettlement.staleUnconfirmed(
+                    items = messages,
+                    sentAtById = pendingPromptSentAt,
+                    snapshotStartedAt = snapshotStartedAt,
+                    serverRunning = false,
+                    queuedTexts = queuedMessages.map { it.text },
+                    now = System.currentTimeMillis(),
+                    inFlightSendIds = pendingPromptSends
+                )
+                if (stale.isNotEmpty()) {
+                    val staleIds = stale.mapTo(HashSet()) { it.id }
+                    messages.removeAll { it.id in staleIds }
+                    staleIds.forEach { pendingPromptSentAt.remove(it) }
+                    // 只在「列表里已经没有同文本提问」时才把正文还回输入框：
+                    // 用户往往在没看到反应时又发了一遍，旧的那条退回去只会让输入框凭空多一段。
+                    val restore = stale.filter { PendingPromptSettlement.shouldRestoreToComposer(messages, it) }
+                    if (restore.isNotEmpty()) {
+                        recallRequest = RecallToComposerRequest(
+                            text = restore.joinToString("\n\n") { it.content },
+                            images = restore.flatMap { item ->
+                                item.mediaList.mapNotNull { it.toChatImageInputOrNull() }
+                            }
+                        )
+                    }
+                    Toast.makeText(
+                        this@MainActivity,
+                        if (restore.isNotEmpty()) "有 ${stale.size} 条提问未送达，已撤回并放回输入框"
+                        else "有 ${stale.size} 条重复的未送达提问已撤回",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                // 已落盘/已撤回的气泡不再需要发送时刻（避免 map 随会话增长）
+                if (pendingPromptSentAt.isNotEmpty() || pendingPromptSends.isNotEmpty()) {
+                    val liveIds = messages.asSequence().map { it.id }.toHashSet()
+                    pendingPromptSentAt.keys.retainAll(liveIds)
+                    pendingPromptSends.retainAll(liveIds)
+                }
+            }
+
             if (serverRunning) {
                 consecutiveIdlePolls = 0
                 if (!isAgentBusy) {
@@ -1292,11 +1387,26 @@ class MainActivity : ComponentActivity() {
                                 markAgentRunActive(phase = event.phaseLabel ?: "重试成功，正在继续...")
                             }
                         }
-                        "auto_compaction_start" -> {
-                            markAgentRunActive(phase = event.phaseLabel ?: "正在自动压缩上下文...")
+                        // 压缩事件：按会话记录服务端事实，并按手动/自动分别收尾。
+                        // 手动 compact 进来就是 `await abort()`，结束后不会继续跑到一半的回合，
+                        // 所以 compaction_end 必须把运行态一起收掉；自动压缩在 turn 边界，只能清 phase。
+                        "compaction_start", "auto_compaction_start" -> {
+                            compactionState = compactionState.serverChanged(sessionId, true)
+                            markAgentRunActive(
+                                phase = event.phaseLabel ?: "正在压缩上下文..."
+                            )
                         }
-                        "auto_compaction_end" -> {
+                        "compaction_end", "auto_compaction_end" -> {
+                            // `*_end` 是压缩结束的权威信号（成功与失败都会发）：
+                            // 连本机那次请求的转圈一起清，否则回执丢了的话它会一直转到 callTimeout。
+                            compactionState = compactionState.serverFinished(sessionId)
                             agentPhaseLabel = null
+                            if (event.type == "compaction_end") {
+                                // 压缩本身不是任务回合：不能留下一堆 isAgentBusy，
+                                // 否则最长要等 60s 启动宽限 + 2 次空闲巡检才会翻回空闲，
+                                // 期间发送会被当成「任务执行中」拦住。
+                                finishManualCompaction(sessionId)
+                            }
                             syncSessionSnapshot(sessionId, allowCompletionTransition = false)
                         }
                         "delta", "message", "text_delta", "content_block_delta", "assistant_delta" -> {
@@ -1718,6 +1828,10 @@ class MainActivity : ComponentActivity() {
             lastOpenedWorkspacePath = session.workspacePath
             session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
             queuedMessages.clear()
+            // 乐观气泡的发送时刻是按气泡 id 记的，换会话时旧列表会被整体丢弃，
+            // 对应的记录一并清掉（否则 map 会跟着会话数量一直长）。
+            pendingPromptSentAt.clear()
+            pendingPromptSends.clear()
             // 切换会话必须丢掉上一场在途消息的身份，否则新会话的正文会被认领到旧气泡上
             streamingMessageId = null
             isAutoRetrying = false
@@ -2413,7 +2527,7 @@ class MainActivity : ComponentActivity() {
                     isLoadingSessionHistory = isLoadingSessionHistory,
                     sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
-                    isCompacting = isCompacting,
+                    isCompacting = compactionState.isCompacting(activeSessionId),
                     isPinned = isPinned,
                     mediaGatewayConfig = com.pi.app.ui.components.MediaGatewayConfig(
                         serverUrl = prefs.serverUrl,
@@ -2489,36 +2603,75 @@ class MainActivity : ComponentActivity() {
                         // pi 的 manual compact 第一步是 await this.abort()：任务执行中压缩会把进行中的
                         // 回合直接打断（表现为「模型服务异常: This operation was aborted」）。
                         // 因此只在空闲态允许，忙时提示用户先等本轮结束。
-                        if (isAgentBusy || isToolExecuting) {
-                            Toast.makeText(
+                        val sid = activeSessionId
+                        when {
+                            sid.isBlank() -> Toast.makeText(
+                                this@MainActivity,
+                                "没有活跃会话",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            // 防重入：压缩耗时实测 71s~333s，按钮转圈时仍然可点，
+                            // 第二下会让 pi 在「分支最后一条已经是 compaction」时抛 Already compacted，
+                            // 或者与第一轮并发写两条 compaction entry。
+                            compactionState.isCompacting(sid) -> Toast.makeText(
+                                this@MainActivity,
+                                "正在压缩上下文，请稍候",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            isAgentBusy || isToolExecuting -> Toast.makeText(
                                 this@MainActivity,
                                 "任务执行中，压缩会中断当前回合；请等本轮结束或先停止任务",
                                 Toast.LENGTH_LONG
                             ).show()
-                        } else {
-                            val sid = activeSessionId
-                            lifecycleScope.launch {
-                                isCompacting = true
+                            else -> {
+                                // 先占位再发请求：这一次 POST 走的是 10 分钟时限的 compactClient，
+                                // 转圈状态只跟着「这次请求」走，不再影响其它会话。
+                                compactionState = compactionState.requestStarted(sid)
                                 Toast.makeText(this@MainActivity, "正在压缩上下文…", Toast.LENGTH_SHORT).show()
-                                try {
-                                    apiClient.compactContext(sid)
-                                        .onSuccess {
-                                            Toast.makeText(this@MainActivity, "上下文已压缩", Toast.LENGTH_SHORT).show()
-                                            apiClient.getSessionStats(sid).onSuccess {
-                                                if (currentSession?.id == sid) tokenStats = it
+                                lifecycleScope.launch {
+                                    try {
+                                        apiClient.compactContext(sid)
+                                            .onSuccess {
+                                                compactionState = compactionState.serverFinished(sid)
+                                                Toast.makeText(this@MainActivity, "上下文已压缩", Toast.LENGTH_SHORT).show()
+                                                apiClient.getSessionStats(sid).onSuccess {
+                                                    if (currentSession?.id == sid) tokenStats = it
+                                                }
+                                                syncSessionSnapshot(sid, allowCompletionTransition = false)
                                             }
-                                            syncSessionSnapshot(sid, allowCompletionTransition = false)
-                                        }
-                                        .onFailure { err ->
-                                            Toast.makeText(
-                                                this@MainActivity,
-                                                "压缩失败：${err.message ?: "未知错误"}",
-                                                Toast.LENGTH_LONG
-                                            ).show()
-                                        }
-                                } finally {
-                                    // 压缩按钮的转圈必须有出口：异常时不能让它永远转下去
-                                    isCompacting = false
+                                            .onFailure { err ->
+                                                // 两种失败必须分开说，否则会把「服务端还在压、只是回执丢了」报成失败：
+                                                // · 服务端真的回了 JSON 错误（Compaction failed / Already compacted /
+                                                //   Nothing to compact）：是真失败；
+                                                // · 其它（超时 / 断流 / 隧道或 nginx 的错误页）：结果未知，
+                                                //   服务端很可能仍在压，保留 serverCompacting，等 SSE compaction_end
+                                                //   或状态里的 isCompacting 收尾。
+                                                val serverRejected = err is AgentCommandException && err.fromServerJson
+                                                if (serverRejected) {
+                                                    // 服务端明确拒收（Compaction failed / Already compacted /
+                                                    // Nothing to compact）：压缩没有发生，直接收尾。
+                                                    compactionState = compactionState.serverFinished(sid)
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        "压缩失败：${err.message ?: "未知错误"}",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                } else {
+                                                    compactionState = compactionState.requestFinished(sid)
+                                                    Toast.makeText(
+                                                        this@MainActivity,
+                                                        "压缩仍在服务端进行（回执丢失），完成后会自动同步",
+                                                        Toast.LENGTH_LONG
+                                                    ).show()
+                                                    // 立刻对一次账：若服务端其实已经压完，这里就能把它收尾
+                                                    syncSessionSnapshot(sid, allowCompletionTransition = false)
+                                                }
+                                            }
+                                    } finally {
+                                        // 请求自身的转圈必须有出口（异常时不能永远转下去）；
+                                        // serverCompacting 不动 —— 是否真在压缩由服务端事实决定。
+                                        compactionState = compactionState.requestFinished(sid)
+                                    }
                                 }
                             }
                         }
@@ -2705,6 +2858,11 @@ class MainActivity : ComponentActivity() {
                                 )
                                 optimisticId = optimistic.id
                                 messages.add(optimistic)
+                                // 记下发送时刻：服务端如果根本不收这条（压缩 abort / 回执丢失 /
+                                // 已被压缩折进摘要），[PendingPromptSettlement] 会按超时把它撤回，
+                                // 而不是让它永久挂在列表尾部、抢走下次同文本提问的匹配。
+                                pendingPromptSentAt[optimistic.id] = System.currentTimeMillis()
+                                pendingPromptSends += optimistic.id
                                 // 新一轮开始：上一条在途消息的身份作废
                                 streamingMessageId = null
                                 isAutoRetrying = false
@@ -2718,9 +2876,11 @@ class MainActivity : ComponentActivity() {
 
                             apiClient.sendCommand(sid, prompt, images)
                                 .onSuccess { ack ->
+                                    optimisticId?.let { pendingPromptSends.remove(it) }
                                     if (!ack.queued) return@onSuccess
                                     // 压缩期间被 park：还不是一条已发送消息，撒回气泡交给队列行显示
                                     messages.removeAll { it.id == optimisticId }
+                                    optimisticId?.let { pendingPromptSentAt.remove(it) }
                                     Toast.makeText(
                                         this@MainActivity,
                                         "已排队，压缩结束后自动发送",
@@ -2729,12 +2889,15 @@ class MainActivity : ComponentActivity() {
                                     syncSessionSnapshot(sid, allowCompletionTransition = false)
                                 }
                                 .onFailure { err ->
+                                    // 请求已经返回（无论成败）：不再算「结果未知」
+                                    optimisticId?.let { pendingPromptSends.remove(it) }
                                     // 区分「确定没收到」与「回执丢了」：
                                     // 前者退还草稿，后者只标记未确认并等对账，绝不自动重发（#1432）。
                                     // 判定与 pi-web 的 `definitivelyRejected` 一致，见 [PromptRecoveryPolicy]。
                                     val missingCwd = (err as? AgentCommandException)?.missingCwd
                                     if (missingCwd != null) {
                                         messages.removeAll { it.id == optimisticId }
+                                        optimisticId?.let { pendingPromptSentAt.remove(it) }
                                         onSubmissionRestore?.invoke()
                                         Toast.makeText(
                                             this@MainActivity,
@@ -2748,6 +2911,7 @@ class MainActivity : ComponentActivity() {
                                         // 运行态一律不动：这一轮在跑的是别的消息，本地无权把它判成空闲
                                         // （旧实现顺手清 isAgentBusy / 阶段文案，界面会变成「消息没了但停止按钮还在」）。
                                         messages.removeAll { it.id == optimisticId }
+                                        optimisticId?.let { pendingPromptSentAt.remove(it) }
                                         onSubmissionRestore?.invoke()
                                         Toast.makeText(
                                             this@MainActivity,
@@ -2767,6 +2931,7 @@ class MainActivity : ComponentActivity() {
                                         prompt = prompt,
                                         onNotDelivered = {
                                             messages.removeAll { it.id == optimisticId }
+                                            optimisticId?.let { pendingPromptSentAt.remove(it) }
                                             onSubmissionRestore?.invoke()
                                             Toast.makeText(
                                                 this@MainActivity,

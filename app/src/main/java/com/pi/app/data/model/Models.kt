@@ -803,6 +803,23 @@ fun ChatImageInput.toMediaAttachment(): MediaAttachment {
 fun List<ChatImageInput>.toMediaAttachments(): List<MediaAttachment> = map { it.toMediaAttachment() }
 
 /**
+ * 反向转换：把本地媒体附件还原成输入框能携带的图片。
+ *
+ * 只有带 base64 的图片能回到输入框（发送时就是用 base64 建的气泡）；服务端下发的延迟图 URL /
+ * 文件路径附件没有字节，重发时需要重新选图，所以这里返回 null 由调用方跳过。
+ */
+fun MediaAttachment.toChatImageInputOrNull(): ChatImageInput? {
+    if (kind != MediaKind.IMAGE) return null
+    val raw = dataBase64?.substringAfter("base64,", dataBase64)?.trim()
+    if (raw.isNullOrBlank()) return null
+    return ChatImageInput(
+        mimeType = mimeType.ifBlank { "image/png" },
+        base64Data = raw,
+        name = title
+    )
+}
+
+/**
  * 聊天消息项（对标 pi-web MessageView）
  */
 data class ChatItem(

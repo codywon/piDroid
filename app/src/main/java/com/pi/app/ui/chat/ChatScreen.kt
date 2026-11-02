@@ -591,7 +591,11 @@ fun ChatScreen(
         // 那种提交只会白播一次乐观气泡再把正文退回来。pi-web 在运行中同样只给
         // 「引导 / 排队」两条路（发送键就是停止键），所以这里直接拦住并指向正确按钮。
         // 注：忙碌时发送箭头本来就不渲染（见输入行右侧），这条只是兵底，防运行态瞬移。
-        if (kind == SendKind.SEND && isAgentBusy && currentEditId.isNullOrBlank()) {
+        //
+        // 但**压缩中**不能一起拦：pi-web 的 wrapper 会把压缩期间到达的普通 prompt park 住，
+        // 压缩结束按 FIFO 下发（回 {queued:true}）。以前这里把「压缩中」也当成「任务运行中」，
+        // 用户只能改用引导/排队，与 pi-web 的行为不一致。
+        if (kind == SendKind.SEND && isAgentBusy && !isCompacting && currentEditId.isNullOrBlank()) {
             android.widget.Toast.makeText(
                 context,
                 "任务执行中：请用上方的引导 / 排队按钮，或先停止本轮",
@@ -1549,13 +1553,15 @@ fun ChatScreen(
                             }
                         }
                         // 1. 圆圈 + 压缩图标按钮
+                        // 压缩本身可能跑几分钟（服务端同步生成摘要），转圈期间必须禁用重复点击：
+                        // 第二下会让 pi 在「分支最后一条已是 compaction」时抛 Already compacted。
                         Surface(
                             shape = CircleShape,
                             color = theme.surfaceContainer,
                             border = BorderStroke(1.dp, theme.outline),
                             modifier = Modifier
                                 .size(28.dp)
-                                .clickable { onCompactContext() }
+                                .clickable(enabled = !isCompacting) { onCompactContext() }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
                                 if (isCompacting) {

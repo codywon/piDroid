@@ -324,6 +324,32 @@ class SessionTreeNavigationTest {
     }
 
     @Test
+    fun `incremental sync gives the server copy to the newest identical prompt, not a stale one`() {
+        // 回归：压缩开头会 `await this.abort()`，被丢掉的那次提问会留下一条 entryId 永远为空的
+        // 乐观气泡（#PendingPromptSettlement 负责按超时撤回）。用户后来又发了同样的文本
+        // （「继续」这类高频短句最常见），服务端只落盘了一条 —— 必须由**新**气泡认领，
+        // 旧气泡留在原地等待撤回；否则新气泡没有归属、被追加到列表尾部，界面就是“同一条指令两遍”。
+        val local = mutableListOf(
+            ChatItem(id = "stale", entryId = null, role = MessageRole.USER, content = "继续"),
+            ChatItem(id = "a_prev", entryId = "a_prev", role = MessageRole.AGENT, content = "上一轮回答"),
+            ChatItem(id = "fresh", entryId = null, role = MessageRole.USER, content = "继续")
+        )
+        val synced = listOf(
+            ChatItem(id = "h_prev_q", entryId = "e_prev", role = MessageRole.USER, content = "上一轮提问"),
+            ChatItem(id = "h_prev_a", entryId = "a_prev", role = MessageRole.AGENT, content = "上一轮回答"),
+            ChatItem(id = "h_new", entryId = "e_new", role = MessageRole.USER, content = "继续")
+        )
+
+        incrementalSync(local, synced, effectiveRunning = false)
+
+        assertEquals(4, local.size)
+        // 服务端那条归最新的气泡，entryId 被正确回填
+        assertEquals("e_new", local.first { it.id == "fresh" }.entryId)
+        // 陈旧气泡仍未被认领（下一步由 PendingPromptSettlement 撤回）
+        assertNull(local.first { it.id == "stale" }.entryId)
+    }
+
+    @Test
     fun `incremental sync matches uncommitted tool and agent without duplicate bubbles`() {
         // 本地包含正在执行的工具和流式助手消息，服务端快照追赶上后，正确匹配并回填 entryId，不产生重复条目
         val toolCall = ToolCallInfo(toolCallId = "call_abc", toolName = "bash", command = "ls -la", isRunning = false)

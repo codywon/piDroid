@@ -263,7 +263,25 @@ class PiSseClient(private val prefs: AppPreferences) {
                     )
                 }
 
-                "auto_compaction_start", "compaction_start" -> {
+                // 手动压缩与自动压缩必须分开：pi 的 `compact()` 是「先 abort 当前回合 → 生成摘要
+                // → 写 compaction entry」，结束后**不会**继续跑到一半的回合；而自动压缩发生在
+                // turn 边界，压缩完还要接着跑。以前两者都被折叠成 auto_compaction_*，上层就无法
+                // 区分「压缩结束 = 这一轮彻底结束」还是「压缩结束 = 继续等模型」。
+                "compaction_start" -> {
+                    listOf(
+                        AgentSseEvent(
+                            type = "compaction_start",
+                            isStreaming = true,
+                            phaseLabel = "正在压缩上下文..."
+                        )
+                    )
+                }
+
+                "compaction_end" -> {
+                    listOf(AgentSseEvent(type = "compaction_end", isStreaming = false))
+                }
+
+                "auto_compaction_start" -> {
                     listOf(
                         AgentSseEvent(
                             type = "auto_compaction_start",
@@ -273,7 +291,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                     )
                 }
 
-                "auto_compaction_end", "compaction_end" -> {
+                "auto_compaction_end" -> {
                     listOf(
                         AgentSseEvent(
                             type = "auto_compaction_end",

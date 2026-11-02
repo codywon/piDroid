@@ -69,6 +69,24 @@ class PromptSubmissionTest {
     }
 
     @Test
+    fun `only a json answer from pi counts as an explicit server rejection`() {
+        // 压缩这类同步长请求：只有 pi 自己回的 JSON 错误才能当“真的失败”，
+        // 否则隧道 / nginx 的 HTML 错误页会把「服务端还在干活」报成压缩失败。
+        val piJson = AgentCommandPayload.failureOf(
+            """{"error":"Compaction failed: boom"}""",
+            500
+        )
+        Assert.assertTrue(piJson.fromServerJson)
+        Assert.assertEquals("Compaction failed: boom", piJson.message)
+
+        val tunnelHtml = AgentCommandPayload.failureOf("<html>502 Bad Gateway</html>", 502)
+        Assert.assertFalse(tunnelHtml.fromServerJson)
+
+        val emptyBody = AgentCommandPayload.failureOf("", 504)
+        Assert.assertFalse(emptyBody.fromServerJson)
+    }
+
+    @Test
     fun `only pi prompt rejection is treated as definitively rejected`() {
         // pi 内核拒收（例如运行中发了裸 prompt）会回 code=prompt_rejected / accepted=false
         val rejected = AgentCommandPayload.failureOf(

@@ -2,6 +2,42 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.47] - 2026-11-02
+
+### 🗜️ 修复「一个会话压缩，所有会话都在压缩」与「压缩假失败」，以及重复的未送达提问
+
+**根因（三处叠加）**
+
+1. **压缩状态是全局单例**：`MainActivity` 里只有一个 `var isCompacting`，手动压缩的 POST 在飞时
+   切到任何会话，界面都显示「正在压缩上下文...」。服务端真源（`GET /api/agent/{id}` 的
+   `isCompacting`）虽然早已解析成 `AgentRuntimeState.isCompacting`，但**没有任何一处读它**；
+   SSE 的 `compaction_start/compaction_end` 也被折叠成 `auto_compaction_*`，两个分支都不碰它。
+2. **压缩请求是同步长请求**：pi-web 的 `case "compact": await inner.compact(...)` 要等摘要写完才回
+   第一个字节，而客户端主 client 的 `readTimeout` 只有 120s。实测同一大会话的四次压缩耗时
+   71s / 189s / 296s / 333s（摘要沿用会话 thinkingLevel，`max` 档更慢）—— 超过一半会被判成
+   `timeout`，界面报「压缩失败」，服务端却仍在继续并照常写盘成功。
+3. **陈旧乐观气泡没有出口**：`SessionSnapshotMerge` 对 `entryId` 为空的 USER 消息只保护、不回收；
+   而内容匹配是**从列表头**找第一个同文本气泡，于是压缩开头 `abort()` 丢掉的那次提问会一直留在
+   列表尾部，并抢走用户下次同文本提问（「继续」这类）的服务端匹配 —— 新气泡没有归属、被追加到
+   末尾，同一条指令就显示两遍；同时 `hasUncommittedUserMessage` 永久为真，本轮永远收不了尾、
+   不通知、唤醒锁不放。
+
+**改动**
+
+- 新增 `CompactionUiState`（纯 JVM）：压缩状态按会话维护，真源取「本机请求在飞」∪「服务端在压缩」
+  的并集；`compaction_start/end` 不再伪装成 `auto_compaction_*`，手动压缩结束顺便收掉
+  `isAgentBusy`（否则要等 60s 启动宽限 + 2 次空闲巡检才会翻回空闲，期间发送被当成「任务执行中」）。
+- `compactContext` 改走独立的 10 分钟时限 client；超时/断流不再报「压缩失败」，改为「仍在服务端
+  进行，完成后自动同步」，只有服务端真的回了错误（`Compaction failed` / `Already compacted` /
+  `Nothing to compact`）才报失败。
+- 压缩按钮在转圈期间禁用（`clickable(enabled = !isCompacting)`），避免连点触发 `Already compacted`
+  或并发写两条 compaction entry；压缩期间允许普通发送（交给 pi-web 的 park 语义）。
+- `SessionSnapshotMerge` 的内容匹配改为**从最新一条往前**找，杜绝陈旧气泡抢走新提问的归属。
+- 新增 `PendingPromptSettlement`（纯 JVM）：发送后发起过快照 + 已过 15s 宽限 + 服务端不 running +
+  不在队列 → 判定未送达，撤回气泡（列表里没有同文本时才退回输入框，避免用户重发后输入框凭空多一段）。
+- 单测：`CompactionUiStateTest`（6 例）、`PendingPromptSettlementTest`（11 例）、
+  `SessionTreeNavigationTest` 补 1 例「同文本提问归最新气泡」。
+
 ## [1.8.46] - 2026-11-02
 
 ### 📁 左侧抽屉底栏增加全局「浏览电脑文件」入口（全盘目录漫游）
