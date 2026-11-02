@@ -2,6 +2,15 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.52] - 2026-11-02
+
+### 🐛 紧急修复：进入全屏文件管理器时因 SnapshotStateList 未适配 Bundle 导致的直接闪退
+
+- **根因分析**：
+  在 `FilesScreen` 中，多级导航历史栈使用了 `val navigationStack = rememberSaveable { mutableStateListOf<String>() }`。Jetpack Compose 的默认 `rememberSaveable` 依赖 Android 的 `SaveableStateRegistry`，要求保存的对象必须能放入 Android `Bundle`（实现 Parcelable/Serializable 或基本数据类型）。而 Compose 的响应式快照列表 `SnapshotStateList` 并非 Bundle 兼容类型，进入 `FilesScreen` 首帧组合时会无条件触发 `IllegalArgumentException: SnapshotStateList cannot be saved using the current SaveableStateRegistry`，导致整个应用崩溃闪退。
+- **改动**：
+  将 `navigationStack` 改为标准的 `remember { mutableStateListOf<String>() }`，避免向 `SaveableStateRegistry` 注册非法类型；当前目录 `currentPath` 依旧由 `rememberSaveable` 保护，彻底杜绝闪退，保证多级目录漫游与返回平稳流畅。
+
 ## [1.8.51] - 2026-11-02
 
 ### 🧪 补齐文件预览异常链路单测与构建脚本容错增强

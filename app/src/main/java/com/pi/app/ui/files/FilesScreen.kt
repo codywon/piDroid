@@ -117,7 +117,7 @@ internal fun FilesScreen(
 
     // 当前浏览路径及多级导航历史栈
     var currentPath by rememberSaveable(workspaceCwd) { mutableStateOf(workspaceCwd) }
-    val navigationStack = rememberSaveable { mutableStateListOf<String>() }
+    val navigationStack = remember { mutableStateListOf<String>() }
 
     var showHidden by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
