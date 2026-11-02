@@ -3698,7 +3698,7 @@ private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
  * 那五种「查看器」在桌面浏览器里分别由 <img> / <audio> / <video> / <iframe> 兜底，
  * 手机上没有任何一个能白拿，所以要各自落地成原生实现。
  */
-internal enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO }
+internal enum class ArtifactKind { TEXT, MARKDOWN, IMAGE, SVG, DOCX, PDF, AUDIO, VIDEO, OFFICE }
 
 /**
  * App 侧内置的斜杠命令（对标 pi-web 的 `source:"builtin"` 命令表）。

@@ -3403,6 +3403,12 @@ class MainActivity : ComponentActivity() {
                     onResolveFileSource = { path ->
                         val url = apiClient.fileApiUrl(path)
                         if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
+                    },
+                    onLoadDrives = {
+                        apiClient.browseRemoteDirectories("").getOrNull()?.directories ?: emptyList()
+                    },
+                    onDirectoryChanged = { newDir ->
+                        prefs.lastBrowsedDirectory = newDir
                     }
                 )
             }

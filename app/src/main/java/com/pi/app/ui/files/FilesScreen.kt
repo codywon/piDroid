@@ -1,7 +1,8 @@
 package com.pi.app.ui.files
 
+import android.graphics.BitmapFactory
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
-import com.pi.app.network.FileListParsing
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,12 +22,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -39,14 +44,17 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
@@ -55,38 +63,31 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.ImageBitmap
-import android.graphics.BitmapFactory
-import android.widget.Toast
 import com.pi.app.data.model.FileDirectoryListing
 import com.pi.app.data.model.FileEntry
 import com.pi.app.data.model.FileMeta
 import com.pi.app.data.model.FilePlaybackSource
 import com.pi.app.data.model.FileTextChunk
 import com.pi.app.data.model.GitStatusResult
+import com.pi.app.data.model.RemoteDirEntry
+import com.pi.app.network.FileListParsing
 import com.pi.app.ui.chat.ArtifactKind
 import com.pi.app.ui.chat.ArtifactViewerFullScreen
+import com.pi.app.ui.components.EdgeSwipeBackArea
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
-private val sharedExpandedMemory = ExpandedPathsMemory()
-
 /**
- * 展平后的树视图行项。
+ * 独立全屏移动端文件管理器。
+ *
+ * 核心交互优化：
+ * 1. 采用移动端最佳实践的层级导航式结构（点文件夹进入子目录，无缩进排版挤压）；
+ * 2. 左上角返回键及边缘右滑手势：在子目录时平滑返回上一级，在根目录时退出文件管理器；
+ * 3. 顶栏显示当前文件夹名称与绝对路径，并支持驱动器盘符（C:、D:、家目录）一键秒切；
+ * 4. 具备全局文件搜索（150ms 实时防抖）、隐藏文件切换、长按快捷引用等完整能力。
  */
-private data class FlattenedTreeItem(
-    val entry: FileEntry,
-    val depth: Int,
-    val fullPath: String,
-    val isExpanded: Boolean,
-    val isLoading: Boolean,
-    val isTruncated: Boolean,
-    val errorMessage: String? = null
-)
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun FilesScreen(
@@ -105,14 +106,18 @@ internal fun FilesScreen(
     onLoadFileBytes: suspend (String) -> Result<ByteArray>,
     onDownloadFileToCache: suspend (String) -> Result<File>,
     onResolveFileSource: (String) -> FilePlaybackSource?,
+    onLoadDrives: (suspend () -> List<RemoteDirEntry>)? = null,
+    onDirectoryChanged: ((String) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
-    BackHandler { onBack() }
-
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val coroutineScope = rememberCoroutineScope()
+
+    // 当前浏览路径及多级导航历史栈
+    var currentPath by rememberSaveable(workspaceCwd) { mutableStateOf(workspaceCwd) }
+    val navigationStack = rememberSaveable { mutableStateListOf<String>() }
 
     var showHidden by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -120,22 +125,19 @@ internal fun FilesScreen(
     var searchLoading by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<SearchTreeNode>>(emptyList()) }
 
-    var isInitialLoading by remember { mutableStateOf(true) }
-    var rootErrorMessage by remember { mutableStateOf<String?>(null) }
+    var isDirectoryLoading by remember { mutableStateOf(true) }
+    var directoryErrorMessage by remember { mutableStateOf<String?>(null) }
+    var directoryEntries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
+    var isTruncated by remember { mutableStateOf(false) }
     var gitStatus by remember { mutableStateOf<GitStatusResult?>(null) }
 
-    // 目录缓存与展开状态
-    val childrenMap = remember { mutableStateMapOf<String, List<FileEntry>>() }
-    val loadingPaths = remember { mutableStateMapOf<String, Boolean>() }
-    val errorPaths = remember { mutableStateMapOf<String, String>() }
-    val truncatedPaths = remember { mutableStateMapOf<String, Boolean>() }
-    var expandedPaths by remember(workspaceCwd) {
-        mutableStateOf(sharedExpandedMemory.restore(workspaceCwd))
-    }
+    // 驱动器盘符菜单状态
+    var showDrivesMenu by remember { mutableStateOf(false) }
+    var drivesList by remember { mutableStateOf<List<RemoteDirEntry>>(emptyList()) }
 
     // 预览相关状态
     var previewPath by remember { mutableStateOf<String?>(null) }
-    var previewTitle by remember { mutableStateOf<String>("") }
+    var previewTitle by remember { mutableStateOf("") }
     var previewKind by remember { mutableStateOf(ArtifactKind.TEXT) }
     var previewMeta by remember { mutableStateOf<String?>(null) }
     var previewText by remember { mutableStateOf<String?>(null) }
@@ -149,6 +151,76 @@ internal fun FilesScreen(
     var previewTruncated by remember { mutableStateOf(false) }
     var previewNextOffset by remember { mutableStateOf(0L) }
     var previewSizeBytes by remember { mutableStateOf(0L) }
+
+    // 判断当前是否还能向上退回父级目录
+    val parentOfCurrent = remember(currentPath) { FileListParsing.parentPath(currentPath) }
+    val canGoUp = navigationStack.isNotEmpty() || (parentOfCurrent != null && !currentPath.equals(workspaceCwd, ignoreCase = true))
+
+    // 统一处理返回操作（预览 -> 搜索 -> 上一级 -> 退出页面）
+    fun handleBack() {
+        if (previewPath != null) {
+            previewPath = null
+        } else if (searchOpen) {
+            searchOpen = false
+            searchQuery = ""
+        } else if (navigationStack.isNotEmpty()) {
+            val prev = navigationStack.removeAt(navigationStack.lastIndex)
+            currentPath = prev
+            onDirectoryChanged?.invoke(prev)
+        } else if (parentOfCurrent != null && !currentPath.equals(workspaceCwd, ignoreCase = true)) {
+            currentPath = parentOfCurrent
+            onDirectoryChanged?.invoke(parentOfCurrent)
+        } else {
+            onBack()
+        }
+    }
+
+    // 监听系统物理/手势返回键
+    BackHandler { handleBack() }
+
+    // 载入当前目录内容
+    fun loadCurrentDirectory() {
+        isDirectoryLoading = true
+        directoryErrorMessage = null
+        coroutineScope.launch {
+            val gitRes = onLoadGitStatus(currentPath)
+            gitStatus = gitRes.getOrNull()
+
+            val dirRes = onLoadDirectory(currentPath, showHidden)
+            dirRes.onSuccess { listing ->
+                val (capped, truncated) = FileTreeState.filterAndCapEntries(listing.entries, showHidden)
+                directoryEntries = capped
+                isTruncated = truncated
+            }.onFailure { err ->
+                directoryErrorMessage = err.message ?: "加载目录失败"
+                directoryEntries = emptyList()
+            }
+            isDirectoryLoading = false
+        }
+    }
+
+    LaunchedEffect(currentPath, showHidden) {
+        loadCurrentDirectory()
+    }
+
+    // 搜索输入防抖
+    LaunchedEffect(searchQuery, searchOpen) {
+        if (!searchOpen || searchQuery.trim().isEmpty()) {
+            searchResults = emptyList()
+            searchLoading = false
+            return@LaunchedEffect
+        }
+        searchLoading = true
+        delay(150)
+        val res = onSearchFiles(currentPath, searchQuery.trim())
+        res.onSuccess { matches ->
+            val paths = matches.map { it.path }
+            searchResults = FileTreeState.buildSearchTree(paths)
+        }.onFailure {
+            searchResults = emptyList()
+        }
+        searchLoading = false
+    }
 
     fun openFilePreview(absPath: String) {
         previewPath = absPath
@@ -216,310 +288,362 @@ internal fun FilesScreen(
         }
     }
 
-    // 展开或折叠目录
-    fun toggleExpand(dirPath: String) {
-        val next = HashSet(expandedPaths)
-        if (next.contains(dirPath)) {
-            next.remove(dirPath)
-        } else {
-            next.add(dirPath)
-            if (!childrenMap.containsKey(dirPath)) {
-                loadingPaths[dirPath] = true
-                errorPaths.remove(dirPath)
-                coroutineScope.launch {
-                    val result = onLoadDirectory(dirPath, showHidden)
-                    result.onSuccess { listing ->
-                        val (capped, truncated) = FileTreeState.filterAndCapEntries(listing.entries, showHidden)
-                        childrenMap[dirPath] = capped
-                        truncatedPaths[dirPath] = truncated
-                    }.onFailure { err ->
-                        errorPaths[dirPath] = err.message ?: "未知错误"
-                    }
-                    loadingPaths.remove(dirPath)
-                }
-            }
-        }
-        expandedPaths = next
-        sharedExpandedMemory.save(workspaceCwd, next)
-    }
-
-    // 刷新根目录
-    fun refreshTree() {
-        isInitialLoading = true
-        rootErrorMessage = null
-        childrenMap.clear()
-        errorPaths.clear()
-        truncatedPaths.clear()
-
-        coroutineScope.launch {
-            val gitRes = onLoadGitStatus(workspaceCwd)
-            gitStatus = gitRes.getOrNull()
-
-            val dirRes = onLoadDirectory(workspaceCwd, showHidden)
-            dirRes.onSuccess { listing ->
-                val (capped, truncated) = FileTreeState.filterAndCapEntries(listing.entries, showHidden)
-                childrenMap[workspaceCwd] = capped
-                truncatedPaths[workspaceCwd] = truncated
-            }.onFailure { err ->
-                rootErrorMessage = err.message ?: "加载工作区文件失败"
-            }
-            isInitialLoading = false
-        }
-    }
-
-    LaunchedEffect(workspaceCwd, showHidden) {
-        refreshTree()
-    }
-
-    // 搜索输入防抖（对齐 pi-web 的 150ms 响应）
-    LaunchedEffect(searchQuery, searchOpen) {
-        if (!searchOpen || searchQuery.trim().isEmpty()) {
-            searchResults = emptyList()
-            searchLoading = false
-            return@LaunchedEffect
-        }
-        searchLoading = true
-        delay(150)
-        val res = onSearchFiles(workspaceCwd, searchQuery.trim())
-        res.onSuccess { matches ->
-            val paths = matches.map { it.path }
-            searchResults = FileTreeState.buildSearchTree(paths)
-        }.onFailure {
-            searchResults = emptyList()
-        }
-        searchLoading = false
-    }
-
-    // 计算包含 Git 变更的目录路径集合
-    val changedDirectories = remember(gitStatus, workspaceCwd) {
-        val files = gitStatus?.files?.map { it.filePath } ?: emptyList()
-        FileTreeState.calculateChangedDirectoryPaths(files, workspaceCwd)
-    }
+    // Git 变更与目录状态映射
     val gitChangesByPath = remember(gitStatus) {
         gitStatus?.files?.associateBy { it.filePath.replace('\\', '/') } ?: emptyMap()
+    }
+    val changedDirectories = remember(gitStatus, currentPath) {
+        val files = gitStatus?.files?.map { it.filePath } ?: emptyList()
+        FileTreeState.calculateChangedDirectoryPaths(files, currentPath)
     }
 
     Box(modifier = modifier.fillMaxSize()) {
         Scaffold(
             containerColor = theme.background,
             topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = workspaceName.ifBlank { "资源管理器" },
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = theme.textPrimary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = workspaceCwd,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                },
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "返回",
-                            tint = theme.textPrimary
-                        )
-                    }
-                },
-                actions = {
-                    // 搜索开关
-                    IconButton(onClick = {
-                        searchOpen = !searchOpen
-                        if (!searchOpen) searchQuery = ""
-                    }) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = "搜索",
-                            tint = if (searchOpen) theme.primary else theme.textMuted
-                        )
-                    }
-
-                    // 隐藏项开关
-                    IconButton(onClick = { showHidden = !showHidden }) {
-                        Icon(
-                            imageVector = if (showHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                            contentDescription = "显示隐藏文件",
-                            tint = if (showHidden) theme.primary else theme.textMuted
-                        )
-                    }
-
-                    // 刷新
-                    IconButton(onClick = { refreshTree() }) {
-                        Icon(
-                            imageVector = Icons.Default.Refresh,
-                            contentDescription = "刷新",
-                            tint = theme.textMuted
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.surfaceContainer)
-            )
-        }
-    ) { innerPadding ->
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-        ) {
-            // 搜索输入栏
-            if (searchOpen) {
-                Surface(
-                    color = theme.surfaceContainerLow,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .background(theme.surfaceContainer, RoundedCornerShape(8.dp))
-                            .padding(horizontal = 10.dp, vertical = 6.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Search,
-                            contentDescription = null,
-                            tint = theme.textMuted,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        BasicTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            singleLine = true,
-                            cursorBrush = SolidColor(theme.primary),
-                            textStyle = androidx.compose.ui.text.TextStyle(
+                TopAppBar(
+                    title = {
+                        Column {
+                            val dirDisplayName = remember(currentPath) {
+                                FileListParsing.displayName(currentPath).ifBlank { currentPath }
+                            }
+                            Text(
+                                text = dirDisplayName,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
                                 color = theme.textPrimary,
-                                fontSize = 13.sp,
-                                fontFamily = FontFamily.Monospace
-                            ),
-                            modifier = Modifier.weight(1f)
-                        )
-                        if (searchQuery.isNotEmpty()) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "清除",
-                                tint = theme.textMuted,
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable { searchQuery = "" }
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = currentPath,
+                                fontSize = 11.sp,
+                                fontFamily = FontFamily.Monospace,
+                                color = theme.textMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                    }
-                }
-            }
+                    },
+                    navigationIcon = {
+                        IconButton(onClick = { handleBack() }) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = if (canGoUp) "返回上一级" else "退出文件管理器",
+                                tint = theme.textPrimary
+                            )
+                        }
+                    },
+                    actions = {
+                        // 1. 搜索按钮
+                        IconButton(onClick = {
+                            searchOpen = !searchOpen
+                            if (!searchOpen) searchQuery = ""
+                        }) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = "搜索当前目录",
+                                tint = if (searchOpen) theme.primary else theme.textMuted
+                            )
+                        }
 
-            // Git 变更统计摘要
-            gitStatus?.let { gs ->
-                if (gs.files.isNotEmpty()) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(theme.surfaceContainerLow)
-                            .padding(horizontal = 14.dp, vertical = 6.dp)
-                    ) {
-                        Text(
-                            text = "${gs.files.size} 项变更",
-                            color = theme.textSecondary,
-                            fontSize = 11.5.sp
-                        )
-                        Text(
-                            text = "+${gs.additions}",
-                            color = theme.success,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                        Text(
-                            text = "-${gs.deletions}",
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 11.5.sp,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
+                        // 2. 磁盘驱动器快速切换菜单
+                        if (onLoadDrives != null) {
+                            Box {
+                                IconButton(onClick = {
+                                    coroutineScope.launch {
+                                        drivesList = onLoadDrives()
+                                        showDrivesMenu = true
+                                    }
+                                }) {
+                                    Icon(
+                                        imageVector = Icons.Default.Storage,
+                                        contentDescription = "切换磁盘",
+                                        tint = theme.textMuted
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showDrivesMenu,
+                                    onDismissRequest = { showDrivesMenu = false },
+                                    modifier = Modifier.background(theme.surfaceContainer)
+                                ) {
+                                    Text(
+                                        text = "切换磁盘盘符",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = theme.textMuted,
+                                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                                    )
+                                    drivesList.forEach { drive ->
+                                        DropdownMenuItem(
+                                            text = {
+                                                Text(
+                                                    text = drive.name.ifBlank { drive.path },
+                                                    fontFamily = FontFamily.Monospace,
+                                                    fontSize = 13.sp,
+                                                    color = theme.textPrimary
+                                                )
+                                            },
+                                            onClick = {
+                                                showDrivesMenu = false
+                                                navigationStack.clear()
+                                                currentPath = drive.path
+                                                onDirectoryChanged?.invoke(drive.path)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
 
-            // 内容区
-            when {
-                isInitialLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
+                        // 3. 隐藏文件开关
+                        IconButton(onClick = { showHidden = !showHidden }) {
+                            Icon(
+                                imageVector = if (showHidden) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                contentDescription = "显示隐藏文件",
+                                tint = if (showHidden) theme.primary else theme.textMuted
+                            )
+                        }
+
+                        // 4. 刷新
+                        IconButton(onClick = { loadCurrentDirectory() }) {
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "刷新",
+                                tint = theme.textMuted
+                            )
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = theme.surfaceContainer)
+                )
+            }
+        ) { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+            ) {
+                // 搜索输入栏
+                if (searchOpen) {
+                    Surface(
+                        color = theme.surfaceContainerLow,
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        CircularProgressIndicator(color = theme.primary)
-                    }
-                }
-                rootErrorMessage != null -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(24.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = rootErrorMessage.orEmpty(),
-                            color = MaterialTheme.colorScheme.error,
-                            fontSize = 13.5.sp
-                        )
-                    }
-                }
-                searchOpen && searchQuery.trim().isNotEmpty() -> {
-                    // 渲染搜索结果树
-                    if (searchLoading) {
-                        Box(
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .background(theme.surfaceContainer, RoundedCornerShape(8.dp))
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
                         ) {
-                            CircularProgressIndicator(
-                                strokeWidth = 2.dp,
-                                color = theme.primary,
-                                modifier = Modifier.size(24.dp)
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                tint = theme.textMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            BasicTextField(
+                                value = searchQuery,
+                                onValueChange = { searchQuery = it },
+                                singleLine = true,
+                                cursorBrush = SolidColor(theme.primary),
+                                textStyle = androidx.compose.ui.text.TextStyle(
+                                    color = theme.textPrimary,
+                                    fontSize = 13.sp,
+                                    fontFamily = FontFamily.Monospace
+                                ),
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (searchQuery.isNotEmpty()) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "清除",
+                                    tint = theme.textMuted,
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clickable { searchQuery = "" }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Git 变更统计
+                gitStatus?.let { gs ->
+                    if (gs.files.isNotEmpty()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(theme.surfaceContainerLow)
+                                .padding(horizontal = 14.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = "${gs.files.size} 项变更",
+                                color = theme.textSecondary,
+                                fontSize = 11.5.sp
+                            )
+                            Text(
+                                text = "+${gs.additions}",
+                                color = theme.success,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
+                            )
+                            Text(
+                                text = "-${gs.deletions}",
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 11.5.sp,
+                                fontFamily = FontFamily.Monospace
                             )
                         }
-                    } else if (searchResults.isEmpty()) {
+                    }
+                }
+
+                // 内容呈现
+                when {
+                    isDirectoryLoading -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = theme.primary)
+                        }
+                    }
+                    directoryErrorMessage != null -> {
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .padding(24.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                text = "未找到匹配文件",
-                                color = theme.textMuted,
-                                fontSize = 13.sp
-                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = directoryErrorMessage.orEmpty(),
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 13.5.sp
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = theme.surfaceContainer,
+                                    modifier = Modifier.clickable { loadCurrentDirectory() }
+                                ) {
+                                    Text("重试", color = theme.primary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), fontSize = 13.sp)
+                                }
+                            }
                         }
-                    } else {
+                    }
+                    searchOpen && searchQuery.trim().isNotEmpty() -> {
+                        if (searchLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                CircularProgressIndicator(strokeWidth = 2.dp, color = theme.primary, modifier = Modifier.size(24.dp))
+                            }
+                        } else if (searchResults.isEmpty()) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(text = "未找到匹配文件", color = theme.textMuted, fontSize = 13.sp)
+                            }
+                        } else {
+                            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                                fun renderSearchNode(node: SearchTreeNode, depth: Int) {
+                                    val fullPath = FileListParsing.joinPath(currentPath, node.path)
+                                    item(key = "search:$fullPath") {
+                                        val entry = FileEntry(name = node.name, isDir = node.isDir)
+                                        FileRow(
+                                            entry = entry,
+                                            depth = depth,
+                                            fullPath = fullPath,
+                                            isExpanded = true,
+                                            isLoading = false,
+                                            gitChange = gitChangesByPath[fullPath],
+                                            containsGitChanges = changedDirectories.contains(fullPath),
+                                            onClick = {
+                                                if (node.isDir) {
+                                                    navigationStack.add(currentPath)
+                                                    currentPath = fullPath
+                                                    searchOpen = false
+                                                    searchQuery = ""
+                                                    onDirectoryChanged?.invoke(fullPath)
+                                                } else {
+                                                    openFilePreview(fullPath)
+                                                }
+                                            },
+                                            onPreview = { openFilePreview(fullPath) },
+                                            onDownload = { onDownloadFile(fullPath) },
+                                            onOpenExternal = { onOpenExternal(fullPath) },
+                                            onCopyPath = {
+                                                clipboardManager.setText(AnnotatedString(fullPath))
+                                                Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onAtMention = {
+                                                val rel = FileListParsing.relativePath(fullPath, currentPath)
+                                                onAtMention(rel, node.isDir)
+                                            }
+                                        )
+                                    }
+                                    for (child in node.children) {
+                                        renderSearchNode(child, depth + 1)
+                                    }
+                                }
+
+                                for (rootNode in searchResults) {
+                                    renderSearchNode(rootNode, 0)
+                                }
+                            }
+                        }
+                    }
+                    else -> {
+                        // 单级层级浏览视图（干净清爽，杜绝多层深缩进）
                         LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            fun renderSearchNode(node: SearchTreeNode, depth: Int) {
-                                val fullPath = FileListParsing.joinPath(workspaceCwd, node.path)
-                                item(key = "search:$fullPath") {
-                                    val entry = FileEntry(name = node.name, isDir = node.isDir)
+                            // 1. 若有上一级，列表顶首展示 [.. 返回上一级]
+                            if (canGoUp && parentOfCurrent != null) {
+                                item(key = ".._parent_up") {
+                                    ParentDirectoryRow(
+                                        parentPath = parentOfCurrent,
+                                        onClick = { handleBack() }
+                                    )
+                                }
+                            }
+
+                            // 2. 文件夹和文件列表
+                            if (directoryEntries.isEmpty()) {
+                                item(key = "empty_dir_notice") {
+                                    EmptyDirectoryRow(depth = 0)
+                                }
+                            } else {
+                                items(
+                                    items = directoryEntries,
+                                    key = { it.name }
+                                ) { entry ->
+                                    val fullPath = FileListParsing.joinPath(currentPath, entry.name)
                                     FileRow(
                                         entry = entry,
-                                        depth = depth,
+                                        depth = 0,
                                         fullPath = fullPath,
-                                        isExpanded = true,
+                                        isExpanded = false,
                                         isLoading = false,
                                         gitChange = gitChangesByPath[fullPath],
                                         containsGitChanges = changedDirectories.contains(fullPath),
                                         onClick = {
-                                            if (!node.isDir) openFilePreview(fullPath)
+                                            if (entry.isDir) {
+                                                // 导航进入子目录！
+                                                navigationStack.add(currentPath)
+                                                currentPath = fullPath
+                                                onDirectoryChanged?.invoke(fullPath)
+                                            } else {
+                                                openFilePreview(fullPath)
+                                            }
                                         },
                                         onPreview = { openFilePreview(fullPath) },
                                         onDownload = { onDownloadFile(fullPath) },
@@ -529,120 +653,15 @@ internal fun FilesScreen(
                                             Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
                                         },
                                         onAtMention = {
-                                            val rel = FileListParsing.relativePath(fullPath, workspaceCwd)
-                                            onAtMention(rel, node.isDir)
+                                            val rel = FileListParsing.relativePath(fullPath, currentPath)
+                                            onAtMention(rel, entry.isDir)
                                         }
                                     )
                                 }
-                                for (child in node.children) {
-                                    renderSearchNode(child, depth + 1)
-                                }
                             }
 
-                            for (rootNode in searchResults) {
-                                renderSearchNode(rootNode, 0)
-                            }
-                        }
-                    }
-                }
-                else -> {
-                    // 递归展开目录树并展平为列表渲染
-                    val flattenedItems = remember(
-                        childrenMap.toMap(),
-                        expandedPaths,
-                        loadingPaths.toMap(),
-                        errorPaths.toMap(),
-                        truncatedPaths.toMap()
-                    ) {
-                        val list = mutableListOf<FlattenedTreeItem>()
-
-                        fun walk(dirPath: String, depth: Int) {
-                            val children = childrenMap[dirPath] ?: return
-                            for (entry in children) {
-                                val childFullPath = FileListParsing.joinPath(dirPath, entry.name)
-                                val isExp = expandedPaths.contains(childFullPath)
-                                val isLdg = loadingPaths[childFullPath] == true
-                                val isTr = truncatedPaths[childFullPath] == true
-                                val err = errorPaths[childFullPath]
-
-                                list.add(
-                                    FlattenedTreeItem(
-                                        entry = entry,
-                                        depth = depth,
-                                        fullPath = childFullPath,
-                                        isExpanded = isExp,
-                                        isLoading = isLdg,
-                                        isTruncated = isTr,
-                                        errorMessage = err
-                                    )
-                                )
-
-                                if (entry.isDir && isExp) {
-                                    walk(childFullPath, depth + 1)
-                                }
-                            }
-                        }
-
-                        walk(workspaceCwd, 0)
-                        list
-                    }
-
-                    if (flattenedItems.isEmpty()) {
-                        EmptyDirectoryRow(depth = 0)
-                    } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
-                            items(
-                                items = flattenedItems,
-                                key = { it.fullPath }
-                            ) { item ->
-                                FileRow(
-                                    entry = item.entry,
-                                    depth = item.depth,
-                                    fullPath = item.fullPath,
-                                    isExpanded = item.isExpanded,
-                                    isLoading = item.isLoading,
-                                    gitChange = gitChangesByPath[item.fullPath],
-                                    containsGitChanges = changedDirectories.contains(item.fullPath),
-                                    onClick = {
-                                        if (item.entry.isDir) {
-                                            toggleExpand(item.fullPath)
-                                        } else {
-                                            openFilePreview(item.fullPath)
-                                        }
-                                    },
-                                    onPreview = { openFilePreview(item.fullPath) },
-                                    onDownload = { onDownloadFile(item.fullPath) },
-                                    onOpenExternal = { onOpenExternal(item.fullPath) },
-                                    onCopyPath = {
-                                        clipboardManager.setText(AnnotatedString(item.fullPath))
-                                        Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
-                                    },
-                                    onAtMention = {
-                                        val rel = FileListParsing.relativePath(item.fullPath, workspaceCwd)
-                                        onAtMention(rel, item.entry.isDir)
-                                    }
-                                )
-
-                                if (item.entry.isDir && item.isExpanded) {
-                                    if (item.errorMessage != null) {
-                                        ErrorDirectoryRow(
-                                            depth = item.depth + 1,
-                                            errorMessage = item.errorMessage,
-                                            onRetry = {
-                                                toggleExpand(item.fullPath)
-                                                toggleExpand(item.fullPath)
-                                            }
-                                        )
-                                    } else if (childrenMap[item.fullPath]?.isEmpty() == true && !item.isLoading) {
-                                        EmptyDirectoryRow(depth = item.depth + 1)
-                                    } else if (item.isTruncated) {
-                                        TruncatedNoticeRow(depth = item.depth + 1)
-                                    }
-                                }
-                            }
-
-                            if (truncatedPaths[workspaceCwd] == true) {
-                                item {
+                            if (isTruncated) {
+                                item(key = "truncated_notice") {
                                     TruncatedNoticeRow(depth = 0)
                                 }
                             }
@@ -651,56 +670,113 @@ internal fun FilesScreen(
                 }
             }
         }
-    }
 
-    // 全屏文件查看器覆盖层（与 Scaffold 平级，覆盖整个屏幕）
-    val activePreviewPath = previewPath
-    if (activePreviewPath != null) {
-        ArtifactViewerFullScreen(
-            title = previewTitle,
-            path = activePreviewPath,
-            meta = previewMeta,
-            kind = previewKind,
-            text = previewText,
-            image = previewImage,
-            pdfFile = previewPdfFile,
-            docxHtml = previewDocxHtml,
-            message = previewMessage,
-            rawMode = previewRawMode,
-            isLoading = isPreviewLoading,
-            isLoadingMore = isPreviewLoadingMore,
-            truncated = previewTruncated,
-            nextOffset = previewNextOffset,
-            sizeBytes = previewSizeBytes,
-            isOpeningExternally = false,
-            sessionCwd = workspaceCwd,
-            onResolveMediaSource = { p -> onResolveFileSource(p) },
-            onBack = { previewPath = null },
-            onToggleRawMode = { raw -> previewRawMode = raw },
-            onLoadMore = { loadMorePreviewText() },
-            onOpenExternal = { onOpenExternal(activePreviewPath) },
-            onReload = { openFilePreview(activePreviewPath) },
-            onOpenLink = { href, baseDir ->
-                val resolved = com.pi.app.ui.components.FileLinks.resolveLocalFileHref(href, baseDir)
-                if (resolved != null) {
-                    openFilePreview(resolved)
-                } else if (com.pi.app.ui.components.FileLinks.isWebUrl(href)) {
-                    runCatching {
-                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href)))
-                    }
-                }
-            },
-            onCopyText = { value ->
-                clipboardManager.setText(AnnotatedString(value))
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
-            },
-            onAtMention = { rel ->
-                onAtMention(rel, false)
-            },
-            onDownloadFile = { p ->
-                onDownloadFile(p)
-            }
+        // 屏幕左侧边缘右滑手势返回区（32dp 边缘热区，不干扰正文滚动）
+        EdgeSwipeBackArea(
+            onSwipeBack = { handleBack() },
+            edgeWidth = 32.dp,
+            modifier = Modifier.align(Alignment.CenterStart)
         )
+
+        // 全屏文件查看器覆盖层（与 Scaffold 平级覆盖整个屏幕）
+        val activePreviewPath = previewPath
+        if (activePreviewPath != null) {
+            ArtifactViewerFullScreen(
+                title = previewTitle,
+                path = activePreviewPath,
+                meta = previewMeta,
+                kind = previewKind,
+                text = previewText,
+                image = previewImage,
+                pdfFile = previewPdfFile,
+                docxHtml = previewDocxHtml,
+                message = previewMessage,
+                rawMode = previewRawMode,
+                isLoading = isPreviewLoading,
+                isLoadingMore = isPreviewLoadingMore,
+                truncated = previewTruncated,
+                nextOffset = previewNextOffset,
+                sizeBytes = previewSizeBytes,
+                isOpeningExternally = false,
+                sessionCwd = currentPath,
+                onResolveMediaSource = { p -> onResolveFileSource(p) },
+                onBack = { previewPath = null },
+                onToggleRawMode = { raw -> previewRawMode = raw },
+                onLoadMore = { loadMorePreviewText() },
+                onOpenExternal = { onOpenExternal(activePreviewPath) },
+                onReload = { openFilePreview(activePreviewPath) },
+                onOpenLink = { href, baseDir ->
+                    val resolved = com.pi.app.ui.components.FileLinks.resolveLocalFileHref(href, baseDir)
+                    if (resolved != null) {
+                        openFilePreview(resolved)
+                    } else if (com.pi.app.ui.components.FileLinks.isWebUrl(href)) {
+                        runCatching {
+                            context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(href)))
+                        }
+                    }
+                },
+                onCopyText = { value ->
+                    clipboardManager.setText(AnnotatedString(value))
+                    Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+                },
+                onAtMention = { rel ->
+                    onAtMention(rel, false)
+                },
+                onDownloadFile = { p ->
+                    onDownloadFile(p)
+                }
+            )
+        }
     }
 }
+
+/**
+ * 列表顶部 ".. (返回上一级)" 导航行项。
+ */
+@Composable
+internal fun ParentDirectoryRow(
+    parentPath: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    Surface(
+        color = androidx.compose.ui.graphics.Color.Transparent,
+        modifier = modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(44.dp)
+                .padding(horizontal = 14.dp)
+        ) {
+            Icon(
+                imageVector = Icons.Default.ArrowUpward,
+                contentDescription = null,
+                tint = theme.primary,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Text(
+                text = ".. (返回上一级)",
+                color = theme.primary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f)
+            )
+            val parentName = FileListParsing.displayName(parentPath).ifBlank { parentPath }
+            Text(
+                text = parentName,
+                color = theme.textMuted,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
 }

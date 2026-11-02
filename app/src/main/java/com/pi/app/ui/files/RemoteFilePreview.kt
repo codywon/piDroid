@@ -11,6 +11,8 @@ private val MARKDOWN_EXTENSIONS = setOf("md", "markdown", "mdown", "mkdn", "mkd"
 private val IMAGE_FILE_EXTENSIONS = setOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "heif")
 private val AUDIO_FILE_EXTENSIONS = setOf("mp3", "wav", "m4a", "aac", "ogg", "oga", "flac", "opus", "amr")
 private val VIDEO_FILE_EXTENSIONS = setOf("mp4", "m4v", "mov", "webm", "mkv", "3gp", "avi")
+private val OFFICE_EXTERNAL_EXTENSIONS = setOf("doc", "wps", "xls", "xlsx", "et", "ppt", "pptx", "dps")
+private val ARCHIVE_EXTENSIONS = setOf("zip", "rar", "7z", "tar", "gz", "bz2", "xz", "apk")
 
 /**
  * 判定预览类型：mime 优先，扩展名兜底（meta 拿不到时仍然能分派）。
@@ -28,6 +30,8 @@ internal fun artifactKindOf(absPath: String, mime: String = ""): ArtifactKind {
         ext in MARKDOWN_EXTENSIONS -> ArtifactKind.MARKDOWN
         lowerMime == "application/pdf" || ext == "pdf" -> ArtifactKind.PDF
         lowerMime.contains("wordprocessingml") || ext == "docx" -> ArtifactKind.DOCX
+        ext in OFFICE_EXTERNAL_EXTENSIONS || lowerMime.contains("spreadsheet") || lowerMime.contains("presentation") || lowerMime.contains("msword") -> ArtifactKind.OFFICE
+        ext in ARCHIVE_EXTENSIONS || lowerMime.contains("zip") || lowerMime.contains("compressed") -> ArtifactKind.OFFICE
         lowerMime.startsWith("audio/") || ext in AUDIO_FILE_EXTENSIONS -> ArtifactKind.AUDIO
         lowerMime.startsWith("video/") || ext in VIDEO_FILE_EXTENSIONS -> ArtifactKind.VIDEO
         else -> ArtifactKind.TEXT
@@ -90,6 +94,7 @@ internal object RemoteFilePreviewLoader {
             ).joinToString(" · ")
         }
 
+        var resolvedKind = kind
         var text: String? = null
         var imageBytes: ByteArray? = null
         var pdfFile: File? = null
@@ -99,8 +104,9 @@ internal object RemoteFilePreviewLoader {
         var sizeBytes = meta?.size ?: 0L
         var truncated = false
         var isBinary = false
+        val ext = title.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
-        when (kind) {
+        when (resolvedKind) {
             ArtifactKind.IMAGE -> {
                 val bytesRes = dataSource.getFileBytes(absPath)
                 if (bytesRes.isSuccess) {
@@ -112,13 +118,17 @@ internal object RemoteFilePreviewLoader {
             ArtifactKind.DOCX -> {
                 // pi-web 的 docx 预览上限 10MB（DOCX_PREVIEW_MAX_BYTES），超了服务端会拒
                 if (meta != null && meta.size > 10L * 1024 * 1024) {
-                    message = "Word 预览上限 10MB，可用下方「用其他应用打开」交给 WPS"
+                    resolvedKind = ArtifactKind.OFFICE
+                    isBinary = true
+                    message = "Word 预览上限 10MB，推荐使用下方按钮调用系统应用（WPS / Office）打开。"
                 } else {
                     val htmlRes = dataSource.getFilePreviewHtml(absPath)
                     if (htmlRes.isSuccess) {
                         docxHtml = htmlRes.getOrNull()
                     } else {
-                        message = "Word 预览失败：${htmlRes.exceptionOrNull()?.message}"
+                        resolvedKind = ArtifactKind.OFFICE
+                        isBinary = true
+                        message = "Word 预览转换不可用，推荐使用下方按钮调用系统应用（WPS / Office）打开。"
                     }
                 }
             }
@@ -130,6 +140,17 @@ internal object RemoteFilePreviewLoader {
                     message = "PDF 加载失败：${pdfRes.exceptionOrNull()?.message}"
                 }
             }
+            ArtifactKind.OFFICE -> {
+                isBinary = true
+                val desc = when (ext) {
+                    "xls", "xlsx", "et" -> "Excel 工作表"
+                    "ppt", "pptx", "dps" -> "PowerPoint 演示文稿"
+                    "doc", "wps" -> "Word 文档"
+                    "zip", "rar", "7z", "tar", "gz", "apk" -> "压缩包 / 安装包"
+                    else -> "办公 / 二进制文档"
+                }
+                message = "此文件为 $desc（${formatBytes(sizeBytes)}），推荐使用下方按钮调用系统应用（WPS / Office）打开查阅。"
+            }
             ArtifactKind.AUDIO, ArtifactKind.VIDEO -> {
                 // 音视频无需预读正文，直接由播放器流式播放
             }
@@ -138,8 +159,9 @@ internal object RemoteFilePreviewLoader {
                 if (chunkRes.isSuccess) {
                     val chunk = chunkRes.getOrNull()!!
                     if (chunk.binary) {
+                        resolvedKind = ArtifactKind.OFFICE
                         isBinary = true
-                        message = "此文件为二进制文件（${formatBytes(chunk.size)}），不支持文本预览。可点击下方「用其他应用打开」调用外部工具查看。"
+                        message = "此文件为二进制文件（${formatBytes(chunk.size)}），不支持文本预览。推荐使用下方按钮调用外部工具打开。"
                     } else {
                         text = chunk.content.ifBlank { "（空文件）" }
                     }
@@ -155,7 +177,7 @@ internal object RemoteFilePreviewLoader {
         return RemoteFilePreviewData(
             path = absPath,
             title = title,
-            kind = kind,
+            kind = resolvedKind,
             mime = metaMime,
             metaLabel = metaLabel,
             text = text,

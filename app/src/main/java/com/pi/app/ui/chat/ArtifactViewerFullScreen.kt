@@ -29,16 +29,25 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.WrapText
 import androidx.compose.material.icons.filled.AlternateEmail
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FolderZip
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.OpenInNew
+import androidx.compose.material.icons.filled.Slideshow
+import androidx.compose.material.icons.filled.TableChart
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -63,6 +72,7 @@ import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.FilePlaybackSource
 import com.pi.app.data.model.formatBytes
 import com.pi.app.network.FileListParsing
+import com.pi.app.ui.components.EdgeSwipeBackArea
 import com.pi.app.ui.components.FileLinks
 import com.pi.app.ui.components.MarkdownRenderer
 import com.pi.app.ui.components.PdfDocumentView
@@ -144,9 +154,10 @@ internal fun ArtifactViewerFullScreen(
     val showRenderedPreview = richPreviewReady && !rawMode && !isErrorBody
     val docDir = path?.let { FileLinks.parentDirectory(it) }.orEmpty()
 
-    Scaffold(
-        containerColor = theme.surfaceContainerLow,
-        topBar = {
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            containerColor = theme.surfaceContainerLow,
+            topBar = {
             AnimatedVisibility(
                 visible = chromeVisible,
                 enter = fadeIn(),
@@ -427,7 +438,32 @@ internal fun ArtifactViewerFullScreen(
                                 )
                             }
                         }
+                        ArtifactKind.OFFICE -> {
+                            ExternalDocumentCard(
+                                title = title,
+                                path = path,
+                                sizeBytes = sizeBytes,
+                                message = message,
+                                isOpeningExternally = isOpeningExternally,
+                                onOpenExternal = onOpenExternal,
+                                onDownload = { path?.let { onDownloadFile?.invoke(it) } }
+                            )
+                        }
                         else -> Unit
+                    }
+
+                    if (kind != ArtifactKind.OFFICE && kind != ArtifactKind.AUDIO && kind != ArtifactKind.VIDEO &&
+                        kind != ArtifactKind.PDF && text == null && image == null && docxHtml == null && !isLoading
+                    ) {
+                        ExternalDocumentCard(
+                            title = title,
+                            path = path,
+                            sizeBytes = sizeBytes,
+                            message = message,
+                            isOpeningExternally = isOpeningExternally,
+                            onOpenExternal = onOpenExternal,
+                            onDownload = { path?.let { onDownloadFile?.invoke(it) } }
+                        )
                     }
 
                     image?.let { bmp ->
@@ -700,6 +736,14 @@ internal fun ArtifactViewerFullScreen(
             }
         }
     }
+
+    // 屏幕左侧边缘右滑手势退出预览
+    EdgeSwipeBackArea(
+        onSwipeBack = onBack,
+        edgeWidth = 32.dp,
+        modifier = Modifier.align(Alignment.CenterStart)
+    )
+}
 }
 
 /**
@@ -780,6 +824,138 @@ private fun ArtifactErrorState(
                             color = theme.textSecondary
                         )
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 针对 Word、Excel、PPT、压缩包等端内不直接解析格式的高清优雅卡片。
+ * 提供一键使用 WPS/系统应用打开的稳定兜底与下载能力。
+ */
+@Composable
+private fun ExternalDocumentCard(
+    title: String,
+    path: String?,
+    sizeBytes: Long,
+    message: String?,
+    isOpeningExternally: Boolean,
+    onOpenExternal: () -> Unit,
+    onDownload: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val theme = LocalAppTheme.current
+    val ext = path?.substringAfterLast('.', "")?.lowercase(java.util.Locale.ROOT) ?: ""
+    val (icon, iconColor, typeDesc) = when (ext) {
+        "xls", "xlsx", "et", "csv" -> Triple(Icons.Default.TableChart, theme.success, "Excel 工作表")
+        "ppt", "pptx", "dps" -> Triple(Icons.Default.Slideshow, theme.warning, "PowerPoint 演示文稿")
+        "doc", "docx", "wps" -> Triple(Icons.Default.Description, theme.primary, "Word 文档")
+        "zip", "rar", "7z", "tar", "gz", "apk" -> Triple(Icons.Default.FolderZip, theme.warning, "压缩包 / 安装包")
+        else -> Triple(Icons.AutoMirrored.Filled.InsertDriveFile, theme.primary, "办公 / 外部文档")
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = theme.surfaceContainer,
+            border = BorderStroke(1.dp, theme.outline.copy(alpha = 0.5f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp)
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = iconColor.copy(alpha = 0.12f),
+                    modifier = Modifier.size(64.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = icon,
+                            contentDescription = null,
+                            tint = iconColor,
+                            modifier = Modifier.size(36.dp)
+                        )
+                    }
+                }
+
+                Text(
+                    text = title,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.textPrimary,
+                    textAlign = TextAlign.Center,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+
+                Text(
+                    text = if (sizeBytes > 0L) "$typeDesc · ${formatBytes(sizeBytes)}" else typeDesc,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = theme.textMuted
+                )
+
+                Text(
+                    text = message ?: "当前格式暂不支持端内直接渲染，建议通过外部应用（如 WPS / 系统 Office）打开查阅。",
+                    fontSize = 11.5.sp,
+                    lineHeight = 16.sp,
+                    color = theme.textSecondary,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // 主操作按钮：用系统应用打开
+                Button(
+                    onClick = onOpenExternal,
+                    enabled = !isOpeningExternally,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = theme.primary,
+                        contentColor = theme.onPrimary
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                ) {
+                    if (isOpeningExternally) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            strokeWidth = 2.dp,
+                            color = theme.onPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("正在传输至应用…", fontSize = 13.sp)
+                    } else {
+                        Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("用其他应用打开 (WPS / Office)", fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+
+                // 次操作按钮：下载保存到手机
+                OutlinedButton(
+                    onClick = onDownload,
+                    shape = RoundedCornerShape(10.dp),
+                    border = BorderStroke(1.dp, theme.outline),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(42.dp)
+                ) {
+                    Icon(Icons.Default.FileDownload, contentDescription = null, tint = theme.textPrimary, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("下载保存到手机", fontSize = 13.sp, color = theme.textPrimary)
                 }
             }
         }

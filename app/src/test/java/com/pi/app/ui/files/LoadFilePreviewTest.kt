@@ -27,6 +27,9 @@ class LoadFilePreviewTest {
         assertEquals(ArtifactKind.MARKDOWN, artifactKindOf("NOTES.markdown", ""))
         assertEquals(ArtifactKind.PDF, artifactKindOf("doc.pdf", "application/pdf"))
         assertEquals(ArtifactKind.DOCX, artifactKindOf("report.docx", ""))
+        assertEquals(ArtifactKind.OFFICE, artifactKindOf("table.xlsx", ""))
+        assertEquals(ArtifactKind.OFFICE, artifactKindOf("slide.pptx", ""))
+        assertEquals(ArtifactKind.OFFICE, artifactKindOf("archive.zip", ""))
         assertEquals(ArtifactKind.AUDIO, artifactKindOf("sound.mp3", "audio/mpeg"))
         assertEquals(ArtifactKind.VIDEO, artifactKindOf("video.mp4", "video/mp4"))
         assertEquals(ArtifactKind.TEXT, artifactKindOf("build.gradle.kts", "text/plain"))
@@ -108,11 +111,25 @@ class LoadFilePreviewTest {
         )
 
         val result = RemoteFilePreviewLoader.load("huge.docx", ds)
-        assertEquals(ArtifactKind.DOCX, result.kind)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
         assertEquals(0, ds.htmlCallCount)
         assertNull(result.docxHtml)
         assertNotNull(result.message)
         assertTrue(result.message!!.contains("10MB"))
+    }
+
+    @Test
+    fun `load excel sheet classifies as office kind and provides external app guidance`() = runBlocking {
+        val ds = FakeDataSource(
+            meta = FileMeta(size = 50000L, mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        )
+
+        val result = RemoteFilePreviewLoader.load("budget.xlsx", ds)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
+        assertTrue(result.isBinary)
+        assertEquals(0, ds.textChunkCallCount)
+        assertNotNull(result.message)
+        assertTrue(result.message!!.contains("Excel 工作表"))
     }
 
     @Test
@@ -169,7 +186,7 @@ class LoadFilePreviewTest {
         )
 
         val result = RemoteFilePreviewLoader.load("archive.zip", ds)
-        assertEquals(ArtifactKind.TEXT, result.kind)
+        assertEquals(ArtifactKind.OFFICE, result.kind)
         assertTrue(result.isBinary)
         assertNull(result.text)
         assertNotNull(result.message)

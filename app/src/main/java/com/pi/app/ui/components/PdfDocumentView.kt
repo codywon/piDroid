@@ -5,6 +5,9 @@ import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,16 +28,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.ui.theme.LocalAppTheme
@@ -45,7 +52,11 @@ import java.io.File
 /**
  * 手机端内置 PDF 文档阅读器。
  *
- * 使用 Android 原生 [PdfRenderer] 逐页渲染为位图，支持多页切换与防 OOM 分辨率限制。
+ * 核心特性：
+ * 1. 左右滑动手势切页（左右滑动翻到上一页/下一页）；
+ * 2. 双指手势平滑缩放（Pinch-to-zoom 0.8x ~ 5x）与缩放后拖动平移；
+ * 3. 双击手势（在 1x 与 2.5x 之间快速切换）；
+ * 4. 底部常驻悬浮页码栏与切页按钮。
  */
 @Composable
 internal fun PdfDocumentView(
@@ -53,11 +64,18 @@ internal fun PdfDocumentView(
     modifier: Modifier = Modifier
 ) {
     val theme = LocalAppTheme.current
+    val density = LocalDensity.current
+
     var currentPage by remember(file.path) { mutableIntStateOf(0) }
     var pageCount by remember(file.path) { mutableIntStateOf(0) }
     var currentBitmap by remember(file.path, currentPage) { mutableStateOf<ImageBitmap?>(null) }
     var isLoading by remember(file.path, currentPage) { mutableStateOf(true) }
     var errorMessage by remember(file.path) { mutableStateOf<String?>(null) }
+
+    // 缩放与平移状态（每次切页复位为 1x 与原点）
+    var scale by remember(currentPage) { mutableFloatStateOf(1f) }
+    var offset by remember(currentPage) { mutableStateOf(Offset.Zero) }
+    var horizontalDragAmount by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(file.path, currentPage) {
         isLoading = true
@@ -125,7 +143,53 @@ internal fun PdfDocumentView(
                     Box(
                         modifier = Modifier
                             .weight(1f)
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            .pointerInput(currentPage) {
+                                detectTapGestures(
+                                    onDoubleTap = {
+                                        if (scale > 1.05f) {
+                                            scale = 1f
+                                            offset = Offset.Zero
+                                        } else {
+                                            scale = 2.5f
+                                            offset = Offset.Zero
+                                        }
+                                    }
+                                )
+                            }
+                            .pointerInput(currentPage, scale) {
+                                if (scale > 1.05f) {
+                                    // 放大状态：双指/单指拖动平移与缩放
+                                    detectTransformGestures { _, pan, zoom, _ ->
+                                        val newScale = (scale * zoom).coerceIn(0.75f, 5f)
+                                        scale = newScale
+                                        offset = if (newScale > 1.05f) {
+                                            Offset(offset.x + pan.x, offset.y + pan.y)
+                                        } else {
+                                            Offset.Zero
+                                        }
+                                    }
+                                } else {
+                                    // 原始比例：单指左右拖动快速翻页
+                                    detectHorizontalDragGestures(
+                                        onDragStart = { horizontalDragAmount = 0f },
+                                        onDragEnd = {
+                                            val thresholdPx = with(density) { 45.dp.toPx() }
+                                            if (horizontalDragAmount < -thresholdPx && currentPage < pageCount - 1) {
+                                                currentPage++
+                                            } else if (horizontalDragAmount > thresholdPx && currentPage > 0) {
+                                                currentPage--
+                                            }
+                                            horizontalDragAmount = 0f
+                                        },
+                                        onDragCancel = { horizontalDragAmount = 0f },
+                                        onHorizontalDrag = { change, dragAmount ->
+                                            change.consume()
+                                            horizontalDragAmount += dragAmount
+                                        }
+                                    )
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Image(
@@ -134,14 +198,21 @@ internal fun PdfDocumentView(
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
+                                .graphicsLayer(
+                                    scaleX = scale,
+                                    scaleY = scale,
+                                    translationX = offset.x,
+                                    translationY = offset.y
+                                )
                                 .padding(8.dp)
                         )
                     }
 
                     if (pageCount > 1) {
                         Surface(
-                            color = theme.surfaceContainer.copy(alpha = 0.9f),
+                            color = theme.surfaceContainer.copy(alpha = 0.92f),
                             shape = RoundedCornerShape(20.dp),
+                            border = androidx.compose.foundation.BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.4f)),
                             modifier = Modifier.padding(bottom = 12.dp)
                         ) {
                             Row(
