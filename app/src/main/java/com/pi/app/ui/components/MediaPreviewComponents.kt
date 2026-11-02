@@ -757,8 +757,11 @@ internal fun SvgWebViewCanvas(
 ) {
     val isDark = LocalAppTheme.current.isDark
     val cleanSvg = remember(svgContent) {
-        // 安全防护：彻底剥除 SVG 中可能夹带的 <script> 标签
-        svgContent.replace(Regex("(?i)<script[\\s\\S]*?</script>"), "")
+        // 安全防护：彻底剥除 SVG 中可能夹带的 <script> 标签（含自闭合）与 on* 事件处理器
+        svgContent
+            .replace(Regex("(?i)<script\\b[^>]*>[\\s\\S]*?</script>"), "")
+            .replace(Regex("(?i)<script\\b[^>]*/>"), "")
+            .replace(Regex("(?i)\\s+on[a-z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)"), "")
     }
 
     val html = remember(cleanSvg, isDark, enableZoom) {
@@ -1000,7 +1003,17 @@ internal fun SvgWebViewCanvas(
             }
         },
         update = { webView ->
-            webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            // 关键：仅在 html 实际发生变化时才重新加载，防止父级重组（如沉浸模式点击切顶栏）重置用户的缩放与平移！
+            if (webView.tag != html) {
+                webView.tag = html
+                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+            }
+        },
+        onRelease = { webView ->
+            runCatching {
+                webView.stopLoading()
+                webView.destroy()
+            }
         }
     )
 }
@@ -1030,27 +1043,29 @@ internal fun ZoomableImageCanvas(
                         } else {
                             scale = 2.5f
                             val center = Offset(size.width / 2f, size.height / 2f)
-                            offset = (center - tapOffset) * 1.5f
+                            val maxOffsetX = (size.width * (2.5f - 1f) / 2f).coerceAtLeast(0f)
+                            val maxOffsetY = (size.height * (2.5f - 1f) / 2f).coerceAtLeast(0f)
+                            offset = Offset(
+                                ((center.x - tapOffset.x) * 1.5f).coerceIn(-maxOffsetX, maxOffsetX),
+                                ((center.y - tapOffset.y) * 1.5f).coerceIn(-maxOffsetY, maxOffsetY)
+                            )
                         }
                     }
                 )
             }
-            .pointerInput(bitmap, scale) {
-                if (scale > 1.05f) {
-                    detectTransformGestures { _, pan, zoom, _ ->
-                        val newScale = (scale * zoom).coerceIn(0.75f, 6f)
-                        scale = newScale
-                        offset = if (newScale > 1.05f) {
-                            Offset(offset.x + pan.x, offset.y + pan.y)
-                        } else {
-                            Offset.Zero
-                        }
-                    }
-                } else {
-                    detectTransformGestures { _, _, zoom, _ ->
-                        if (zoom > 1.02f) {
-                            scale = (scale * zoom).coerceIn(1f, 6f)
-                        }
+            .pointerInput(bitmap) {
+                detectTransformGestures { _, pan, zoom, _ ->
+                    val newScale = (scale * zoom).coerceIn(0.75f, 6f)
+                    scale = newScale
+                    if (newScale > 1.05f) {
+                        val maxOffsetX = (size.width * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                        val maxOffsetY = (size.height * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                        offset = Offset(
+                            (offset.x + pan.x).coerceIn(-maxOffsetX, maxOffsetX),
+                            (offset.y + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
+                        )
+                    } else {
+                        offset = Offset.Zero
                     }
                 }
             },

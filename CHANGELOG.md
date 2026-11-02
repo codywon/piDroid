@@ -2,6 +2,18 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.62] - 2026-11-02
+
+### 🛡️ 代码质量与交互稳定性加固：WebView 避免冗余重载、手势生命周期防抖与边界平移约束
+
+1. **SVG WebView 重组防重载保护 (`MediaPreviewComponents.kt`)**：
+   - 修复在 `AndroidView.update` 中无条件执行 `loadDataWithBaseURL` 导致父级重组（如点击屏幕切换沉浸模式）时重置用户当前缩放比例与平移位置的缺陷，通过 `tag` 比对仅在内容变化时重载；
+   - 增加 `onRelease` 显式销毁 WebView 与停止后台加载，杜绝内存泄漏；
+   - 强化 SVG 脚本净化，彻底移除自闭合脚本标签与 `on*` 内联事件属性。
+2. **位图图片手势稳定性优化 (`MediaPreviewComponents.kt`)**：
+   - 移除 `pointerInput` 中的 `scale` 变动键，避免在双指缩放过程中因状态改变导致手势协程被反复取消重启；
+   - 增加平移物理边界限制（`maxOffsetX`/`maxOffsetY`），防止将图片拖拽出可视区域。
+
 ## [1.8.61] - 2026-11-02
 
 ### 📐 彻底重构 SVG 缩放引擎：采用 `viewBox` 原生动态投影，实现真矢量 100% 锐利缩放
