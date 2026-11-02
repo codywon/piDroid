@@ -77,7 +77,27 @@ object FileListParsing {
         return runCatching {
             val root = JsonParser.parseString(json).asJsonObject
             root.get("error")?.takeIf { !it.isJsonNull }?.asString
+                ?: root.get("detail")?.takeIf { !it.isJsonNull }?.asString
+                ?: root.get("message")?.takeIf { !it.isJsonNull }?.asString
         }.getOrNull()
+    }
+
+    /**
+     * 把文件/目录路径编码进 `/api/files/<path>` 的路由段。
+     * 对标 @agegr/pi-web `encodeFilePathForApi` (lib/file-paths.ts):
+     * 1. 统一换为正斜杠并过滤空段（关键！防止盘符根目录产生末尾斜杠导致反代/云端网关 404）；
+     * 2. 保留 UNC 根 `//host` 作为首段；
+     * 3. 逐段调用 URI 编码。
+     */
+    fun encodeFilePath(absPath: String): String {
+        val normalized = absPath.trim().replace('\\', '/')
+        val segments = normalized.split('/').filter { it.isNotEmpty() }.toMutableList()
+        if (normalized.startsWith("//") && segments.isNotEmpty()) {
+            segments[0] = "//${segments[0]}"
+        }
+        return segments.joinToString("/") {
+            java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
     }
 
     /**

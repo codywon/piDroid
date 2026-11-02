@@ -210,4 +210,22 @@ class FileListParsingTest {
         val metaWithoutTime = FileMeta(size = 2048L, mtime = null)
         assertNull(metaWithoutTime.version)
     }
+
+    @Test
+    fun `encodeFilePath accurately encodes paths and strips trailing slashes`() {
+        // Windows 盘符根目录：绝不能带尾随斜杠（尾随斜杠会导致反向代理 404）
+        assertEquals("D%3A", FileListParsing.encodeFilePath("D:\\"))
+        assertEquals("D%3A", FileListParsing.encodeFilePath("D:/"))
+        assertEquals("D%3A", FileListParsing.encodeFilePath("D:"))
+        assertEquals("C%3A", FileListParsing.encodeFilePath("C:\\"))
+
+        // 子目录与文件
+        assertEquals("D%3A/project/src", FileListParsing.encodeFilePath("D:/project/src/"))
+        assertEquals("D%3A/project/src", FileListParsing.encodeFilePath("D:\\project\\src"))
+        assertEquals("home/user/code", FileListParsing.encodeFilePath("/home/user/code/"))
+        assertEquals("home/user/hello%20world.txt", FileListParsing.encodeFilePath("/home/user/hello world.txt"))
+
+        // UNC 网络路径
+        assertEquals("%2F%2Fserver/share/dir", FileListParsing.encodeFilePath("//server/share/dir/"))
+    }
 }

@@ -2,6 +2,18 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.54] - 2026-11-02
+
+### 🐛 修复磁盘根目录（如 D:\、C:\）因末尾斜杠编码导致 Nginx/网关报 HTTP 404 的问题
+
+- **根因分析**：
+  在 `PiApiClient.encodeFilePath` 中，旧逻辑直接以 `split('/')` 切割路径，当传入磁盘根目录（如 `D:\` 或 `D:/`）时，末尾的斜杠切割出了尾随空串，拼接后产生了带有末尾斜杠的 API 路由段 `D%3A/`（即请求 URL 为 `/api/files/D%3A/?type=list`）。在公网反向代理（Nginx / frp）转发下，以末尾斜杠结尾的请求会脱离代理 location 规则直接被上游路由阻断并抛出 `HTTP 404 {"detail":"Not Found"}`；而在不带末尾斜杠的 `D%3A` 下则完全正常响应 200。
+- **改动**：
+  1. **对齐上游 `encodeFilePathForApi` 算法**：抽离至 `FileListParsing.encodeFilePath` 纯 JVM 方法，统一切段并自动 `filter { it.isNotEmpty() }`，消除任何尾随斜杠（`D:\` 准确编码为 `D%3A`，`D:\path\` 编码为 `D%3A/path`），彻底根治 404 问题；
+  2. **URL 前缀保护**：`fileApiUrl` 与 `uploadFiles` 对 `baseUrl` 增加 `.trimEnd('/')` 保护，防止多余双斜杠造成路由异常；
+  3. **丰富错误解析**：`FileListParsing.parseError` 新增对服务端 `detail` 与 `message` 字段的提取，提升异常可读性；
+  4. **单测覆盖**：在 `FileListParsingTest` 中新增 `encodeFilePath accurately encodes paths and strips trailing slashes` 单元测试，全面覆盖 Windows 盘符根目录、子目录与 UNC 路径。
+
 ## [1.8.53] - 2026-11-02
 
 ### ⚡ 修复「浏览电脑文件」点击后抽屉收起但页面未出现的延迟与阻断问题

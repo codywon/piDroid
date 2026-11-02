@@ -2184,9 +2184,10 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 走不了 OkHttp 客户端，所以需要单独拿 URL + 鉴权头的入口。
      */
     fun fileApiUrl(absPath: String, type: String = "read", sessionId: String? = null): String {
-        val baseUrl = prefs.serverUrl
+        val baseUrl = prefs.serverUrl.trimEnd('/')
         if (baseUrl.isBlank()) return ""
-        return "$baseUrl/api/files/${encodeFilePath(absPath)}?type=$type" + sessionQuery(sessionId)
+        val encoded = FileListParsing.encodeFilePath(absPath)
+        return "$baseUrl/api/files/$encoded?type=$type" + sessionQuery(sessionId)
     }
 
     /**
@@ -2330,12 +2331,6 @@ class PiApiClient(private val prefs: AppPreferences) {
             } catch (e: Exception) {
                 Result.failure(e)
             }
-        }
-
-    /** 把绝对路径编码进 /api/files/<path> 的单段路径（保留分隔符语义，只转义特殊字符） */
-    private fun encodeFilePath(absPath: String): String =
-        absPath.trim().replace('\\', '/').split('/').joinToString("/") {
-            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
         }
 
     /** 开关 pi 的自动上下文压缩（agent {"type":"set_auto_compaction","enabled":bool}） */
@@ -2862,7 +2857,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (directoryPath.isBlank()) return@withContext Result.failure(Exception("会话缺少工作目录，无法上传"))
         if (files.isEmpty()) return@withContext Result.success(UploadFilesResult())
         try {
-            val dirSegment = encodeFilePath(directoryPath)
+            val dirSegment = FileListParsing.encodeFilePath(directoryPath)
             val builder = MultipartBody.Builder().setType(MultipartBody.FORM)
             files.forEach { f ->
                 builder.addFormDataPart(
