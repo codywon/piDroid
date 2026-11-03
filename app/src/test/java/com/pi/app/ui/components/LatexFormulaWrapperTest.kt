@@ -102,7 +102,8 @@ class LatexFormulaWrapperTest {
     fun `unsafe structures are never touched`() {
         // 已有多行环境
         val aligned = "\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}"
-        assertEquals(aligned, wrapOnPhone("$aligned + q + q + q + q + q + q + q + q + q + q + q + q + q + q"))
+        val alignedWithTail = "$aligned + q + q + q + q + q + q + q + q + q + q + q + q + q + q"
+        assertEquals(alignedWithTail, wrapOnPhone(alignedWithTail))
         // 成对括号：从中间切开会让每行括号都不配平
         val leftRight = "\\left( a + b + c + d + e + f + g + h + i + j + k + l \\right) = z"
         assertEquals(leftRight, wrapOnPhone(leftRight))
