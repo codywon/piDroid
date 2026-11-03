@@ -2,7 +2,34 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.80] - 2026-11-03
+## [1.8.81] - 2026-11-04
+
+### 🚀 全面对齐上游 pi-web 核心功能体系
+
+- **会话成果导出（Session Export）**：
+  - 接入 `GET /api/sessions/[id]/export`，支持一键生成自包含完整样式的独立离线 HTML 会话网页；
+  - 导出完成后自动唤起系统原生 Sharesheet，支持直接发送至微信、QQ、坚果云或在系统浏览器中离线查阅。
+- **列表卡片用量与费用（Context Usage & Cost）**：
+  - 按照方案 A（对标 pi-web `vl` 组件）在 `SessionCard` 第二行以紧凑内联行展示：`时间 · 🕒 耗时 · Token数 · 费用`；
+  - 接入 `POST /api/sessions/stats` 批量接口，等宽字体排布，严格遵循单行说明规范。
+- **压缩历史明细（Compaction Details）**：
+  - 完善 `CompactionRecord` 结构，解析 `type == "compaction"` 节点；
+  - 在 `TokenStatsHudDialog` 中展示历次压缩前后 Token 变化、节省百分比与模型生成的摘要预览。
+- **分支树状选择器（Branch Tree Navigator）**：
+  - 方案 A 官方直角拓扑树：1:1 复刻 pi-web `vn`/`vt` 组件，通过直角折线（`├─`、`└─`）绘制多叉树；
+  - 节点打上 `[U]`（用户提问）与 `[A]`（助手回答）徽标，连续单链折叠显示 `+N 轮`；
+  - 活跃路径发光高亮，点击任意非当前分支节点即可触发 `navigate_tree` 瞬间穿梭切换。
+- **文件预览自动刷新（File Watch via SSE）**：
+  - 接入 `GET /api/files/[...path]?type=watch` SSE 流监听；
+  - Agent 在后台运行 `edit`/`write` 修改代码时，手机端全屏文件查看器收到 `change` 事件加 200ms 防抖自动热刷新，无需手动点击。
+- **Git Worktrees 体系与跨检出同仓库聚合**：
+  - 接入 `GET/POST/DELETE /api/worktrees`，提供抽屉式管理看板，支持查看检出分支、一键切换、新建 Worktree 并开启新会话、安全移除检出（含 dirty 冲突确认）；
+  - `WorkspaceGrouping` 强制以 `session.projectKey` 为第一锚点，实现同一个 Git 仓库的不同 Worktrees 在列表自动聚合在同一个项目组下，并在会话卡片上渲染 `⑂ branch` 徽标。
+- **构建修复**：
+  - 补齐 `WorktreeManagementDialog` 中缺失的 `androidx.compose.foundation.background` 导入；
+  - 纯 JVM 单元测试覆盖树拓扑解析、多工作树跨路径聚合、统计解析、防抖防刷与导出命名。
+
+---
 
 ### 🩹 补齐 ArtifactViewer 中 LaunchedEffect 导入并修复 CI 单元测试
 

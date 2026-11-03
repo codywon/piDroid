@@ -43,6 +43,8 @@ import com.pi.app.data.storage.SessionExporter
 import com.pi.app.network.FileListParsing
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
+import com.pi.app.ui.session.WorktreeManagementDialog
+import com.pi.app.data.model.WorktreesResult
 import com.pi.app.ui.settings.GlobalSettingsScreen
 import com.pi.app.ui.updater.AppUpdateDialog
 import com.pi.app.ui.updater.UpdateUiState
@@ -377,6 +379,8 @@ class MainActivity : ComponentActivity() {
         var currentCompactionRecords by remember { mutableStateOf<List<CompactionRecord>>(emptyList()) }
         var currentBranchTreeNodes by remember { mutableStateOf<List<BranchTreeNode>>(emptyList()) }
         var currentActiveLeafId by remember { mutableStateOf<String?>(null) }
+        var activeWorktreesResult by remember { mutableStateOf<WorktreesResult?>(null) }
+        var isOperatingWorktree by remember { mutableStateOf(false) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
@@ -576,6 +580,21 @@ class MainActivity : ComponentActivity() {
                     }
                 }.onFailure { err ->
                     Toast.makeText(this@MainActivity, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
+        fun loadAndShowWorktrees(cwd: String) {
+            lifecycleScope.launch {
+                Toast.makeText(this@MainActivity, "正在检查 Worktree 状态…", Toast.LENGTH_SHORT).show()
+                apiClient.getWorktrees(cwd).onSuccess { res ->
+                    if (!res.isGit) {
+                        Toast.makeText(this@MainActivity, "该目录不是 Git 仓库", Toast.LENGTH_SHORT).show()
+                    } else {
+                        activeWorktreesResult = res
+                    }
+                }.onFailure { err ->
+                    Toast.makeText(this@MainActivity, "加载 Worktree 失败：${err.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -3715,6 +3734,9 @@ class MainActivity : ComponentActivity() {
                     onExportSession = { session ->
                         exportSessionToHtml(session.id, session.displayTitle)
                     },
+                    onManageWorktrees = { path ->
+                        loadAndShowWorktrees(path)
+                    },
                     onRefresh = { loadSessions() },
                     onSessionClick = { session ->
                         openSessionWithHistory(session)
@@ -3905,6 +3927,53 @@ class MainActivity : ComponentActivity() {
                 updateUiState = UpdateUiState.Idle
             }
         )
+
+        activeWorktreesResult?.let { wtResult ->
+            WorktreeManagementDialog(
+                worktreesResult = wtResult,
+                isOperating = isOperatingWorktree,
+                onSwitchWorktree = { wt ->
+                    activeWorktreesResult = null
+                    lastOpenedWorkspacePath = wt.path
+                    loadSessions()
+                    Toast.makeText(this@MainActivity, "已切换工作区到 ${wt.branch ?: wt.path}", Toast.LENGTH_SHORT).show()
+                },
+                onCreateWorktree = { branch ->
+                    val root = wtResult.projectRoot
+                    lifecycleScope.launch {
+                        isOperatingWorktree = true
+                        apiClient.createWorktree(root, branch).onSuccess { wt ->
+                            isOperatingWorktree = false
+                            activeWorktreesResult = null
+                            lastOpenedWorkspacePath = wt.path
+                            loadSessions()
+                            Toast.makeText(this@MainActivity, "已创建并检出分支 ${wt.branch}", Toast.LENGTH_SHORT).show()
+                        }.onFailure { err ->
+                            isOperatingWorktree = false
+                            Toast.makeText(this@MainActivity, "创建失败：${err.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                onDeleteWorktree = { wt, force ->
+                    val root = wtResult.projectRoot
+                    lifecycleScope.launch {
+                        isOperatingWorktree = true
+                        apiClient.deleteWorktree(root, wt.path, force).onSuccess {
+                            apiClient.getWorktrees(root).onSuccess { res ->
+                                activeWorktreesResult = res
+                            }
+                            isOperatingWorktree = false
+                            loadSessions(silent = true)
+                            Toast.makeText(this@MainActivity, "已移除该 Worktree 检出", Toast.LENGTH_SHORT).show()
+                        }.onFailure { err ->
+                            isOperatingWorktree = false
+                            Toast.makeText(this@MainActivity, "移除失败：${err.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                onDismiss = { activeWorktreesResult = null }
+            )
+        }
     }
 
     override fun onDestroy() {
