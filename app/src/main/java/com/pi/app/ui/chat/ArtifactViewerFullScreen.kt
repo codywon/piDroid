@@ -85,6 +85,7 @@ import com.pi.app.ui.files.CodeSyntaxHighlighter
 import com.pi.app.ui.files.OfficePreview
 import com.pi.app.ui.files.OfficeXmlPreview
 import com.pi.app.ui.theme.LocalAppTheme
+import kotlinx.coroutines.flow.Flow
 import java.io.File
 
 /**
@@ -141,8 +142,20 @@ internal fun ArtifactViewerFullScreen(
     onCopyText: (String) -> Unit,
     onAtMention: ((String) -> Unit)? = null,
     onDownloadFile: ((String) -> Unit)? = null,
+    onWatchFileChanges: ((String) -> Flow<Unit>)? = null,
 ) {
     val theme = LocalAppTheme.current
+
+    // 自动刷新：对标 pi-web GET /api/files/[...path]?type=watch
+    val watchFlow = remember(path) {
+        path?.takeIf { it.isNotBlank() }?.let { onWatchFileChanges?.invoke(it) }
+    }
+    LaunchedEffect(watchFlow) {
+        watchFlow?.collect {
+            kotlinx.coroutines.delay(200L)
+            onReload()
+        }
+    }
 
     // 沉浸态（隐藏顶栏）用 rememberSaveable：转屏后仍保持用户选的阅读模式
     var chromeVisible by rememberSaveable { mutableStateOf(true) }

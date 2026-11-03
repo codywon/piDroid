@@ -2,6 +2,19 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.79] - 2026-11-03
+
+### 🩹 修复工作区选区记忆与测试断言对齐
+
+- **选区记忆与兜底治理**：
+  - `AppPreferences` 增加 `lastSelectedWorkspacePath`，抽屉切换、置顶专区、长按新建会话、新建远程目录统一持久化并规范化；
+  - `SessionListScreen` 改用 `rememberSaveable` 并在冷启动时走 `resolveInitialWorkspaceSelection` 安全回退到真实视觉排序第一项，彻底解决冷启动回退到 `termius` 的缺陷。
+- **单元测试回归修复**：
+  - 修正 `SessionExporterTest` 对清洗文件名的断言，保留合法字符并对齐首尾 trim 规则；
+  - 补充 `FileWatchDebounceTest` 与 `CompactionRecordParsingTest`。
+
+---
+
 ## [1.8.78] - 2026-11-03
 
 ### 📜 聊天滚动对齐 pi-web：贴底才跟随、长落差直接跳、首屏定位不再半路停

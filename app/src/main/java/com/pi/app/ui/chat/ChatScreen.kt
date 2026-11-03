@@ -167,6 +167,7 @@ fun ChatScreen(
     isLoadingSessionHistory: Boolean = false,
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
     queuedMessages: List<QueuedMessage> = emptyList(),
+    compactionRecords: List<com.pi.app.data.model.CompactionRecord> = emptyList(),
     isCompacting: Boolean = false,
     isPinned: Boolean = false,
     onBack: () -> Unit,
@@ -214,6 +215,7 @@ fun ChatScreen(
     /** 媒体播放源：URL + 鉴权头（MediaPlayer / VideoView 自己发请求） */
     onResolveFileSource: (String) -> FilePlaybackSource? = { null },
     onLoadFileBytes: suspend (String) -> Result<ByteArray> = { Result.failure(Exception("未接入")) },
+    onWatchFileChanges: ((String) -> kotlinx.coroutines.flow.Flow<Unit>)? = null,
     /** 读取工作目录的 git 变更（GET /api/git/status?cwd=） */
     onLoadGitStatus: suspend () -> Result<GitStatusResult> = { Result.success(GitStatusResult()) },
     /** 读取单个文件的 diff（GET /api/git/diff?cwd=&path=） */
@@ -2666,6 +2668,7 @@ fun ChatScreen(
             onLoadMore = { loadMoreArtifact() },
             onOpenExternal = { openArtifactExternally() },
             onReload = { artifactPath?.let { openFilePreview(it) } },
+            onWatchFileChanges = onWatchFileChanges,
             onOpenLink = { href, baseDir -> openLinkTarget(href, baseDir) },
             onCopyText = { value ->
                 clipboardManager.setText(AnnotatedString(value))
@@ -2715,6 +2718,7 @@ fun ChatScreen(
     if (showHudDialog) {
         TokenStatsHudDialog(
             stats = tokenStats,
+            compactionRecords = compactionRecords,
             onCompactClick = {
                 showHudDialog = false
                 onCompactContext()

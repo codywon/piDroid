@@ -33,6 +33,9 @@ import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 
 data class SessionHistoryData(
     val messages: List<ChatItem>,
@@ -54,14 +57,10 @@ data class SessionHistoryData(
     val toolNames: List<String>? = null,
     /**
      * 这份快照的 `context` 窗口**没有走到服务端自称的 leaf**（分支滞后）。
-     *
-     * 成因见 pi-web `app/api/sessions/[id]/route.ts` 的注释：另一个进程也在写同一个 jsonl 时，
-     * 进程内 live wrapper 的内存 leaf 会落后于磁盘，于是同一个响应里 `stats`（覆盖全部 entry）
-     * 是新的、`context`（按 leaf 往回走）是旧的。App 以前对此无感知：
-     * 只把这条滞后快照当权威，`reconcileList` 又把本地已经更新的尾部当“过期分支”截掉 ——
-     * 界面上就永远停在几分钟前的那一步。
      */
-    val branchLagged: Boolean = false
+    val branchLagged: Boolean = false,
+    val compactionRecords: List<CompactionRecord> = emptyList(),
+    val branchTreeNodes: List<BranchTreeNode> = emptyList()
 )
 
 /**
@@ -672,6 +671,11 @@ class PiApiClient(private val prefs: AppPreferences) {
         } else 0
         val serverTurnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0
 
+        val compactions = extractCompactionRecords(json, ctxObj)
+        val treeNodes = BranchTreeTopology.parseTreeJson(
+            json.get("tree")?.takeIf { it.isJsonArray }?.asJsonArray
+        )
+
         return SessionHistoryData(
             messages = chatItems,
             provider = currentProvider,
@@ -685,8 +689,32 @@ class PiApiClient(private val prefs: AppPreferences) {
             turnsBefore = if (droppedEntryCount > 0) maxOf(droppedTurns, serverTurnsBefore) else serverTurnsBefore,
             leafId = leafId,
             toolNames = readPinnedToolNames(json),
-            branchLagged = branchLagged
+            branchLagged = branchLagged,
+            compactionRecords = compactions,
+            branchTreeNodes = treeNodes
         )
+    }
+
+    private fun extractCompactionRecords(json: JsonObject, ctxObj: JsonObject?): List<CompactionRecord> {
+        val records = mutableListOf<CompactionRecord>()
+        val entriesArr = json.get("entries")?.takeIf { it.isJsonArray }?.asJsonArray
+            ?: ctxObj?.get("entries")?.takeIf { it.isJsonArray }?.asJsonArray
+        if (entriesArr != null) {
+            for (el in entriesArr) {
+                val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString
+                if (type == "compaction" || type == "compactionSummary") {
+                    val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val summary = obj.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val ts = parseFlexibleTimestamp(obj.get("timestamp"))
+                    val tokensBefore = obj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    val tokensAfter = obj.get("tokensAfter")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    val cost = obj.get("cost")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                    records.add(CompactionRecord(id, ts, summary, tokensBefore, tokensAfter, cost))
+                }
+            }
+        }
+        return records
     }
 
     /**
@@ -5839,4 +5867,59 @@ data class CatalogPreset(
         }
     }
 
+    /**
+     * 监听远端文件变更事件（GET /api/files/[...path]?type=watch 的 SSE 长连接）。
+     */
+    fun watchFileChanges(absPath: String): Flow<Unit> = callbackFlow {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || absPath.isBlank()) {
+            close()
+            return@callbackFlow
+        }
+        val encodedPath = absPath.replace('\\', '/').split('/').filter { it.isNotBlank() }
+            .joinToString("/") { URLEncoder.encode(it, "UTF-8") }
+        val url = "$baseUrl/api/files/$encodedPath?type=watch"
+        val req = Request.Builder()
+            .url(url)
+            .header("Accept", "text/event-stream")
+            .header("Cache-Control", "no-cache")
+            .build()
+
+        val call = client.newCall(req)
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                close(e)
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (!response.isSuccessful) {
+                    close(IOException("Watch file failed (${response.code})"))
+                    return
+                }
+                val body = response.body
+                if (body == null) {
+                    close(IOException("Response body is null"))
+                    return
+                }
+                try {
+                    val reader = body.byteStream().bufferedReader(Charsets.UTF_8)
+                    var line: String?
+                    while (reader.readLine().also { line = it } != null) {
+                        val currentLine = line ?: break
+                        if (currentLine.startsWith("event: change") || currentLine.startsWith("data: {\"mtime\"")) {
+                            trySend(Unit)
+                        }
+                    }
+                } catch (e: Exception) {
+                    // 正常流断开
+                } finally {
+                    close()
+                }
+            }
+        })
+
+        awaitClose {
+            call.cancel()
+        }
+    }
 }

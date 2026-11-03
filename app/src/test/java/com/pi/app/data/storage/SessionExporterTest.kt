@@ -12,7 +12,7 @@ class SessionExporterTest {
             sessionId = "7d8a9f1234567890",
             title = "Fix: models/cache & refactor?"
         )
-        assertEquals("pi-session-Fix_-models_cache-refactor_.html", fileName)
+        assertEquals("pi-session-Fix_-models_cache-&-refactor.html", fileName)
     }
 
     @Test

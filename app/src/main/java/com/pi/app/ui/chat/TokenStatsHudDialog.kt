@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.pi.app.data.model.CompactionRecord
 import com.pi.app.data.model.TokenStats
 import com.pi.app.ui.components.InfoTitle
 import com.pi.app.ui.theme.*
@@ -19,6 +20,7 @@ import com.pi.app.ui.theme.*
 @Composable
 fun TokenStatsHudDialog(
     stats: TokenStats,
+    compactionRecords: List<CompactionRecord> = emptyList(),
     onCompactClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -175,6 +177,39 @@ fun TokenStatsHudDialog(
                         fontFamily = FontFamily.Monospace,
                         color = theme.textPrimary
                     )
+                }
+
+                // 5. 压缩历史明细
+                if (compactionRecords.isNotEmpty()) {
+                    HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "压缩历史 (${compactionRecords.size} 次)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = theme.textPrimary
+                        )
+                        compactionRecords.take(3).forEachIndexed { idx, record ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "第 ${idx + 1} 轮压缩",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = theme.textSecondary
+                                )
+                                Text(
+                                    text = "-${TokenStats.formatTokenStandard(record.tokensSaved)} (${record.savingsPercent}%)",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontWeight = FontWeight.Bold,
+                                    color = theme.success
+                                )
+                            }
+                        }
+                    }
                 }
             }
         },

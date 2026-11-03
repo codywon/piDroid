@@ -374,6 +374,7 @@ class MainActivity : ComponentActivity() {
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
         var sessionStatsMap by remember { mutableStateOf<Map<String, SessionStatsSummary>>(emptyMap()) }
+        var currentCompactionRecords by remember { mutableStateOf<List<CompactionRecord>>(emptyList()) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
@@ -1153,6 +1154,7 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
+                currentCompactionRecords = hist.compactionRecords
                 // 快照是否**缺了本地已有的已落盘条目**（本地跑到快照前面去了）：
                 // 这种快照不能当“权威删除依据”，否则界面会永久停在几分钟前的那一步
                 // （“PC 一直在跑，手机不再往后长”）。
@@ -2704,6 +2706,7 @@ class MainActivity : ComponentActivity() {
                     isLoadingSessionHistory = isLoadingSessionHistory,
                     sseState = sseConnectionState,
                     queuedMessages = queuedMessages,
+                    compactionRecords = currentCompactionRecords,
                     isCompacting = compactionState.isCompacting(activeSessionId),
                     isPinned = isPinned,
                     mediaGatewayConfig = com.pi.app.ui.components.MediaGatewayConfig(
@@ -2751,6 +2754,7 @@ class MainActivity : ComponentActivity() {
                         isAutoRetrying = false
                         isToolExecuting = false
                         isLoadingSessionHistory = false
+                        currentCompactionRecords = emptyList()
                         agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
@@ -2879,6 +2883,7 @@ class MainActivity : ComponentActivity() {
                         if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
                     },
                     onLoadFileBytes = { path -> apiClient.getFileBytes(path, sessionId = activeSessionId) },
+                    onWatchFileChanges = { path -> apiClient.watchFileChanges(path) },
                     onLoadGitStatus = {
                         val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
                             ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }
