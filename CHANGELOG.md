@@ -2,7 +2,7 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.82] - 2026-11-04
+## [1.8.83] - 2026-11-04
 
 ### 🩹 修复会话切换/新建会话时的分支拓扑与压缩历史状态泄露
 
