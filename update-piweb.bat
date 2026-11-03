@@ -1,31 +1,17 @@
 @echo off
+rem Upgrade @agegr/pi-web in place: stop the stack, install, start it again.
+rem
+rem Do NOT run this from a terminal that pi-web opened (an agent session): the
+rem script stops the whole tree, so it would kill its own parent mid-run.
+rem Double-click it from Explorer, or run it from a standalone console.
+rem
+rem Why a wrapper: the real work (process-tree stop, folder-unlock probe,
+rem install retries, restart, port wait) lives in upgrade-piweb.ps1.
+rem NOTE: ASCII-only on purpose, same rule as server\start-hidden.cmd.
+
+setlocal
+cd /d "%~dp0"
 chcp 65001 >nul
-title 升级 pi-web 到最新版
-echo ======================================================
-echo    正在准备升级 @agegr/pi-web 到最新版本...
-echo ======================================================
-cd /d %~dp0
-
-echo 1. 正在停止当前运行中的 pi-web...
-call pi-web stop
-timeout /t 2 /nobreak >nul
-
-echo 2. 正在执行 npm 全局升级安装...
-call npm install -g @agegr/pi-web@latest
-
-if %errorlevel%==0 (
-    echo.
-    echo ======================================================
-    echo [OK] pi-web 升级成功！当前版本：
-    call pi-web --version
-    echo ======================================================
-    echo.
-    echo 正在重新启动 pi-web...
-    timeout /t 1 /nobreak >nul
-    call "D:\myscript\pi-app\start-piweb.bat"
-) else (
-    echo.
-    echo [ERROR] 升级失败，错误代码：%errorlevel%
-    echo 请检查是否有其他进程占用，或稍后重试。
-    pause
-)
+title Upgrade @agegr/pi-web
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0upgrade-piweb.ps1"
+exit /b %ERRORLEVEL%
