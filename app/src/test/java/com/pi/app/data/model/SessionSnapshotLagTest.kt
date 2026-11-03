@@ -49,6 +49,20 @@ class SessionSnapshotLagTest {
     }
 
     @Test
+    fun `本地只有未落盘在途项时不进入追加模式`() {
+        val local = listOf(
+            item("l1", MessageRole.AGENT, "第一步", entryId = "e1", timestamp = 1_000L),
+            item("l2", MessageRole.TOOL, "", entryId = null, timestamp = 2_000L)
+        )
+        val synced = listOf(
+            item("s1", MessageRole.AGENT, "第一步", entryId = "e1", timestamp = 1_000L)
+        )
+        // SSE 在途项（无 entryId）不算“本地跑到快照前面”，否则一旦服务端 leaf 与末条长期不相等
+        // （例如分支最后一条是不产出消息的 model_change），界面会永久留在只追加模式
+        assertFalse(SessionSnapshotMerge.isSnapshotOlderThanLocal(local, synced))
+    }
+
+    @Test
     fun `滞后快照不得删掉本地已落盘的更新内容`() {
         val local = listOf(
             item("l1", MessageRole.AGENT, "第一步", entryId = "e1", timestamp = 1_000L),

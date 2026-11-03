@@ -316,6 +316,8 @@ class MainActivity : ComponentActivity() {
         var sessionFetchInFlight by remember { mutableStateOf(false) }
         // 会话同步失败提示的节流时间戳（避免每轮巡检都弹一次）
         var lastHistorySyncErrorAt by remember { mutableStateOf(0L) }
+        // 「快照滞后」日志的节流时间戳：滞后会持续存在，不节流就是每轮巡检一条 W 日志
+        var lastStaleSnapshotLogAt by remember { mutableStateOf(0L) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
         var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
@@ -1122,14 +1124,13 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
-                // 快照是否落后于本机已看到的尾部：分支 leaf 滞后（stats 新、context 旧）
-                // 或尾部时间戳比本地还早。两种情况都不能拿快照当“权威删除依据”，
-                // 否则界面会永久停在几分钟前的那一步（“PC 一直在跑，手机不再往后长”）。
-                // 注意：这里用 hist.messages 判定（与 synced 仅差 isStreaming 标记，不影响时间戳/entryId），
+                // 快照是否**缺了本地已有的已落盘条目**（本地跑到快照前面去了）：
+                // 这种快照不能当“权威删除依据”，否则界面会永久停在几分钟前的那一步
+                // （“PC 一直在跑，手机不再往后长”）。
+                // 注意：用 hist.messages 判定（与 synced 仅差 isStreaming 标记，不影响 entryId），
                 // 因为翻页游标那段在本块之外也要用同一个结论。
-                val snapshotStale = !replaceHistory && (
-                    hist.branchLagged || SessionSnapshotMerge.isSnapshotOlderThanLocal(messages, hist.messages)
-                    )
+                val snapshotStale = !replaceHistory &&
+                    SessionSnapshotMerge.isSnapshotOlderThanLocal(messages, hist.messages)
 
                 if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
@@ -1157,10 +1158,14 @@ class MainActivity : ComponentActivity() {
                         // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动；
                         // 3) 快照落后时只往前长、不回滚（见上面的 snapshotStale）。
                         if (snapshotStale) {
-                            android.util.Log.w(
-                                "PiSync",
-                                "stale snapshot for $sessionId (leaf lag=${hist.branchLagged}) → append-only reconcile"
-                            )
+                            val now = System.currentTimeMillis()
+                            if (now - lastStaleSnapshotLogAt > 60_000L) {
+                                lastStaleSnapshotLogAt = now
+                                android.util.Log.w(
+                                    "PiSync",
+                                    "stale snapshot for $sessionId (server leaf lag=${hist.branchLagged}) → append-only reconcile"
+                                )
+                            }
                         }
                         val reconciled = SessionSnapshotMerge.reconcileList(
                             messages,

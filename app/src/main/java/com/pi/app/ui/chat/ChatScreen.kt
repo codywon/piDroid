@@ -993,8 +993,13 @@ fun ChatScreen(
     var userJumpedToHistory by rememberSaveable(sessionId) { mutableStateOf(false) }
     var hasInitialScrolled by rememberSaveable(sessionId) { mutableStateOf(false) }
 
-    // 顶部哨兵行：有更早历史时是加载提示行，否则是「起点」分隔线（都只占一行）
-    val showTopSentinel = hasEarlierOnServer || isLoadingOlder || conversation.size > 6
+    // 顶部哨兵行：有更早历史时是加载提示行，否则是「起点」分隔线（都只占一行）。
+    //
+    // 两个条件必须分两层写：`showHistoryTopLoader` 决定**真的渲染哪一行**，
+    // `showTopSentinel` 只比它多一种「起点分隔线」的情形。二者若各写一套，
+    // turnStartRowIndex() 的行号就会和实际渲染错开一行，时轴跳转/视口锚定会偏。
+    val showHistoryTopLoader = hasEarlierOnServer || isLoadingOlder || earlierTurnCount > 0
+    val showTopSentinel = showHistoryTopLoader || conversation.size > 6
     val leadingRowCount = allTurns.firstOrNull()?.userIndex ?: conversation.size
 
     // 一个回合不是一行：还可能有「过程折叠组」、「生成式 UI 微组件」与「最终答复」
@@ -2187,7 +2192,7 @@ fun ChatScreen(
                 ) {
                     // 顶部加载哨兵：只占一行。触顶即自动向 PC 续批，加载中显示一枚细圆圈
                     // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，已按大厂 App 惯例移除）
-                    if (hasEarlierOnServer || isLoadingOlder || earlierTurnCount > 0) {
+                    if (showHistoryTopLoader) {
                         item(key = "history_top_loader") {
                             HistoryTopLoader(
                                 isLoading = isLoadingOlder,

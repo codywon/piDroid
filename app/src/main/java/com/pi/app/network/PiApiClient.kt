@@ -122,8 +122,21 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** 大文件传输的重试次数（首次 + 1 次重试）。见 [getFileBytes]。 */
         private const val FILE_TRANSFER_ATTEMPTS = 2
+
+        /** 「补 force=1 也修不好」的滞后会话冷却时长（见 [lagRetryCooldownUntil]）。 */
+        private const val LAG_RETRY_COOLDOWN_MS = 5 * 60_000L
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
+
+    /**
+     * 「补过 `force=1` 也修不好」的会话 → 冷却截止时刻。
+     *
+     * 为什么需要：leaf 与 context 末条对不上有两种成因 —— 真的滞后（补 force 可解）与
+     * 天然不相等（整条分支最新 entry 是不产出消息的 model_change / thinking_level_change，
+     * 或 pi-web 那边卡在滞后状态本回合都修不好）。后两种情况下每次对账都双请求 + 一条 W 日志，
+     * 在跑的会话 3~10s 一轮就是持续的无效流量与日志噪音。命中一次仍修不好就冷却一段时间。
+     */
+    private val lagRetryCooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /**
      * 模型目录（models.json + 内置注册表）里各模型的真实 contextWindow，键为 `provider:modelId` 小写。
@@ -690,9 +703,17 @@ class PiApiClient(private val prefs: AppPreferences) {
                     continue
                 }
                 val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
-                if (historyData.branchLagged && !force) {
-                    Log.w("PiSync", "snapshot branch lagged for $sessionId → retry with force=1")
-                    continue
+                if (historyData.branchLagged) {
+                    if (!force && !isLagRetryCoolingDown(sessionId)) {
+                        Log.w("PiSync", "snapshot branch lagged for $sessionId → retry with force=1")
+                        continue
+                    }
+                    if (force) {
+                        // force=1 也修不好：这轮不再徒劳重试，冷却一段时间。
+                        lagRetryCooldownUntil[sessionId] = System.currentTimeMillis() + LAG_RETRY_COOLDOWN_MS
+                    }
+                } else {
+                    lagRetryCooldownUntil.remove(sessionId)
                 }
                 sessionHistoryCache[sessionId] = historyData
                 persistSessionSnapshot(sessionId, payload.body)
@@ -702,6 +723,16 @@ class PiApiClient(private val prefs: AppPreferences) {
         } catch (e: Exception) {
             Result.failure(e)
         }
+    }
+
+    /** 该会话是否处于「补 force 也没用」的冷却期（见 [lagRetryCooldownUntil]）。 */
+    private fun isLagRetryCoolingDown(sessionId: String): Boolean {
+        val until = lagRetryCooldownUntil[sessionId] ?: return false
+        if (System.currentTimeMillis() >= until) {
+            lagRetryCooldownUntil.remove(sessionId)
+            return false
+        }
+        return true
     }
 
     // ── 会话快照磁盘缓存：再次打开会话时先回放上次的正文，不必等网络 ──

@@ -2,6 +2,18 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.71] - 2026-11-03
+
+### 🧹 1.8.70 的代码审查修正（执行过程同步链）
+
+- **修正「快照落后」的判定口径（重要）**：1.8.70 把「响应 `leafId` ≠ `context` 末条 `entryId`」也当成了“快照落后”而进入只追加模式。当分支最后一条恰好是不产出消息的 `model_change` / `thinking_level_change` 时，这个条件会**恒成立**，界面就永久停在只追加：服务端后续的正文修正再也同步不回来。现在只追加的判定只问一个结构问题：**本地是否存在快照里没有的 `entryId`**（在途 SSE 条目不计数），`branchLagged` 只用于决定要不要补一次 `force=1`；
+- **`force=1` 不再无限重试**：命中后补一次仍修不好（真滞后且服务端修不回来、或上述天然不相等）时，该会话冷却 5 分钟不再双请求，也把 W 日志压到一次，避免在跑的会话每 3~10s 双请求 + 一条日志；
+- **修正顶部哨兵行号错位**：`HistoryTopLoader` 的渲染条件（`hasMore` | 加载中 | `turnsBefore > 0`）与用于时间轴/视口错定的 `showTopSentinel` 各写了一套，在某些组合下会错开一行，导致时间轴跳转/翻页锜点偏一行。现在由同一个 `showHistoryTopLoader` 两层派生；
+- **日志节流**：`PiSync: stale snapshot …` 从每轮对账一条改为同一小时内最多一条；
+- **文档**：修正 CHANGELOG 1.8.70 里的错字（点目 → 条目）；新增用例「本地只有未落盘在途项时不进入追加模式」固定上述判定口径。
+
+---
+
 ## [1.8.70] - 2026-11-03
 
 ### 🔍 修复「PC 上几十上百次工具调用，手机上只同步到中途某一步」（执行过程不同步）
@@ -10,10 +22,10 @@ All notable changes to the πDroid application will be documented in this file.
 - **根因（四条，全部实现在数据层）**：
   1. **响应里的 `tree` 是嵌套数组**（pi-web 0.13 起为 `[{entry, children}]`，带 `treeFormat` 标记），旧解析只认 `entries` / `tree.entries` / `messages` 三种平铺形状，嵌套树直接落空 —— `entries` 分支形同死码，App 永远只能拿到 `context.messages` 那一小段上下文窗口（本例实测：会话 1097 条消息 / 548 次工具调用，窗口只给 117 条）。现统一拍平三种形状（摘要树不带 `message` 正文时自动回落，绝不伪造内容）；
   2. **服务端快照会「半边新半边旧」**：`stats`（覆盖全部 entry）是新的，`context`（按 leaf 往回走）是旧的 —— 成因是 pi-web 的 live wrapper 在外部进程写同一个 jsonl 时内存 leaf 滞后于磁盘，它自己的前端靠 `?force=1`（`evictIfDiskAhead()`）规避，App 从来没带过。现在解析时用「响应 `leafId` vs `context` 末条 `entryId`」检测滞后，命中就补一次 `force=1`；
-  3. **对账会把本地更新的尾部截掉**：以前无条件以快照为权威，本地「已落盘但快照里没有」的点目被当成过期分支删除，再加上 `while (messages.size > reconciled.size) removeAt(lastIndex)` 直接截尾 —— 于是正文只能往回退。现在检测到快照落后时改为**只往前长、不回滚**（保留本地已落盘条目、已匹配条目保留更完整的正文，翻页游标也不被旧快照覆盖）；
+  3. **对账会把本地更新的尾部截掉**：以前无条件以快照为权威，本地「已落盘但快照里没有」的**条目**被当成过期分支删除，再加上 `while (messages.size > reconciled.size) removeAt(lastIndex)` 直接截尾 —— 于是正文只能往回退。现在检测到快照落后时改为**只往前长、不回滚**（保留本地已落盘条目、已匹配条目保留更完整的正文，翻页游标也不被旧快照覆盖）；
   4. **过程组窗口太窄 + 续批判定单一**：过程折叠组原来只渲染最近 40 条（pi-web 的 `ProcessDetailsGroup` 展开是全量的），现在提到 200 条（仍保留「显示更早的 N 条过程」兜底）；上滑自动续批同时看 `hasMore` 与「未加载回合数」，任一存在就继续翻，不再因为某一次快照把 `hasMore` 报成 false 就永久停手。
 - **顺带修正**：条目树切窗改为按 pi 的 `tail` 语义（只数 user/assistant/压缩里程碑，不数 toolResult），并保证窗口不比 context 窗口更短；翻页游标改为跟着**实际渲染窗口的第一条**走，避免丢页/重复。
-- **验证**：新增 17 个纯 JVM 用例（`SessionBranchWindowTest` 共 11 条：嵌套树拍平、可见消息预算、leaf 滞后判定；`SessionSnapshotLagTest` 共 6 条：滞后快照不截尾、不回滚正文、乐观提问仍保留、快照追上后恢复以服务端为准），并更新 `ProcessWindowPolicyTest` 期望值。
+- **验证**：新增 18 个纯 JVM 用例（`SessionBranchWindowTest` 共 11 条：嵌套树拍平、可见消息预算、leaf 滞后判定；`SessionSnapshotLagTest` 共 7 条：滞后快照不截尾、不回滚正文、乐观提问仍保留、在途项不触发追加模式、快照追上后恢复以服务端为准），并更新 `ProcessWindowPolicyTest` 期望值。
 
 ---
 

@@ -130,25 +130,25 @@ object SessionSnapshotMerge {
     }
 
     /**
-     * 服务端快照是否比本地列表**更旧**（快照只是本地已展示内容的**前缀**）。
+     * 服务端快照是否**缺了本地已有的已落盘条目**（即：本地跑到快照前面去了）。
      *
      * 为什么需要这条判定：pi-web 的 live wrapper 在外部进程写同一个 jsonl 时，内存 leaf 会落后于磁盘，
      * 同一个响应里 `stats` 是新的、`context` 是旧的（分支滞后）；磁盘快照回放 + 后续网络快照
      * 也可能出现同样的“新本地 + 旧快照”组合。
      *
-     * 判定方式故意**不依赖时间戳**：历史条目的时间戳缺失时解析器会兜底成 `now`，
-     * 而 `mergeItem` 又会保留本地时间戳，一比就会永久误判成“滞后”。
-     * 这里改用 entryId 的前缀关系：快照最新一条已落盘条目在本地出现、且本地它后面还有已落盘条目
-     * → 快照就是本地的前缀，比本地旧。
+     * 判定方式故意**不依赖时间戳**（历史条目时间戳缺失时解析器会兜底成 `now`，恒比服务端新，
+     * 一比就永久误判），也不用「leaf 与末条不相等」这种启发式（整条分支最后一条是不产出消息的
+     * `model_change` / `thinking_level_change` 时恒不相等，会把界面永久钉在“只追加”模式）。
+     * 这里只问一个结构问题：本地存在快照里没有的 entryId 吗？
      */
     fun isSnapshotOlderThanLocal(local: List<ChatItem>, synced: List<ChatItem>): Boolean {
-        val localEntryIds = local.mapNotNull { it.entryId?.takeIf { id -> id.isNotBlank() } }
-        val syncedNewestId = synced.asReversed()
-            .firstNotNullOfOrNull { it.entryId?.takeIf { id -> id.isNotBlank() } }
-            ?: return false
-        val idxInLocal = localEntryIds.indexOf(syncedNewestId)
-        if (idxInLocal < 0) return false
-        return idxInLocal < localEntryIds.lastIndex
+        val syncedEntryIds = synced.mapNotNullTo(HashSet()) { it.entryId?.takeIf { id -> id.isNotBlank() } }
+        // 快照为空 = “还不知道”，不能当作“比本地旧”；该情形由 reconcileList 的空快照分支处理。
+        if (syncedEntryIds.isEmpty()) return false
+        return local.any { item ->
+            val id = item.entryId
+            !id.isNullOrBlank() && id !in syncedEntryIds
+        }
     }
 
     /**
