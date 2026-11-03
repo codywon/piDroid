@@ -2,6 +2,16 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.84] - 2026-11-04
+
+### 🛡️ 代码质量与稳定性加固（Code Review 跟进）
+
+- **文件监听异常防护**：在 `watchFileChanges` 流传递给文件预览层时加入 `.catch {}` 错误守护，防止远端 SSE 长连接中断或网络异常导致 Flow 消费端未捕获崩溃；
+- **Worktree 选区持久化一致性**：在切换及创建 Worktree 时同步落盘至 `lastSelectedWorkspacePath` 与 `lastSelectedCwd`，确保冷启动行为与抽屉选区保持一致；
+- **删除 Worktree 安全回落**：当移除的检出分支恰好为当前选区时，自动回退到项目主目录；转译脏工作树错误为友好中文提示。
+
+---
+
 ## [1.8.83] - 2026-11-04
 
 ### 🩹 修复会话切换/新建会话时的分支拓扑与压缩历史状态泄露

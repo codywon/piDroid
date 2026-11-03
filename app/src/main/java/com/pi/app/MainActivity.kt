@@ -17,6 +17,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.flow.catch
 import com.pi.app.data.model.*
 import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
@@ -566,6 +567,7 @@ class MainActivity : ComponentActivity() {
         }
 
         fun exportSessionToHtml(sid: String, title: String?) {
+            if (sid.isBlank()) return
             lifecycleScope.launch {
                 Toast.makeText(this@MainActivity, "正在生成独立 HTML 会话文件…", Toast.LENGTH_SHORT).show()
                 val fileName = SessionExporter.exportFileName(sid, title)
@@ -2929,7 +2931,10 @@ class MainActivity : ComponentActivity() {
                         if (url.isBlank()) null else FilePlaybackSource(url, apiClient.authHeaders())
                     },
                     onLoadFileBytes = { path -> apiClient.getFileBytes(path, sessionId = activeSessionId) },
-                    onWatchFileChanges = { path -> apiClient.watchFileChanges(path) },
+                    onWatchFileChanges = { path ->
+                        apiClient.watchFileChanges(path)
+                            .catch { /* 监听失败或网络断开时静默降级为手动刷新，绝不崩溃 */ }
+                    },
                     onLoadGitStatus = {
                         val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
                             ?: currentSession?.projectRoot?.takeIf { it.isNotBlank() }
@@ -3943,6 +3948,8 @@ class MainActivity : ComponentActivity() {
                 onSwitchWorktree = { wt ->
                     activeWorktreesResult = null
                     lastOpenedWorkspacePath = wt.path
+                    prefs.lastSelectedWorkspacePath = wt.path
+                    prefs.lastSelectedCwd = wt.path
                     loadSessions()
                     Toast.makeText(this@MainActivity, "已切换工作区到 ${wt.branch ?: wt.path}", Toast.LENGTH_SHORT).show()
                 },
@@ -3954,6 +3961,8 @@ class MainActivity : ComponentActivity() {
                             isOperatingWorktree = false
                             activeWorktreesResult = null
                             lastOpenedWorkspacePath = wt.path
+                            prefs.lastSelectedWorkspacePath = wt.path
+                            prefs.lastSelectedCwd = wt.path
                             loadSessions()
                             Toast.makeText(this@MainActivity, "已创建并检出分支 ${wt.branch}", Toast.LENGTH_SHORT).show()
                         }.onFailure { err ->
@@ -3967,6 +3976,11 @@ class MainActivity : ComponentActivity() {
                     lifecycleScope.launch {
                         isOperatingWorktree = true
                         apiClient.deleteWorktree(root, wt.path, force).onSuccess {
+                            if (WorkspacePaths.samePath(lastOpenedWorkspacePath, wt.path)) {
+                                lastOpenedWorkspacePath = root
+                                prefs.lastSelectedWorkspacePath = root
+                                prefs.lastSelectedCwd = root
+                            }
                             apiClient.getWorktrees(root).onSuccess { res ->
                                 activeWorktreesResult = res
                             }
@@ -3975,7 +3989,12 @@ class MainActivity : ComponentActivity() {
                             Toast.makeText(this@MainActivity, "已移除该 Worktree 检出", Toast.LENGTH_SHORT).show()
                         }.onFailure { err ->
                             isOperatingWorktree = false
-                            Toast.makeText(this@MainActivity, "移除失败：${err.message}", Toast.LENGTH_LONG).show()
+                            val userMsg = if (err.message?.startsWith("WORKTREE_DIRTY:") == true) {
+                                "本地存在未提交改动，请在弹窗中选择强制清理"
+                            } else {
+                                "移除失败：${err.message}"
+                            }
+                            Toast.makeText(this@MainActivity, userMsg, Toast.LENGTH_LONG).show()
                         }
                     }
                 },
