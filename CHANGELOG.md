@@ -4,6 +4,16 @@ All notable changes to the πDroid application will be documented in this file.
 
 ## [1.8.82] - 2026-11-04
 
+### 🩹 修复会话切换/新建会话时的分支拓扑与压缩历史状态泄露
+
+- **会话状态隔离**：在 `openSessionWithHistory` 与 `onNewSessionClick` 流程中显式清空 `currentBranchTreeNodes`、`currentActiveLeafId` 与 `currentCompactionRecords`，彻底杜绝跨会话状态残留与顶栏误展示分支入口；
+- **并发与竞态保护**：在 `onNavigateToEntry` 回调中加入当前活跃会话校验，避免切换分支期间退出页面导致的跨会话更新；
+- **UI 渲染**：修复 `WorktreeManagementDialog` 中当前分支指示圆点的 Compose 语法与重载。
+
+---
+
+## [1.8.82] - 2026-11-04
+
 ### 🚀 全面对齐上游 pi-web 核心功能体系
 
 - **会话成果导出（Session Export）**：
