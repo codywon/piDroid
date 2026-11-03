@@ -696,7 +696,9 @@ class MainActivity : ComponentActivity() {
          */
         fun loadOlderHistory(silent: Boolean = false) {
             val sid = currentSession?.id ?: return
-            if (isLoadingOlder || !hasEarlierOnServer) return
+            // “还有更早”的两个来源：服务端 hasMore 标志与它统计的未加载回合数。
+            // 只看前者时，只要一次快照把 hasMore 报成 false，上滑续批就永久停手。
+            if (isLoadingOlder || (!hasEarlierOnServer && earlierTurnCount <= 0)) return
             val cursor = olderCursor
             if (cursor.isNullOrBlank()) return
             isLoadingOlder = true
@@ -759,7 +761,7 @@ class MainActivity : ComponentActivity() {
                     repeat(4) {
                         if (currentSession?.id != sessionId) return@launch
                         if (satisfied()) return@launch
-                        if (!hasEarlierOnServer) return@launch
+                        if (!hasEarlierOnServer && earlierTurnCount <= 0) return@launch
                         val before = olderMessages.size
                         loadOlderHistory(silent = true)
                         var waited = 0
@@ -1120,6 +1122,15 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
+                // 快照是否落后于本机已看到的尾部：分支 leaf 滞后（stats 新、context 旧）
+                // 或尾部时间戳比本地还早。两种情况都不能拿快照当“权威删除依据”，
+                // 否则界面会永久停在几分钟前的那一步（“PC 一直在跑，手机不再往后长”）。
+                // 注意：这里用 hist.messages 判定（与 synced 仅差 isStreaming 标记，不影响时间戳/entryId），
+                // 因为翻页游标那段在本块之外也要用同一个结论。
+                val snapshotStale = !replaceHistory && (
+                    hist.branchLagged || SessionSnapshotMerge.isSnapshotOlderThanLocal(messages, hist.messages)
+                    )
+
                 if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
                         if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
@@ -1143,8 +1154,20 @@ class MainActivity : ComponentActivity() {
                     } else {
                         // 对账规则收敛至 SessionSnapshotMerge（纯 JVM，可单测）：
                         // 1) 严密保护本地乐观用户消息与实时流式在途消息，绝不因服务端 .jsonl 尚未落盘而抹去用户提问与实时输出；
-                        // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动。
-                        val reconciled = SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
+                        // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动；
+                        // 3) 快照落后时只往前长、不回滚（见上面的 snapshotStale）。
+                        if (snapshotStale) {
+                            android.util.Log.w(
+                                "PiSync",
+                                "stale snapshot for $sessionId (leaf lag=${hist.branchLagged}) → append-only reconcile"
+                            )
+                        }
+                        val reconciled = SessionSnapshotMerge.reconcileList(
+                            messages,
+                            synced,
+                            effectiveRunning,
+                            snapshotStale = snapshotStale
+                        )
                         for (i in reconciled.indices) {
                             if (i < messages.size) {
                                 if (messages[i] != reconciled[i]) {
@@ -1170,7 +1193,9 @@ class MainActivity : ComponentActivity() {
                 } else {
                     hist.stats
                 }
-                // 翻页元数据：一旦已经往前翻过页，真·最老游标来自更早页，不能被快照覆盖
+                // 翻页元数据：一旦已经往前翻过页，真·最老游标来自更早页，不能被快照覆盖。
+                // （快照滞后时它的窗口只会**更早**，游标跟着它走不会跳过历史，重叠部分由
+                //  loadOlderHistory 里的指纹去重兑掉；反而不能因为滞后就不设游标，否则新开的会话无法续批。）
                 if (olderMessages.isEmpty()) {
                     olderCursor = hist.oldestEntryId
                     olderLeafId = hist.leafId

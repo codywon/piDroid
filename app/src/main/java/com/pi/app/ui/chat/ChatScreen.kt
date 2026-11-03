@@ -1159,9 +1159,14 @@ fun ChatScreen(
     // 滑到最顶端就自动向 PC 续批更早的记录（IntersectionObserver 的 Compose 等价写法：
     // 观察首个可见行索引）。必须等首屏「瞬间定位到底部」完成（hasInitialScrolled），
     // 否则刚进会话时索引本来就是 0，会立刻狂拉页并把视口钉在顶部而不是最新对话上。
+    //
+    // 「还有更早」有两个来源：服务端 hasMore 标志与它统计的未加载回合数（turnsBefore）。
+    // 只看前者时，只要某一次快照把 hasMore 报成 false（旧版服务端缺字段 / 游标刚好落页尾），
+    // 自动续批就永久停手，表现就是“往上翻不动、后半段历史没了”。
+    val hasUnloadedHistory = hasEarlierOnServer || earlierTurnCount > 0
     val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
-    LaunchedEffect(firstVisibleIndex, hasInitialScrolled, hasEarlierOnServer, isLoadingOlder) {
-        if (hasInitialScrolled && !isLoadingOlder && hasEarlierOnServer && firstVisibleIndex <= 0) {
+    LaunchedEffect(firstVisibleIndex, hasInitialScrolled, hasUnloadedHistory, isLoadingOlder) {
+        if (hasInitialScrolled && !isLoadingOlder && hasUnloadedHistory && firstVisibleIndex <= 0) {
             captureViewportAnchor()
             onLoadOlder()
         }
@@ -2182,7 +2187,7 @@ fun ChatScreen(
                 ) {
                     // 顶部加载哨兵：只占一行。触顶即自动向 PC 续批，加载中显示一枚细圆圈
                     // （此前这里是一张占满一屏的「已折叠 N 条早期记录」大卡片，已按大厂 App 惯例移除）
-                    if (hasEarlierOnServer || isLoadingOlder) {
+                    if (hasEarlierOnServer || isLoadingOlder || earlierTurnCount > 0) {
                         item(key = "history_top_loader") {
                             HistoryTopLoader(
                                 isLoading = isLoadingOlder,

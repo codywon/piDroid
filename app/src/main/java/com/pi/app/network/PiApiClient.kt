@@ -51,7 +51,17 @@ data class SessionHistoryData(
      * 本会话钉住的工具清单（pi-web `GET /api/sessions/{id}` 的 `toolNames`）。
      * `null` = 会话没有钉住，跟随 settings.json 的 defaultTools；空清单 = 仅聊天。
      */
-    val toolNames: List<String>? = null
+    val toolNames: List<String>? = null,
+    /**
+     * 这份快照的 `context` 窗口**没有走到服务端自称的 leaf**（分支滞后）。
+     *
+     * 成因见 pi-web `app/api/sessions/[id]/route.ts` 的注释：另一个进程也在写同一个 jsonl 时，
+     * 进程内 live wrapper 的内存 leaf 会落后于磁盘，于是同一个响应里 `stats`（覆盖全部 entry）
+     * 是新的、`context`（按 leaf 往回走）是旧的。App 以前对此无感知：
+     * 只把这条滞后快照当权威，`reconcileList` 又把本地已经更新的尾部当“过期分支”截掉 ——
+     * 界面上就永远停在几分钟前的那一步。
+     */
+    val branchLagged: Boolean = false
 )
 
 /**
@@ -482,11 +492,14 @@ class PiApiClient(private val prefs: AppPreferences) {
             for (m in initialCtxMsgs) rawContextMessages.add(m)
         }
 
-        // 检查是否存在完整 entries 树（包含被 compaction 折叠前的早期历史记录）
+        // 会话树：pi-web 0.13+ 的 `tree` 是**嵌套数组** `[{entry, children}]`（treeFormat 标记形态），
+        // 旧版是 `tree.entries` / 顶层 `entries`。三者统一拍平——
+        // 以前只认平铺形状，嵌套树直接落空，`entries` 分支形同死码：App 永远只能看到
+        // `context.messages` 的尾部窗口，PC 上的整段执行过程在手机上没有入口。
+        val treeEntries = SessionBranchWindow.flattenTree(json.get("tree"))
         val entriesArr = when {
+            treeEntries != null && treeEntries.size() > 0 -> treeEntries
             json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
-            json.has("tree") && json.get("tree").isJsonObject && json.getAsJsonObject("tree").has("entries") ->
-                json.getAsJsonObject("tree").getAsJsonArray("entries")
             json.has("messages") && json.get("messages").isJsonArray -> json.getAsJsonArray("messages")
             else -> null
         }
@@ -495,28 +508,25 @@ class PiApiClient(private val prefs: AppPreferences) {
             extractChronologicalMessagesFromEntries(entriesArr, leafId)
         } else JsonArray()
 
-        val chosenMessages = if (normalizedEntryMessages.size() > rawContextMessages.size()) {
-            if (tail <= 100 && normalizedEntryMessages.size() > tail) {
-                // 首屏快速分段：默认截取最近 tail 条；若尾部全是工具调用，向前延伸以确保包含用户对话
-                var startIndex = (normalizedEntryMessages.size() - tail).coerceAtLeast(0)
-                val nonToolCount = (startIndex until normalizedEntryMessages.size()).count { idx ->
-                    val el = normalizedEntryMessages.get(idx)
-                    if (el.isJsonObject) {
-                        val r = el.asJsonObject.get("role")?.takeIf { !it.isJsonNull }?.asString
-                        r == "user" || r == "assistant"
-                    } else false
-                }
-                if (nonToolCount < 3 && startIndex > 0) {
-                    startIndex = (startIndex - 40).coerceAtLeast(0)
-                }
-                val sliced = JsonArray()
-                for (i in startIndex until normalizedEntryMessages.size()) {
-                    sliced.add(normalizedEntryMessages.get(i))
-                }
-                sliced
-            } else {
-                normalizedEntryMessages
+        // 条目树比 context 窗口更完整时才用它（摘要树拍平后只有 id/parentId/type，不会命中）。
+        val usedEntries = normalizedEntryMessages.size() > rawContextMessages.size()
+        var droppedEntryCount = 0
+        val chosenMessages = if (usedEntries) {
+            // 切窗按 pi 的 tail 语义：**只数可见消息**（user/assistant/压缩里程碑），不数 toolResult。
+            // 旧实现直接切最后 `tail` 个原始条目，工具密集的回合会被切成一副骨架。
+            // 同时保证窗口不比 context 窗口更短（条目树可用不该成为首屏缩水）。
+            val roles = (0 until normalizedEntryMessages.size()).map { i ->
+                roleOfMessage(normalizedEntryMessages.get(i))
             }
+            val visibleStart = SessionBranchWindow.visibleTailStart(roles, tail)
+            val floorStart = (normalizedEntryMessages.size() - rawContextMessages.size()).coerceAtLeast(0)
+            val startIndex = minOf(visibleStart, floorStart)
+            val sliced = JsonArray()
+            for (i in startIndex until normalizedEntryMessages.size()) {
+                sliced.add(normalizedEntryMessages.get(i))
+            }
+            droppedEntryCount = startIndex
+            sliced
         } else {
             rawContextMessages
         }
@@ -601,17 +611,48 @@ class PiApiClient(private val prefs: AppPreferences) {
             cost = cost
         )
 
+        // ── 分支滞后判定 ───────────────────────────────────────────────
+        // 响应自带 leafId，而 context 窗口是从 leaf 往回走的；两者对不上就是「滞后快照」：
+        // stats（覆盖全部 entry）是新的、context（按 leaf 往回走）是旧的。
+        // 以前完全无感，于是 App 拿着几分钟前的尾巴当权威，把本地更新的部分截掉了。
+        val contextLastEntryId: String? = initialEntryIds?.let { ids ->
+            if (ids.size() <= 0) {
+                null
+            } else {
+                ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
+            }
+        }
+        val branchLagged = SessionBranchWindow.branchLagsBehindLeaf(
+            payloadLeafId = json.get("leafId")?.takeIf { !it.isJsonNull }?.asString,
+            contextLastEntryId = contextLastEntryId
+        )
+
+        // 翻页游标必须跟着**实际渲染窗口的第一条**走：用了条目树时窗口起点可能早于 context 窗口，
+        // 继续用 context 的 oldestEntryId 会让下一页和已渲染内容重叠（同一段过程显示两遍）。
+        val chosenOldestEntryId = if (usedEntries) {
+            firstMessageEntryId(chosenMessages) ?: extractOldestEntryId(ctxObj, initialCtxMsgs)
+        } else {
+            extractOldestEntryId(ctxObj, initialCtxMsgs)
+        }
+        val droppedTurns = if (droppedEntryCount > 0) {
+            (0 until droppedEntryCount).count { i -> roleOfMessage(normalizedEntryMessages.get(i)) == "user" }
+        } else 0
+        val serverTurnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+
         return SessionHistoryData(
             messages = chatItems,
             provider = currentProvider,
             modelId = currentModelId,
             thinkingLevel = currentThinkingLevel,
             stats = tokenStats,
-            hasMoreOnServer = initialHasMore,
-            oldestEntryId = extractOldestEntryId(ctxObj, initialCtxMsgs),
-            turnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+            // 窗口被条目树截过（droppedEntryCount > 0）就一定有更早的历史，
+            // 不依赖服务端 hasMore 单一信号（旧版网关缺字段 / 游标刚好落页尾都会把它报成 false）。
+            hasMoreOnServer = initialHasMore || droppedEntryCount > 0,
+            oldestEntryId = chosenOldestEntryId,
+            turnsBefore = if (droppedEntryCount > 0) maxOf(droppedTurns, serverTurnsBefore) else serverTurnsBefore,
             leafId = leafId,
-            toolNames = readPinnedToolNames(json)
+            toolNames = readPinnedToolNames(json),
+            branchLagged = branchLagged
         )
     }
 
@@ -627,20 +668,37 @@ class PiApiClient(private val prefs: AppPreferences) {
     suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
-            // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
-            // 这两个开关把首屏快照从 ~200KB 压到 ~150KB，手机端打开会话明显更快。
-            val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary")
-                .get()
-                .build()
-            val payload = readGet(req, snapshotClient)
-            if (payload.code !in 200..299) {
-                return@withContext Result.failure(readFailure(payload, "/api/sessions/{id}"))
+            var lastFailure: IOException? = null
+            // 第一次按 pi-web 前端同一套参数取；只有解析发现「分支 leaf 滞后」时才补一次 `force=1`。
+            //
+            // `force=1` 会让 pi-web 执行 `evictIfDiskAhead()`（一次 statSync + 必要时重建 wrapper），
+            // 所以绝不能每次轮询都带 —— 但发现滞后时不带就永远拿不到新内容，
+            // 而 pi-web 自己的前端挂载会话时恰恰是一直带 force 的（`loadSession(..., {force:true})`）。
+            for (attempt in 0..1) {
+                val force = attempt > 0
+                // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
+                // 这两个开关把首屏快照从 ~200KB 压到 ~150KB，手机端打开会话明显更快。
+                val forceParam = if (force) "&force=1" else ""
+                val req = Request.Builder()
+                    .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
+                    .get()
+                    .build()
+                val payload = readGet(req, snapshotClient)
+                if (payload.code !in 200..299) {
+                    lastFailure = readFailure(payload, "/api/sessions/{id}")
+                    if (force) return@withContext Result.failure(lastFailure ?: IOException("会话快照请求失败"))
+                    continue
+                }
+                val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
+                if (historyData.branchLagged && !force) {
+                    Log.w("PiSync", "snapshot branch lagged for $sessionId → retry with force=1")
+                    continue
+                }
+                sessionHistoryCache[sessionId] = historyData
+                persistSessionSnapshot(sessionId, payload.body)
+                return@withContext Result.success(historyData)
             }
-            val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
-            sessionHistoryCache[sessionId] = historyData
-            persistSessionSnapshot(sessionId, payload.body)
-            Result.success(historyData)
+            Result.failure(lastFailure ?: IOException("会话快照获取失败"))
         } catch (e: Exception) {
             Result.failure(e)
         }
@@ -886,6 +944,31 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
             }
         }
+    }
+
+    /** 一条消息条目（可能是裸消息，也可能是 `{message:{...}}`）的角色。 */
+    private fun roleOfMessage(el: com.google.gson.JsonElement?): String? {
+        if (el == null || !el.isJsonObject) return null
+        val obj = el.asJsonObject
+        val msg = if (obj.has("message") && obj.get("message").isJsonObject) {
+            obj.getAsJsonObject("message")
+        } else {
+            obj
+        }
+        return msg.get("role")?.takeIf { !it.isJsonNull }?.asString
+    }
+
+    /** 消息数组里第一条带 entryId 的 id（作为向前翻页的游标）。 */
+    private fun firstMessageEntryId(msgs: JsonArray): String? {
+        for (i in 0 until msgs.size()) {
+            val el = msgs.get(i)
+            if (!el.isJsonObject) continue
+            val obj = el.asJsonObject
+            val id = obj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+                ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            if (!id.isNullOrBlank()) return id
+        }
+        return null
     }
 
     private fun extractOldestEntryId(ctxObj: JsonObject?, msgs: JsonArray?): String? {
