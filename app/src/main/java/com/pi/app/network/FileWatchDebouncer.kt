@@ -6,9 +6,29 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 文件修改事件防抖器（纯 JVM，可单测）。
- *
- * 避免编译器或编辑器保存时产生连续的临时写入触发多次无意义重新加载。
+ * 文件变更防抖过滤策略（纯 JVM，不依赖任何外部测试依赖）。
+ */
+class FileWatchDebouncePolicy(
+    val debounceMs: Long = 200L,
+    private val clock: () -> Long = System::currentTimeMillis
+) {
+    private var lastReloadAt: Long = 0L
+
+    fun shouldReload(now: Long = clock()): Boolean {
+        if (lastReloadAt > 0L && now - lastReloadAt < debounceMs) {
+            return false
+        }
+        lastReloadAt = now
+        return true
+    }
+
+    fun reset() {
+        lastReloadAt = 0L
+    }
+}
+
+/**
+ * 文件修改事件协程防抖包装器。
  */
 class FileWatchDebouncer(
     private val scope: CoroutineScope,

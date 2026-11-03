@@ -2,7 +2,7 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.81] - 2026-11-04
+## [1.8.82] - 2026-11-04
 
 ### 🚀 全面对齐上游 pi-web 核心功能体系
 

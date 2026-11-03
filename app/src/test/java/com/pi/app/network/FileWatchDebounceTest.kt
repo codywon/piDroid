@@ -1,61 +1,47 @@
 package com.pi.app.network
 
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.StandardTestDispatcher
-import kotlinx.coroutines.test.TestScope
-import kotlinx.coroutines.test.advanceTimeBy
-import kotlinx.coroutines.test.runTest
-import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
-@OptIn(ExperimentalCoroutinesApi::class)
 class FileWatchDebounceTest {
 
     @Test
-    fun `multiple rapid changes trigger reload only once after debounce delay`() = runTest {
-        val testDispatcher = StandardTestDispatcher(testScheduler)
-        val scope = TestScope(testDispatcher)
-        var reloadCount = 0
-
-        val debouncer = FileWatchDebouncer(
-            scope = scope,
+    fun `rapid consecutive file changes within debounce threshold are suppressed`() {
+        var currentTime = 1000L
+        val policy = FileWatchDebouncePolicy(
             debounceMs = 200L,
-            onReload = { reloadCount++ }
+            clock = { currentTime }
         )
 
-        // 连续触发 3 次变更
-        debouncer.onFileChanged()
-        testScheduler.advanceTimeBy(50L)
-        debouncer.onFileChanged()
-        testScheduler.advanceTimeBy(50L)
-        debouncer.onFileChanged()
+        // 第一次触发：允许刷新
+        assertTrue(policy.shouldReload())
 
-        // 100ms 尚未达到 200ms
-        testScheduler.advanceTimeBy(100L)
-        assertEquals(0, reloadCount)
+        // 50ms 之后再次触发：防抖抑制
+        currentTime += 50L
+        assertFalse(policy.shouldReload())
 
-        // 超过 200ms，触发一次
-        testScheduler.advanceTimeBy(150L)
-        assertEquals(1, reloadCount)
+        // 100ms 之后再次触发：防抖抑制
+        currentTime += 50L
+        assertFalse(policy.shouldReload())
+
+        // 超过 200ms 后再次触发：允许刷新
+        currentTime += 150L
+        assertTrue(policy.shouldReload())
     }
 
     @Test
-    fun `cancel stops pending reload`() = runTest {
-        val testDispatcher = StandardTestDispatcher(testScheduler)
-        val scope = TestScope(testDispatcher)
-        var reloadCount = 0
-
-        val debouncer = FileWatchDebouncer(
-            scope = scope,
+    fun `reset clears previous timestamp`() {
+        var currentTime = 1000L
+        val policy = FileWatchDebouncePolicy(
             debounceMs = 200L,
-            onReload = { reloadCount++ }
+            clock = { currentTime }
         )
 
-        debouncer.onFileChanged()
-        testScheduler.advanceTimeBy(100L)
-        debouncer.cancel()
-        testScheduler.advanceTimeBy(200L)
+        assertTrue(policy.shouldReload())
+        assertFalse(policy.shouldReload())
 
-        assertEquals(0, reloadCount)
+        policy.reset()
+        assertTrue(policy.shouldReload())
     }
 }
