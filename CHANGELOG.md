@@ -51,10 +51,21 @@ All notable changes to the πDroid application will be documented in this file.
 
 ---
 
+## [1.8.81] - 2026-11-03
+
+### 🔧 补齐 Worktree 管理所需的 Compose 导入与入口接线
+
+- `WorktreeManagementDialog` 补上 `androidx.compose.foundation.background` 导入（上一版因此编译失败）；
+- `MainActivity` 接入 Worktree 管理入口：`onManageWorktrees` → `loadAndShowWorktrees(cwd)`。
+
+---
+
+## [1.8.80] - 2026-11-03
+
 ### 🩹 补齐 ArtifactViewer 中 LaunchedEffect 导入并修复 CI 单元测试
 
 - **文件预览**：补充 `ArtifactViewerFullScreen` 中文件监控自动刷新所需的 `LaunchedEffect` Compose 运行时导入；
-- **发版闭环**：结合工作区持久化记忆治理，确保云端构建流水线绿灯闭环。
+- **发版闭环**：修复 `SessionExporterTest` 对导出文件名的断言（同 1.8.79 批次），确保云端流水线绿灯闭环。
 
 ---
 
