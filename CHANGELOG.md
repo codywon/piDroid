@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.85] - 2026-11-04
+
+### 🛡️ 会话状态收口 / Worktree 并发与失败可见（对齐 pi-web 的单一真相）
+
+- **活跃叶兜底（`resolveActiveLeafId`）**：旧版网关/精简快照不下发 `leafId` 时，用 `context` 窗口末条的 `entryId` 兜底 —— 与 pi-web「客户端的 leaf 就是当前上下文窗口末端」同义。以前 `leafId` 为 null 会让分支树整体不高亮（内容其实完整），用户以为分支信息丢了。滞后判定仍用**未兜底**的原始 `leafId`（拿兜底值比较永远相等）；
+- **会话级状态收口（`resetSessionScopedState`）**：打开会话 / 返回列表 / 新建会话三个入口共用同一份清理（翻页游标、分支树、压缩历史、在途身份、阶段文案），顺带修掉「新建会话漏清 `olderCursor/olderLeafId/isLoadingOlder`」的跨会话泄漏——这类 bug 历史上已经补过两次；
+- **工作区选区收口（`applyWorkspaceSelection`）**：worktree 切换/新建/删除回落与既有入口共用唯一落盘路径（`lastOpenedWorkspacePath` + `lastSelectedWorkspacePath` + `lastSelectedCwd`），杜绝“新加一个入口就漏写某个字段”；
+- **Worktree 操作并发**：`isOperatingWorktree` 改为在 `launch` **之前**同步置真并 `try/finally` 复位 —— 快速双击不再并发发两个创建/删除请求，异常/取消也不会把弹窗卡在“处理中”；
+- **删除后刷新失败**：`getWorktrees` 刷新失败时关闭弹窗，而不是继续展示一条已被删除的 worktree（再点一次就是“目录不存在”）；
+- **文件监听失败留痕**：`?type=watch` 的流被 `catch` 后补一条 `PiNet` 日志（仍不崩溃），老网关不支持时不再无从排查；
+- **验证**：新增 1 条纯 JVM 用例（`resolveActiveLeafId` 的四种取值口径）。
+
+---
+
 ## [1.8.84] - 2026-11-04
 
 ### 🛡️ 代码质量与稳定性加固（Code Review 跟进）

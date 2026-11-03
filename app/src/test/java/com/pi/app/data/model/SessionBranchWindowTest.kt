@@ -135,6 +135,19 @@ class SessionBranchWindowTest {
         assertEquals(1, SessionBranchWindow.visibleTailStart(roles, 1))
     }
 
+    @Test
+    fun `leafId 缺失时用窗口末端兑底`() {
+        assertEquals("ctx-last", SessionBranchWindow.resolveActiveLeafId(null, "ctx-last"))
+        assertEquals("ctx-last", SessionBranchWindow.resolveActiveLeafId("", "ctx-last"))
+        assertEquals(
+            "服务端下发的 leaf 优先于兑底值",
+            "payload-leaf",
+            SessionBranchWindow.resolveActiveLeafId("payload-leaf", "ctx-last")
+        )
+        assertNull("两者都缺失时就是未知，不能伪造一个叶子", SessionBranchWindow.resolveActiveLeafId(null, null))
+        assertNull(SessionBranchWindow.resolveActiveLeafId("  ", ""))
+    }
+
     // ── 3. 分支 leaf 滞后 ────────────────────────────────────────────
 
     @Test

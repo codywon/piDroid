@@ -17,7 +17,6 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
-import kotlinx.coroutines.flow.catch
 import com.pi.app.data.model.*
 import com.pi.app.data.ServerDefaults
 import com.pi.app.data.storage.AppPreferences
@@ -45,7 +44,6 @@ import com.pi.app.network.FileListParsing
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
 import com.pi.app.ui.session.WorktreeManagementDialog
-import com.pi.app.data.model.WorktreesResult
 import com.pi.app.ui.settings.GlobalSettingsScreen
 import com.pi.app.ui.updater.AppUpdateDialog
 import com.pi.app.ui.updater.UpdateUiState
@@ -54,6 +52,7 @@ import com.pi.app.updater.UpdateCheckResult
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -2008,6 +2007,45 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /**
+         * 工作区选区的**唯一落盘入口**（对齐 1.8.79 引入的“单一真相”原则）。
+         *
+         * 之前 worktree 切换/新建/删除回落各写一遍三个字段（`lastOpenedWorkspacePath` +
+         * `prefs.lastSelectedWorkspacePath` + `prefs.lastSelectedCwd`），只要新增一个入口就会漏掉
+         * 其中某个——典型后果是冷启动后工作区对了、`cwd` 还是上一场的。
+         */
+        fun applyWorkspaceSelection(path: String, cwd: String? = null) {
+            if (path.isBlank()) return
+            lastOpenedWorkspacePath = path
+            prefs.lastSelectedWorkspacePath = path
+            prefs.lastSelectedCwd = cwd?.takeIf { it.isNotBlank() } ?: path
+        }
+
+        /**
+         * 会话级状态一次性清空：三个入口（打开会话 / 返回列表 / 新建会话）共用。
+         *
+         * 一类 bug 不宣而至：只要新增一个入口忘了清其中某项，就会跨会话泄漏
+         * （历史上就补过两次：压缩状态跨会话、分支树/压缩历史跨会话）。
+         * 这里只把已有散装赋值搬进来，**不新增语义**；各站点专属的清理保留在调用处。
+         */
+        fun resetSessionScopedState() {
+            // 分页游标（更早历史）
+            olderMessages = emptyList()
+            olderCursor = null
+            olderLeafId = null
+            hasEarlierOnServer = false
+            earlierTurnCount = 0
+            isLoadingOlder = false
+            autoFillUserTurnTriedFor = null
+            // 分支树 / 压缩历史
+            currentCompactionRecords = emptyList()
+            currentBranchTreeNodes = emptyList()
+            currentActiveLeafId = null
+            // 在途身份与阶段文案（对齐 pi-web 的 finishRun：新会话不得带着上一场的流式身份）
+            streamingMessageId = null
+            agentPhaseLabel = null
+        }
+
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
         fun openSessionWithHistory(session: Session) {
             completionSettleJob?.cancel()
@@ -2028,9 +2066,10 @@ class MainActivity : ComponentActivity() {
                 SessionModelSelection.resolve(dynamicCatalog.models, p, m)?.let { selectedModel = it }
             }
             currentProject = session.workspaceName
-            lastOpenedWorkspacePath = session.workspacePath
-            session.workspacePath.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedWorkspacePath = it }
-            session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
+            applyWorkspaceSelection(
+                path = session.workspacePath,
+                cwd = session.cwd
+            )
             queuedMessages.clear()
             // 乐观气泡的发送时刻是按气泡 id 记的，换会话时旧列表会被整体丢弃，
             // 对应的记录一并清掉（否则 map 会跟着会话数量一直长）。
@@ -2048,17 +2087,7 @@ class MainActivity : ComponentActivity() {
             agentPhaseLabel = if (session.isRunning && !isToolExecuting) "正在等待模型..." else null
 
             // 切换会话必须清空上一场的「更早记录」，否则会把别人的历史拼进来
-            olderMessages = emptyList()
-            currentCompactionRecords = emptyList()
-            currentBranchTreeNodes = emptyList()
-            currentActiveLeafId = null
-            hasEarlierOnServer = false
-            earlierTurnCount = 0
-            olderCursor = null
-            olderLeafId = null
-            isLoadingOlder = false
-            // 新会话重新给一次「窗口里没提问行就补页」的机会
-            autoFillUserTurnTriedFor = null
+            resetSessionScopedState()
 
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)
@@ -2800,10 +2829,7 @@ class MainActivity : ComponentActivity() {
                         isAutoRetrying = false
                         isToolExecuting = false
                         isLoadingSessionHistory = false
-                        currentCompactionRecords = emptyList()
-                        currentBranchTreeNodes = emptyList()
-                        currentActiveLeafId = null
-                        agentPhaseLabel = null
+                        resetSessionScopedState()
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
                         hapticsAndNotify.clearNotification()
@@ -2932,8 +2958,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onLoadFileBytes = { path -> apiClient.getFileBytes(path, sessionId = activeSessionId) },
                     onWatchFileChanges = { path ->
-                        apiClient.watchFileChanges(path)
-                            .catch { /* 监听失败或网络断开时静默降级为手动刷新，绝不崩溃 */ }
+                        apiClient.watchFileChanges(path).catch { err ->
+                            // 不崩溃，但留一条线索：老网关不支持 ?type=watch 时，
+                            // 否则“查看器永不刷新”完全无从排查。
+                            android.util.Log.d("PiNet", "file watch ended for $path: ${err.javaClass.simpleName}: ${err.message}")
+                        }
                     },
                     onLoadGitStatus = {
                         val cwd = currentSession?.cwd?.takeIf { it.isNotBlank() }
@@ -3781,26 +3810,20 @@ class MainActivity : ComponentActivity() {
                                 )
                                 currentSession = newSession
                                 currentProject = newSession.workspaceName
-                                lastOpenedWorkspacePath = newSession.workspacePath
-                                newSession.workspacePath.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedWorkspacePath = it }
-                                newSession.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
+                                applyWorkspaceSelection(
+                                    path = newSession.workspacePath,
+                                    cwd = newSession.cwd
+                                )
                                 messages.clear()
                                 isLoadingSessionHistory = false
-                                olderMessages = emptyList()
-                                currentCompactionRecords = emptyList()
-                                currentBranchTreeNodes = emptyList()
-                                currentActiveLeafId = null
-                                hasEarlierOnServer = false
-                                earlierTurnCount = 0
-                                // 新会话是全新的界面：上一场会话的运行态/在途身份/阶段文案必须跟着清，
+                                resetSessionScopedState()
+                                // 新会话是全新的界面：运行态与排队消息也要跟着清，
                                 // 否则新会话顶部会盖着旧会话的「正在执行 xxx」+ 停止按钮，看起来
                                 // 就像「我刚发的消息已经在跑了」（pi-web 新建会话时 agentRunning 也是 false）。
-                                streamingMessageId = null
+                                queuedMessages.clear()
                                 isAgentBusy = false
                                 isAutoRetrying = false
                                 isToolExecuting = false
-                                agentPhaseLabel = null
-                                queuedMessages.clear()
                                 hasNotifiedCompletionForCurrentRun = true
                                 startListeningEvents(realSessionId)
                                 loadSessions(silent = true)
@@ -3947,54 +3970,66 @@ class MainActivity : ComponentActivity() {
                 isOperating = isOperatingWorktree,
                 onSwitchWorktree = { wt ->
                     activeWorktreesResult = null
-                    lastOpenedWorkspacePath = wt.path
-                    prefs.lastSelectedWorkspacePath = wt.path
-                    prefs.lastSelectedCwd = wt.path
+                    applyWorkspaceSelection(wt.path)
                     loadSessions()
                     Toast.makeText(this@MainActivity, "已切换工作区到 ${wt.branch ?: wt.path}", Toast.LENGTH_SHORT).show()
                 },
                 onCreateWorktree = { branch ->
                     val root = wtResult.projectRoot
-                    lifecycleScope.launch {
+                    // 在 launch **之前**同步拦截：标志位在协程体里才置真时，从点击到调度之间还有一帧，
+                    // 快速双击会并发发出两个创建请求（pi-web 的 worktree 面板同样用 pending 状态挡连点）。
+                    if (!isOperatingWorktree) {
                         isOperatingWorktree = true
-                        apiClient.createWorktree(root, branch).onSuccess { wt ->
-                            isOperatingWorktree = false
-                            activeWorktreesResult = null
-                            lastOpenedWorkspacePath = wt.path
-                            prefs.lastSelectedWorkspacePath = wt.path
-                            prefs.lastSelectedCwd = wt.path
-                            loadSessions()
-                            Toast.makeText(this@MainActivity, "已创建并检出分支 ${wt.branch}", Toast.LENGTH_SHORT).show()
-                        }.onFailure { err ->
-                            isOperatingWorktree = false
-                            Toast.makeText(this@MainActivity, "创建失败：${err.message}", Toast.LENGTH_LONG).show()
+                        lifecycleScope.launch {
+                            try {
+                                apiClient.createWorktree(root, branch)
+                                    .onSuccess { wt ->
+                                        activeWorktreesResult = null
+                                        applyWorkspaceSelection(wt.path)
+                                        loadSessions()
+                                        Toast.makeText(this@MainActivity, "已创建并检出分支 ${wt.branch}", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .onFailure { err ->
+                                        Toast.makeText(this@MainActivity, "创建失败：${err.message}", Toast.LENGTH_LONG).show()
+                                    }
+                            } finally {
+                                // 异常 / 取消也要复位，否则弹窗永久停在“处理中”
+                                isOperatingWorktree = false
+                            }
                         }
                     }
                 },
                 onDeleteWorktree = { wt, force ->
                     val root = wtResult.projectRoot
-                    lifecycleScope.launch {
+                    if (!isOperatingWorktree) {
                         isOperatingWorktree = true
-                        apiClient.deleteWorktree(root, wt.path, force).onSuccess {
-                            if (WorkspacePaths.samePath(lastOpenedWorkspacePath, wt.path)) {
-                                lastOpenedWorkspacePath = root
-                                prefs.lastSelectedWorkspacePath = root
-                                prefs.lastSelectedCwd = root
+                        lifecycleScope.launch {
+                            try {
+                                apiClient.deleteWorktree(root, wt.path, force)
+                                    .onSuccess {
+                                        if (WorkspacePaths.samePath(lastOpenedWorkspacePath, wt.path)) {
+                                            // 删掉的正好是当前选区：回落到项目主目录
+                                            applyWorkspaceSelection(root)
+                                        }
+                                        apiClient.getWorktrees(root)
+                                            .onSuccess { res -> activeWorktreesResult = res }
+                                            // 刷新失败必须关掉弹窗：继续展示一条已被删除的 worktree，
+                                            // 用户再点一次就是“目录不存在”。
+                                            .onFailure { activeWorktreesResult = null }
+                                        loadSessions(silent = true)
+                                        Toast.makeText(this@MainActivity, "已移除该 Worktree 检出", Toast.LENGTH_SHORT).show()
+                                    }
+                                    .onFailure { err ->
+                                        val userMsg = if (err.message?.startsWith("WORKTREE_DIRTY:") == true) {
+                                            "本地存在未提交改动，请在弹窗中选择强制清理"
+                                        } else {
+                                            "移除失败：${err.message}"
+                                        }
+                                        Toast.makeText(this@MainActivity, userMsg, Toast.LENGTH_LONG).show()
+                                    }
+                            } finally {
+                                isOperatingWorktree = false
                             }
-                            apiClient.getWorktrees(root).onSuccess { res ->
-                                activeWorktreesResult = res
-                            }
-                            isOperatingWorktree = false
-                            loadSessions(silent = true)
-                            Toast.makeText(this@MainActivity, "已移除该 Worktree 检出", Toast.LENGTH_SHORT).show()
-                        }.onFailure { err ->
-                            isOperatingWorktree = false
-                            val userMsg = if (err.message?.startsWith("WORKTREE_DIRTY:") == true) {
-                                "本地存在未提交改动，请在弹窗中选择强制清理"
-                            } else {
-                                "移除失败：${err.message}"
-                            }
-                            Toast.makeText(this@MainActivity, userMsg, Toast.LENGTH_LONG).show()
                         }
                     }
                 },

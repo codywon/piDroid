@@ -501,8 +501,17 @@ class PiApiClient(private val prefs: AppPreferences) {
         attachEntryIds(initialCtxMsgs, initialEntryIds)
         val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
             (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
-        val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+        // 服务端自称的 leaf（未兜底）：分支滞后判定必须用它，不能用下面兜底后的值。
+        val payloadLeafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
             ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+        // 窗口末端 entry：优先取末条消息自身的 entryId，平行数组只作兜底
+        // （两者不等长时数组末项不一定是末条消息）。
+        val contextLastEntryId: String? = messageEntryId(initialCtxMsgs, fromEnd = true)
+            ?: initialEntryIds?.let { ids ->
+                if (ids.size() <= 0) null else ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
+            }
+        // 活跃叶：旧网关不下发 leafId 时用窗口末端兜底，否则分支树高亮会整块消失。
+        val leafId = SessionBranchWindow.resolveActiveLeafId(payloadLeafId, contextLastEntryId)
 
         if (initialHasMore) {
             if (tail > 100) {
@@ -646,16 +655,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 响应自带 leafId，而 context 窗口是从 leaf 往回走的；两者对不上就是「滞后快照」：
         // stats（覆盖全部 entry）是新的、context（按 leaf 往回走）是旧的。
         // 以前完全无感，于是 App 拿着几分钟前的尾巴当权威，把本地更新的部分截掉了。
-        val contextLastEntryId: String? = messageEntryId(initialCtxMsgs, fromEnd = true)
-            ?: initialEntryIds?.let { ids ->
-                if (ids.size() <= 0) {
-                    null
-                } else {
-                    ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
-                }
-            }
+        // 注意用**未兜底**的 payloadLeafId：兜底值就是窗口末端，比较了永远相等。
         val branchLagged = SessionBranchWindow.branchLagsBehindLeaf(
-            payloadLeafId = json.get("leafId")?.takeIf { !it.isJsonNull }?.asString,
+            payloadLeafId = payloadLeafId,
             contextLastEntryId = contextLastEntryId
         )
 

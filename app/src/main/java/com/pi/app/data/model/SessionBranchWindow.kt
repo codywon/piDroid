@@ -53,7 +53,7 @@ object SessionBranchWindow {
     }
 
     /**
-     * 快照自带的分支 leaf，是否已经跑到 `context` 窗口末端之外。
+     * 快照自带的 leafId 与 `context` 窗口末端对不上，说明服务端回的是**滞后的分支**。
      *
      * 任一为 null（旧版服务端不下发 / 窗口为空）时不判定为滞后：宁可少补一次请求，
      * 也不能把「叶子是 model_change 这类不产出消息的条目」误判成滞后而每次都补 `force=1`。
@@ -63,6 +63,17 @@ object SessionBranchWindow {
         if (contextLastEntryId.isNullOrBlank()) return false
         return payloadLeafId != contextLastEntryId
     }
+
+    /**
+     * 本会话的「活跃叶」：优先用服务端下发的 [payloadLeafId]，缺失时用 `context` 末条 entryId 兜底。
+     *
+     * 为什么需要兜底：旧版网关 / 精简快照可能不带顶层 `leafId`，而 App 用它做
+     * 「分支树高亮 + `navigate_tree` 目标 + 翻页 leafId 参数」。直接为 null 会让分支树
+     * 整体不高亮（内容其实完整），用户以为分支信息丢了。
+     * 语义与 pi-web 一致：客户端拿到的 leaf 就是「当前上下文窗口的末端」。
+     */
+    fun resolveActiveLeafId(payloadLeafId: String?, contextLastEntryId: String?): String? =
+        payloadLeafId?.takeIf { it.isNotBlank() } ?: contextLastEntryId?.takeIf { it.isNotBlank() }
 
     /**
      * 把会话树拍平成 entry 数组（父在前、子在后）。
