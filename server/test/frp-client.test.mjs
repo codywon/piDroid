@@ -11,6 +11,7 @@ const {
   frpcBinaryCandidates,
   frpcConfigCandidates,
   maskSecrets,
+  stripProxyEnv,
   classifyFrpcExit,
   restartDelayMs,
 } = await import("../frp-client.js");
@@ -147,6 +148,40 @@ test("logs never leak the gateway token", () => {
   );
   assert.equal(maskSecrets("auth.token = \"secret\""), 'auth.token = "***"');
   assert.equal(maskSecrets("plain line"), "plain line");
+});
+
+test("frpc never inherits the system http proxy", () => {
+  const env = {
+    PATH: "/usr/bin",
+    HTTP_PROXY: "http://127.0.0.1:10808",
+    HTTPS_PROXY: "http://127.0.0.1:10808",
+    ALL_PROXY: "socks5://127.0.0.1:10808",
+    http_proxy: "http://127.0.0.1:10808",
+    no_proxy: "localhost",
+    PI_FRPC_CONFIG: "/etc/frpc.toml",
+  };
+  const cleaned = stripProxyEnv(env);
+  assert.equal(cleaned.HTTP_PROXY, undefined);
+  assert.equal(cleaned.HTTPS_PROXY, undefined);
+  assert.equal(cleaned.ALL_PROXY, undefined);
+  // 小写形式同样要剔除（Linux 上很常见）
+  assert.equal(cleaned.http_proxy, undefined);
+  // 其余变量原样保留，否则 frpc 找不到 PATH / 配置
+  assert.equal(cleaned.PATH, "/usr/bin");
+  assert.equal(cleaned.PI_FRPC_CONFIG, "/etc/frpc.toml");
+  // NO_PROXY 无害，没必要删（frp 本身也不认它）
+  assert.equal(cleaned.no_proxy, "localhost");
+});
+
+test("stripProxyEnv returns a copy and tolerates empty input", () => {
+  const env = { HTTP_PROXY: "http://127.0.0.1:10808", KEEP: "1" };
+  assert.deepEqual(stripProxyEnv(env), { KEEP: "1" });
+  // 不能就地篡改调用方的 env
+  assert.equal(env.HTTP_PROXY, "http://127.0.0.1:10808");
+  assert.deepEqual(stripProxyEnv({}), {});
+  // 不传参数时默认作用于 process.env，且依旧剔除代理变量
+  assert.equal(stripProxyEnv(undefined).HTTP_PROXY, undefined);
+  assert.equal(stripProxyEnv(null).HTTP_PROXY, undefined);
 });
 
 test("clean exit stops the supervisor, crashes restart it", () => {

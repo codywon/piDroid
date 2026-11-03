@@ -190,6 +190,30 @@ function maskSecrets(line) {
     .replace(/((?:auth\.)?token\s*=\s*)[^\s,"}&]+/gi, "$1***");
 }
 
+/** 会造成隧道挂在本地代理上的环境变量（大小写都算）。 */
+const PROXY_ENV_KEYS = new Set(["http_proxy", "https_proxy", "all_proxy"]);
+
+/**
+ * 剔除代理环境变量，返回新对象（不改入参，便于单测）。
+ *
+ * 为什么必须剔除：frp 0.7x 是裸读 HTTP_PROXY（连 NO_PROXY 都不生效，实测过），
+ * 于是 frpc 会把控制通道连同全部工作连接挂在 v2rayN/Clash 的 10808 上。
+ * 代理一重启 / 切节点 / 开关系统代理，隧道瞬间全断，日志里就是成片的
+ * `try to connect` → `connect to server error: dial tcp 127.0.0.1:10808` →
+ * `login success` → `start proxy success`，手机端则是 502 与 SSE 长流被切断。
+ *
+ * 确实必须走代理的场景，在自己的 toml 里写 `transport.proxyURL`（实测优先级高于
+ * HTTP_PROXY，且配置真源仍是用户 toml），不要靠继承系统代理。
+ */
+function stripProxyEnv(env = process.env) {
+  const out = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (PROXY_ENV_KEYS.has(key.toLowerCase())) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 /**
  * 进程退出后要不要重启。干干净净的 exit 0（用户 Ctrl+C / 手工 stop）不重启，
  * 其余（被系统杀掉、崩溃）都交给退避重启。
@@ -258,7 +282,11 @@ function launch() {
   }
   const binary = info.binary || (process.platform === "win32" ? "frpc.exe" : "frpc");
 
-  const child = spawn(binary, ["-c", info.configPath], { stdio: ["ignore", "pipe", "pipe"] });
+  // env 必须显式传：默认继承会让 frpc 走系统代理（见 stripProxyEnv 注释）。
+  const child = spawn(binary, ["-c", info.configPath], {
+    stdio: ["ignore", "pipe", "pipe"],
+    env: stripProxyEnv(process.env)
+  });
   frpState.child = child;
   pipeFrpcLogs(child.stdout, process.stdout);
   pipeFrpcLogs(child.stderr, process.stderr);
@@ -351,6 +379,7 @@ module.exports = {
   frpcBinaryCandidates,
   frpcConfigCandidates,
   maskSecrets,
+  stripProxyEnv,
   classifyFrpcExit,
   restartDelayMs,
   describeFrp,

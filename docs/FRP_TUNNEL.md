@@ -235,6 +235,17 @@ node server/launcher.js --tunnel # 改用 Cloudflare
 App 里填的**服务器地址**就是公网地址（形如 `https://<域名>/pi`，注意带前缀），
 Token 与之前完全一致 —— 换通道不需要重新配对。
 
+### 不要继承系统代理
+
+`frpc` 会裸读 `HTTP_PROXY`（实测连 `NO_PROXY` 都不生效），所以启动器 spawn 时
+把 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY`（含小写）从子进程环境里剔除，
+让隧道直连 VPS。手工 `frpc.exe -c ...` 起的时候也不要带这些变量，否则整条隧道会
+挂在 v2rayN / Clash 的 `127.0.0.1:10808` 上：代理一重启或切节点，控制通道立刻断开，
+日志里就是成片的 `try to connect` → `dial tcp 127.0.0.1:10808 ... refused` →
+`login success`，手机端表现为 502 与 SSE 长流被切断。
+确实必须走代理时，在 toml 里显式写 `transport.proxyURL = "http://127.0.0.1:10808"`
+（优先级高于 `HTTP_PROXY`），不要在启动器里恢复继承系统代理。
+
 ---
 
 ## 七、验收（四步，逐条都要过）
@@ -274,6 +285,7 @@ curl -s -m 5 -o /dev/null -w '%{http_code}\n' -H 'Accept: text/event-stream' \
 | 公网 `:8080` 能打开 | `proxyBindAddr` 被写死在 `frps.toml` 里，或包装器探测失败退回了 `0.0.0.0` |
 | 改配置不生效 | frp 配置文件优先级高于命令行参数；`/run/frp/frps.toml` 是运行期副本，改完要 `systemctl restart frps` |
 | 手机一直重连 | `systemctl status frps`、`journalctl -u frps -n 50`、`ss -lnt \| grep 7000` |
+| 日志反复 `dial tcp 127.0.0.1:10808 ... refused` | frpc 走了系统代理：启动器已剔除代理变量，手工启动时别带 `HTTP_PROXY`；必须走代理就写 `transport.proxyURL` |
 | 握手失败/版本告警 | 服务端 frps 与客户端 frpc 版本不一致 |
 | 手机侧 `timeout` 但本地正常 | 安全组没放通 7000，或 VPS 侧 iptables 拦了 |
 | 换域名后旧地址 404 | 需同步三处：frpc `customDomains`、nginx `Host`/前缀、App 地址 |
