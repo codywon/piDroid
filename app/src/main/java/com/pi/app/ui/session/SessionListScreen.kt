@@ -171,6 +171,7 @@ fun SessionListScreen(
     onDeleteSession: (String) -> Unit = {},
     sessionStatsMap: Map<String, SessionStatsSummary> = emptyMap(),
     onExportSession: (Session) -> Unit = {},
+    onManageWorktrees: (workspacePath: String) -> Unit = {},
     onRefresh: () -> Unit,
     onSessionClick: (Session) -> Unit,
     onScanClick: () -> Unit,
@@ -1890,6 +1891,21 @@ fun SessionListScreen(
                         onBrowseFiles(path, name, false)
                         coroutineScope.launch {
                             drawerState.close()
+                        }
+                    }
+                )
+
+                // 3.6 Git Worktrees 管理… (对标 pi-web sidebar.worktrees)
+                WorkspaceMenuActionItem(
+                    icon = Icons.Default.AltRoute,
+                    iconTint = theme.primary,
+                    title = "Git Worktrees 检出管理…",
+                    onClick = {
+                        val path = targetWs.path
+                        selectedMenuWorkspace = null
+                        coroutineScope.launch {
+                            drawerState.close()
+                            onManageWorktrees(path)
                         }
                     }
                 )

@@ -168,6 +168,9 @@ fun ChatScreen(
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
     queuedMessages: List<QueuedMessage> = emptyList(),
     compactionRecords: List<com.pi.app.data.model.CompactionRecord> = emptyList(),
+    branchTreeNodes: List<com.pi.app.data.model.BranchTreeNode> = emptyList(),
+    activeLeafId: String? = null,
+    onNavigateToEntry: (String) -> Unit = {},
     isCompacting: Boolean = false,
     isPinned: Boolean = false,
     onBack: () -> Unit,
@@ -375,6 +378,7 @@ fun ChatScreen(
     val mediaViewport = remember { MediaViewportState() }
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
+    var showBranchTreeSheet by remember { mutableStateOf(false) }
     var showToolPresetSheet by remember { mutableStateOf(false) }
     var showToolDefinitionsSheet by remember { mutableStateOf(false) }
     // 通用查看器（bash 完整输出 / 文件内容 / 图片）：一个面板复用，避免各处各弹一种 UI
@@ -1272,16 +1276,45 @@ fun ChatScreen(
                             }
                         }
 
-                        // 第二行：纯会话标题。
-                        // 原先这一行是「状态点 + （重连文案 / Agent 阶段文案 / 会话标题）」三选一，
-                        // 等于把标题行当状态栏用；正文与底部脉冲条已经能看到完整状态，这里不再重复报状态。
-                        Text(
-                            text = sessionTitle.ifBlank { "未命名会话" },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = theme.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        // 第二行：会话标题 + 分支树入口胶囊
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = sessionTitle.ifBlank { "未命名会话" },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = theme.textSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (branchTreeNodes.isNotEmpty()) {
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Surface(
+                                    shape = RoundedCornerShape(4.dp),
+                                    color = theme.surfaceContainer,
+                                    border = BorderStroke(0.5.dp, theme.primary.copy(alpha = 0.5f)),
+                                    modifier = Modifier.clickable { showBranchTreeSheet = true }
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.AltRoute,
+                                            contentDescription = "查看分支拓扑",
+                                            modifier = Modifier.size(11.dp),
+                                            tint = theme.primary
+                                        )
+                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Text(
+                                            text = "⑂ 分支",
+                                            fontSize = 9.5.sp,
+                                            color = theme.primary,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
                 actions = {
@@ -2724,6 +2757,19 @@ fun ChatScreen(
                 onCompactContext()
             },
             onDismiss = { showHudDialog = false }
+        )
+    }
+
+    if (showBranchTreeSheet) {
+        BranchTreeBottomSheet(
+            treeNodes = branchTreeNodes,
+            activeLeafId = activeLeafId,
+            isAgentBusy = isAgentBusy,
+            onSelectEntry = { targetId ->
+                showBranchTreeSheet = false
+                onNavigateToEntry(targetId)
+            },
+            onDismiss = { showBranchTreeSheet = false }
         )
     }
     }

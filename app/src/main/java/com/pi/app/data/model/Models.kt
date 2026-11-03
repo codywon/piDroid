@@ -84,9 +84,9 @@ data class Session(
         get() = WorkspacePaths.identityKey(rawWorkspacePath).ifBlank { "默认工作区" }
 
     private val rawWorkspacePath: String
-        get() = projectRoot?.takeIf { it.isNotBlank() }
+        get() = projectKey?.takeIf { it.isNotBlank() }
+            ?: projectRoot?.takeIf { it.isNotBlank() }
             ?: cwd?.takeIf { it.isNotBlank() }
-            ?: projectKey?.takeIf { it.isNotBlank() }
             ?: "默认工作区"
 
     val workspaceName: String

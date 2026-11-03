@@ -375,6 +375,8 @@ class MainActivity : ComponentActivity() {
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
         var sessionStatsMap by remember { mutableStateOf<Map<String, SessionStatsSummary>>(emptyMap()) }
         var currentCompactionRecords by remember { mutableStateOf<List<CompactionRecord>>(emptyList()) }
+        var currentBranchTreeNodes by remember { mutableStateOf<List<BranchTreeNode>>(emptyList()) }
+        var currentActiveLeafId by remember { mutableStateOf<String?>(null) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
@@ -1155,6 +1157,8 @@ class MainActivity : ComponentActivity() {
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
                 currentCompactionRecords = hist.compactionRecords
+                currentBranchTreeNodes = hist.branchTreeNodes
+                currentActiveLeafId = hist.leafId
                 // 快照是否**缺了本地已有的已落盘条目**（本地跑到快照前面去了）：
                 // 这种快照不能当“权威删除依据”，否则界面会永久停在几分钟前的那一步
                 // （“PC 一直在跑，手机不再往后长”）。
@@ -2745,6 +2749,22 @@ class MainActivity : ComponentActivity() {
                     onExportSession = {
                         exportSessionToHtml(activeSessionId, currentSession?.displayTitle)
                     },
+                    branchTreeNodes = currentBranchTreeNodes,
+                    activeLeafId = currentActiveLeafId,
+                    onNavigateToEntry = { targetEntryId ->
+                        val sid = activeSessionId
+                        if (sid.isNotBlank()) {
+                            lifecycleScope.launch {
+                                Toast.makeText(this@MainActivity, "正在切换分支…", Toast.LENGTH_SHORT).show()
+                                apiClient.navigateTree(sid, targetEntryId).onSuccess {
+                                    syncSessionSnapshot(sid, allowCompletionTransition = false, replaceHistory = true)
+                                    Toast.makeText(this@MainActivity, "已切换至目标分支", Toast.LENGTH_SHORT).show()
+                                }.onFailure { err ->
+                                    Toast.makeText(this@MainActivity, "切换分支失败：${err.message}", Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    },
                     onBack = {
                         completionSettleJob?.cancel()
                         completionSettleJob = null
@@ -2755,6 +2775,8 @@ class MainActivity : ComponentActivity() {
                         isToolExecuting = false
                         isLoadingSessionHistory = false
                         currentCompactionRecords = emptyList()
+                        currentBranchTreeNodes = emptyList()
+                        currentActiveLeafId = null
                         agentPhaseLabel = null
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)

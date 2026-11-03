@@ -5922,4 +5922,102 @@ data class CatalogPreset(
             call.cancel()
         }
     }
+
+    /**
+     * 读取指定工作目录的 Git Worktree 检出集合（GET /api/worktrees?cwd=...）。
+     */
+    suspend fun getWorktrees(cwd: String): Result<WorktreesResult> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val encodedCwd = URLEncoder.encode(cwd, "UTF-8")
+            val req = Request.Builder()
+                .url("$baseUrl/api/worktrees?cwd=$encodedCwd")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val err = runCatching { JsonParser.parseString(bodyStr).asJsonObject.get("error").asString }.getOrNull()
+                        ?: "HTTP ${resp.code}"
+                    Result.failure(IOException(err))
+                } else {
+                    val json = JsonParser.parseString(bodyStr).asJsonObject
+                    Result.success(WorktreeResponseParsing.parse(json))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 为新分支创建 Worktree 检出（POST /api/worktrees）。
+     */
+    suspend fun createWorktree(cwd: String, branch: String): Result<WorktreeItem> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (cwd.isBlank() || branch.isBlank()) return@withContext Result.failure(IllegalArgumentException("路径或分支名不能为空"))
+        try {
+            val payload = JsonObject().apply {
+                addProperty("cwd", cwd)
+                addProperty("branch", branch.trim())
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/worktrees")
+                .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val err = runCatching { JsonParser.parseString(bodyStr).asJsonObject.get("error").asString }.getOrNull()
+                        ?: "HTTP ${resp.code}"
+                    Result.failure(IOException(err))
+                } else {
+                    val json = JsonParser.parseString(bodyStr).asJsonObject
+                    val path = json.get("path")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val b = json.get("branch")?.takeIf { !it.isJsonNull }?.asString ?: branch
+                    Result.success(WorktreeItem(path = path, branch = b, isCurrent = true))
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 移除 Worktree 检出（DELETE /api/worktrees，保留 Git 分支，安全清理本地工作树目录）。
+     */
+    suspend fun deleteWorktree(cwd: String, path: String, force: Boolean = false): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val payload = JsonObject().apply {
+                addProperty("cwd", cwd)
+                addProperty("path", path)
+                if (force) addProperty("force", true)
+            }
+            val req = Request.Builder()
+                .url("$baseUrl/api/worktrees")
+                .delete(gson.toJson(payload).toRequestBody(jsonMediaType))
+                .build()
+            client.newCall(req).execute().use { resp ->
+                val bodyStr = resp.body?.string() ?: "{}"
+                if (!resp.isSuccessful) {
+                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val dirty = json?.get("dirty")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP ${resp.code}"
+                    if (dirty) {
+                        Result.failure(IOException("WORKTREE_DIRTY:$err"))
+                    } else {
+                        Result.failure(IOException(err))
+                    }
+                } else {
+                    Result.success(true)
+                }
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
 }

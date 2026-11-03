@@ -2,6 +2,15 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.80] - 2026-11-03
+
+### 🩹 补齐 ArtifactViewer 中 LaunchedEffect 导入并修复 CI 单元测试
+
+- **文件预览**：补充 `ArtifactViewerFullScreen` 中文件监控自动刷新所需的 `LaunchedEffect` Compose 运行时导入；
+- **发版闭环**：结合工作区持久化记忆治理，确保云端构建流水线绿灯闭环。
+
+---
+
 ## [1.8.79] - 2026-11-03
 
 ### 🩹 修复工作区选区记忆与测试断言对齐
