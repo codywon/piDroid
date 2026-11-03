@@ -40,6 +40,9 @@ node launcher.js --no-pi-web
 默认公网通道是 frp，但它需要网关常驻，所以「自启动」= 让**整条链路**登录后自己起来；
 只单独跑一个 frpc 没有意义（网关不在，隧道通了也是 502）。
 
+触发条件是「用户登录后 20 秒」，不是开机前：pi-web 要读当前用户目录下的 pi 凭据（`%USERPROFILE%\.pi`），
+改用 SYSTEM 账户在登录前启动会读不到，反而起不来。如果希望开着机就有人已登录，开 Windows 自动登录即可。
+
 一次性注册（以当前用户身份运行、只在登录时启动）：
 
 ```powershell
@@ -62,7 +65,15 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settin
 | `start-hidden.cmd` | 真正的守护：切目录 → 轮转日志 → 补依赖 → **单实例守卫** → `launcher.js` 退出后 5 秒重试 |
 | `stop-gateway.ps1` / `.cmd` | 按命令行匹配杀掉整棵树；只碰 `node/cmd/wscript/frpc`，不误伤其它隧道 |
 
-重启后若 30141 上没有 pi-web，`launcher.js` 会自己把它拉起来，无需另外的自启项。
+`launcher.js` 同时托管本地 pi-web（30141），所以**不需要第二个计划任务**：
+
+- 30141 空闲 → 由 `launcher.js` 自己拉起 `pi-web --no-open`（后台常驻，不再自动弹浏览器）；
+- pi-web 进程崩溃 → 同一个 launcher 5 秒后自动重启它（日志里是 `[pi-web] 已退出 ... 5s 后自动重启`）；
+- 30141 已被占用（例如手动开了 `start-piweb.bat`）→ 直接「接入」现有实例，
+  **但不接管它的生命周期**：那个窗口一关，服务就没了。
+
+所以日常**不要**再用 `start-piweb.bat` / `start.bat` 起服务——那是调试入口，它会占住 30141，
+把计划任务降级成旁观者，还得一直挂着黑窗口。要常驻就用计划任务，要停就 `stop-gateway.cmd`。
 
 ### 日常操作
 

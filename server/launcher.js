@@ -210,6 +210,11 @@ function shutdown(exitCode = 0) {
     console.log('\n🛑 正在停止 piDroid 服务并清理后台进程...');
   }
 
+  if (piWebRestartTimer) {
+    clearTimeout(piWebRestartTimer);
+    piWebRestartTimer = null;
+  }
+
   if (piWebProcess && piWebProcess.pid) {
     killProcessTree(piWebProcess.pid);
     piWebProcess = null;
@@ -239,33 +244,20 @@ process.on('SIGTERM', () => shutdown(0));
 process.on('exit', () => shutdown(0));
 
 // 3. 启动本地官方 pi-web 子进程
-async function launchPiWeb() {
-  const isWindows = process.platform === 'win32';
-  
-  // 智能寻找可执行命令
-  let cmd = 'pi-web';
-  let cmdArgs = [];
-  let useShell = false;
+//
+// 这个进程由计划任务（无窗口）托管，所以两件事必须自己做：
+//   * 崩溃后自己重启 —— 没人看着窗口，一次退出就是手机端一直 502，
+//     直到重启任务或电脑为止；
+//   * 传 --no-open / PI_WEB_NO_OPEN=1 —— pi-web 默认会在就绪后打开浏览器，
+//     后台常驻服务不该在桌面上自己弹标签页。
+const PI_WEB_RESTART_DELAY_MS = 5000;
+let piWebRestartTimer = null;
 
-  // 检查是否全局有 pi-web 命令
-  try {
-    const checkCmd = isWindows ? 'where pi-web' : 'which pi-web';
-    execSync(checkCmd, { stdio: 'ignore' });
-    cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
-    useShell = isWindows;
-  } catch (e) {
-    // 若未全局安装，使用 npx 实时拉起最新版
-    cmd = isWindows ? 'npx.cmd' : 'npx';
-    cmdArgs = ['@agegr/pi-web@latest'];
-    useShell = isWindows;
-  }
-
-  console.log(`[1/3] 正在启动官方原生 pi-web 服务 (${cmd} ${cmdArgs.join(' ')})...`);
-
+function spawnPiWeb(cmd, cmdArgs, useShell) {
   const proc = spawn(cmd, cmdArgs, {
     stdio: ['ignore', 'pipe', 'inherit'],
     shell: useShell,
-    env: { ...process.env, PORT: '30141' }
+    env: { ...process.env, PORT: '30141', PI_WEB_NO_OPEN: '1' }
   });
 
   proc.on('error', (err) => {
@@ -278,6 +270,47 @@ async function launchPiWeb() {
     if (text.includes('Ready') || text.includes('ready') || text.includes('http://')) {
       process.stdout.write(`    [pi-web] ${text.trim()}\n`);
     }
+  });
+
+  return proc;
+}
+
+function launchPiWeb() {
+  const isWindows = process.platform === 'win32';
+
+  // 智能寻找可执行命令
+  let cmd = 'pi-web';
+  let cmdArgs = ['--no-open'];
+  let useShell = false;
+
+  // 检查是否全局有 pi-web 命令
+  try {
+    const checkCmd = isWindows ? 'where pi-web' : 'which pi-web';
+    execSync(checkCmd, { stdio: 'ignore' });
+    cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
+    useShell = isWindows;
+  } catch (e) {
+    // 若未全局安装，使用 npx 实时拉起最新版
+    cmd = isWindows ? 'npx.cmd' : 'npx';
+    cmdArgs = ['@agegr/pi-web@latest', '--no-open'];
+    useShell = isWindows;
+  }
+
+  console.log(`[1/3] 正在启动官方原生 pi-web 服务 (${cmd} ${cmdArgs.join(' ')})...`);
+
+  const proc = spawnPiWeb(cmd, cmdArgs, useShell);
+
+  proc.on('exit', (code, signal) => {
+    // 已经换代（被重启后的新进程取代）或正在退出：不重复拉起
+    if (proc !== piWebProcess || isShuttingDown) return;
+    console.log(
+      `[pi-web] 已退出 (code=${code}, signal=${signal})，${PI_WEB_RESTART_DELAY_MS / 1000}s 后自动重启...`
+    );
+    piWebRestartTimer = setTimeout(() => {
+      piWebRestartTimer = null;
+      if (isShuttingDown) return;
+      piWebProcess = launchPiWeb();
+    }, PI_WEB_RESTART_DELAY_MS);
   });
 
   return proc;
