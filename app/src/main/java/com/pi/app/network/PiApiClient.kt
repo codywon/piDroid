@@ -354,7 +354,14 @@ class PiApiClient(private val prefs: AppPreferences) {
                 emptyList()
             }
 
-            val enrichedList = rawList.map { s ->
+            // 侧聊（session relation.kind = "side"）与子代理（"subagent"）在 pi-web 里
+            // 从不是侧栏行 —— 它自己的 `isHiddenRelation()` 就是按这两个 kind 过滤的。
+            // 不过滤的话，用户在 PC 上开一个侧聊，手机上就会多出一条看起来像普通会话
+            // 的条目（同一段对话两份入口）。
+            // 旧版 pi-web 不下发 `relation` 时为 null，过滤等于不生效，向后兼容。
+            val visibleList = rawList.filter { !it.isHiddenFamilyMember() }
+
+            val enrichedList = visibleList.map { s ->
                 s.copy(
                     isRunning = runningIds.contains(s.id),
                     awaitingInput = s.awaitingInput || awaitingIds.contains(s.id)

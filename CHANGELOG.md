@@ -2,6 +2,16 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.69] - 2026-11-03
+
+### 🚀 适配 pi-web 0.14 / pi 1.5.0：侧聊与子代理不再混入会话列表
+
+- **会话列表不再混入侧聊与子代理**：pi-web 0.14 用 `SessionInfo.relation.kind`（`side` | `subagent` | `fork`）标记继生会话，它自己的侧栏靠 `isHiddenRelation()` 把前两者藏起来。App 之前完全不解析该字段，于是 PC 上开一个侧聊，手机上就会多出一条看起来像普通会话的条目。现在新增 `SessionRelation`，解析 `GET /api/sessions` 时按 `kind` 过滤；`fork` 仍是顶层会话，**旧版网关不下发 `relation` 时判定为可见**（向后兼容）；
+- **伴侣网关依赖升到 pi 1.5.0**（`@earendil-works/pi-coding-agent` / `pi-ai` 1.4.0 → 1.5.0）：pi 1.5 唯一的破坏性变更是「工具参数校验改用 `@earendil-works/pi-schema`」，而网关的提示词增强走 `ModelRuntime.completeSimple`、**不传 tools**，因此不受影响。已实测 `ModelRuntime.create()` 正常、目录可枚举 1602 个模型、`models.json` 里 codywon / routergo / deepseek 三家的自定义模型全部能解析；
+- **验证**：网关 90 个自动化用例全绿；App 侧新增 8 个纯 JVM 用例覆盖 `relation` 可见性（side/subagent 隐藏、fork 可见、无 relation 可见、未知 kind 不隐藏、大小写不敏感、其余字段解析不受影响）。
+
+---
+
 ## [1.8.68] - 2026-11-03
 
 ### 🩹 修复「带截图的提问在模型答完后又在底部重复出现」

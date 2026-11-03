@@ -51,8 +51,18 @@ data class Session(
     @SerializedName("cost") val cost: Double = 0.0,
     @SerializedName("active") val active: Boolean = false,
     val isRunning: Boolean = false,
-    val awaitingInput: Boolean = false
+    val awaitingInput: Boolean = false,
+    /** pi-web 的 `SessionInfo.relation`：侧聊 / 子代理 / fork 的来源关系。 */
+    @SerializedName("relation") val relation: SessionRelation? = null
 ) {
+    /**
+     * 是否属于“不应当出现在会话列表里”的家庭成员。
+     *
+     * 对齐 pi-web 的 `isHiddenRelation()`：`subagent` 与 `side` 都是在另一个会话里
+     * 打开的继生对话，pi-web 自己的侧栏不会为它们画行；fork 则仍是顶层会话。
+     * 旧版网关不下发 `relation` 时它为 null，判定为 false（不隐藏）。
+     */
+    fun isHiddenFamilyMember(): Boolean = relation?.isHiddenFromList == true
     val displayTitle: String
         get() = name?.takeIf { it.isNotBlank() }
             ?: title?.takeIf { it.isNotBlank() }
@@ -94,6 +104,27 @@ data class Session(
      */
     val isLive: Boolean
         get() = isRunning || active
+}
+
+/**
+ * 会话之间的来源关系（pi-web `SessionInfo.relation`，0.14 起新增 `side`）。
+ *
+ * 只建模判断可见性所需的 `kind`；其余字段（profile/description/status 等）
+ * 目前 App 没有对应 UI，不读就不会因上游改字段而崩。
+ */
+data class SessionRelation(
+    @SerializedName("kind") val kind: String? = null,
+    @SerializedName("parentSessionId") val parentSessionId: String? = null
+) {
+    /** pi-web 的 `isHiddenRelation()`：这两种关系不从侧栏独立成行。 */
+    val isHiddenFromList: Boolean
+        get() = kind.equals(KIND_SUBAGENT, ignoreCase = true) || kind.equals(KIND_SIDE, ignoreCase = true)
+
+    companion object {
+        const val KIND_SUBAGENT = "subagent"
+        const val KIND_SIDE = "side"
+        const val KIND_FORK = "fork"
+    }
 }
 
 /**
