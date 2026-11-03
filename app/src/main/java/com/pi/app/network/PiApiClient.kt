@@ -138,6 +138,10 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     private val lagRetryCooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    /** 会话树形状认不出来的日志只报一次（进程内），见 [warnUnknownTreeShape]。 */
+    @Volatile
+    private var warnedUnknownTreeShape = false
+
     /**
      * 模型目录（models.json + 内置注册表）里各模型的真实 contextWindow，键为 `provider:modelId` 小写。
      *
@@ -263,10 +267,18 @@ class PiApiClient(private val prefs: AppPreferences) {
      *
      * 重试前 `evictAll()`：把连接池里的可疑旧连接全部清掉，保证第二次一定是新连接，
      * 否则复用同一条半开连接只会再超一次。SSE 用的是独立连接池（PiSseClient），不受影响。
+     *
+     * [attempts] 供「上面已经有自己的重试逻辑」的调用方传 1：`getSessionDetail` 发现分支滞后时
+     * 会再补一次 `force=1`，那里如果又叠 2 次尝试，单个同步槽最坏会变成 4 个请求 × 30s。
      */
-    private fun readGet(req: Request, httpClient: OkHttpClient = readClient): ReadPayload {
+    private fun readGet(
+        req: Request,
+        httpClient: OkHttpClient = readClient,
+        attempts: Int = 2
+    ): ReadPayload {
+        val maxAttempts = attempts.coerceIn(1, 2)
         var lastError: IOException? = null
-        for (attempt in 1..2) {
+        for (attempt in 1..maxAttempts) {
             val startedAt = System.currentTimeMillis()
             try {
                 httpClient.newCall(req).execute().use { response ->
@@ -283,10 +295,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val elapsed = System.currentTimeMillis() - startedAt
                 Log.w(
                     "PiNet",
-                    "GET ${req.url.encodedPath} failed in ${elapsed}ms (attempt $attempt/2): " +
+                    "GET ${req.url.encodedPath} failed in ${elapsed}ms (attempt $attempt/$maxAttempts): " +
                         "${e.javaClass.simpleName}: ${e.message}"
                 )
-                if (attempt == 2) break
+                if (attempt == maxAttempts) break
                 httpClient.connectionPool.evictAll()
             }
         }
@@ -510,6 +522,11 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 以前只认平铺形状，嵌套树直接落空，`entries` 分支形同死码：App 永远只能看到
         // `context.messages` 的尾部窗口，PC 上的整段执行过程在手机上没有入口。
         val treeEntries = SessionBranchWindow.flattenTree(json.get("tree"))
+        if (treeEntries == null) {
+            val rawTree = json.get("tree")
+            val nonEmptyArray = rawTree != null && rawTree.isJsonArray && rawTree.asJsonArray.size() > 0
+            if (nonEmptyArray) warnUnknownTreeShape(json)
+        }
         val entriesArr = when {
             treeEntries != null && treeEntries.size() > 0 -> treeEntries
             json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
@@ -528,6 +545,8 @@ class PiApiClient(private val prefs: AppPreferences) {
             // 切窗按 pi 的 tail 语义：**只数可见消息**（user/assistant/压缩里程碑），不数 toolResult。
             // 旧实现直接切最后 `tail` 个原始条目，工具密集的回合会被切成一副骨架。
             // 同时保证窗口不比 context 窗口更短（条目树可用不该成为首屏缩水）。
+            // 注：`tail > 100` 是大批量路径（见上面 fetchFullContextPages），此时预算装不满，
+            // 窗口会退化成整条分支 —— 这是有意的「全量」语义，不是疏漏。
             val roles = (0 until normalizedEntryMessages.size()).map { i ->
                 roleOfMessage(normalizedEntryMessages.get(i))
             }
@@ -628,13 +647,14 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 响应自带 leafId，而 context 窗口是从 leaf 往回走的；两者对不上就是「滞后快照」：
         // stats（覆盖全部 entry）是新的、context（按 leaf 往回走）是旧的。
         // 以前完全无感，于是 App 拿着几分钟前的尾巴当权威，把本地更新的部分截掉了。
-        val contextLastEntryId: String? = initialEntryIds?.let { ids ->
-            if (ids.size() <= 0) {
-                null
-            } else {
-                ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
+        val contextLastEntryId: String? = lastMessageEntryId(initialCtxMsgs)
+            ?: initialEntryIds?.let { ids ->
+                if (ids.size() <= 0) {
+                    null
+                } else {
+                    ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
+                }
             }
-        }
         val branchLagged = SessionBranchWindow.branchLagsBehindLeaf(
             payloadLeafId = json.get("leafId")?.takeIf { !it.isJsonNull }?.asString,
             contextLastEntryId = contextLastEntryId
@@ -696,7 +716,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
                     .get()
                     .build()
-                val payload = readGet(req, snapshotClient)
+                val payload = readGet(req, snapshotClient, attempts = if (force) 1 else 2)
                 if (payload.code !in 200..299) {
                     lastFailure = readFailure(payload, "/api/sessions/{id}")
                     if (force) return@withContext Result.failure(lastFailure ?: IOException("会话快照请求失败"))
@@ -710,6 +730,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                     if (force) {
                         // force=1 也修不好：这轮不再徒劳重试，冷却一段时间。
+                        // 上限保护：长期不打开的会话没必要一直占着这条记录。
+                        if (lagRetryCooldownUntil.size > 64) lagRetryCooldownUntil.clear()
                         lagRetryCooldownUntil[sessionId] = System.currentTimeMillis() + LAG_RETRY_COOLDOWN_MS
                     }
                 } else {
@@ -733,6 +755,19 @@ class PiApiClient(private val prefs: AppPreferences) {
             return false
         }
         return true
+    }
+
+    /**
+     * 会话树格式认不出来时只报一次（进程内）。
+     *
+     * 必要性：pi-web 上次把 `tree` 改成嵌套数组时，旧解析静默回落 `context.messages`，
+     * 结果「PC 跑了几十步、手机只到中途」这种缺陷只能靠肉眼看出来。一条 W 日志就够了。
+     */
+    private fun warnUnknownTreeShape(json: JsonObject) {
+        if (warnedUnknownTreeShape) return
+        warnedUnknownTreeShape = true
+        val format = json.get("treeFormat")?.takeIf { !it.isJsonNull }?.let { runCatching { it.asString }.getOrNull() }
+        Log.w("PiSync", "unrecognized session tree shape (treeFormat=$format) → falling back to context.messages")
     }
 
     // ── 会话快照磁盘缓存：再次打开会话时先回放上次的正文，不必等网络 ──
@@ -987,6 +1022,20 @@ class PiApiClient(private val prefs: AppPreferences) {
             obj
         }
         return msg.get("role")?.takeIf { !it.isJsonNull }?.asString
+    }
+
+    /** 消息数组里最后一条带 entryId 的 id（判断「窗口有没有走到 leaf」的主依据）。 */
+    private fun lastMessageEntryId(msgs: JsonArray?): String? {
+        if (msgs == null) return null
+        for (i in msgs.size() - 1 downTo 0) {
+            val el = msgs.get(i)
+            if (!el.isJsonObject) continue
+            val obj = el.asJsonObject
+            val id = obj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
+                ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            if (!id.isNullOrBlank()) return id
+        }
+        return null
     }
 
     /** 消息数组里第一条带 entryId 的 id（作为向前翻页的游标）。 */

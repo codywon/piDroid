@@ -24,11 +24,12 @@ object SessionBranchWindow {
     /**
      * pi 的 `countsTowardTail` 语义：只有这些角色占用 tail 预算。
      *
-     * `compactionSummary` / `branchSummary` 是本项目把 compaction / branch_summary 条目
-     * 合成出来的合成消息，它们也是可见里程碑，同样占预算。
+     * 对齐参考实现（pi-web `lib/session-reader.ts`）：compaction 条目算，`branch_summary` **不**算
+     * ——后者只是分支切换的旁注，把它算进预算会让窗口比 PC 端短一条。
+     * `compactionSummary` 是本项目把 compaction 条目合成出的可见消息。
      */
     fun roleCountsTowardTail(role: String?): Boolean = when (role) {
-        "user", "assistant", "compactionSummary", "branchSummary" -> true
+        "user", "assistant", "compactionSummary" -> true
         else -> false
     }
 
@@ -76,22 +77,20 @@ object SessionBranchWindow {
      */
     fun flattenTree(tree: JsonElement?): JsonArray? {
         if (tree == null || tree.isJsonNull) return null
-        if (tree.isJsonArray) {
-            val out = JsonArray()
-            for (el in tree.asJsonArray) collectNode(el, out)
-            return out.takeIf { it.size() > 0 }
-        }
+        if (tree.isJsonArray) return flattenRoots(tree.asJsonArray)
         if (!tree.isJsonObject) return null
         val obj = tree.asJsonObject
         obj.get("entries")?.takeIf { it.isJsonArray }?.let { return it.asJsonArray }
-        obj.get("roots")?.takeIf { it.isJsonArray }?.let { roots ->
-            val out = JsonArray()
-            for (el in roots.asJsonArray) collectNode(el, out)
-            return out.takeIf { it.size() > 0 }
-        }
+        obj.get("roots")?.takeIf { it.isJsonArray }?.let { return flattenRoots(it.asJsonArray) }
         if (!obj.has("entry") && !obj.has("children")) return null
         val out = JsonArray()
         collectNode(obj, out)
+        return out.takeIf { it.size() > 0 }
+    }
+
+    private fun flattenRoots(roots: JsonArray): JsonArray? {
+        val out = JsonArray()
+        for (el in roots) collectNode(el, out)
         return out.takeIf { it.size() > 0 }
     }
 

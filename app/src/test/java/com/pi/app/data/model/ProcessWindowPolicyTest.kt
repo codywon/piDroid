@@ -15,26 +15,27 @@ import org.junit.Test
 class ProcessWindowPolicyTest {
 
     @Test
-    fun `短回合不做任何折叠`() {
+    fun `长回合一次展开就能看全`() {
+        // 40 条窗口时代的回归：真实长回合（几十条过程项）被截掉一大截，
+        // 看上去就像“App 只同步了最近几步”（pi-web 的 ProcessDetailsGroup 展开是全量的）。
         assertEquals(12, ProcessWindowPolicy.initialLimit(12))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(12, ProcessWindowPolicy.initialLimit(12)))
         assertEquals(40, ProcessWindowPolicy.initialLimit(40))
-        // 真实长回合（几十条过程项）必须一次展开看全，不能被截断
-        assertEquals(137, ProcessWindowPolicy.initialLimit(137))
-        assertEquals(0, ProcessWindowPolicy.hiddenCount(137, ProcessWindowPolicy.initialLimit(137)))
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.initialLimit(ProcessWindowPolicy.INITIAL_WINDOW))
+        assertEquals(0, ProcessWindowPolicy.hiddenCount(83, ProcessWindowPolicy.initialLimit(83)))
     }
 
     @Test
     fun `超长回合首屏只渲染最近 N 条`() {
-        val total = 437
+        val total = ProcessWindowPolicy.INITIAL_WINDOW + 300
         val limit = ProcessWindowPolicy.initialLimit(total)
         assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, limit)
-        assertEquals(237, ProcessWindowPolicy.hiddenCount(total, limit))
+        assertEquals(300, ProcessWindowPolicy.hiddenCount(total, limit))
     }
 
     @Test
     fun `逐次展开直到全部`() {
-        val total = 437
+        val total = ProcessWindowPolicy.INITIAL_WINDOW + 300
         var limit = ProcessWindowPolicy.initialLimit(total)
         var taps = 0
         while (limit < total) {
@@ -45,7 +46,9 @@ class ProcessWindowPolicyTest {
         }
         assertEquals(total, limit)
         assertEquals(0, ProcessWindowPolicy.hiddenCount(total, limit))
-        assertEquals(3, taps) // 200 -> 300 -> 400 -> 437
+        // 期望次数由常量推导，改窗口/步长不该再把这条测试弄红
+        val expectedTaps = (300 + ProcessWindowPolicy.WINDOW_STEP - 1) / ProcessWindowPolicy.WINDOW_STEP
+        assertEquals(expectedTaps, taps)
     }
 
     @Test

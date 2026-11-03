@@ -34,9 +34,9 @@ class SessionBranchWindowTest {
             ]
             """.trimIndent()
         )
-        val flat = SessionBranchWindow.flattenTree(json)
-        assertEquals(3, flat!!.size())
-        assertEquals(listOf("a", "b", "c"), flat!!.map { it.asJsonObject.get("id").asString })
+        val flat = requireNotNull(SessionBranchWindow.flattenTree(json))
+        assertEquals(3, flat.size())
+        assertEquals(listOf("a", "b", "c"), flat.map { it.asJsonObject.get("id").asString })
     }
 
     @Test
@@ -105,10 +105,27 @@ class SessionBranchWindowTest {
     }
 
     @Test
+    fun `节点缺 entry 对象时跳过它但继续走子节点`() {
+        // 形状漂移的兜底：一个节点可能只有 children（压缩后合并出来的中间层）
+        val json = JsonParser.parseString(
+            """[{"children":[{"entry":{"id":"a","type":"message"},"children":[]}]}]"""
+        )
+        val ids = SessionBranchWindow.flattenTree(json)!!.map { it.asJsonObject.get("id").asString }
+        assertEquals(listOf("a"), ids)
+    }
+
+    @Test
     fun `压缩里程碑占预算`() {
         val roles = listOf("compactionSummary", "user", "assistant")
         assertEquals(0, SessionBranchWindow.visibleTailStart(roles, 3))
         assertEquals(2, SessionBranchWindow.visibleTailStart(roles, 1))
+    }
+
+    @Test
+    fun `分支摘要不占预算（对齐 pi 的 countsTowardTail）`() {
+        // branch_summary 只是分支切换的旁注，算进预算会让窗口比 PC 端短一条
+        val roles = listOf("branchSummary", "user", "assistant")
+        assertEquals(1, SessionBranchWindow.visibleTailStart(roles, 2))
     }
 
     @Test

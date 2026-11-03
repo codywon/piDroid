@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.72] - 2026-11-03
+
+### 🧹 审查跟进第二轮（评审里剩下的优化项）
+
+- **过程组窗口 200 → 120（步长 100 → 80）**：200 已经越过了这个策略存在的理由（「上百张卡片同帧组合」会卡），120 既能覆盖真实长回合、又把组合量压回有界；测试改为从常量推导展开次数，以后改窗口/步长不会再把它弄红；
+- **只追加模式不再可能“粘死”**：新增 `STALE_STREAK_BEFORE_SERVER_WINS = 3` —— 连续 3 轮「快照缺本地条目」且会话已**空闲**时，允许服务端当一次权威（服务端真的丢了条目、客户端又没走分支导航时，界面不会永久显示已不存在的内容）。在跑时永远不从，不会掉断在途输出；
+- **只追加模式下的工具卡片补信息**：服务端已有结果、本地卡片还在转圈（SSE 断在 `tool_execution_end` 之前）时，单向补进 `output / durationMs / isError` 并把 `isRunning` 置 false；
+- **不再一次同步叠两层重试**：`readGet()` 新增 `attempts` 参数，`force=1` 那一趟只给 1 次单试 —— 之前最坏是「内层 2 次 × 外层 2 趟 = 4 个请求 × 30s」占住一个同步槽；
+- **可诊断性**：会话树形状认不出来时打一条一次性 W 日志（带 `treeFormat`）—— 上次 pi-web 把 `tree` 改成嵌套数组就是静默回落，缺陷只能靠肉眼看出来；`lagRetryCooldownUntil` 加上 64 条上限；`contextLastEntryId` 改为优先取末条消息自身的 `entryId`，平行数组只作兜底；
+- **对齐参考实现 / 可读性**：`roleCountsTowardTail` 不再把 `branchSummary` 算进预算（pi 的 `countsTowardTail` 只算 user/assistant/compaction）；`flattenTree` 里的非局部返回改成独立的 `flattenRoots()`；补充「节点缺 entry 对象时跳过自身但仍走子节点」的用例，测试里的双 `!!` 改用 `requireNotNull`。
+- **验证**：新增 5 个纯 JVM 用例（工具结果单向补全、只追加模式的空闲出口、分支摘要不占预算、形状漂移兜底）。
+
+---
+
 ## [1.8.71] - 2026-11-03
 
 ### 🧹 1.8.70 的代码审查修正（执行过程同步链）

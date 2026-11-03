@@ -152,6 +152,21 @@ object SessionSnapshotMerge {
     }
 
     /**
+     * 连续多少轮「快照缺本地条目」之后，允许服务端权威覆盖一次（只在会话已空闲时）。
+     *
+     * 为什么要出口：只追加模式是对付滞后快照的止血手段，但如果服务端**真的**丢了一些条目
+     * （会话裁剪 / 分支重写而客户端没走 replaceHistory），界面会永久显示已不存在的内容。
+     * 会话空闲时本机的在途内容已经落盘，此时以服务端为准是安全的；在跑时绝不动（否则会扼断在途输出）。
+     */
+    const val STALE_STREAK_BEFORE_SERVER_WINS = 3
+
+    /** 本轮对账是否该放弃只追加模式、改以服务端为准。详见 [STALE_STREAK_BEFORE_SERVER_WINS]。 */
+    fun shouldTrustServerOverLocal(staleStreak: Int, effectiveRunning: Boolean): Boolean {
+        if (effectiveRunning) return false
+        return staleStreak >= STALE_STREAK_BEFORE_SERVER_WINS
+    }
+
+    /**
      * 将本地消息列表 [local] 与服务端权威快照 [synced] 进行对账合并（纯 JVM，可单测）。
      *
      * 核心契约与不变式：
@@ -298,12 +313,32 @@ object SessionSnapshotMerge {
                     // 快照落后于本地：同一条消息保留本地（更新）的正文/思考/工具输出，
                     // 只把快照里才有、本地缺的元数据补上。否则一次滞后快照就会把已经流下来的
                     // 内容回滚成几百字前的样子。快照追上后（snapshotStale=false）恢复正常以服务端为准。
+                    //
+                    // 工具卡片例外：服务端已经有结果的，必须单向补进来。否则 SSE 一旦断在
+                    // `tool_execution_end` 之前，那张卡会永远转圈（本机再也等不到结束事件）。
+                    val localTool = localItem.toolCall
+                    val diskTool = diskItem.toolCall
+                    val resolvedTool = if (localTool != null && diskTool != null &&
+                        localTool.isRunning && localTool.output.isNullOrBlank() && !diskTool.output.isNullOrBlank()
+                    ) {
+                        localTool.copy(
+                            output = diskTool.output,
+                            durationMs = diskTool.durationMs,
+                            isError = diskTool.isError,
+                            isRunning = false,
+                            fullOutputPath = diskTool.fullOutputPath ?: localTool.fullOutputPath,
+                            mediaList = if (diskTool.mediaList.isNotEmpty()) diskTool.mediaList else localTool.mediaList
+                        )
+                    } else {
+                        localTool
+                    }
                     reconciledCommitted.add(
                         localItem.copy(
                             entryId = localItem.entryId ?: diskItem.entryId,
                             usageSummary = localItem.usageSummary ?: diskItem.usageSummary,
                             modelName = localItem.modelName ?: diskItem.modelName,
-                            thinkingDurationSec = localItem.thinkingDurationSec ?: diskItem.thinkingDurationSec
+                            thinkingDurationSec = localItem.thinkingDurationSec ?: diskItem.thinkingDurationSec,
+                            toolCall = resolvedTool
                         )
                     )
                 } else {

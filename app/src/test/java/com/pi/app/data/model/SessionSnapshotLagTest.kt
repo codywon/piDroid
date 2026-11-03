@@ -132,6 +132,42 @@ class SessionSnapshotLagTest {
     }
 
     @Test
+    fun `滞后快照仍要把服务端已经跑完的工具结果补进来`() {
+        // SSE 断在 tool_execution_end 之前时，本机卡片会停在转圈；
+        // 服务端快照里已经有结果就必须单向补，否则卡片永远不停。
+        val local = listOf(
+            item("t1", MessageRole.TOOL, "", entryId = "e9", timestamp = 5_000L).copy(
+                toolCall = ToolCallInfo(toolName = "bash", command = "npm test", isRunning = true)
+            )
+        )
+        val synced = listOf(
+            item("s1", MessageRole.TOOL, "", entryId = "e9", timestamp = 5_000L).copy(
+                toolCall = ToolCallInfo(toolName = "bash", command = "npm test", output = "90 passed", durationMs = 1_200L)
+            )
+        )
+
+        val merged = SessionSnapshotMerge.reconcileList(
+            local = local,
+            synced = synced,
+            effectiveRunning = true,
+            snapshotStale = true
+        )
+
+        assertEquals(1, merged.size)
+        val tool = requireNotNull(merged[0].toolCall)
+        assertEquals("90 passed", tool.output)
+        assertFalse("服务端已经有结果，卡片就不能继续转圈", tool.isRunning)
+        assertEquals(1_200L, tool.durationMs)
+    }
+
+    @Test
+    fun `只追加模式不会永久粘住——空闲多轮后服务端重新当权`() {
+        assertFalse("在跑时绝不能以服务端为准，会掉断在途输出", SessionSnapshotMerge.shouldTrustServerOverLocal(99, true))
+        assertFalse(SessionSnapshotMerge.shouldTrustServerOverLocal(1, false))
+        assertTrue(SessionSnapshotMerge.shouldTrustServerOverLocal(SessionSnapshotMerge.STALE_STREAK_BEFORE_SERVER_WINS, false))
+    }
+
+    @Test
     fun `滞后快照不会让乐观提问或已作废分支复活`() {
         // 本地有一条尚未落盘的乐观提问：滞后时仍然保留（既有契约）
         val local = listOf(

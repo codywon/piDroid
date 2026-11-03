@@ -318,6 +318,8 @@ class MainActivity : ComponentActivity() {
         var lastHistorySyncErrorAt by remember { mutableStateOf(0L) }
         // 「快照滞后」日志的节流时间戳：滞后会持续存在，不节流就是每轮巡检一条 W 日志
         var lastStaleSnapshotLogAt by remember { mutableStateOf(0L) }
+        // 连续多少轮对账发现「快照缺本地条目」（只追加模式的出口判据，见 SessionSnapshotMerge）
+        var staleSnapshotStreak by remember { mutableStateOf(0) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
         var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
@@ -1129,8 +1131,22 @@ class MainActivity : ComponentActivity() {
                 // （“PC 一直在跑，手机不再往后长”）。
                 // 注意：用 hist.messages 判定（与 synced 仅差 isStreaming 标记，不影响 entryId），
                 // 因为翻页游标那段在本块之外也要用同一个结论。
-                val snapshotStale = !replaceHistory &&
+                val staleThisRound = !replaceHistory &&
                     SessionSnapshotMerge.isSnapshotOlderThanLocal(messages, hist.messages)
+                staleSnapshotStreak = if (staleThisRound) staleSnapshotStreak + 1 else 0
+                // 出口：连续多轮都对不上、且会话已空闲 → 以服务端为准一次（避免永久只追加）。
+                val serverWins = SessionSnapshotMerge.shouldTrustServerOverLocal(
+                    staleSnapshotStreak,
+                    effectiveRunning
+                )
+                val snapshotStale = staleThisRound && !serverWins
+                if (serverWins) {
+                    staleSnapshotStreak = 0
+                    android.util.Log.i(
+                        "PiSync",
+                        "stale snapshot for $sessionId persisted while idle → server becomes authoritative once"
+                    )
+                }
 
                 if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
