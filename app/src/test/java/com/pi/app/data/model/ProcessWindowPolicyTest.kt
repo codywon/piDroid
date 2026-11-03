@@ -75,7 +75,9 @@ class ProcessWindowPolicyTest {
     @Test
     fun `窗口不会越过总数也不会反向缩回`() {
         val total = ProcessWindowPolicy.INITIAL_WINDOW + 15
-        assertEquals(total, ProcessWindowPolicy.limitFor(total, 0))
+        // 总数超过窗口时默认只看一个窗口；展开一步就已封顶到总数（120 + 80 > 135）
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.limitFor(total, 0))
+        assertEquals(total, ProcessWindowPolicy.limitFor(total, 1))
         assertEquals(total, ProcessWindowPolicy.limitFor(total, 5))
         assertEquals(0, ProcessWindowPolicy.limitFor(0, 0))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(0, 0))
