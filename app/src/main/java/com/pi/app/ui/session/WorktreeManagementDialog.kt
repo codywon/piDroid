@@ -15,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -219,12 +220,11 @@ private fun WorktreeCardItem(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     if (isCur) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(theme.success)
-                        )
+                        Surface(
+                            modifier = Modifier.size(7.dp),
+                            shape = CircleShape,
+                            color = theme.success
+                        ) {}
                     }
                     Text(
                         text = item.branch ?: "(detached)",

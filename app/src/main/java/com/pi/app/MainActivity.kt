@@ -2047,6 +2047,9 @@ class MainActivity : ComponentActivity() {
 
             // 切换会话必须清空上一场的「更早记录」，否则会把别人的历史拼进来
             olderMessages = emptyList()
+            currentCompactionRecords = emptyList()
+            currentBranchTreeNodes = emptyList()
+            currentActiveLeafId = null
             hasEarlierOnServer = false
             earlierTurnCount = 0
             olderCursor = null
@@ -2776,9 +2779,11 @@ class MainActivity : ComponentActivity() {
                             lifecycleScope.launch {
                                 Toast.makeText(this@MainActivity, "正在切换分支…", Toast.LENGTH_SHORT).show()
                                 apiClient.navigateTree(sid, targetEntryId).onSuccess {
+                                    if (currentSession?.id != sid) return@onSuccess
                                     syncSessionSnapshot(sid, allowCompletionTransition = false, replaceHistory = true)
                                     Toast.makeText(this@MainActivity, "已切换至目标分支", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
+                                    if (currentSession?.id != sid) return@onFailure
                                     Toast.makeText(this@MainActivity, "切换分支失败：${err.message}", Toast.LENGTH_LONG).show()
                                 }
                             }
@@ -3777,6 +3782,9 @@ class MainActivity : ComponentActivity() {
                                 messages.clear()
                                 isLoadingSessionHistory = false
                                 olderMessages = emptyList()
+                                currentCompactionRecords = emptyList()
+                                currentBranchTreeNodes = emptyList()
+                                currentActiveLeafId = null
                                 hasEarlierOnServer = false
                                 earlierTurnCount = 0
                                 // 新会话是全新的界面：上一场会话的运行态/在途身份/阶段文案必须跟着清，
