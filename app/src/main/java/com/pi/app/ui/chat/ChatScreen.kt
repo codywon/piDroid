@@ -2307,15 +2307,20 @@ fun ChatScreen(
                                 ) {
                                     // 长回合只渲染最近 N 条（ProcessWindowPolicy）：组内是普通 Column，
                                     // 展开时全部同时组合，上百次工具调用的回合会一次性铺满几十张卡片。
+                                    //
+                                    // 记住的是「用户多展开了几步」，不是窗口绝对值：回合是活的，
+                                    // 每次重组都按**当前**过程项总数重算窗口。以前 remember 的是
+                                    // initialLimit(total)，它冻在首次组合（那时往往只有 1~2 条）上，
+                                    // 界面就变成「12 条消息 · 只显示最新 1 条 + 显示更早的 11 条」。
                                     val processTotal = turn.processItems.size
-                                    var processLimit by remember(turn.turnNumber) {
-                                        mutableIntStateOf(ProcessWindowPolicy.initialLimit(processTotal))
-                                    }
+                                    var extraProcessSteps by remember(turn.turnNumber) { mutableIntStateOf(0) }
+                                    val processLimit =
+                                        ProcessWindowPolicy.limitFor(processTotal, extraProcessSteps)
                                     val hiddenProcessCount =
                                         ProcessWindowPolicy.hiddenCount(processTotal, processLimit)
                                     if (hiddenProcessCount > 0) {
                                         ProcessWindowExpandRow(hiddenCount = hiddenProcessCount) {
-                                            processLimit = ProcessWindowPolicy.nextLimit(processLimit, processTotal)
+                                            extraProcessSteps++
                                         }
                                     }
                                     turn.processItems.takeLast(processLimit).forEach { procItem ->

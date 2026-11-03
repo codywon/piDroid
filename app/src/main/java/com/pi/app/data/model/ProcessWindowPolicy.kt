@@ -26,19 +26,27 @@ object ProcessWindowPolicy {
     /** 每点一次「显示更早」补充的条数。 */
     const val WINDOW_STEP = 80
 
-    /** 首次展开时实际渲染多少条：不超过总数，也不超过窗口。 */
-    fun initialLimit(total: Int, window: Int = INITIAL_WINDOW): Int {
+    /**
+     * 渲染窗口上限 = `min(总数, INITIAL_WINDOW + 用户已展开的步数 * WINDOW_STEP)`。
+     *
+     * 为什么用「已展开的步数」而不是「上一次的窗口值」：[extraSteps] 只能被用户点击 +
+     * 加，而窗口每帧都由**当前总数**重算 —— 回合是活的（每几秒多一条过程项），
+     * 一旦把绝对窗口值缓存起来（例如 `remember { initialLimit(total) }`），
+     * 它就会冻在首次组合时那个 1~2 上，界面就变成「12 条消息只显示最新 1 条 +
+     * 显示更早的 11 条过程」。
+     */
+    fun limitFor(
+        total: Int,
+        extraSteps: Int,
+        window: Int = INITIAL_WINDOW,
+        step: Int = WINDOW_STEP
+    ): Int {
         if (total <= 0) return 0
-        val cap = if (window <= 0) total else window
-        return minOf(total, cap)
-    }
-
-    /** 点一次「显示更早」之后的新窗口上限（单调不减，封顶总数）。 */
-    fun nextLimit(current: Int, total: Int, step: Int = WINDOW_STEP): Int {
-        if (total <= 0) return 0
-        val base = current.coerceAtLeast(0)
-        val next = base + (if (step <= 0) total else step)
-        return next.coerceAtMost(total)
+        val base = if (window <= 0) total else window
+        val steps = extraSteps.coerceAtLeast(0)
+        val extra = if (step <= 0) total else steps.toLong() * step
+        val limit = base.toLong() + extra
+        return if (limit >= total) total else limit.toInt()
     }
 
     /** 还有多少条被折叠（渲染窗口 `_显示更早的 N 条_` 文案用）。 */

@@ -2,6 +2,17 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.74] - 2026-11-03
+
+### 🩹 修复过程折叠组「只显示最新 1 条 + 显示更早的 11 条」
+
+- **现象**：回合在跑时，折叠行明明写着「12 条消息 · 9 次工具调用 · 耗时 1m 8s」，下面却只有一张卡片，再加一行「显示更早的 11 条过程」。
+- **根因**：组内窗口用的是 `remember(turn.turnNumber) { initialLimit(processTotal) }` —— 回合刚起时只有 1 条过程项，窗口就被冻在 1，之后过程项再多也不会重算（只有用户点那行才会变）。
+- **修法**：记住的东西换成「用户多展开了几步」（`extraProcessSteps`），窗口每帧由**当前总数**重算：`limitFor(total, extraSteps) = min(total, INITIAL_WINDOW + extraSteps * WINDOW_STEP)`。回合刚开始 1 条就看 1 条，长到 12 条就显示 12 条，超过 120 条才出现「显示更早」，每点一次多 80 条。
+- **顺带**：`ProcessWindowPolicy` 删除 `initialLimit` / `nextLimit`（被 `limitFor` 取代，避免两套窗口算法共存）；测试同步重写，并新增回归用例「回合在跑时长回合的窗口不会冻结在首次那条」。
+
+---
+
 ## [1.8.73] - 2026-11-03
 
 ### 🩹 修正 1.8.72 引入的「滞后快照」误判（会让界面长期卡在只追加模式）

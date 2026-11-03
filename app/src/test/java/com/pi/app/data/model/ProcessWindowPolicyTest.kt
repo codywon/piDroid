@@ -18,19 +18,19 @@ class ProcessWindowPolicyTest {
     fun `长回合一次展开就能看全`() {
         // 40 条窗口时代的回归：真实长回合（几十条过程项）被截掉一大截，
         // 看上去就像“App 只同步了最近几步”（pi-web 的 ProcessDetailsGroup 展开是全量的）。
-        assertEquals(12, ProcessWindowPolicy.initialLimit(12))
-        assertEquals(0, ProcessWindowPolicy.hiddenCount(12, ProcessWindowPolicy.initialLimit(12)))
-        assertEquals(40, ProcessWindowPolicy.initialLimit(40))
+        assertEquals(12, ProcessWindowPolicy.limitFor(12, 0))
+        assertEquals(0, ProcessWindowPolicy.hiddenCount(12, ProcessWindowPolicy.limitFor(12, 0)))
+        assertEquals(40, ProcessWindowPolicy.limitFor(40, 0))
         // 窗口边界：刚好等于窗口、窗口 +1 各自的表现
-        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.initialLimit(ProcessWindowPolicy.INITIAL_WINDOW))
-        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.initialLimit(ProcessWindowPolicy.INITIAL_WINDOW + 1))
-        assertEquals(0, ProcessWindowPolicy.hiddenCount(83, ProcessWindowPolicy.initialLimit(83)))
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.limitFor(ProcessWindowPolicy.INITIAL_WINDOW, 0))
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.limitFor(ProcessWindowPolicy.INITIAL_WINDOW + 1, 0))
+        assertEquals(0, ProcessWindowPolicy.hiddenCount(83, ProcessWindowPolicy.limitFor(83, 0)))
     }
 
     @Test
     fun `超长回合首屏只渲染最近 N 条`() {
         val total = ProcessWindowPolicy.INITIAL_WINDOW + 300
-        val limit = ProcessWindowPolicy.initialLimit(total)
+        val limit = ProcessWindowPolicy.limitFor(total, 0)
         assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, limit)
         assertEquals(300, ProcessWindowPolicy.hiddenCount(total, limit))
     }
@@ -38,34 +38,56 @@ class ProcessWindowPolicyTest {
     @Test
     fun `逐次展开直到全部`() {
         val total = ProcessWindowPolicy.INITIAL_WINDOW + 300
-        var limit = ProcessWindowPolicy.initialLimit(total)
-        var taps = 0
+        var limit = ProcessWindowPolicy.limitFor(total, 0)
+        var steps = 0
         while (limit < total) {
-            val next = ProcessWindowPolicy.nextLimit(limit, total)
+            val next = ProcessWindowPolicy.limitFor(total, steps + 1)
             assertEquals("窗口必须单调增长", true, next > limit)
             limit = next
-            taps++
+            steps++
         }
         assertEquals(total, limit)
         assertEquals(0, ProcessWindowPolicy.hiddenCount(total, limit))
-        // 期望次数由常量推导，改窗口/步长不该再把这条测试弄红
-        val expectedTaps = (300 + ProcessWindowPolicy.WINDOW_STEP - 1) / ProcessWindowPolicy.WINDOW_STEP
-        assertEquals(expectedTaps, taps)
+        // 期望步数由常量推导，改窗口/步长不该再把这条测试弄红
+        val expectedSteps = (300 + ProcessWindowPolicy.WINDOW_STEP - 1) / ProcessWindowPolicy.WINDOW_STEP
+        assertEquals(expectedSteps, steps)
+    }
+
+    @Test
+    fun `回合在跑时长回合的窗口不会冻结在首次那条`() {
+        // 回归：以前 remember 的是 initialLimit(total)，回合刚起时只有 1 条，
+        // 窗口就永远停在 1 —— 界面显示“12 条消息”却只渲染最新 1 条 + “显示更早的 11 条”。
+        assertEquals(1, ProcessWindowPolicy.limitFor(1, 0))
+        assertEquals(2, ProcessWindowPolicy.limitFor(2, 0))
+        assertEquals(12, ProcessWindowPolicy.limitFor(12, 0))
+        assertEquals(0, ProcessWindowPolicy.hiddenCount(12, ProcessWindowPolicy.limitFor(12, 0)))
+        // 超长回合：默认就看最近一个窗口，多展开一步再多一段
+        val long = ProcessWindowPolicy.INITIAL_WINDOW + ProcessWindowPolicy.WINDOW_STEP + 40
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.limitFor(long, 0))
+        assertEquals(
+            ProcessWindowPolicy.INITIAL_WINDOW + ProcessWindowPolicy.WINDOW_STEP,
+            ProcessWindowPolicy.limitFor(long, 1)
+        )
+        assertEquals(long, ProcessWindowPolicy.limitFor(long, 2))
+        assertEquals("已封顶，不会越过总数", long, ProcessWindowPolicy.limitFor(long, 99))
     }
 
     @Test
     fun `窗口不会越过总数也不会反向缩回`() {
-        assertEquals(10, ProcessWindowPolicy.nextLimit(5, 10))
-        assertEquals(10, ProcessWindowPolicy.nextLimit(10, 10))
-        assertEquals(0, ProcessWindowPolicy.initialLimit(0))
+        val total = ProcessWindowPolicy.INITIAL_WINDOW + 15
+        assertEquals(total, ProcessWindowPolicy.limitFor(total, 0))
+        assertEquals(total, ProcessWindowPolicy.limitFor(total, 5))
+        assertEquals(0, ProcessWindowPolicy.limitFor(0, 0))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(0, 0))
+        assertEquals(0, ProcessWindowPolicy.limitFor(0, 3))
     }
 
     @Test
     fun `异常入参不产出负数窗口`() {
         assertEquals(0, ProcessWindowPolicy.hiddenCount(3, 5))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(-1, -1))
-        assertEquals(0, ProcessWindowPolicy.initialLimit(-5))
-        assertEquals(5, ProcessWindowPolicy.nextLimit(-3, 5))
+        assertEquals(0, ProcessWindowPolicy.limitFor(-5, 0))
+        assertEquals(10, ProcessWindowPolicy.limitFor(10, -3))
+        assertEquals(10, ProcessWindowPolicy.limitFor(10, 0, window = 0))
     }
 }
