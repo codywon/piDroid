@@ -329,6 +329,45 @@ fun ChatScreen(
     // 滚动位置也必须按会话隔离：否则切到新会话时会沿用上一个会话的滚动偏移，
     // 看起来像“打开了一个不从头也不到底的会话”。
     val listState = remember(sessionId) { LazyListState() }
+
+    // ── 「是否跟随到底部」的真相（1:1 对齐 pi-web 的 isNearBottomRef）────────────
+    // 判定用**首条可见项的位移方向**，不是“离底多远”：内容在下方自然增长（新消息、
+    // 图片解码、卡片变高）也会拉开离底距离，那不该被当成用户想离开底部（否则流式输出
+    // 刚跑起来跟随就自己关掉）。见 [ScrollFollowPolicy]。
+    var followTail by remember(sessionId) { mutableStateOf(true) }
+    val distanceToBottom by remember(listState) {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            when {
+                info.totalItemsCount == 0 || last == null -> ScrollFollowPolicy.FAR_FROM_BOTTOM_PX
+                last.index >= info.totalItemsCount - 1 ->
+                    (last.offset + last.size - info.viewportEndOffset).toFloat().coerceAtLeast(0f)
+                // 最后一条还没渲染进视口：至少还有一整行没看到
+                else -> ScrollFollowPolicy.FAR_FROM_BOTTOM_PX
+            }
+        }
+    }
+    LaunchedEffect(listState) {
+        var prevIndex = -1
+        var prevOffset = 0
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .collect { (index, offset) ->
+                if (prevIndex >= 0) {
+                    val scrolledUp = index > prevIndex || (index == prevIndex && offset > prevOffset)
+                    val scrolledDown = index < prevIndex || (index == prevIndex && offset < prevOffset)
+                    val attached = ScrollFollowPolicy.resolveAttached(
+                        wasAttached = followTail,
+                        scrolledUp = scrolledUp,
+                        scrolledDown = scrolledDown,
+                        distanceToBottom = distanceToBottom
+                    )
+                    if (attached != followTail) followTail = attached
+                }
+                prevIndex = index
+                prevOffset = offset
+            }
+    }
     // 列表区域的可见视口：图片/PDF 卡片只有在落进这块矩形之后才会真去取字节，
     // 否则一个回合的过程组展开时（组内所有卡片同时组合）会把整回合的图一次性拉下来。
     val mediaViewport = remember { MediaViewportState() }
@@ -1142,13 +1181,24 @@ fun ChatScreen(
         agentPhaseLabel,
         isImeVisible
     ) {
-        if (conversation.isNotEmpty() && (!userJumpedToHistory || isImeVisible)) {
+        if (conversation.isEmpty()) return@LaunchedEffect
+        if (isImeVisible || followTail) {
             if (!hasInitialScrolled) {
-                // 首屏进入直接瞬间定位到底部，避免长列表逐条滚动造成的屏幕闪现
+                // 首屏（或内容还没量好）：瞬时贴底；**只有真的到底了才认账**，
+                // 否则一帧后新快照又下来一截，界面就停在半路再也回不去（以前就是这样）。
                 scrollToVeryBottom()
-                hasInitialScrolled = true
-            } else if (!listState.canScrollForward || isImeVisible || isAgentBusy) {
-                followToBottomSmoothly()
+                if (!listState.canScrollForward) {
+                    hasInitialScrolled = true
+                    followTail = true
+                }
+            } else {
+                // 落差超过一屏就直接跳：逐屏 animateScrollBy 就是“自动刷屏往下翻”。
+                val viewport = listState.layoutInfo.viewportSize.height.toFloat()
+                if (ScrollFollowPolicy.needsInstantJump(distanceToBottom, viewport)) {
+                    scrollToVeryBottom()
+                } else {
+                    followToBottomSmoothly()
+                }
             }
         }
     }
@@ -2479,6 +2529,8 @@ fun ChatScreen(
                     onLoadEarlier = onLoadOlder,
                     onJumpToUserMessage = { turn ->
                         userJumpedToHistory = true
+                        // 时间轴跳转＝主动离开底部，流式期间不得再抢视口
+                        followTail = false
                         val turnIdx = allTurns.indexOfFirst { it.turnNumber == turn.turnNumber }
                         if (turnIdx >= 0) {
                             // pi-web 的 H()：先把目标节点直接设为高亮并锁 1.6s，
@@ -2537,6 +2589,7 @@ fun ChatScreen(
                         .size(38.dp)
                         .clickable {
                             userJumpedToHistory = false
+                            followTail = true
                             coroutineScope.launch {
                                 if (conversation.isNotEmpty()) scrollToVeryBottom()
                             }

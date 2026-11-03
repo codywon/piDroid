@@ -2,6 +2,25 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.78] - 2026-11-03
+
+### 📜 聊天滚动对齐 pi-web：贴底才跟随、长落差直接跳、首屏定位不再半路停
+
+- **现象**：重新进入会话后经常不在底部（有时很靠前），随后又"自动一屏屏刷下去"；任务在跑时往上翻历史，会被每段流式增量拽回底部。
+- **根因**：App 的跟随条件是 `isAgentBusy || isImeVisible || !canScrollForward` ——
+  1) 用"任务在跑"当"该跟随"，而不是"用户是否贴底"（pi-web 的原话：*Live-follow the streaming output only when the user is already near the bottom; if they scrolled up, leave them there.*）；
+  2) 手指上滑**从不**改变跟随状态（全仓只有点时间轴/回到底部按钮才改那个标记），于是流式期间持续抢视口；
+  3) 长落差用 `animateScrollBy(viewport)` 循环 → 一屏一屏自动翻，就是"刷屏往下滚"；
+  4) 首屏 `scrollToVeryBottom()` 在列表还没测量时不做任何事，却把 `hasInitialScrolled` 置真 → 之后快照补下来的新消息再也不会重新锚到底部。
+- **修法（新增 `ScrollFollowPolicy`，1:1 对齐 pi-web `lib/chat-lazy-load.ts`）**：
+  - 跟随判定改为 `getLiveFollowAttached` 的等价实现：距底 ≤ 8px 算贴底；**用户往上滚立即脱离**；向下滚回 ≤ 96px 重新接上；内容在下方自然增长不影响判定（用首条可见项的位移方向，而不是"离底多远"）；
+  - 落差 > 1 屏直接瞬移，≤ 1 屏才用平滑，彻底消除"自动刷屏翻页"；
+  - 首屏定位只在**真的滚到尽头**（`!canScrollForward`）之后才认账，否则下一轮内容变化继续重试，不再停在半路；
+  - 时间轴跳转显式脱离跟随，"回到底部"显式重新接上。
+- **验证**：新增 6 个纯 JVM 用例覆盖贴底/上滚脱离/下滚重接/内容增长不误判/悬浮按钮/瞬移阈值。
+
+---
+
 ## [1.8.77] - 2026-11-03
 
 ### 🩹 修复离开 App 一段时间后工作区选区丢失、冷启动每次都回退到 termius 的缺陷
