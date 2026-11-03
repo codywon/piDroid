@@ -2,6 +2,7 @@ package com.pi.app.data.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.pi.app.data.model.PINNED_WORKSPACE_KEY
 import com.pi.app.data.model.SessionModelIdentityCodec
 import com.pi.app.data.model.WorkspacePaths
 
@@ -40,6 +41,24 @@ class AppPreferences(context: Context) {
     var lastBrowsedDirectory: String
         get() = prefs.getString(KEY_LAST_BROWSED_DIRECTORY, "") ?: ""
         set(value) = prefs.edit().putString(KEY_LAST_BROWSED_DIRECTORY, value.trim()).apply()
+
+    /**
+     * 最近一次选中的工作区路径（或全局置顶专区 [PINNED_WORKSPACE_KEY]）。
+     *
+     * 解决离开 App 一段时间后进程被系统回收杀死，冷启动恢复时工作区丢失、
+     * 盲目回退到历史会话数最多项目（如 termius）的问题。
+     */
+    var lastSelectedWorkspacePath: String
+        get() = prefs.getString(KEY_LAST_SELECTED_WORKSPACE_PATH, "") ?: ""
+        set(value) {
+            val trimmed = value.trim()
+            val toStore = if (trimmed == PINNED_WORKSPACE_KEY || trimmed.isBlank()) {
+                trimmed
+            } else {
+                WorkspacePaths.displayPath(trimmed)
+            }
+            prefs.edit().putString(KEY_LAST_SELECTED_WORKSPACE_PATH, toStore).apply()
+        }
 
     // 语音播报开关：默认关闭自动播报，支持手动按需点击播报
     var autoSpeakEnabled: Boolean
@@ -534,6 +553,7 @@ class AppPreferences(context: Context) {
     private const val KEY_CUSTOM_WORKSPACES = "key_custom_workspaces"
     private const val KEY_LAST_SELECTED_CWD = "key_last_selected_cwd"
     private const val KEY_LAST_BROWSED_DIRECTORY = "key_last_browsed_directory"
+    private const val KEY_LAST_SELECTED_WORKSPACE_PATH = "key_last_selected_workspace_path"
         private const val KEY_MODEL_OVERRIDES = "key_model_overrides"
     private const val KEY_SESSION_MODEL_IDENTITIES = "key_session_model_identities"
     }

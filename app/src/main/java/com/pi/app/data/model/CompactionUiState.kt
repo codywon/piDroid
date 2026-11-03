@@ -82,6 +82,28 @@ data class CompactionUiState(
 }
 
 /**
+ * 历史压缩记录明细（对标 pi-web 会话中 type == "compaction" 的 entry）。
+ */
+data class CompactionRecord(
+    val id: String = "",
+    val timestamp: Long = 0L,
+    val summary: String = "",
+    val tokensBefore: Long = 0L,
+    val tokensAfter: Long = 0L,
+    val cost: Double = 0.0
+) {
+    /** 压缩释放的 token 差值 */
+    val tokensSaved: Long
+        get() = (tokensBefore - tokensAfter).coerceAtLeast(0L)
+
+    /** 压缩比例（百分比） */
+    val savingsPercent: Int
+        get() = if (tokensBefore > 0L) {
+            ((tokensSaved * 100) / tokensBefore).toInt().coerceIn(0, 100)
+        } else 0
+}
+
+/**
  * 压缩失败文案的分类（纯 JVM，可单测）。
  *
  * pi 在压缩被 `abort_compaction` 打断时，`compact()` 会以 `"Compaction cancelled"` 拒绝

@@ -50,6 +50,8 @@ data class Session(
     @SerializedName("tokenUsage") val tokenUsage: Long = 0L,
     @SerializedName("cost") val cost: Double = 0.0,
     @SerializedName("active") val active: Boolean = false,
+    @SerializedName("isWorktree") val isWorktree: Boolean = false,
+    @SerializedName("totalActiveMs") val totalActiveMs: Long = 0L,
     val isRunning: Boolean = false,
     val awaitingInput: Boolean = false,
     /** pi-web 的 `SessionInfo.relation`：侧聊 / 子代理 / fork 的来源关系。 */

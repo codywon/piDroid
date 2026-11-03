@@ -43,6 +43,8 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import com.pi.app.data.model.SessionStatsFormatting
+import com.pi.app.data.model.SessionStatsSummary
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -67,9 +69,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.runtime.saveable.rememberSaveable
+import com.pi.app.data.model.PINNED_WORKSPACE_KEY
+import com.pi.app.data.model.resolveInitialWorkspaceSelection
 import kotlin.math.abs
-
-const val PINNED_WORKSPACE_KEY = "__global_pinned__"
 
 private enum class SessionStatusFilter {
     ALL,
@@ -129,6 +132,8 @@ fun SessionListScreen(
     sessions: List<Session>,
     /** 上次离开的工作区路径：左滑返回列表时定位到它（空/无效则回落到第一条） */
     initialWorkspacePath: String = "",
+    /** 工作区选中变更回调（供上层同步状态并持久化落盘） */
+    onWorkspaceSelected: (String) -> Unit = {},
     isLoading: Boolean,
     pinnedSessionIds: Set<String> = emptySet(),
     archivedSessionIds: Set<String> = emptySet(),
@@ -164,6 +169,8 @@ fun SessionListScreen(
     onRenameSession: (sessionId: String, newTitle: String) -> Unit = { _, _ -> },
     onForkSession: (Session) -> Unit = {},
     onDeleteSession: (String) -> Unit = {},
+    sessionStatsMap: Map<String, SessionStatsSummary> = emptyMap(),
+    onExportSession: (Session) -> Unit = {},
     onRefresh: () -> Unit,
     onSessionClick: (Session) -> Unit,
     onScanClick: () -> Unit,
@@ -264,32 +271,66 @@ fun SessionListScreen(
         )
     }
 
-    // 当前选中的工作区：**不能**用 remember(workspaces) —— sessions 一刷新，workspaces 列表内容
-    // 就会变（运行数/排序/新增会话），remember 的 key 跟着失效，选区被重置到「第一条」，
-    // 于是从会话左滑返回时总是回到别的工作区。现在只在首帧猜一次，后续由下面的
-    // LaunchedEffect 根据「上次离开的工作区」或用户自己的切换来决定。
-    var selectedWorkspacePath by remember { mutableStateOf(initialWorkspacePath) }
-    var appliedWorkspaceHint by remember { mutableStateOf<String?>(null) }
+    // 置顶与排序以 pi-web 的 ui-state 为准；取不到时才回退到本地偏好
+    fun wsKey(path: String) = path.replace('\\', '/').trimEnd('/').lowercase()
+    val pinnedKeys = remember(serverPinnedWorkspaceKeys, pinnedWorkspaces, workspaces) {
+        if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
+            serverPinnedWorkspaceKeys
+        } else {
+            pinnedWorkspaces.map { wsKey(it) }.toSet()
+        }
+    }
+    val orderList = remember(serverWorkspaceOrder, wsOrder, workspaces) {
+        if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { wsKey(it) }
+    }
+    val sortedWorkspaces = remember(workspaces, pinnedKeys, orderList) {
+        workspaces.sortedWith(
+            compareByDescending<WorkspaceInfo> { pinnedKeys.contains(wsKey(it.path)) }
+                .thenBy { ws ->
+                    val idx = orderList.indexOf(wsKey(ws.path))
+                    if (idx != -1) idx else Int.MAX_VALUE
+                }
+        )
+    }
 
-    LaunchedEffect(initialWorkspacePath, workspaces) {
-        val available = workspaces.map { it.path }
+    // 当前选中的工作区：改用 rememberSaveable 确保进程或配置恢复时平滑保留；
+    // 选区变更时通过 selectWorkspace 统一回调并持久化到本地存储。
+    var selectedWorkspacePath by rememberSaveable { mutableStateOf(initialWorkspacePath) }
+    var appliedWorkspaceHint by rememberSaveable { mutableStateOf<String?>(null) }
+
+    val selectWorkspace: (String) -> Unit = { targetPath ->
+        selectedWorkspacePath = targetPath
+        onWorkspaceSelected(targetPath)
+    }
+
+    LaunchedEffect(initialWorkspacePath, sortedWorkspaces) {
+        val sortedPaths = sortedWorkspaces.map { it.path }
         val hint = initialWorkspacePath
         val hintUsable = hint.isNotBlank() &&
-            (hint == PINNED_WORKSPACE_KEY || available.any { WorkspacePaths.samePath(it, hint) })
+            (hint == PINNED_WORKSPACE_KEY || sortedPaths.any { WorkspacePaths.samePath(it, hint) })
         if (hintUsable && hint != appliedWorkspaceHint) {
-            // 提示只应用一次（每次从别的会话返回才变），之后不去抢用户手动切的工作区
+            // 提示只应用一次（每次从别的会话返回或初次注入时才变），之后不去抢用户手动切的工作区
             appliedWorkspaceHint = hint
             // 回到上次的工作区时用列表里真实的那份写法（可能与会话快照里的写法差个分隔符）
-            selectedWorkspacePath = if (hint == PINNED_WORKSPACE_KEY) {
+            val resolved = if (hint == PINNED_WORKSPACE_KEY) {
                 hint
             } else {
-                available.firstOrNull { WorkspacePaths.samePath(it, hint) } ?: hint
+                sortedPaths.firstOrNull { WorkspacePaths.samePath(it, hint) } ?: hint
             }
+            selectedWorkspacePath = resolved
+            onWorkspaceSelected(resolved)
         } else if (selectedWorkspacePath.isBlank() ||
             (selectedWorkspacePath != PINNED_WORKSPACE_KEY &&
-                available.none { WorkspacePaths.samePath(it, selectedWorkspacePath) })
+                sortedPaths.none { WorkspacePaths.samePath(it, selectedWorkspacePath) })
         ) {
-            selectedWorkspacePath = available.firstOrNull() ?: ""
+            val resolved = resolveInitialWorkspaceSelection(
+                preferredPath = selectedWorkspacePath.ifBlank { hint },
+                sortedWorkspacePaths = sortedPaths
+            )
+            selectedWorkspacePath = resolved
+            if (resolved.isNotBlank()) {
+                onWorkspaceSelected(resolved)
+            }
         }
     }
 
@@ -654,28 +695,6 @@ fun SessionListScreen(
                         sessions.count { pinnedSessionIds.contains(it.id) }
                     }
 
-                    // 置顶与排序以 pi-web 的 ui-state 为准；取不到时才回退到本地偏好
-                    fun wsKey(path: String) = path.replace('\\', '/').trimEnd('/').lowercase()
-                    val pinnedKeys = remember(serverPinnedWorkspaceKeys, pinnedWorkspaces, workspaces) {
-                        if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
-                            serverPinnedWorkspaceKeys
-                        } else {
-                            pinnedWorkspaces.map { wsKey(it) }.toSet()
-                        }
-                    }
-                    val orderList = remember(serverWorkspaceOrder, wsOrder, workspaces) {
-                        if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { wsKey(it) }
-                    }
-                    val sortedWorkspaces = remember(workspaces, pinnedKeys, orderList) {
-                        workspaces.sortedWith(
-                            compareByDescending<WorkspaceInfo> { pinnedKeys.contains(wsKey(it.path)) }
-                                .thenBy { ws ->
-                                    val idx = orderList.indexOf(wsKey(ws.path))
-                                    if (idx != -1) idx else Int.MAX_VALUE
-                                }
-                        )
-                    }
-
                     // 拖动过程中的展示顺序：拖动/提交后立即生效（wsOrderOverride），
                     // 未拖动时就是真源顺序，两者一致，因此松手瞬间不会二次跳动。
                     val displayWorkspaces = remember(sortedWorkspaces, wsOrderOverride) {
@@ -750,7 +769,7 @@ fun SessionListScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        selectedWorkspacePath = PINNED_WORKSPACE_KEY
+                                        selectWorkspace(PINNED_WORKSPACE_KEY)
                                         coroutineScope.launch { drawerState.close() }
                                     }
                             ) {
@@ -835,7 +854,7 @@ fun SessionListScreen(
                                     }
                                     .combinedClickable(
                                         onClick = {
-                                            selectedWorkspacePath = ws.path
+                                            selectWorkspace(ws.path)
                                             coroutineScope.launch { drawerState.close() }
                                         }
                                     )
@@ -1589,7 +1608,7 @@ fun SessionListScreen(
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .clip(RoundedCornerShape(8.dp))
-                                            .clickable { selectedWorkspacePath = PINNED_WORKSPACE_KEY }
+                                            .clickable { selectWorkspace(PINNED_WORKSPACE_KEY) }
                                             .padding(horizontal = 4.dp, vertical = 6.dp),
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -1631,6 +1650,8 @@ fun SessionListScreen(
                                     onToggleArchive = { onToggleArchiveSession(session.id) },
                                     onToggleUnread = { onToggleUnreadSession(session.id) },
                                     onDelete = { deletingSession = session },
+                                    stats = sessionStatsMap[session.id],
+                                    onExport = { onExportSession(session) },
                                     onClick = { onSessionClick(session) }
                                 )
                             }
@@ -1696,6 +1717,8 @@ fun SessionListScreen(
                                             onToggleArchive = { onToggleArchiveSession(session.id) },
                                             onToggleUnread = { onToggleUnreadSession(session.id) },
                                             onDelete = { deletingSession = session },
+                                            stats = sessionStatsMap[session.id],
+                                            onExport = { onExportSession(session) },
                                             onClick = { onSessionClick(session) }
                                         )
                                     }
@@ -1846,7 +1869,7 @@ fun SessionListScreen(
                     iconTint = theme.primary,
                     title = "在新会话中打开",
                     onClick = {
-                        selectedWorkspacePath = targetWs.path
+                        selectWorkspace(targetWs.path)
                         selectedMenuWorkspace = null
                         coroutineScope.launch {
                             drawerState.close()
@@ -2193,7 +2216,7 @@ fun SessionListScreen(
                 coroutineScope.launch {
                     val result = onAddWorkspace(targetPath, newFolderName, createIfMissing)
                     val finalPath = result.getOrDefault(targetPath)
-                    selectedWorkspacePath = finalPath
+                    selectWorkspace(finalPath)
                     showAddWorkspaceDialog = false
                     drawerState.close()
                     if (startSessionNow) {
@@ -2679,11 +2702,13 @@ fun SessionCard(
     isArchived: Boolean = false,
     isUnread: Boolean = false,
     customTitle: String? = null,
+    stats: SessionStatsSummary? = null,
     onTogglePin: () -> Unit = {},
     onRename: () -> Unit = {},
     onFork: () -> Unit = {},
     onToggleArchive: () -> Unit = {},
     onToggleUnread: () -> Unit = {},
+    onExport: () -> Unit = {},
     onDelete: () -> Unit = {},
     onClick: () -> Unit
 ) {
@@ -2950,6 +2975,22 @@ fun SessionCard(
                             )
 
                             DropdownMenuItem(
+                                text = { Text("导出 HTML", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        Icons.Default.FileDownload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showMenu = false
+                                    onExport()
+                                }
+                            )
+
+                            DropdownMenuItem(
                                 text = { Text(if (isUnread) "标为已读" else "标为未读", style = MaterialTheme.typography.bodyMedium) },
                                 leadingIcon = {
                                     Icon(
@@ -3015,7 +3056,7 @@ fun SessionCard(
                 )
             }
 
-            // 底部元信息行：左侧自适应截断 (weight(1f)) + 右侧单行不折行时间 (softWrap = false, maxLines = 1)
+            // 底部元信息行：左侧自适应截断 + 右侧单行不折行统计指标与时间 (方案 A 规范)
             Spacer(modifier = Modifier.height(5.dp))
             Row(
                 modifier = Modifier
@@ -3025,7 +3066,7 @@ fun SessionCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f, fill = false),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
@@ -3036,8 +3077,7 @@ fun SessionCard(
                         color = theme.textMuted,
                         maxLines = 1,
                         softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
+                        overflow = TextOverflow.Ellipsis
                     )
                     if (session.messageCount > 0) {
                         Text(
@@ -3061,17 +3101,62 @@ fun SessionCard(
                     }
                 }
 
-                if (dateStr.isNotBlank()) {
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = dateStr,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 10.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = theme.textMuted,
-                        maxLines = 1,
-                        softWrap = false
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    val activeDur = SessionStatsFormatting.formatActiveDuration(
+                        stats?.totalActiveMs ?: session.totalActiveMs
                     )
+                    if (activeDur.isNotBlank()) {
+                        Text(
+                            text = "🕒 $activeDur",
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    val tok = SessionStatsFormatting.formatTokensCompact(
+                        stats?.totalTokens ?: session.tokenUsage
+                    )
+                    if (tok.isNotBlank()) {
+                        Text(
+                            text = "· $tok",
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    val costVal = stats?.cost ?: session.cost
+                    val costStr = SessionStatsFormatting.formatCostCompact(costVal)
+                    if (costStr.isNotBlank()) {
+                        Text(
+                            text = "· $costStr",
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.success.copy(alpha = 0.9f),
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    if (dateStr.isNotBlank()) {
+                        Text(
+                            text = "· $dateStr",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
                 }
             }
         }

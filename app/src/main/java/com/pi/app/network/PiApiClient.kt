@@ -5750,4 +5750,93 @@ data class CatalogPreset(
         }
     }
 
+    /**
+     * 导出会话为自包含独立 HTML 文件（GET /api/sessions/[id]/export）。
+     */
+    suspend fun downloadSessionExportHtml(
+        sessionId: String,
+        targetFile: File
+    ): Result<File> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId/export")
+                .get()
+                .build()
+            client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val msg = resp.body?.string()?.take(200) ?: ""
+                    return@withContext Result.failure(IOException("导出失败 (${resp.code})${if (msg.isNotBlank()) "：$msg" else ""}"))
+                }
+                val body = resp.body ?: return@withContext Result.failure(IOException("导出响应为空"))
+                targetFile.parentFile?.mkdirs()
+                body.byteStream().use { input ->
+                    targetFile.outputStream().use { output ->
+                        input.copyTo(output)
+                    }
+                }
+            }
+            Result.success(targetFile)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 批量拉取会话统计信息（POST /api/sessions/stats）。
+     */
+    suspend fun getBatchSessionStats(
+        sessionIds: List<String>
+    ): Result<Map<String, SessionStatsSummary>> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        val cleanIds = sessionIds.map { it.trim() }.filter { it.isNotBlank() }.distinct()
+        if (cleanIds.isEmpty()) return@withContext Result.success(emptyMap())
+
+        try {
+            val resultMap = mutableMapOf<String, SessionStatsSummary>()
+            cleanIds.chunked(200).forEach { batch ->
+                val payload = JsonObject().apply {
+                    val arr = JsonArray()
+                    batch.forEach { arr.add(it) }
+                    add("ids", arr)
+                }
+                val req = Request.Builder()
+                    .url("$baseUrl/api/sessions/stats")
+                    .post(gson.toJson(payload).toRequestBody(jsonMediaType))
+                    .build()
+                client.newCall(req).execute().use { resp ->
+                    if (resp.isSuccessful) {
+                        val bodyStr = resp.body?.string() ?: "{}"
+                        val json = JsonParser.parseString(bodyStr).asJsonObject
+                        val statsObj = json.getAsJsonObject("stats")
+                        if (statsObj != null) {
+                            for (entry in statsObj.entrySet()) {
+                                val sId = entry.key
+                                val sData = entry.value.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+                                val tokensObj = sData.getAsJsonObject("tokens")
+                                val totalTokens = tokensObj?.get("total")?.takeIf { !it.isJsonNull }?.asLong
+                                    ?: ((tokensObj?.get("input")?.asLong ?: 0L) + (tokensObj?.get("output")?.asLong ?: 0L) + (tokensObj?.get("cacheRead")?.asLong ?: 0L) + (tokensObj?.get("cacheWrite")?.asLong ?: 0L))
+                                val cost = sData.get("cost")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                                val toolCalls = sData.get("toolCalls")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                                val totalActiveMs = sData.get("totalActiveMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                                resultMap[sId] = SessionStatsSummary(
+                                    totalTokens = totalTokens,
+                                    cost = cost,
+                                    toolCalls = toolCalls,
+                                    totalActiveMs = totalActiveMs
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Result.success(resultMap)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
 }

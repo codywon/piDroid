@@ -36,7 +36,9 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 session.cost.toString(),
                 session.active.toString(),
                 session.awaitingInput.toString(),
-                session.isRunning.toString()
+                session.isRunning.toString(),
+                session.isWorktree.toString(),
+                session.totalActiveMs.toString()
             )
         }
     },
@@ -63,7 +65,9 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 cost = text(13).toDoubleOrNull() ?: 0.0,
                 active = text(14).toBooleanStrictOrNull() ?: false,
                 awaitingInput = text(15).toBooleanStrictOrNull() ?: false,
-                isRunning = text(16).toBooleanStrictOrNull() ?: false
+                isRunning = text(16).toBooleanStrictOrNull() ?: false,
+                isWorktree = text(17).toBooleanStrictOrNull() ?: false,
+                totalActiveMs = text(18).toLongOrNull() ?: 0L
             )
         }
     }

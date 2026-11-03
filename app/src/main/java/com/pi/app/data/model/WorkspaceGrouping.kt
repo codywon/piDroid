@@ -2,6 +2,9 @@ package com.pi.app.data.model
 
 import java.util.Locale
 
+/** 全局常用置顶工作区虚拟标识。 */
+const val PINNED_WORKSPACE_KEY = "__global_pinned__"
+
 /**
  * 工作区路径的跨端归一化与分组（**以 pi-web 的实现为基准**）。
  *
@@ -123,3 +126,25 @@ fun groupWorkspaces(
         )
     }
 }
+
+/**
+ * 决策工作区的初始选中路径。
+ *
+ * 优先使用候选路径 [preferredPath]（如果有效且仍在可用列表 [sortedWorkspacePaths] 中，或者是全局置顶专区 [PINNED_WORKSPACE_KEY]）；
+ * 若候选路径失效或为空，则回退到当前已排序列表的第一项（尊重用户置顶与拖拽排序后的真实展示首位，绝不盲目按历史会话数兜底）。
+ */
+fun resolveInitialWorkspaceSelection(
+    preferredPath: String?,
+    sortedWorkspacePaths: List<String>
+): String {
+    val candidate = preferredPath?.trim().orEmpty()
+    if (candidate.isBlank()) {
+        return sortedWorkspacePaths.firstOrNull().orEmpty()
+    }
+    if (candidate == PINNED_WORKSPACE_KEY) {
+        return PINNED_WORKSPACE_KEY
+    }
+    val matched = sortedWorkspacePaths.firstOrNull { WorkspacePaths.samePath(it, candidate) }
+    return matched ?: sortedWorkspacePaths.firstOrNull().orEmpty()
+}
+

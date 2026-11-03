@@ -39,6 +39,7 @@ import com.pi.app.ui.chat.ThinkingLevelBottomSheet
 import com.pi.app.ui.chat.openFileWithOtherApp
 import com.pi.app.ui.files.FilesScreen
 import com.pi.app.data.storage.FileDownloader
+import com.pi.app.data.storage.SessionExporter
 import com.pi.app.network.FileListParsing
 import com.pi.app.ui.scanner.QrScannerScreen
 import com.pi.app.ui.session.SessionListScreen
@@ -308,8 +309,8 @@ class MainActivity : ComponentActivity() {
         // true = 「浏览电脑文件」入口（可一直向上退到盘符根）；false = 工作区「浏览文件」
         var browsingWorkspaceRoam by rememberSaveable { mutableStateOf(false) }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
-        // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区
-        var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf("") }
+        // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区，冷启动优先读取持久化值
+        var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf(prefs.lastSelectedWorkspacePath) }
         var isLoadingSessions by remember { mutableStateOf(false) }
         // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
         // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
@@ -372,6 +373,7 @@ class MainActivity : ComponentActivity() {
         }
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
+        var sessionStatsMap by remember { mutableStateOf<Map<String, SessionStatsSummary>>(emptyMap()) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
@@ -556,6 +558,25 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        fun exportSessionToHtml(sid: String, title: String?) {
+            lifecycleScope.launch {
+                Toast.makeText(this@MainActivity, "正在生成独立 HTML 会话文件…", Toast.LENGTH_SHORT).show()
+                val fileName = SessionExporter.exportFileName(sid, title)
+                val exportDir = java.io.File(cacheDir, "exports").apply { mkdirs() }
+                val targetFile = java.io.File(exportDir, fileName)
+                apiClient.downloadSessionExportHtml(sid, targetFile).onSuccess { htmlFile ->
+                    try {
+                        val shareIntent = SessionExporter.buildShareIntent(this@MainActivity, htmlFile)
+                        startActivity(Intent.createChooser(shareIntent, "导出会话网页"))
+                    } catch (e: Exception) {
+                        Toast.makeText(this@MainActivity, "拉起分享失败：${e.message}", Toast.LENGTH_LONG).show()
+                    }
+                }.onFailure { err ->
+                    Toast.makeText(this@MainActivity, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+
         fun loadSessions(silent: Boolean = false) {
             if (!prefs.isConfigured) return
             if (sessionFetchInFlight) {
@@ -593,6 +614,12 @@ class MainActivity : ComponentActivity() {
                             prefs.setUnreadSessionIds(validUnread)
                         }
                         customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
+                        val sessionIds = it.map { s -> s.id }
+                        if (sessionIds.isNotEmpty()) {
+                            apiClient.getBatchSessionStats(sessionIds).onSuccess { sMap ->
+                                sessionStatsMap = sMap
+                            }
+                        }
                         isGatewayOnline = true
                         syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
                     }.onFailure { err ->
@@ -1975,6 +2002,7 @@ class MainActivity : ComponentActivity() {
             }
             currentProject = session.workspaceName
             lastOpenedWorkspacePath = session.workspacePath
+            session.workspacePath.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedWorkspacePath = it }
             session.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
             queuedMessages.clear()
             // 乐观气泡的发送时刻是按气泡 id 记的，换会话时旧列表会被整体丢弃，
@@ -2710,6 +2738,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onAutoGenerateTitle = {
                         autoGenerateTitleForSession(activeSessionId)
+                    },
+                    onExportSession = {
+                        exportSessionToHtml(activeSessionId, currentSession?.displayTitle)
                     },
                     onBack = {
                         completionSettleJob?.cancel()
@@ -3490,8 +3521,15 @@ class MainActivity : ComponentActivity() {
                     isGatewayOnline = isGatewayOnline,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
-                    // 左滑返回时定位到「刚才那个会话所在的工作区」，而不是默认第一条
-                    initialWorkspacePath = lastOpenedWorkspacePath,
+                    // 左滑返回时定位到「刚才那个会话所在的工作区」，冷启动时使用上次持久化的工作区
+                    initialWorkspacePath = lastOpenedWorkspacePath.ifBlank { prefs.lastSelectedWorkspacePath },
+                    onWorkspaceSelected = { path ->
+                        lastOpenedWorkspacePath = path
+                        prefs.lastSelectedWorkspacePath = path
+                        if (path != PINNED_WORKSPACE_KEY && path.isNotBlank()) {
+                            prefs.lastSelectedCwd = path
+                        }
+                    },
                     pinnedSessionIds = pinnedSessionIds,
                     archivedSessionIds = archivedSessionIds,
                     customTitles = customTitles,
@@ -3646,6 +3684,10 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    sessionStatsMap = sessionStatsMap,
+                    onExportSession = { session ->
+                        exportSessionToHtml(session.id, session.displayTitle)
+                    },
                     onRefresh = { loadSessions() },
                     onSessionClick = { session ->
                         openSessionWithHistory(session)
@@ -3681,6 +3723,7 @@ class MainActivity : ComponentActivity() {
                                 currentSession = newSession
                                 currentProject = newSession.workspaceName
                                 lastOpenedWorkspacePath = newSession.workspacePath
+                                newSession.workspacePath.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedWorkspacePath = it }
                                 newSession.cwd?.takeIf { it.isNotBlank() }?.let { prefs.lastSelectedCwd = it }
                                 messages.clear()
                                 isLoadingSessionHistory = false

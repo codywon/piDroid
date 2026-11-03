@@ -40,8 +40,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 182
-        versionName = "1.8.76"
+        versionCode = 183
+        versionName = "1.8.77"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

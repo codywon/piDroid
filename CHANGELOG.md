@@ -2,6 +2,24 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.77] - 2026-11-03
+
+### 🩹 修复离开 App 一段时间后工作区选区丢失、冷启动每次都回退到 termius 的缺陷
+
+- **现象**：每次离开 App 一段时间后再重新进入，界面不是停留在上次选中的工作区项目，而是每次都自动重置并落到 `termius` 项目。
+- **根因**：
+  1. 状态未持久化：工作区切换仅在 `SessionListScreen` 内部以纯内存 `remember` 存放，抽屉点击、长按菜单和新建工作区均未向外通知，也未存入 SharedPreferences 磁盘；
+  2. 冷启动清零：长时间离开后 Android 系统回收 App 进程，再次启动时内存归零，触发默认兜底；
+  3. 兜底策略倒挂：原兜底逻辑直接取 `workspaces.firstOrNull()`，而该列表按「活跃运行数 + 历史会话数」降序排序，在无后台运行时固定命中累积会话数最多的 `termius`。
+- **最佳实践修复**：
+  1. `AppPreferences` 增加 `lastSelectedWorkspacePath` 持久化，写入前自动通过 `WorkspacePaths.displayPath` 统一斜杠与尾部处理，对全局置顶专区虚拟 Key（`PINNED_WORKSPACE_KEY`）直通豁免；
+  2. `SessionListScreen` 选区改用 `rememberSaveable` 保持，并暴露出 `onWorkspaceSelected` 回调；在抽屉点击工作区、点击置顶专区、长按菜单在新会话中打开、新建远程工作区等所有入口通过统一 `selectWorkspace` 分发并持久化；
+  3. 决策函数 `resolveInitialWorkspaceSelection` 抽取为纯逻辑：优先选择记忆项并比对当前列表规范化形态；若记忆失效则回退至用户自定义拖拽排序与置顶规则后的 `sortedWorkspaces` 第一项，彻底对齐视觉展示，绝不再盲选 `termius`；
+  4. `MainActivity` 在冷启动时自动读取持久化路径作为初值，并在打开或新建会话时同步持久化该工作区与 cwd。
+- **验证**：在 `WorkspacePathsTest` 新增 4 个针对反斜杠/大小写兼容、虚拟置顶专区保留、多项目已排序兜底回退及空列表安全性的纯 JVM 单元测试覆盖。
+
+---
+
 ## [1.8.76] - 2026-11-03
 
 ### 🩹 修复过程折叠组「只显示最新 1 条 + 显示更早的 11 条」

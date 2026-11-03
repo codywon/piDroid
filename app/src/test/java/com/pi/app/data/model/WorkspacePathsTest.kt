@@ -148,4 +148,44 @@ class WorkspacePathsTest {
         assertEquals("d:/myscript/termius", fromKey.workspacePath)
         assertTrue(WorkspacePaths.samePath(fromKey.workspacePath, "D:/myscript/termius"))
     }
+
+    // ---- 工作区初始选区恢复与兜底策略 ----
+
+    @Test
+    fun `resolveInitialWorkspaceSelection respects preferred path regardless of slash or case`() {
+        val sortedList = listOf("D:/myscript/pi-app", "D:/myscript/termius")
+
+        // 候选是反斜杠且小写盘符
+        val selected = resolveInitialWorkspaceSelection("d:\\myscript\\termius", sortedList)
+        assertEquals("D:/myscript/termius", selected)
+    }
+
+    @Test
+    fun `resolveInitialWorkspaceSelection keeps pinned workspace key`() {
+        val sortedList = listOf("D:/myscript/pi-app", "D:/myscript/termius")
+        val selected = resolveInitialWorkspaceSelection(PINNED_WORKSPACE_KEY, sortedList)
+        assertEquals(PINNED_WORKSPACE_KEY, selected)
+    }
+
+    @Test
+    fun `resolveInitialWorkspaceSelection falls back to first sorted item instead of blindly picking other projects`() {
+        // 用户排在第 1 位的是 pi-app，哪怕后面有历史会话数更多的 termius，在候选失效时也必须回退到第一项
+        val sortedList = listOf("D:/myscript/pi-app", "D:/myscript/termius")
+
+        // 候选为空
+        assertEquals("D:/myscript/pi-app", resolveInitialWorkspaceSelection("", sortedList))
+        assertEquals("D:/myscript/pi-app", resolveInitialWorkspaceSelection("   ", sortedList))
+        assertEquals("D:/myscript/pi-app", resolveInitialWorkspaceSelection(null, sortedList))
+
+        // 候选项目已被删除
+        val deletedProject = "D:/myscript/old-deleted-project"
+        assertEquals("D:/myscript/pi-app", resolveInitialWorkspaceSelection(deletedProject, sortedList))
+    }
+
+    @Test
+    fun `resolveInitialWorkspaceSelection returns empty string when sorted list is empty`() {
+        assertEquals("", resolveInitialWorkspaceSelection("", emptyList()))
+        assertEquals("", resolveInitialWorkspaceSelection("D:/myscript/pi-app", emptyList()))
+        assertEquals(PINNED_WORKSPACE_KEY, resolveInitialWorkspaceSelection(PINNED_WORKSPACE_KEY, emptyList()))
+    }
 }

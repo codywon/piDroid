@@ -184,6 +184,7 @@ fun ChatScreen(
     onStopAgent: () -> Unit,
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
+    onExportSession: () -> Unit = {},
     /**
      * 提示词增强：当前网关能力 + 目标连接/模型。
      *
@@ -1251,6 +1252,14 @@ fun ChatScreen(
                         Icon(
                             Icons.Default.AccountTree,
                             contentDescription = "工作目录变更",
+                            tint = theme.textSecondary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(onClick = onExportSession, modifier = Modifier.size(34.dp)) {
+                        Icon(
+                            imageVector = Icons.Default.FileDownload,
+                            contentDescription = "导出完整会话为 HTML",
                             tint = theme.textSecondary,
                             modifier = Modifier.size(18.dp)
                         )
