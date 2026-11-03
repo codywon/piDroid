@@ -135,14 +135,22 @@ class SessionSnapshotLagTest {
     fun `滞后快照仍要把服务端已经跑完的工具结果补进来`() {
         // SSE 断在 tool_execution_end 之前时，本机卡片会停在转圈；
         // 服务端快照里已经有结果就必须单向补，否则卡片永远不停。
+        // 工具卡片在真实数据里**没有 entryId**（它在 assistant 消息内部的 toolCall 块），
+        // 所以这里按 production 形状：双方都只能靠 toolCallId 配对。
         val local = listOf(
-            item("t1", MessageRole.TOOL, "", entryId = "e9", timestamp = 5_000L).copy(
-                toolCall = ToolCallInfo(toolName = "bash", command = "npm test", isRunning = true)
+            item("t1", MessageRole.TOOL, "", entryId = null, timestamp = 5_000L).copy(
+                toolCall = ToolCallInfo(toolCallId = "call_1", toolName = "bash", command = "npm test", isRunning = true)
             )
         )
         val synced = listOf(
-            item("s1", MessageRole.TOOL, "", entryId = "e9", timestamp = 5_000L).copy(
-                toolCall = ToolCallInfo(toolName = "bash", command = "npm test", output = "90 passed", durationMs = 1_200L)
+            item("s1", MessageRole.TOOL, "", entryId = null, timestamp = 5_000L).copy(
+                toolCall = ToolCallInfo(
+                    toolCallId = "call_1",
+                    toolName = "bash",
+                    command = "npm test",
+                    output = "90 passed",
+                    durationMs = 1_200L
+                )
             )
         )
 
@@ -158,6 +166,23 @@ class SessionSnapshotLagTest {
         assertEquals("90 passed", tool.output)
         assertFalse("服务端已经有结果，卡片就不能继续转圈", tool.isRunning)
         assertEquals(1_200L, tool.durationMs)
+    }
+
+    @Test
+    fun `快照窗口向前滑动不算滞后`() {
+        // 长会话里每跑一个回合，窗口最老的那几条就会掉出去；
+        // 若把“本地有快照没有的 entryId”当成滞后，界面就会长期卡在只追加模式。
+        val local = listOf(
+            item("l1", MessageRole.AGENT, "第一步", entryId = "e1", timestamp = 1_000L),
+            item("l2", MessageRole.AGENT, "第二步", entryId = "e2", timestamp = 2_000L),
+            item("l3", MessageRole.AGENT, "第三步", entryId = "e3", timestamp = 3_000L)
+        )
+        val slidForward = listOf(
+            item("s2", MessageRole.AGENT, "第二步", entryId = "e2", timestamp = 2_000L),
+            item("s3", MessageRole.AGENT, "第三步", entryId = "e3", timestamp = 3_000L),
+            item("s4", MessageRole.AGENT, "第四步", entryId = "e4", timestamp = 4_000L)
+        )
+        assertFalse(SessionSnapshotMerge.isSnapshotOlderThanLocal(local, slidForward))
     }
 
     @Test

@@ -21,7 +21,9 @@ class ProcessWindowPolicyTest {
         assertEquals(12, ProcessWindowPolicy.initialLimit(12))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(12, ProcessWindowPolicy.initialLimit(12)))
         assertEquals(40, ProcessWindowPolicy.initialLimit(40))
+        // 窗口边界：刚好等于窗口、窗口 +1 各自的表现
         assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.initialLimit(ProcessWindowPolicy.INITIAL_WINDOW))
+        assertEquals(ProcessWindowPolicy.INITIAL_WINDOW, ProcessWindowPolicy.initialLimit(ProcessWindowPolicy.INITIAL_WINDOW + 1))
         assertEquals(0, ProcessWindowPolicy.hiddenCount(83, ProcessWindowPolicy.initialLimit(83)))
     }
 

@@ -647,7 +647,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 响应自带 leafId，而 context 窗口是从 leaf 往回走的；两者对不上就是「滞后快照」：
         // stats（覆盖全部 entry）是新的、context（按 leaf 往回走）是旧的。
         // 以前完全无感，于是 App 拿着几分钟前的尾巴当权威，把本地更新的部分截掉了。
-        val contextLastEntryId: String? = lastMessageEntryId(initialCtxMsgs)
+        val contextLastEntryId: String? = messageEntryId(initialCtxMsgs, fromEnd = true)
             ?: initialEntryIds?.let { ids ->
                 if (ids.size() <= 0) {
                     null
@@ -663,7 +663,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 翻页游标必须跟着**实际渲染窗口的第一条**走：用了条目树时窗口起点可能早于 context 窗口，
         // 继续用 context 的 oldestEntryId 会让下一页和已渲染内容重叠（同一段过程显示两遍）。
         val chosenOldestEntryId = if (usedEntries) {
-            firstMessageEntryId(chosenMessages) ?: extractOldestEntryId(ctxObj, initialCtxMsgs)
+            messageEntryId(chosenMessages, fromEnd = false) ?: extractOldestEntryId(ctxObj, initialCtxMsgs)
         } else {
             extractOldestEntryId(ctxObj, initialCtxMsgs)
         }
@@ -1024,23 +1024,16 @@ class PiApiClient(private val prefs: AppPreferences) {
         return msg.get("role")?.takeIf { !it.isJsonNull }?.asString
     }
 
-    /** 消息数组里最后一条带 entryId 的 id（判断「窗口有没有走到 leaf」的主依据）。 */
-    private fun lastMessageEntryId(msgs: JsonArray?): String? {
-        if (msgs == null) return null
-        for (i in msgs.size() - 1 downTo 0) {
-            val el = msgs.get(i)
-            if (!el.isJsonObject) continue
-            val obj = el.asJsonObject
-            val id = obj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
-                ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
-            if (!id.isNullOrBlank()) return id
-        }
-        return null
-    }
-
-    /** 消息数组里第一条带 entryId 的 id（作为向前翻页的游标）。 */
-    private fun firstMessageEntryId(msgs: JsonArray): String? {
-        for (i in 0 until msgs.size()) {
+    /**
+     * 消息数组里某一条带 entryId 的 id。
+     *
+     * `fromEnd = true`：取最后一条（判断「窗口有没有走到 leaf」的主依据）；
+     * `fromEnd = false`：取第一条（向前翻页的指针）。
+     */
+    private fun messageEntryId(msgs: JsonArray?, fromEnd: Boolean): String? {
+        if (msgs == null || msgs.size() <= 0) return null
+        val indices = if (fromEnd) (msgs.size() - 1) downTo 0 else 0 until msgs.size()
+        for (i in indices) {
             val el = msgs.get(i)
             if (!el.isJsonObject) continue
             val obj = el.asJsonObject

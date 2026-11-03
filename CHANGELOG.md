@@ -2,6 +2,17 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.73] - 2026-11-03
+
+### 🩹 修正 1.8.72 引入的「滞后快照」误判（会让界面长期卡在只追加模式）
+
+- **问题**：1.8.72 把「本地存在快照里没有的 `entryId`」当成“快照落后”。但长会话里**每跑一个回合**，窗口最老的那几条就会自然掉出快照窗口（它们仍在分支上，只是不在 `tail` 窗口内），于是：每轮对账都被判为“滞后”→ 界面长期只能往前长；空闲状态下连续 3 轮还会触发“服务端当权”，把已经拉到的旧尾巴截回窗口。
+- **正解**（与“快照追得上”能同时成立的口径）：取快照里最新的 `entryId`，**它出现在本地、但不是本地的尾巴**才算快照滞后 —— 窗口向前滑动时快照尾巴根本不在本地，自然不误判；而“本地跑到快照前面”（磁盘回放 / 服务端 leaf 滞后）仍能准确识别。
+- **测试**：新增「快照窗口向前滑动不算滞后」；把「工具结果单向补全」改成真实数据形状（工具卡片实际**没有** `entryId`，只能靠 `toolCallId` 配对）—— 旧写法用了一个生产环境不存在的形状。
+- **顺带**：`PiApiClient` 里两个几乎重复的首/尾 `entryId` 扫描合并为 `messageEntryId(msgs, fromEnd)`；`ProcessWindowPolicyTest` 里同义反复的断言（`initialLimit(INITIAL_WINDOW) == INITIAL_WINDOW` 的等价重复）换成窗口边界断言。
+
+---
+
 ## [1.8.72] - 2026-11-03
 
 ### 🧹 审查跟进第二轮（评审里剩下的优化项）
@@ -12,7 +23,7 @@ All notable changes to the πDroid application will be documented in this file.
 - **不再一次同步叠两层重试**：`readGet()` 新增 `attempts` 参数，`force=1` 那一趟只给 1 次单试 —— 之前最坏是「内层 2 次 × 外层 2 趟 = 4 个请求 × 30s」占住一个同步槽；
 - **可诊断性**：会话树形状认不出来时打一条一次性 W 日志（带 `treeFormat`）—— 上次 pi-web 把 `tree` 改成嵌套数组就是静默回落，缺陷只能靠肉眼看出来；`lagRetryCooldownUntil` 加上 64 条上限；`contextLastEntryId` 改为优先取末条消息自身的 `entryId`，平行数组只作兜底；
 - **对齐参考实现 / 可读性**：`roleCountsTowardTail` 不再把 `branchSummary` 算进预算（pi 的 `countsTowardTail` 只算 user/assistant/compaction）；`flattenTree` 里的非局部返回改成独立的 `flattenRoots()`；补充「节点缺 entry 对象时跳过自身但仍走子节点」的用例，测试里的双 `!!` 改用 `requireNotNull`。
-- **验证**：新增 5 个纯 JVM 用例（工具结果单向补全、只追加模式的空闲出口、分支摘要不占预算、形状漂移兜底）。
+- **验证**：新增 4 个纯 JVM 用例（工具结果单向补全、只追加模式的空闲出口、分支摘要不占预算、形状漂移兜底）。
 
 ---
 
