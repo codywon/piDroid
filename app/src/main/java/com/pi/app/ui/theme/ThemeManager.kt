@@ -3,6 +3,7 @@ package com.pi.app.ui.theme
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Color
@@ -192,6 +193,7 @@ enum class AppTheme(
 object ThemeManager {
     private const val PREFS_NAME = "pidroid_theme_prefs"
     private const val KEY_THEME = "current_theme_id"
+    private const val KEY_CHAT_FONT_SCALE = "chat_font_scale"
 
     private var prefs: SharedPreferences? = null
 
@@ -199,16 +201,37 @@ object ThemeManager {
     var currentTheme by mutableStateOf(AppTheme.LIGHT_PAPER)
         private set
 
+    /**
+     * 聊天正文字号倍数（1.0 = 与历史版本一致）。
+     *
+     * 只影响**会话正文**（Markdown 正文/代码/公式/工具卡片），不缩放输入框与设置页：
+     * 用户抱怨的“公式与正文接在一起、挤得看不清”属于阅读区问题，把整套 UI 一起放大
+     * 反而会挤掉底部输入栏与顶部标题栏的横向空间。
+     */
+    var chatFontScale by mutableFloatStateOf(ChatTextScale.DEFAULT)
+        private set
+
     fun init(context: Context) {
         if (prefs == null) {
             prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val savedId = prefs?.getString(KEY_THEME, AppTheme.LIGHT_PAPER.id) ?: AppTheme.LIGHT_PAPER.id
             currentTheme = AppTheme.fromId(savedId)
+            // 旧版本可能没写过这个键，也可能被写进过任意 float：统一交给 normalize 规整
+            chatFontScale = ChatTextScale.normalize(
+                prefs?.getFloat(KEY_CHAT_FONT_SCALE, ChatTextScale.DEFAULT) ?: ChatTextScale.DEFAULT
+            )
         }
     }
 
     fun setTheme(theme: AppTheme) {
         currentTheme = theme
         prefs?.edit()?.putString(KEY_THEME, theme.id)?.apply()
+    }
+
+    /** 设置聊天正文字号档位；越界/NaN 一律由 [ChatTextScale.normalize] 规整。 */
+    fun setChatFontScale(scale: Float) {
+        val next = ChatTextScale.normalize(scale)
+        chatFontScale = next
+        prefs?.edit()?.putFloat(KEY_CHAT_FONT_SCALE, next)?.apply()
     }
 }

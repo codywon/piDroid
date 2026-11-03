@@ -42,12 +42,15 @@ import kotlinx.coroutines.delay
  *  2. **无桥**：不开 `addJavascriptInterface`，页面拿不到任何与应用通信的能力；
  *  3. **失败必降级**：KaTeX 缺失 / 脚本报错 / 主文档加载失败一律回调 [fallback]，
  *     由调用方渲染原生近似版本，绝不留白板。
+ *
+ * @param fontSizeDp 正文字号（dp）。页面 viewport 用 device-width，所以 1 CSS px == 1 dp；
+ *   调用方要把 sp 换算成 dp 再传进来（WebView 里的 CSS px 不吃 Compose 的 fontScale）。
  */
 @Composable
 internal fun KaTeXFormulaView(
     latex: String,
     displayMode: Boolean,
-    fontSizeSp: Float,
+    fontSizeDp: Float,
     textColor: Color,
     modifier: Modifier = Modifier,
     fallback: @Composable () -> Unit
@@ -68,7 +71,7 @@ internal fun KaTeXFormulaView(
         val widthDp = maxWidth.value.toInt().coerceAtLeast(1)
         // 把所有排版相关的输入压成一个 key：尺寸/失败态/HTML 只有在「公式或排版环境变了」时
         // 才该重置，旋屏（widthDp 参与）也要重算一次缩放，否则横向被裁。
-        val renderKey = "$stableLatex|$colorHex|$fontSizeSp|$displayMode|$widthDp"
+        val renderKey = "$stableLatex|$colorHex|$fontSizeDp|$displayMode|$widthDp"
         // 尺寸未知（0f）= 正在排版，此时叠一层原生近似版顶着，避免卡片高度跳一下就空。
         var heightDp by remember(renderKey) { mutableStateOf(0f) }
         var failed by remember(renderKey) { mutableStateOf(false) }
@@ -77,7 +80,7 @@ internal fun KaTeXFormulaView(
             KaTeXPageTemplate.build(
                 latex = stableLatex,
                 displayMode = displayMode,
-                fontSizePx = fontSizeSp,
+                fontSizePx = fontSizeDp,
                 colorHex = colorHex
             ) + "\n<!--viewport:$widthDp-->"
         }

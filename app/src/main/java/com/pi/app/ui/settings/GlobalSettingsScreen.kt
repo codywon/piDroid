@@ -3137,6 +3137,64 @@ fun GlobalPluginsTab(
 // ==========================================
 // Tab 5: 系统设置 (主题切换、常驻通知栏保活、网关管理与关于)
 // ==========================================
+
+/**
+ * 「聊天正文字号」档位行：`−  100%  +`。
+ *
+ * 只作用于会话正文（见 [ThemeManager.chatFontScale]）：用户抱怨的是「公式/正文挤得看不清」，
+ * 把标题栏与输入栏一起放大反而会挤掉输入框的横向空间。档位计算全走 [ChatTextScale]（纯 Kotlin、有单测）。
+ */
+@Composable
+private fun ChatFontScaleRow() {
+    val theme = LocalAppTheme.current
+    val scale = ThemeManager.chatFontScale
+    SettingsRow(
+        title = "聊天正文字号",
+        topDivider = true,
+        trailing = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                ChatFontScaleButton(text = "−", enabled = !ChatTextScale.isMin(scale)) {
+                    ThemeManager.setChatFontScale(ChatTextScale.zoomOut(scale))
+                }
+                Text(
+                    text = ChatTextScale.percentLabel(scale),
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    color = theme.primary,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.widthIn(min = 42.dp)
+                )
+                ChatFontScaleButton(text = "+", enabled = !ChatTextScale.isMax(scale)) {
+                    ThemeManager.setChatFontScale(ChatTextScale.zoomIn(scale))
+                }
+            }
+        }
+    )
+}
+
+/** 档位按钮：到顶/到底时置灰且不可点，避免点了没反应的“假按钮”。 */
+@Composable
+private fun ChatFontScaleButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val theme = LocalAppTheme.current
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = if (enabled) theme.surfaceContainerHigh else theme.surfaceContainerLow,
+        modifier = Modifier
+            .size(26.dp)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Text(
+                text = text,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (enabled) theme.primary else theme.textMuted.copy(alpha = 0.5f)
+            )
+        }
+    }
+}
+
 @Composable
 fun GlobalSystemSettingsTab(
     isIgnoringBattery: Boolean,
@@ -3231,6 +3289,7 @@ fun GlobalSystemSettingsTab(
                             }
                         }
                     )
+                    ChatFontScaleRow()
                     SettingsRow(
                         title = "马达触觉反馈",
                         topDivider = true,

@@ -2164,7 +2164,13 @@ fun ChatScreen(
                     )
                 }
             }
-            CompositionLocalProvider(LocalMediaViewport provides mediaViewport) {
+            // 正文区整体套一层 Density：用户把「聊天正文字号」调大时，Markdown 正文 / 代码 / 标题
+            // 全部按同一比例放大，而输入栏、标题栏、间距（dp）不受影响。
+            val chatContentDensity = rememberChatContentDensity()
+            CompositionLocalProvider(
+                LocalMediaViewport provides mediaViewport,
+                LocalDensity provides chatContentDensity
+            ) {
                 LazyColumn(
                     state = listState,
                     modifier = Modifier

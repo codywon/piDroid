@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
@@ -1096,6 +1097,10 @@ private fun appendMdTextWithFallbacks(
 // ==========================================
 // 独立块级数学公式卡片 ($$...$$ / ```math / ```latex)
 // ==========================================
+
+/** 公式的基准字号：15sp 与 pi-web 的正文行高对齐，再乘用户设定的字号档位。 */
+private val FORMULA_BASE_SP = 15.sp
+
 @Composable
 private fun MathFormulaBlockCard(formula: String) {
     val theme = LocalAppTheme.current
@@ -1150,25 +1155,42 @@ private fun MathFormulaBlockCard(formula: String) {
                 }
             }
             Spacer(modifier = Modifier.height(6.dp))
-            KaTeXFormulaView(
-                latex = formula,
-                displayMode = true,
-                fontSizeSp = 15f,
-                textColor = theme.textPrimary,
-                modifier = Modifier.fillMaxWidth(),
-                fallback = {
-                    Text(
-                        text = fallbackText,
-                        style = TextStyle(
-                            fontSize = 15.sp,
-                            fontFamily = FontFamily.Serif,
-                            fontWeight = FontWeight.Medium,
-                            color = theme.textPrimary,
-                            lineHeight = 22.sp
-                        )
+            // 公式字号跟随「聊天正文字号」：WebView 里的 CSS px 不吃 Compose 的 fontScale，
+            // 必须在这里把 15sp 换算成 dp 再传进去（1 CSS px == 1 dp），否则拉大字号时
+            // 正文变大了、公式还是原来那么小。
+            val formulaSizeDp = with(LocalDensity.current) { FORMULA_BASE_SP.toDp().value }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                // 卡片内左右各有 10dp padding，换行预算要用真实可用宽度算
+                val availableDp = (maxWidth - 20.dp).value
+                // 太长的公式先在顶层运算符处断行再排版，避免 KaTeX 把整条公式等比缩到看不清
+                val wrappedLatex = remember(formula, availableDp, formulaSizeDp) {
+                    LatexFormulaWrapper.wrap(
+                        latex = formula,
+                        availableWidthDp = availableDp,
+                        fontSizeDp = formulaSizeDp
                     )
                 }
-            )
+                KaTeXFormulaView(
+                    latex = wrappedLatex,
+                    displayMode = true,
+                    fontSizeDp = formulaSizeDp,
+                    textColor = theme.textPrimary,
+                    modifier = Modifier.fillMaxWidth(),
+                    fallback = {
+                        // 天然降级仍然用**原文**：LatexMathParser 不认识 gathered 环境
+                        Text(
+                            text = fallbackText,
+                            style = TextStyle(
+                                fontSize = FORMULA_BASE_SP,
+                                fontFamily = FontFamily.Serif,
+                                fontWeight = FontWeight.Medium,
+                                color = theme.textPrimary,
+                                lineHeight = 22.sp
+                            )
+                        )
+                    }
+                )
+            }
         }
     }
 }

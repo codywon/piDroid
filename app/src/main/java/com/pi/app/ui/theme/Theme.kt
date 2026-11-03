@@ -8,11 +8,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Density
 import androidx.core.view.WindowCompat
 
 val LocalAppTheme = compositionLocalOf { AppTheme.LIGHT_PAPER }
+
+/**
+ * 会话正文的 [Density]：在系统字体缩放之上再乘上用户设定的「聊天正文字号」倍数。
+ *
+ * 为什么用 fontScale 覆盖而不是逐处改字号：正文里是一个字号阶梯（正文 13.5 / 代码 12 / 标题 16…），
+ * 逐个乘一遍会漏、且行高与间距的比例容易走样；只换 fontScale 则所有 `sp` 等比放大，
+ * `dp`（间距、圆角、图标）保持不动，版式不会散。
+ *
+ * 注意：WebView 里的 CSS px 不吃 fontScale，公式要自己把 sp 换算成 dp 再传进去
+ * （见 MathFormulaBlockCard）。
+ */
+@Composable
+fun rememberChatContentDensity(): Density {
+    val base = LocalDensity.current
+    val scale = ThemeManager.chatFontScale
+    return remember(base, scale) { Density(base.density, base.fontScale * scale) }
+}
 
 @Composable
 fun PiDroidTheme(
