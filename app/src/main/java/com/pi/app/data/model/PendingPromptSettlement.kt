@@ -20,17 +20,17 @@ package com.pi.app.data.model
  * 4) 服务端此刻不在跑（在跑就还有戏，不动它）；
  * 5) 它的正文不在服务端队列里（压缩期间被 park 的提问在队列里，压缩结束会自动下发）；
  * 6) 它的提交请求已经返回（还在飞的时候结果未定，不能判死）。
+ *
+ * 正文比较必须走 [UserPromptText.normalize]：带图片的提问落盘后，pi 会往正文末尾追加一行
+ * 尺寸提示（`[Image: original …]`），拿它跟本机原话直接比会把「已经送达的提问」判成没送达，
+ * 于是气泡被收回、正文又被塞回输入框。
  */
 object PendingPromptSettlement {
 
     /** 默认宽限：pi 正常落盘在 1s 内，15s 是弱网 + 压缩边界的余量。 */
     const val DEFAULT_GRACE_MS = 15_000L
 
-    /** 引导消息在本地气泡上带的前缀（见 MainActivity 的 onSendSteer）。 */
-    const val STEER_PREFIX = "➔ [引导] "
-
-    private fun normalize(text: String): String =
-        text.trim().removePrefix(STEER_PREFIX).trim()
+    private fun normalize(text: String): String = UserPromptText.normalize(text)
 
     /**
      * 找出「确定没送达、应当从列表撤回」的乐观提问。

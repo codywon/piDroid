@@ -1122,7 +1122,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             when (roleStr) {
                 "user" -> {
                     val contentElem = msgObj.get("content") ?: msgObj.get("text")
-                    val userText = extractTextFromContent(contentElem)
+                    // 剥掉 pi 为缩放后的图片追加的尺寸提示行（`[Image: original 1220x2656, …]`）：
+                    // 那是给模型看的元数据，不该出现在用户气泡里，也不该被「从此处编辑」回填进输入框。
+                    val userText = UserPromptText.stripImageHints(extractTextFromContent(contentElem))
                     val userMedia = extractMediaFromContent(contentElem, userText)
                     if (userText.isNotBlank() || userMedia.isNotEmpty()) {
                         // 识别是否为 [Compaction summary] 摘要节点

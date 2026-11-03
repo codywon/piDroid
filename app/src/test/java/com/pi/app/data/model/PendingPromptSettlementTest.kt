@@ -149,4 +149,21 @@ class PendingPromptSettlementTest {
 
         assertTrue(PendingPromptSettlement.shouldRestoreToComposer(items, staleItem))
     }
+
+    @Test
+    fun `composer restore is skipped when the persisted copy carries an image note`() {
+        // 带截图的提问落盘后，正文末尾会多一行 pi 的尺寸提示；这不算「另一条提问」，
+        // 不能因此把正文再塞回输入框。
+        val items = listOf(
+            user("stale", "如图，请看点位"),
+            user(
+                "fresh",
+                "如图，请看点位\n\n[Image: original 1220x2656, displayed at 919x2000. " +
+                    "Multiply coordinates by 1.33 to map to original image.]",
+                entryId = "e1"
+            )
+        )
+
+        assertFalse(PendingPromptSettlement.shouldRestoreToComposer(items, items.first()))
+    }
 }

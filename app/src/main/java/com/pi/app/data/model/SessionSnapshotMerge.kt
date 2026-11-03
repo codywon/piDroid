@@ -178,15 +178,19 @@ object SessionSnapshotMerge {
             }
 
             // 若 entryId 未匹配，针对乐观用户消息尝试按角色与正文内容匹配
+            //
+            // 正文比较**必须**走 [UserPromptText.samePrompt] 而不是简单的 trim+equals：
+            // 带图片的提问落盘时，pi 会往正文末尾追加一行给模型看的尺寸提示
+            // （`[Image: original 1220x2656, displayed at 919x2000. …]`），手机截图几乎必然被缩放，
+            // 于是「本机原话」与「服务端原话 + 提示行」永远对不上 —— 乐观气泡认领不了服务端那条，
+            // 被当作 in-flight 追加到列表末尾，界面上就是「模型已经答完，下面又冒出一条我发的提问」。
             if (localMatchIdx < 0 && diskItem.role == MessageRole.USER) {
-                val diskContent = diskItem.content.trim()
                 for (i in newestFirst) {
                     if (matchedLocalIndices.contains(i)) continue
                     val item = local[i]
                     if (item.role != MessageRole.USER) continue
                     if (!item.entryId.isNullOrBlank()) continue
-                    val localContent = item.content.trim()
-                    if (localContent == diskContent || localContent.removePrefix("➔ [引导] ").trim() == diskContent) {
+                    if (UserPromptText.samePrompt(item.content, diskItem.content)) {
                         localMatchIdx = i
                         break
                     }

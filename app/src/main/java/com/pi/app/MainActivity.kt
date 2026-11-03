@@ -981,10 +981,12 @@ class MainActivity : ComponentActivity() {
                     return@launch
                 }
                 // 运行态可能刚好在中间结束：再对一次正文，避免把已经落盘的提问当失败
+                // 比较走 [UserPromptText.samePrompt]：带图片的提问落盘后正文末尾会被 pi 追加一行
+                // 尺寸提示（`[Image: original …]`），直接比 trim 后的原文会把已送达当成失败。
                 val detail = apiClient.getSessionDetail(sessionId)
                 val lastUserText = detail.getOrNull()?.messages
-                    ?.lastOrNull { it.role == MessageRole.USER }?.content?.trim()
-                if (lastUserText != null && lastUserText == prompt.trim()) return@launch
+                    ?.lastOrNull { it.role == MessageRole.USER }?.content
+                if (lastUserText != null && UserPromptText.samePrompt(lastUserText, prompt)) return@launch
                 if (detail.isFailure) {
                     syncSnapshotCallback?.invoke(sessionId)
                     return@launch
