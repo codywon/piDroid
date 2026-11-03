@@ -1,14 +1,23 @@
 # 固定公网地址（一次扫码，长期可用）
 
-> **通道定位**：默认公网通道已改为自建 frp，见 [FRP_TUNNEL.md](FRP_TUNNEL.md)。
-> 本文描述的是 **Cloudflare 通道（可选）** —— 只有 `node launcher.js --tunnel`
-> 或 `start-server-tunnel.bat` 才会走这里。两者都能做到「扫码一次长期可用」，
-> 区别在网络路径（见两份文档开头的对比表）。
+> **通道定位**：默认公网通道是 **自建 frp**，部署 runbook 见 [FRP_TUNNEL.md](FRP_TUNNEL.md)。
+> **本文只描述 Cloudflare 通道，它已降级为备用** —— 只有显式 `--tunnel`（或 `--cloudflare`）
+> 才会走这里，**默认不会再拉起 Cloudflare**，默认模式也完全不读 `~/.cloudflared/config.yml`。
+>
+> | 启动方式 | 公网通道 | 实际行为 |
+> | --- | --- | --- |
+> | `node launcher.js`（不带参数） | **frp** | 读 `frpc-pidroid.toml`，地址 = `https://<customDomains[0]>/pi` |
+> | `--tunnel` / `--cloudflare` | Cloudflare | 本文；没装 frp、或 frp 不可用时的备选 |
+> | `--local` / `--no-tunnel` | 无 | 只留局域网，不出公网 |
+>
+> 判定逻辑只有一处：`server/gateway.js` 的 `resolveTunnelMode()` ——
+> 命令行 flag 优先，其次 `start({ autoTunnel })`，都没有就默认 `frp`。
+> 两个通道都能做到「扫码一次长期可用」，区别只在网络路径（frp 实测 0.19s，Cloudflare 1.5s）。
 
 ## 为什么以前每次重启都要重新扫码
 
-> 现状：只要能读到 `~/.cloudflared/config.yml` 里指向网关端口的 ingress，
-> `start-server-tunnel.bat` 就会直接走**固定域名隧道**（见下面第 0 节），
+> 现状：只要你用 `--tunnel` 启动，且能读到 `~/.cloudflared/config.yml` 里指向网关端口的
+> ingress，`start-server-tunnel.bat` 就会直接走**固定域名隧道**（见下文「Cloudflare 模式下的现状」），
 > 不再需要每次重扫。下面这段解释「为什么过去做不到」，排查时仍有用。
 
 没有配置命名隧道时，`start-server-tunnel.bat` 会退到 **Cloudflare Quick Tunnel**：
@@ -33,7 +42,9 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 
 ---
 
-## 现状：默认就走固定域名（无需环境变量）
+## Cloudflare 模式下的现状：地址由 config.yml 决定（无需环境变量）
+
+> 本节只在 `--tunnel` 模式下生效。默认的 frp 模式**不会**读 `~/.cloudflared/config.yml`。
 
 `server/gateway.js` 会读取 `%USERPROFILE%\.cloudflared\config.yml`：
 
@@ -48,7 +59,11 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 > 「一直自动重连中」——App 无法自愈，因为它无从得知新地址。遇到这个现象：
 > 先确认 `cloudflared` 的 `config.yml` 是否指向 4100，再重新扫码。
 
-## 方案一（推荐）：Cloudflare Named Tunnel + 自有域名
+## 方案一（备用）：Cloudflare Named Tunnel + 自有域名
+
+> 日常请走 [FRP_TUNNEL.md](FRP_TUNNEL.md)（默认通道）。本节仅在需要走 Cloudflare 时用：
+> 启动必须是 `start-server-tunnel.bat`（它带 `--tunnel`），或手动
+> `node launcher.js --tunnel` / `node server/start.bat --tunnel`。
 
 Cloudflare 的「命名隧道」把一条隧道绑定到你自己域名下的固定主机名，免费额度足够个人使用。
 配置好之后每次启动都是**同一个 URL + 同一个 Token**，手机扫码一次即可长期连接，除非你主动重置 Token。
@@ -92,8 +107,8 @@ ingress:
 
 ### 告诉启动器使用固定域名
 
-**通常什么都不用做。** 只要 `~/.cloudflared/config.yml` 里存在
-「`tunnel:` + 一条 `service` 指向网关端口（默认 4100）的 `hostname`」，
+**在 Cloudflare 模式下（`--tunnel`）通常什么都不用做。** 只要 `~/.cloudflared/config.yml`
+里存在「`tunnel:` + 一条 `service` 指向网关端口（默认 4100）的 `hostname`」，
 双击 `start-server-tunnel.bat` 就会自动用它：
 
 - 不再启动临时隧道，改为执行 `cloudflared tunnel run <tunnel>`；
@@ -191,7 +206,13 @@ Token 保持不变即可，不必重新扫码。后续若需要，可以在 App 
 
 ---
 
-## 本机当前部署记录（2026-10-28 配置）
+## 本机当前部署记录（2026-10-28 配置，已停用）
+
+> **状态（2026-11-03）**：Cloudflare 通道**未在服务**。`cloudflared` 没有在跑，
+> 计划任务也不再带 `--tunnel`，访问 `https://pi.codywon.top` 会得到
+> Cloudflare 的 `1033`（隧道未连接）。
+> **当前实际公网入口是 frp**：`https://agent.thetatech.cn/pi`（`frpc-pidroid.toml`，`localPort=4100`）。
+> 下表保留作为重新启用 Cloudflare 时的配置参照。
 
 | 项目 | 值 |
 | --- | --- |
