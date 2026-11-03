@@ -44,9 +44,10 @@ object ProcessWindowPolicy {
         if (total <= 0) return 0
         val base = if (window <= 0) total else window
         val steps = extraSteps.coerceAtLeast(0)
-        val extra = if (step <= 0) total else steps.toLong() * step
+        val extra = if (step <= 0) total.toLong() else steps.toLong() * step
+        // 用 Long 累加是为了避免 steps * step 溢出；和 total 比时两边都换成 Long。
         val limit = base.toLong() + extra
-        return if (limit >= total) total else limit.toInt()
+        return if (limit >= total.toLong()) total else limit.toInt()
     }
 
     /** 还有多少条被折叠（渲染窗口 `_显示更早的 N 条_` 文案用）。 */

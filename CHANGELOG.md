@@ -2,7 +2,7 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.74] - 2026-11-03
+## [1.8.75] - 2026-11-03
 
 ### 🩹 修复过程折叠组「只显示最新 1 条 + 显示更早的 11 条」
 
