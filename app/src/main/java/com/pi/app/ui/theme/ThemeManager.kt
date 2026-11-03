@@ -229,7 +229,7 @@ object ThemeManager {
     }
 
     /** 设置聊天正文字号档位；越界/NaN 一律由 [ChatTextScale.normalize] 规整。 */
-    fun setChatFontScale(scale: Float) {
+    fun updateChatFontScale(scale: Float) {
         val next = ChatTextScale.normalize(scale)
         chatFontScale = next
         prefs?.edit()?.putFloat(KEY_CHAT_FONT_SCALE, next)?.apply()

@@ -3154,7 +3154,7 @@ private fun ChatFontScaleRow() {
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ChatFontScaleButton(text = "−", enabled = !ChatTextScale.isMin(scale)) {
-                    ThemeManager.setChatFontScale(ChatTextScale.zoomOut(scale))
+                    ThemeManager.updateChatFontScale(ChatTextScale.zoomOut(scale))
                 }
                 Text(
                     text = ChatTextScale.percentLabel(scale),
@@ -3166,7 +3166,7 @@ private fun ChatFontScaleRow() {
                     modifier = Modifier.widthIn(min = 42.dp)
                 )
                 ChatFontScaleButton(text = "+", enabled = !ChatTextScale.isMax(scale)) {
-                    ThemeManager.setChatFontScale(ChatTextScale.zoomIn(scale))
+                    ThemeManager.updateChatFontScale(ChatTextScale.zoomIn(scale))
                 }
             }
         }

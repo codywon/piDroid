@@ -2,7 +2,7 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
-## [1.8.65] - 2026-11-03
+## [1.8.66] - 2026-11-03
 
 ### 🔍 长公式不再被压成小字 + 新增「聊天正文字号」
 
