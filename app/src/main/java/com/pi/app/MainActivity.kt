@@ -2018,6 +2018,8 @@ class MainActivity : ComponentActivity() {
             if (path.isBlank()) return
             lastOpenedWorkspacePath = path
             prefs.lastSelectedWorkspacePath = path
+            // cwd 缺失时回落到工作区根：`lastSelectedCwd` 要的是「下次新会话在哪儿开」，
+            // 留空会让新会话建到一个与当前工作区无关的旧目录里。
             prefs.lastSelectedCwd = cwd?.takeIf { it.isNotBlank() } ?: path
         }
 
@@ -2075,8 +2077,10 @@ class MainActivity : ComponentActivity() {
             // 对应的记录一并清掉（否则 map 会跟着会话数量一直长）。
             pendingPromptSentAt.clear()
             pendingPromptSends.clear()
-            // 切换会话必须丢掉上一场在途消息的身份，否则新会话的正文会被认领到旧气泡上
-            streamingMessageId = null
+            // 切换会话：先把上一场的分页游标 / 分支树 / 压缩历史 / 在途身份一次清完，
+            // **必须在下面根据 session.isRunning 重算运行态之前**——否则会把它刚算好的
+            // agentPhaseLabel 又抹成 null（运行中的会话再也看不到「正在等待模型…」）。
+            resetSessionScopedState()
             isAutoRetrying = false
             isToolExecuting = false
             consecutiveIdlePolls = 0
@@ -2085,9 +2089,6 @@ class MainActivity : ComponentActivity() {
             // 工具在跑时不要盖成「正在等待模型」（pi-web #1348，runStatePhase 规则）：
             // 否则工具明明在执行，顶部却先闪一下等待模型。
             agentPhaseLabel = if (session.isRunning && !isToolExecuting) "正在等待模型..." else null
-
-            // 切换会话必须清空上一场的「更早记录」，否则会把别人的历史拼进来
-            resetSessionScopedState()
 
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)
@@ -4012,7 +4013,9 @@ class MainActivity : ComponentActivity() {
                                             applyWorkspaceSelection(root)
                                         }
                                         apiClient.getWorktrees(root)
-                                            .onSuccess { res -> activeWorktreesResult = res }
+                                            // 用户可能已经关掉弹窗：只在弹窗仍然打开时回填刷新结果，
+                                            // 否则会在关闭后又被“复活”一次。
+                                            .onSuccess { res -> if (activeWorktreesResult != null) activeWorktreesResult = res }
                                             // 刷新失败必须关掉弹窗：继续展示一条已被删除的 worktree，
                                             // 用户再点一次就是“目录不存在”。
                                             .onFailure { activeWorktreesResult = null }

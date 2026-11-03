@@ -2,6 +2,17 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.86] - 2026-11-04
+
+### 🩹 修复 1.8.85 引入的「切到运行中的会话时阶段文案被抹掉」
+
+- **问题**：`resetSessionScopedState()` 里包含 `agentPhaseLabel = null`，而 `openSessionWithHistory` 是**先**按 `session.isRunning` 算出「正在等待模型…」、**再**调用该清理函数，于是刚算好的阶段文案立刻被抹成 null —— 切到一个正在跑的会话时，顶部不再显示「正在等待模型…」，要等下一个 SSE/状态事件才恢复。
+- **修法**：把会话级清理提到「重算运行态」之前（并在注释里写明这个顺序约束），同时删掉被它覆盖掉的散装 `streamingMessageId = null`。
+- **顺带**：worktree 删除成功后刷新列表时，若用户已经关掉弹窗就只丢弃结果、不再把弹窗「复活」；`applyWorkspaceSelection` 补一句 `lastSelectedCwd` 回落语义的注释。
+- **验证**：`Run Unit Tests` 全量通过（490+ 用例）。
+
+---
+
 ## [1.8.85] - 2026-11-04
 
 ### 🛡️ 会话状态收口 / Worktree 并发与失败可见（对齐 pi-web 的单一真相）
