@@ -1326,7 +1326,7 @@ fun ChatScreen(
                         ) {
                             if (branchTreeNodes.isNotEmpty()) {
                                 DropdownMenuItem(
-                                    text = { Text("会话分支拓扑...", style = MaterialTheme.typography.bodyMedium) },
+                                    text = { Text("分支拓扑", style = MaterialTheme.typography.bodyMedium) },
                                     leadingIcon = {
                                         Icon(
                                             imageVector = Icons.Default.AltRoute,
@@ -1342,7 +1342,7 @@ fun ChatScreen(
                                 )
                             }
                             DropdownMenuItem(
-                                text = { Text("工作目录 Git 变更", style = MaterialTheme.typography.bodyMedium) },
+                                text = { Text("Git 变更", style = MaterialTheme.typography.bodyMedium) },
                                 leadingIcon = {
                                     Icon(
                                         imageVector = Icons.Default.AccountTree,
@@ -1357,7 +1357,7 @@ fun ChatScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("导出会话为 HTML", style = MaterialTheme.typography.bodyMedium) },
+                                text = { Text("导出 HTML", style = MaterialTheme.typography.bodyMedium) },
                                 leadingIcon = {
                                     Icon(
                                         imageVector = Icons.Default.FileDownload,
@@ -1372,7 +1372,7 @@ fun ChatScreen(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("重命名会话...", style = MaterialTheme.typography.bodyMedium) },
+                                text = { Text("重命名", style = MaterialTheme.typography.bodyMedium) },
                                 leadingIcon = {
                                     Icon(
                                         imageVector = Icons.Default.Edit,
