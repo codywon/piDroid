@@ -904,42 +904,67 @@ const proxyAgent = new http.Agent({
 const SSE_HEARTBEAT_MS = 30_000;
 const SSE_IDLE_TIMEOUT_MS = SSE_HEARTBEAT_MS * 3;
 
+// 慢消费者（客户端跟不上）的看门狗。
+//
+// 只有 idle 看门狗是不够的：一个 24 KB/s 的活跃会话，90s 就能在 pi-web 那边
+// 堆出跟实测一致的 2.2 MB 队列（`is behind (2277 KB queued)`）。
+// 网关是唯一能看见「客户端写缓冲」的地方：`res.writableLength` 就是还没送出去的字节数，
+// 它连续超阀值，说明手机已经跟不上了（弱网、熄屏、或 TCP 半死）。
+// 这时不应继续反压上游让 pi-web 排队，而是直接断开：手机重连时会拿快照重建。
+const SSE_BACKPRESSURE_BYTES = 256 * 1024;
+const SSE_BACKPRESSURE_MS = 5_000;
+const SSE_BACKPRESSURE_POLL_MS = 1_000;
+
 function isEventStreamResponse(headers) {
   return String((headers && headers['content-type']) || '').includes('text/event-stream');
 }
 
 /**
- * 给一条 SSE 响应挂上「空闲即断开」的看门狗。导出是为了能单测（不启服务）。
+ * 给一条 SSE 响应挂两个看门狗（导出是为了能单测，不启服务）：
  *
- * 任何字节（心跳、正文、工具事件）都算活跃，重置计时；
+ * 1. **空闲**：连续 `idleMs` 没收到上游任何字节（连心跳也没有）；
+ * 2. **慢消费者**：下游写缓冲连续 `backpressureMs` 超过 `backpressureBytes`。
+ *
+ * 任何字节（心跳、正文、工具事件）都会重置空闲计时；
  * 断开时同时销毁上下游：只关客户端会让 pi-web 继续排队，只关上游会让手机端挂死。
  */
-function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS) {
+function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS, options = {}) {
+  const backpressureBytes = options.backpressureBytes ?? SSE_BACKPRESSURE_BYTES;
+  const backpressureMs = options.backpressureMs ?? SSE_BACKPRESSURE_MS;
+  const pollMs = options.pollMs ?? SSE_BACKPRESSURE_POLL_MS;
   const label = `${(req && req.method) || 'GET'} ${(req && (req.originalUrl || req.url)) || ''}`;
   let timer = null;
+  let poller = null;
+  let slowSince = 0;
 
   const disarm = () => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
     }
+    if (poller) {
+      clearInterval(poller);
+      poller = null;
+    }
   };
 
-  const kill = () => {
+  const kill = (reason) => {
     disarm();
-    console.error(
-      `[SSE] ${Math.round(idleMs / 1000)}s 内没有收到任何事件（连心跳也没到），` +
-        `判定为僵尸长连接并主动断开，避免 pi-web 继续往队列里堆事件: ${label}`
-    );
+    console.error(`[SSE] ${reason}，主动断开以避免 pi-web 继续往队列里堆事件: ${label}`);
     try { proxyRes.destroy(); } catch (e) {}
     try { res.destroy(); } catch (e) {}
   };
 
   const arm = () => {
-    disarm();
-    timer = setTimeout(kill, idleMs);
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(
+      () => kill(`${Math.round(idleMs / 1000)}s 内没有收到任何事件（连心跳也没到），判定为僵尸长连接`),
+      idleMs
+    );
     // 不拖住进程退出：看门狗只是清理，不该成为 launcher 的存活原因
     if (typeof timer.unref === 'function') timer.unref();
+    // 有字节流过，说明这条流不是僵尸：把慢消费者的观察窗口也重置一下
+    slowSince = 0;
   };
 
   proxyRes.on('data', arm);
@@ -948,6 +973,25 @@ function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS) 
   proxyRes.on('error', disarm);
   if (res && typeof res.on === 'function') res.on('close', disarm);
   arm();
+
+  // 慢消费者：轮询下游还没送出去的字节数
+  poller = setInterval(() => {
+    const queued = res && typeof res.writableLength === 'number' ? res.writableLength : 0;
+    if (queued < backpressureBytes) {
+      slowSince = 0;
+      return;
+    }
+    if (!slowSince) {
+      slowSince = Date.now();
+      return;
+    }
+    if (Date.now() - slowSince >= backpressureMs) {
+      kill(
+        `客户端写缓冲已积压 ${Math.round(queued / 1024)} KB 超过 ${Math.round(backpressureMs / 1000)}s（慢消费者）`
+      );
+    }
+  }, pollMs);
+  if (typeof poller.unref === 'function') poller.unref();
 }
 
 const proxy = createProxyMiddleware({
@@ -1268,9 +1312,11 @@ module.exports = {
   // 公网通道选择与 frp 守护
   resolveTunnelMode,
   stopFrp: frpClient.stopFrp,
-  // SSE 空闲看门狗（单测直接喂假事件流，不启服务）
+  // SSE 空闲 / 慢消费者看门狗（单测直接喂假事件流，不启服务）
   SSE_HEARTBEAT_MS,
   SSE_IDLE_TIMEOUT_MS,
+  SSE_BACKPRESSURE_BYTES,
+  SSE_BACKPRESSURE_MS,
   isEventStreamResponse,
   guardEventStreamIdle
 };

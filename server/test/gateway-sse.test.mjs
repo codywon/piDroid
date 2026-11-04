@@ -85,3 +85,51 @@ test('client closing disarms the watchdog instead of double-killing', async () =
   await new Promise((r) => setTimeout(r, 80));
   assert.equal(upstream.destroyed, false);
 });
+
+// ── 慢消费者（下游写缓冲积压）──────────────────────────────────────────────
+// 光有 idle 看门狗不够：24 KB/s 的活跃会话 90s 就能在 pi-web 堆出实测的 2.2 MB。
+// 网关能直接看到 `res.writableLength`，所以这里另有一条更快的判据。
+
+function fakeDownstream(writableLength) {
+  const stream = new EventEmitter();
+  stream.destroyed = false;
+  stream.writableLength = writableLength;
+  stream.destroy = () => {
+    stream.destroyed = true;
+  };
+  return stream;
+}
+
+const FAST = { backpressureBytes: 100, backpressureMs: 30, pollMs: 10 };
+
+test('a client whose write buffer stays full is dropped quickly', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(4096);
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, FAST);
+
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(downstream.destroyed, true, 'slow consumer must not hold pi-web alive');
+  assert.equal(upstream.destroyed, true, 'upstream to pi-web must be released too');
+});
+
+test('a client that keeps draining is never dropped', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(10); // 低于阈值
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, FAST);
+
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(downstream.destroyed, false);
+});
+
+test('bytes flowing resets the slow-consumer window', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(4096);
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, FAST);
+
+  // 每 10ms 有数据流过 -> 空闲计时与慢消费者窗口都被重置
+  const heartbeat = setInterval(() => upstream.emit('data', 'data: {"type":"heartbeat"}\n\n'), 10);
+  await new Promise((r) => setTimeout(r, 150));
+  clearInterval(heartbeat);
+
+  assert.equal(downstream.destroyed, false, 'a still-moving stream must survive');
+});
