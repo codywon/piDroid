@@ -252,22 +252,28 @@ fun SessionListScreen(
     // App 自己拼出来的 `D:\myscript\termius` 与会话/pi-web 侧的 `D:/myscript/termius`
     // 原本会分裂成两个项目（同一个目录出现两行、会话只归到其中一行）。
     // 展示路径仍取会话自己那份写法，不把已有数据处理成另一种写法。
+    //
+    // 🧷 对标 pi-web 的 x(sessions) 排序：未自定义排序的项目优先看最近活跃修改时间（latestModified），
+    // 绝不是看谁的历史会话总数最多（避免陈年旧项目靠堆积会话数霸占首位）。
     val workspaces = remember(sessions, customWorkspaces, unreadSessionIds) {
         groupWorkspaces(sessions, customWorkspaces).map { group ->
             val list = group.sessions
             val first = list.firstOrNull()
             val name = first?.workspaceName
                 ?: group.path.trimEnd('/', '\\').substringAfterLast('\\').substringAfterLast('/')
+            val latestModified = list.maxOfOrNull { it.modified ?: it.created ?: "" }.orEmpty()
             WorkspaceInfo(
                 path = group.path,
                 name = name.ifBlank { "默认项目" },
                 sessionCount = list.size,
                 runningCount = list.count { it.isLive },
                 awaitingCount = list.count { it.awaitingInput },
-                unreadCount = list.count { unreadSessionIds.contains(it.id) }
+                unreadCount = list.count { unreadSessionIds.contains(it.id) },
+                latestModified = latestModified
             )
         }.sortedWith(
             compareByDescending<WorkspaceInfo> { it.runningCount }
+                .thenByDescending { it.latestModified }
                 .thenByDescending { it.sessionCount }
         )
     }
@@ -304,33 +310,42 @@ fun SessionListScreen(
         onWorkspaceSelected(targetPath)
     }
 
-    LaunchedEffect(initialWorkspacePath, sortedWorkspaces) {
+    LaunchedEffect(initialWorkspacePath, sortedWorkspaces, isLoading, sessions.isEmpty()) {
+        // 🧷 对标 pi-web 的 0 !== sessions.length 门禁：
+        // 初始网络拉取在途期间（isLoading && sessions.isEmpty()），绝对不能拿只有离线 customWorkspaces 的半成品列表做有效性判决，
+        // 否则必定误判上次工作区“已失效”并把选区错误洗回首项！
+        if (isLoading && sessions.isEmpty()) return@LaunchedEffect
+
         val sortedPaths = sortedWorkspaces.map { it.path }
         val hint = initialWorkspacePath
         val hintUsable = hint.isNotBlank() &&
             (hint == PINNED_WORKSPACE_KEY || sortedPaths.any { WorkspacePaths.samePath(it, hint) })
-        if (hintUsable && hint != appliedWorkspaceHint) {
-            // 提示只应用一次（每次从别的会话返回或初次注入时才变），之后不去抢用户手动切的工作区
-            appliedWorkspaceHint = hint
-            // 回到上次的工作区时用列表里真实的那份写法（可能与会话快照里的写法差个分隔符）
+        if (hintUsable) {
             val resolved = if (hint == PINNED_WORKSPACE_KEY) {
                 hint
             } else {
                 sortedPaths.firstOrNull { WorkspacePaths.samePath(it, hint) } ?: hint
             }
-            selectedWorkspacePath = resolved
-            onWorkspaceSelected(resolved)
+            if (hint != appliedWorkspaceHint) {
+                // 提示只应用一次（初次注入或切会话返回时变），之后不抢用户在抽屉手动切换的工作区
+                appliedWorkspaceHint = hint
+                if (selectedWorkspacePath != resolved) {
+                    selectedWorkspacePath = resolved
+                }
+            }
         } else if (selectedWorkspacePath.isBlank() ||
             (selectedWorkspacePath != PINNED_WORKSPACE_KEY &&
+                sortedPaths.isNotEmpty() &&
                 sortedPaths.none { WorkspacePaths.samePath(it, selectedWorkspacePath) })
         ) {
             val resolved = resolveInitialWorkspaceSelection(
                 preferredPath = selectedWorkspacePath.ifBlank { hint },
                 sortedWorkspacePaths = sortedPaths
             )
-            selectedWorkspacePath = resolved
-            if (resolved.isNotBlank()) {
-                onWorkspaceSelected(resolved)
+            // 🧷 铁律：系统被动兜底只更新当前的临时 UI 选区指针，绝不反向调用 onWorkspaceSelected 改写用户的持久化磁盘！
+            // 只有用户在抽屉/菜单中主动点击切换，才允许调用 onWorkspaceSelected 写盘。
+            if (resolved.isNotBlank() && selectedWorkspacePath != resolved) {
+                selectedWorkspacePath = resolved
             }
         }
     }

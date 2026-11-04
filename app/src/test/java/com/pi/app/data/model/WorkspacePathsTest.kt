@@ -188,4 +188,40 @@ class WorkspacePathsTest {
         assertEquals("", resolveInitialWorkspaceSelection("D:/myscript/pi-app", emptyList()))
         assertEquals(PINNED_WORKSPACE_KEY, resolveInitialWorkspaceSelection(PINNED_WORKSPACE_KEY, emptyList()))
     }
+
+    @Test
+    fun `workspaces comparator prioritizes latest modified over session count (align with pi-web)`() {
+        val oldProjectManySessions = WorkspaceInfo(
+            path = "D:/myscript/old-archive",
+            name = "old-archive",
+            sessionCount = 200,
+            runningCount = 0,
+            latestModified = "2026-10-01T12:00:00Z"
+        )
+        val recentProjectFewSessions = WorkspaceInfo(
+            path = "D:/myscript/recent-active",
+            name = "recent-active",
+            sessionCount = 3,
+            runningCount = 0,
+            latestModified = "2026-11-04T01:30:00Z"
+        )
+        val runningProject = WorkspaceInfo(
+            path = "D:/myscript/running-task",
+            name = "running-task",
+            sessionCount = 1,
+            runningCount = 1,
+            latestModified = "2026-11-04T00:00:00Z"
+        )
+
+        val list = listOf(oldProjectManySessions, recentProjectFewSessions, runningProject)
+        val sorted = list.sortedWith(
+            compareByDescending<WorkspaceInfo> { it.runningCount }
+                .thenByDescending { it.latestModified }
+                .thenByDescending { it.sessionCount }
+        )
+
+        assertEquals("D:/myscript/running-task", sorted[0].path)
+        assertEquals("D:/myscript/recent-active", sorted[1].path)
+        assertEquals("D:/myscript/old-archive", sorted[2].path)
+    }
 }

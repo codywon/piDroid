@@ -2,6 +2,24 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.88] - 2026-11-04
+
+### 🩹 彻底解决冷启动工作区自动落到 termius 的缺陷（对标 pi-web 机制）
+
+- **现象**：退出 App 重新进入或离开一段时间后返回主页，界面总是顽固跳回到 `termius` 项目目录。
+- **根因（多帧异步竞争 + 假失效反向洗白）**：
+  1. 手机端本地 `KEY_CUSTOM_WORKSPACES` 曾通过浏览添加过 `D:\myscript\termius`，冷启动第 1 帧时服务端会话列表 `sessions` 仍在网络在途中（为空），而离线自定义工作区已同步加载，导致首帧工作区列表里只有 `["termius"]`；
+  2. `LaunchedEffect` 在首帧缺乏数据就绪门禁，比对后误以为用户上次选区（如 `pi-app`）“已被物理删除”，于是错误进入兜底逻辑取出首项 `termius`；
+  3. 兜底逻辑越权反写磁盘：兜底取出的 `termius` 直接调用 `onWorkspaceSelected`，在第 1 帧瞬间把 SharedPreferences 里的持久化选区强制改写成了 `termius`，致使第 2 帧完整会话到达后历史记忆已被摧毁。
+- **最佳实践修复（1:1 对标 pi-web）**：
+  - **网络就绪门禁（对标 pi-web `0 !== sessions.length`）**：在 `LaunchedEffect` 中加入 `if (isLoading && sessions.isEmpty()) return@LaunchedEffect` 保护，初始网络拉取期间挂起判决，绝不拿半成品列表判定工作区有效性；
+  - **严禁兜底污染存储（No Dirty Stomp）**：系统的被动兜底选区只更新 Compose 内存指针，绝不调用 `onWorkspaceSelected` 改写磁盘；只有用户在抽屉/菜单中主动点击切换才允许持久化写盘；
+  - **项目默认排序对标 pi-web `x(sessions)`**：`workspaces` 增加 `latestModified` 指标，项目按最近一条会话的时间戳降序排列，彻底废除“谁的陈年历史会话数最多谁排第一”的旧规则；
+  - **初值读取多级容灾**：`lastOpenedWorkspacePath` 读取 `prefs.lastSelectedWorkspacePath`，若空自动回退至 `prefs.lastSelectedCwd`。
+- **验证**：在 `WorkspacePathsTest` 新增单元测试，验证活跃时间（`latestModified`）优先于历史会话总数（`sessionCount`）的排序逻辑。
+
+---
+
 ## [1.8.87] - 2026-11-04
 
 ### 🎨 顶栏人机工程学重构与会话导出路径规范化

@@ -19,6 +19,7 @@ data class WorkspaceInfo(
     val runningCount: Int = 0,
     val awaitingCount: Int = 0,
     val unreadCount: Int = 0,
+    val latestModified: String = "",
     val isCurrent: Boolean = false
 ) {
     val displayName: String

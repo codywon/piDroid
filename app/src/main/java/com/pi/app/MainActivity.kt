@@ -312,7 +312,7 @@ class MainActivity : ComponentActivity() {
         var browsingWorkspaceRoam by rememberSaveable { mutableStateOf(false) }
         var sessions by remember { mutableStateOf<List<Session>>(emptyList()) }
         // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区，冷启动优先读取持久化值
-        var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf(prefs.lastSelectedWorkspacePath) }
+        var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf(prefs.lastSelectedWorkspacePath.ifBlank { prefs.lastSelectedCwd }) }
         var isLoadingSessions by remember { mutableStateOf(false) }
         // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
         // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
@@ -3628,7 +3628,11 @@ class MainActivity : ComponentActivity() {
                     sessions = sessions,
                     isLoading = isLoadingSessions,
                     // 左滑返回时定位到「刚才那个会话所在的工作区」，冷启动时使用上次持久化的工作区
-                    initialWorkspacePath = lastOpenedWorkspacePath.ifBlank { prefs.lastSelectedWorkspacePath },
+                    initialWorkspacePath = lastOpenedWorkspacePath.ifBlank {
+                        prefs.lastSelectedWorkspacePath.ifBlank {
+                            prefs.lastSelectedCwd
+                        }
+                    },
                     onWorkspaceSelected = { path ->
                         lastOpenedWorkspacePath = path
                         prefs.lastSelectedWorkspacePath = path
