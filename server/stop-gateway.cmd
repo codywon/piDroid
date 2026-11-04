@@ -11,4 +11,19 @@ rem NOTE: ASCII-only on purpose, see start-hidden.cmd.
 setlocal
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop-gateway.ps1"
-exit /b %ERRORLEVEL%
+set RC=%ERRORLEVEL%
+
+rem Session 0 (task with LogonType=Password) runs with a full token, so a normal
+rem shell gets "Access denied" -> exit 2. Re-run elevated: one UAC prompt beats
+rem telling the user to open a second window.
+if "%RC%"=="2" (
+    echo [stop-gateway] requesting administrator rights...
+    powershell -NoProfile -Command ^
+        "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%~dp0stop-gateway.ps1'"
+    if errorlevel 1 (
+        echo [stop-gateway] elevated run failed or was cancelled
+        exit /b 1
+    )
+)
+
+exit /b %RC%

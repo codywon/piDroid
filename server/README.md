@@ -62,6 +62,15 @@ node launcher.js --no-pi-web
 触发条件是「用户登录后 20 秒」，不是开机前：pi-web 要读当前用户目录下的 pi 凭据（`%USERPROFILE%\.pi`），
 改用 SYSTEM 账户在登录前启动会读不到，反而起不来。如果希望开着机就有人已登录，开 Windows 自动登录即可。
 
+> **任务当前的登录类型是 `Password`（即「不管用户是否登录都运行」）**，进程落在 **session 0**，
+> 不依赖桌面会话（也就不会有任何窗口）。代价有两个，都得知道：
+>
+> 1. 对普通权限的 shell 来说，这些进程的 `CommandLine` 是空的，而且 `Stop-Process` 会 **Access denied**。
+>    所以 `stop-gateway.ps1` 改成先从 **4100 / 30141 端口反查进程**、再往上爬到最顶层（`wscript.exe`），
+>    用 `taskkill /T /F` 整棵树一起收；权限不够时以退出码 2 退出，`stop-gateway.cmd` 会自动弹一次 UAC 重跑。
+> 2. 它仍然是 **AtLogon** 触发器：**没人登录就不会跑**。真要「开机即服务」，得再加一个 `AtStartup` 触发器
+>    （改触发器需要管理员权限），或者干脆开 Windows 自动登录。
+
 一次性注册（以当前用户身份运行、只在登录时启动）：
 
 ```powershell
@@ -97,7 +106,7 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settin
 
 ```bat
 schtasks /Run  /TN "piDroid Gateway (frp)"    :: 启动
-server\stop-gateway.cmd                       :: 停止（唯一可靠的停止方式）
+server\stop-gateway.cmd                       :: 停止（唯一可靠的停止方式，必要时自己弹 UAC）
 schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
 ```
 
@@ -119,6 +128,24 @@ schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
 健康的长连接不会被误杀：心跳 30s 一条，实测 120s 的空闲会话 `maxGap` 只有 30s。
 阈值写成心跳的倍数（`SSE_HEARTBEAT_MS * 3`），与 App 侧 `PiSseClient.EVENT_HEARTBEAT_MS` 同口径；
 单测在 `server/test/gateway-sse.test.mjs`（`node --test`，不启服务）。
+
+### pi-web 崩溃取证（`crash-forensics.js`）
+
+pi-web 是子进程，崩了只会留下一行 `Next.js exited unexpectedly (code 1)`，没有栈也没有内存读数 ——
+2026-11-04 那次就是这样，只能对着「2.2 MB 队列 / 26725 次丢增量」猜根因。现在每次退出都会打：
+
+```
+[pi-web 崩溃取证] 运行时长=3600s code=1 signal=null
+[pi-web 崩溃取证] 退出前 RSS=2381 MB
+[pi-web 崩溃取证] 疑似 OOM（输出里出现 heap out of memory / FATAL ERROR）
+[pi-web 崩溃取证] 最后 40 行输出:
+  | ...（已脱敏：token / password / pi_*** 一律替换）
+```
+
+- RSS 采的是 **整棵进程树**（`scripts/process-tree.ps1`）：`spawn('pi-web.cmd')` 拿到的是 `cmd.exe`（~11 MB），
+  真正的内存大户是孙子那层的 `next start`；
+- 每 20s 采一次，只在「首次 / 相对上次变化 ≥ max(64 MB, 25%)」时打一行 `[pi-web] RSS … MB`，稳态不刷屏；
+- 单测：`server/test/crash-forensics.test.mjs`（环形缓冲、脱敏、截断、树求和、环状 parent 链都覆盖）。
 
 ### 升级 pi-web
 

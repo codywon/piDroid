@@ -15,6 +15,7 @@ const https = require('https');
 const path = require('path');
 const gateway = require('./gateway');
 const frpClient = require('./frp-client');
+const { CrashForensics, sampleProcessTreeMemoryMb } = require('./crash-forensics');
 const {
   checkUrlAlive,
   isPortListening,
@@ -214,6 +215,7 @@ function shutdown(exitCode = 0) {
     clearTimeout(piWebRestartTimer);
     piWebRestartTimer = null;
   }
+  stopPiWebMemorySampling();
 
   if (piWebProcess && piWebProcess.pid) {
     killProcessTree(piWebProcess.pid);
@@ -253,12 +255,54 @@ process.on('exit', () => shutdown(0));
 const PI_WEB_RESTART_DELAY_MS = 5000;
 let piWebRestartTimer = null;
 
+// 崩溃取证：只保留最后 N 行输出 + 每 20s 采一次 RSS。
+// 历史上那次 Next.js 退出只留下 `exited unexpectedly (code 1)`，没有栈也没内存记录，
+// 只能靠猜。现在每次退出都会打一段可读证据（见 crash-forensics.js）。
+const PI_WEB_MEMORY_SAMPLE_MS = 20_000;
+let piWebForensics = null;
+let piWebMemoryTimer = null;
+
+function stopPiWebMemorySampling() {
+  if (piWebMemoryTimer) {
+    clearInterval(piWebMemoryTimer);
+    piWebMemoryTimer = null;
+  }
+}
+
+function startPiWebMemorySampling(proc) {
+  stopPiWebMemorySampling();
+  if (!proc || !proc.pid) return;
+  let inFlight = false;
+  piWebMemoryTimer = setInterval(() => {
+    if (!piWebForensics || inFlight) return;
+    inFlight = true;
+    // 采整棵树的 RSS：spawn('pi-web.cmd') 拿到的是 cmd.exe（~11 MB），
+    // 真正的内存大户是它孙子那层 `next start`。
+    sampleProcessTreeMemoryMb(proc.pid)
+      .then((mb) => {
+        if (!piWebForensics) return;
+        // recordMemory 只在「首次 / 明显变化」时返回 true，稳态不刷屏
+        if (piWebForensics.recordMemory(mb)) {
+          console.log(`[pi-web] RSS ${mb} MB`);
+        }
+      })
+      .catch(() => {})
+      .then(() => {
+        inFlight = false;
+      });
+  }, PI_WEB_MEMORY_SAMPLE_MS);
+  if (typeof piWebMemoryTimer.unref === 'function') piWebMemoryTimer.unref();
+}
+
 function spawnPiWeb(cmd, cmdArgs, useShell) {
   const proc = spawn(cmd, cmdArgs, {
-    stdio: ['ignore', 'pipe', 'inherit'],
+    stdio: ['ignore', 'pipe', 'pipe'],
     shell: useShell,
     env: { ...process.env, PORT: '30141', PI_WEB_NO_OPEN: '1' }
   });
+
+  piWebForensics = new CrashForensics();
+  piWebForensics.markStarted();
 
   proc.on('error', (err) => {
     console.error('[pi-web 启动异常]:', err.message);
@@ -266,11 +310,22 @@ function spawnPiWeb(cmd, cmdArgs, useShell) {
 
   proc.stdout.on('data', (chunk) => {
     const text = chunk.toString();
-    // 过滤展示关键就绪日志
+    // 全部输出进环形缓冲（崩溃时用），只有就绪类日志才实时回显
+    piWebForensics.recordLine(text);
     if (text.includes('Ready') || text.includes('ready') || text.includes('http://')) {
       process.stdout.write(`    [pi-web] ${text.trim()}\n`);
     }
   });
+
+  // stderr 以前是 inherit（直接进日志但没有副本）；现在同时进环形缓冲，
+  // 崩的时候才能把「最后到底骂了什么」一起带出来。
+  proc.stderr.on('data', (chunk) => {
+    const text = chunk.toString();
+    piWebForensics.recordLine(text);
+    process.stderr.write(text);
+  });
+
+  startPiWebMemorySampling(proc);
 
   return proc;
 }
@@ -301,6 +356,13 @@ function launchPiWeb() {
   const proc = spawnPiWeb(cmd, cmdArgs, useShell);
 
   proc.on('exit', (code, signal) => {
+    stopPiWebMemorySampling();
+    // 先出证据再重启：谁在什么时候、凭什么退出的
+    const forensics = piWebForensics;
+    piWebForensics = null;
+    if (forensics) {
+      for (const line of forensics.report({ code, signal })) console.log(line);
+    }
     // 已经换代（被重启后的新进程取代）或正在退出：不重复拉起
     if (proc !== piWebProcess || isShuttingDown) return;
     console.log(
