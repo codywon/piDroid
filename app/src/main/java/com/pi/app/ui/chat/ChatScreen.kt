@@ -964,39 +964,27 @@ fun ChatScreen(
             val nextUIdx = if (turnIdx + 1 < userIndices.size) userIndices[turnIdx + 1] else conversation.size
             val turnSlice = conversation.subList(uIdx + 1, nextUIdx)
 
-            // 从后往前找最后一个具有文本内容的 assistant 消息作为最终回答
-            var finalAns: ChatItem? = null
-            var finalAnsIdx: Int? = null
-            for (i in turnSlice.indices.reversed()) {
-                val m = turnSlice[i]
-                if (m.role == MessageRole.AGENT && m.content.isNotBlank()) {
-                    finalAns = m
-                    finalAnsIdx = uIdx + 1 + i
-                    break
-                }
-            }
-
-            // 如果处于最后一轮且正在运行，且最后一条是工具调用或在流式生成，按 pi-web 规范视作中间过程
+            // 如果处于最后一轮且正在运行，按 pi-web 规范：未答复回合里正文只是过程的一部分
             val isCurrentRunning = (turnIdx == userIndices.lastIndex) && isAgentBusy
 
-            // 本回合是否产生了生成式 UI 微组件。若**是**，流式正文绝不能再塞回过程折叠组：
+            // 本回合是否产生了生成式 UI 微组件。若**是**，流式正文要提成独立的最终答复行：
             // 折叠组排在微组件卡片**上方**，正文每多一行就把卡片往下推一行，
-            // 真机上看到的就是「每输出一行，卡片跳一下」。把它提成独立的最终答复行后，
-            // 版面顺序与答案完成后的稳定态完全一致，正文只在卡片下方生长。
+            // 真机上看到的就是「每输出一行，卡片跳一下」。
             val turnHasWidget = turnSlice.any { m ->
                 m.toolCall?.let { showWidgetPayload(it) } != null
             }
 
-            val processItems = if (finalAns != null &&
-                (!isCurrentRunning || finalAnsIdx != conversation.lastIndex || turnHasWidget)
-            ) {
-                val pEnd = finalAnsIdx!! - (uIdx + 1)
-                turnSlice.subList(0, pEnd)
-            } else {
-                finalAns = null
-                finalAnsIdx = null
-                turnSlice
-            }
+            // 拆分规则见 [TurnPartition]：与 pi-web 一致（未答复不拆），且**绝不丢项** ——
+            // 旧实现用 subList(0, finalAnsIdx) 把最终答复之后的过程项整段丢掉，
+            // 表现就是「界面停在最后一句正文 + 正在等待模型」，而 PC 上还在继续跑。
+            val split = TurnPartition.split(
+                items = turnSlice,
+                isCurrentRunning = isCurrentRunning,
+                turnHasWidget = turnHasWidget
+            )
+            val finalAns: ChatItem? = split.finalAnswerIndex?.let { turnSlice[it] }
+            val finalAnsIdx: Int? = split.finalAnswerIndex?.let { uIdx + 1 + it }
+            val processItems: List<ChatItem> = split.processIndices.map { turnSlice[it] }
 
             var toolCount = 0
             turnSlice.forEach { m ->
