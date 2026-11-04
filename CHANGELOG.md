@@ -2,6 +2,18 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.7] - 2026-11-04
+
+### 🧹 会话卡片底部元信息行改版：时钟贴最左，清掉被压扁的省略号噪点
+
+- **现象**：部分卡片最左端冒出 `…` / `p…` 这类字母残片，右侧日期还会被卡片边缘切掉半个。
+- **根因**：元信息行最左端先排 `workspaceName` + 消息条数 + 分支，右侧 token / 费用 / 时间又按固有宽度硬排。屏窄时右侧先拿走全部宽度，左侧只剩几像素 → 被省略号压成噪点；右侧超出部分则被 surface 直接裁切。
+- **Fix（布局）**：最左端只保留「时钟矢量图标 + 耗时」（`Icons.Default.Schedule`，替换原来的 emoji `🕒`）；工作区名不再进入这一行（标题栏与工作区胶囊已重复），消息条数 / 分支让位给指标。
+- **Fix（防裁切）**：右侧 token · 费用 · 时间合成一条 `AnnotatedString`（费用仍为成功色），左中右用 `Spacer(weight = 1f)` 撑开，空间不足时整行尾部省略而不是被切掉。
+- **逻辑收口**：新增纯 JVM `SessionStatsFormatting.buildSessionMetaParts()`（顺序固定：耗时 → Token → 费用 → 时间，空值不产出片段），取代原 `buildCompactMetricsLine()`；单测覆盖顺序约定与空值过滤。
+
+---
+
 ## [2.0.6] - 2026-11-04
 
 ### ⚖️ 收尾等待对齐 pi-web `rh()`：从「探一次」改成「600ms × 20s 直到 settle」

@@ -39,10 +39,14 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import com.pi.app.data.model.SessionStatsFormatting
 import com.pi.app.data.model.SessionStatsSummary
 import androidx.compose.ui.unit.Dp
@@ -3092,107 +3096,73 @@ fun SessionCard(
                 )
             }
 
-            // 底部元信息行：左侧自适应截断 + 右侧单行不折行统计指标与时间 (方案 A 规范)
-            Spacer(modifier = Modifier.height(5.dp))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 22.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            // 底部元信息行（方案 A）：最左端只有 [时钟图标 + 耗时]，右侧 token / 费用 / 时间。
+            // 以前最左端先塞 workspaceName + 条数 + 分支，右侧又按固有宽度硬排：
+            // 屏窄时左侧被压成 "…"、"p…" 这类噪点，右侧最后一段还会被卡片边缘直接裁掉。
+            // 工作区名在当前列表里本就重复（标题栏与工作区胶囊都有），条数/分支让位给指标。
+            val metaParts = SessionStatsFormatting.buildSessionMetaParts(
+                dateStr = dateStr,
+                totalActiveMs = stats?.totalActiveMs ?: session.totalActiveMs,
+                totalTokens = stats?.totalTokens ?: session.tokenUsage,
+                cost = stats?.cost ?: session.cost
+            )
+            val durationText = metaParts
+                .firstOrNull { it.kind == SessionStatsFormatting.SessionMetaKind.DURATION }
+                ?.text
+            val rightParts = metaParts.filter {
+                it.kind != SessionStatsFormatting.SessionMetaKind.DURATION
+            }
+
+            if (durationText != null || rightParts.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(5.dp))
                 Row(
-                    modifier = Modifier.weight(1f, fill = false),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 22.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
+                    if (durationText != null) {
+                        Icon(
+                            imageVector = Icons.Default.Schedule,
+                            contentDescription = null,
+                            modifier = Modifier.size(11.dp),
+                            tint = theme.textMuted
+                        )
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text(
+                            text = durationText,
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textMuted,
+                            maxLines = 1,
+                            softWrap = false
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.weight(1f))
+
+                    // 右段合成一条 AnnotatedString：整行尾部省略，不再让最后一段被裁切。
                     Text(
-                        text = session.workspaceName,
+                        text = buildAnnotatedString {
+                            rightParts.forEachIndexed { index, part ->
+                                if (index > 0) append(" · ")
+                                val color = when (part.kind) {
+                                    SessionStatsFormatting.SessionMetaKind.COST ->
+                                        theme.success.copy(alpha = 0.9f)
+                                    else -> theme.textMuted
+                                }
+                                withStyle(SpanStyle(color = color)) { append(part.text) }
+                            }
+                        },
                         fontSize = 10.5.sp,
                         fontFamily = FontFamily.Monospace,
                         color = theme.textMuted,
                         maxLines = 1,
                         softWrap = false,
-                        overflow = TextOverflow.Ellipsis
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.padding(start = 8.dp)
                     )
-                    if (session.messageCount > 0) {
-                        Text(
-                            text = "· ${session.messageCount} 条",
-                            fontSize = 10.5.sp,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-                    if (!session.branch.isNullOrBlank()) {
-                        Text(
-                            text = "· ⑂ ${session.branch}",
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.primary,
-                            maxLines = 1,
-                            softWrap = false,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    val activeDur = SessionStatsFormatting.formatActiveDuration(
-                        stats?.totalActiveMs ?: session.totalActiveMs
-                    )
-                    if (activeDur.isNotBlank()) {
-                        Text(
-                            text = "🕒 $activeDur",
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-
-                    val tok = SessionStatsFormatting.formatTokensCompact(
-                        stats?.totalTokens ?: session.tokenUsage
-                    )
-                    if (tok.isNotBlank()) {
-                        Text(
-                            text = "· $tok",
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-
-                    val costVal = stats?.cost ?: session.cost
-                    val costStr = SessionStatsFormatting.formatCostCompact(costVal)
-                    if (costStr.isNotBlank()) {
-                        Text(
-                            text = "· $costStr",
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.success.copy(alpha = 0.9f),
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-
-                    if (dateStr.isNotBlank()) {
-                        Text(
-                            text = "· $dateStr",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
                 }
             }
         }

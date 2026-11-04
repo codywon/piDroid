@@ -73,34 +73,39 @@ object SessionStatsFormatting {
     }
 
     /**
-     * 构造 SessionCard 方案 A 紧凑第二行指标文本集合。
-     *
-     * 格式：时间 · [🕒 耗时] · [Token] · [费用]
+     * 会话卡片底部元信息片段的类型：决定渲染位置与配色。
+     * - [DURATION] 永远排在最左，带时钟图标（这一行的视觉起点）
+     * - [COST] 用成功色，其余用 muted
      */
-    fun buildCompactMetricsLine(
+    enum class SessionMetaKind { DURATION, TOKENS, COST, TIME }
+
+    /** 卡片底部元信息的一个片段。 */
+    data class SessionMetaPart(val text: String, val kind: SessionMetaKind)
+
+    /**
+     * 构造 SessionCard 底部元信息片段，顺序固定为：耗时 → Token → 费用 → 时间。
+     *
+     * 约定：
+     * - 耗时排最左（它带时钟图标）；工作区名 / 消息条数不再进入这一行 ——
+     *   列表里已重复（标题栏与工作区胶囊），屏窄时会被压成 "…"、"p…" 这类噪点。
+     * - 空值一律不产出片段，调用方无需再判空。
+     */
+    fun buildSessionMetaParts(
         dateStr: String,
-        stats: SessionStatsSummary?
-    ): List<Pair<String, Boolean>> {
-        val list = mutableListOf<Pair<String, Boolean>>()
+        totalActiveMs: Long,
+        totalTokens: Long,
+        cost: Double
+    ): List<SessionMetaPart> {
+        val parts = mutableListOf<SessionMetaPart>()
+        formatActiveDuration(totalActiveMs).takeIf { it.isNotBlank() }
+            ?.let { parts.add(SessionMetaPart(it, SessionMetaKind.DURATION)) }
+        formatTokensCompact(totalTokens).takeIf { it.isNotBlank() }
+            ?.let { parts.add(SessionMetaPart(it, SessionMetaKind.TOKENS)) }
+        formatCostCompact(cost).takeIf { it.isNotBlank() }
+            ?.let { parts.add(SessionMetaPart(it, SessionMetaKind.COST)) }
         if (dateStr.isNotBlank()) {
-            list.add(dateStr to false)
+            parts.add(SessionMetaPart(dateStr, SessionMetaKind.TIME))
         }
-        if (stats == null) return list
-
-        val dur = formatActiveDuration(stats.totalActiveMs)
-        if (dur.isNotBlank()) {
-            list.add(dur to true) // true 表示需要时钟图标
-        }
-
-        val tok = formatTokensCompact(stats.totalTokens)
-        if (tok.isNotBlank()) {
-            list.add(tok to false)
-        }
-
-        val costStr = formatCostCompact(stats.cost)
-        if (costStr.isNotBlank()) {
-            list.add(costStr to false)
-        }
-        return list
+        return parts
     }
 }

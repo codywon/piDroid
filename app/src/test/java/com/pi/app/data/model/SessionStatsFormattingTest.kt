@@ -35,25 +35,36 @@ class SessionStatsFormattingTest {
     }
 
     @Test
-    fun `buildCompactMetricsLine constructs non-empty items`() {
-        val stats = SessionStatsSummary(
+    fun `buildSessionMetaParts puts duration first and time last`() {
+        val parts = SessionStatsFormatting.buildSessionMetaParts(
+            dateStr = "10-31 16:40",
+            totalActiveMs = 18 * 60 * 1000L + 42_000L,
             totalTokens = 24_800L,
-            cost = 0.0214,
-            toolCalls = 4,
-            totalActiveMs = 18 * 60 * 1000L + 42_000L
+            cost = 0.0214
         )
-        val metrics = SessionStatsFormatting.buildCompactMetricsLine("10-31 16:40", stats)
-        assertEquals(4, metrics.size)
-        assertEquals("10-31 16:40", metrics[0].first)
-        assertEquals(false, metrics[0].second)
+        assertEquals(4, parts.size)
+        // 耗时必须在最左：它带时钟图标，是这一行的视觉起点
+        assertEquals("18m 42s", parts[0].text)
+        assertEquals(SessionStatsFormatting.SessionMetaKind.DURATION, parts[0].kind)
 
-        assertEquals("18m 42s", metrics[1].first)
-        assertEquals(true, metrics[1].second) // with clock icon
+        assertEquals("24.8k tok", parts[1].text)
+        assertEquals(SessionStatsFormatting.SessionMetaKind.TOKENS, parts[1].kind)
 
-        assertEquals("24.8k tok", metrics[2].first)
-        assertEquals(false, metrics[2].second)
+        assertEquals("$0.0214", parts[2].text)
+        assertEquals(SessionStatsFormatting.SessionMetaKind.COST, parts[2].kind)
 
-        assertEquals("$0.0214", metrics[3].first)
-        assertEquals(false, metrics[3].second)
+        assertEquals("10-31 16:40", parts[3].text)
+        assertEquals(SessionStatsFormatting.SessionMetaKind.TIME, parts[3].kind)
+    }
+
+    @Test
+    fun `buildSessionMetaParts drops empty values`() {
+        val parts = SessionStatsFormatting.buildSessionMetaParts(
+            dateStr = "",
+            totalActiveMs = 0L,
+            totalTokens = 0L,
+            cost = 0.0
+        )
+        assertTrue(parts.isEmpty())
     }
 }
