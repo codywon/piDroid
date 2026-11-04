@@ -1230,6 +1230,19 @@ fun ChatScreen(
         }
     }
 
+    // 重连状态点加迟滞：一次 1–2 秒的抖包也会把 sseState 打成 RECONNECTING，
+    // 立刻亮一个小黄点等于把“手机挪了一下”也报成故障。超过 3 秒仍未恢复才亮。
+    var showReconnectingDot by remember { mutableStateOf(false) }
+    LaunchedEffect(sseState) {
+        if (sseState == SseConnectionState.RECONNECTING) {
+            showReconnectingDot = false
+            delay(3_000L)
+            showReconnectingDot = true
+        } else {
+            showReconnectingDot = false
+        }
+    }
+
     Scaffold(
         containerColor = theme.background,
         topBar = {
@@ -1259,8 +1272,8 @@ fun ChatScreen(
                                 modifier = Modifier.weight(1f, fill = false)
                             )
                             // 唯一的例外状态：事件流重连中。正文里看不到这个信号，
-                            // 所以退化成一个琥珀小点（不再占一整行文字）。
-                            if (sseState == SseConnectionState.RECONNECTING) {
+                            // 所以退化成一个琥珀小点（不再占一整行文字）；抖动 3 秒内的重连不亮。
+                            if (showReconnectingDot) {
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Surface(
                                     modifier = Modifier

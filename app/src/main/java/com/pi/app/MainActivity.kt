@@ -1219,18 +1219,15 @@ class MainActivity : ComponentActivity() {
                     }
 
                     // ── revision 不变量（pi-web `useAgentSession.ts:813-849`）──
-                    // 服务端说「快照没变」且本地已有不少于该窗口的条目时：树/叶/统计已经
-                    // 在上面刷新过了，正文与翻页游标一律不动 —— 不再需要任何"滞后/stale"启发式。
+                    // 仅用于保护向前翻页的 olderCursor 游标不被 50 条窗口覆盖重置
                     keepLoadedWindow = !replaceHistory && SessionRevision.keepLoadedWindow(
                         cachedRevision = previousRevision,
                         incomingRevision = hist.snapshotRevision,
                         cachedEntryCount = localEntryCount,
                         incomingEntryCount = synced.count { !it.entryId.isNullOrBlank() }
                     )
-                    if (keepLoadedWindow) {
-                        // 什么都不做：保留已翻页的历史与本地在途内容
-                    } else if (replaceHistory) {
-                        // 分支回退导航：不做任何增量合并，直接以服务端活跃分支覆盖本地，
+                    if (replaceHistory) {
+                        // 分支回退导航 / 手动强制刷新：直接以服务端活跃分支覆盖本地，
                         // 让被放弃分支上的旧工具输出 / 中断的思考过程在界面上瞬间消失。
                         messages.clear()
                         messages.addAll(synced)
@@ -1244,7 +1241,6 @@ class MainActivity : ComponentActivity() {
                         // 对账规则收敛至 SessionSnapshotMerge（纯 JVM，可单测）：
                         // 1) 严密保护本地乐观用户消息与实时流式在途消息，绝不因服务端 .jsonl 尚未落盘而抹去用户提问与实时输出；
                         // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动。
-                        // 注：「快照是否新鲜」不在这里判断 —— 由服务端 `snapshotRevision` 决定（见 SessionRevision）。
                         val reconciled = SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
                         for (i in reconciled.indices) {
                             if (i < messages.size) {
@@ -1398,11 +1394,15 @@ class MainActivity : ComponentActivity() {
                 val now = System.currentTimeMillis()
                 val hasRunningToolCard = messages.any { it.role == MessageRole.TOOL && it.toolCall?.isRunning == true }
                 // 思考模型（如 Gemini 3.8 Flash Thinking / Claude 3.7 Thinking / o1 / R1）思考阶段可能长达 15–45s，
-                // 且 pi 心跳为 30s。若刚启动未满 60s 或 SSE 在 45s 内正常活跃，绝不能误判为完成。
+                // 且 pi 心跳为 30s。若刚启动未满 60s 或 SSE 仍在心跳窗口内正常活跃，绝不能误判为完成。
+                // 阈值写成心跳的倍数（与下方“流长时间无事件 → 重挂”同口径）：
+                // 以前这里写孤立 45s，等于只给心跳留 15s 余量，弱网下一条心跳迟到就会被当成“流停了”，
+                // 于是误判完成 / 反复重挂，界面上就是一直转圈。
                 // 另外：若本地仍有未被服务端承认落盘的乐观用户提问，同样不能提前判结束。
                 val hasUncommittedUserMessage = messages.any { it.role == MessageRole.USER && it.entryId.isNullOrBlank() }
                 val isRecentlyStarted = (now - taskStartedAt) < 60_000L
-                val isSseRecentlyActive = sseConnectionState == SseConnectionState.CONNECTED && (now - lastSseActivityAt) < 45_000L
+                val isSseRecentlyActive = sseConnectionState == SseConnectionState.CONNECTED &&
+                    (now - lastSseActivityAt) < (PiSseClient.EVENT_HEARTBEAT_MS * 2.5).toLong()
                 if (!isAutoRetrying && !isToolExecuting && !hasRunningToolCard && !hasUncommittedUserMessage && completionSettleJob?.isActive != true && !isRecentlyStarted && !isSseRecentlyActive) {
                     consecutiveIdlePolls += 1
                     if (consecutiveIdlePolls >= 2) {
@@ -1889,6 +1889,19 @@ class MainActivity : ComponentActivity() {
                         }
                         "message_end_sync" -> {
                             lastSseActivityAt = System.currentTimeMillis()
+                            // 对标 pi-web (useAgentSession.ts case "message_end")：
+                            // message_end 携带着当前助手消息的权威定稿全文。
+                            // 即使流式期间由于网络抖动/背压丢弃了部分 delta，此处也能瞬间置入完整正文。
+                            val fullText = event.effectiveText
+                            if (fullText.isNotEmpty()) {
+                                applyAgentTextSnapshot(
+                                    messageId = event.messageId ?: streamingMessageId,
+                                    fullText = fullText,
+                                    mediaList = event.mediaList,
+                                    isStreaming = event.isStreaming == true,
+                                    modelName = event.modelName
+                                )
+                            }
                             if (event.isStreaming == true) {
                                 isToolExecuting = true
                                 markAgentRunActive(phase = event.phaseLabel)
@@ -2874,7 +2887,7 @@ class MainActivity : ComponentActivity() {
                     onRefreshSession = {
                         val sid = activeSessionId
                         lifecycleScope.launch {
-                            syncSessionSnapshot(sid, allowCompletionTransition = false, force = true)
+                            syncSessionSnapshot(sid, allowCompletionTransition = false, replaceHistory = true, force = true)
                             Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                         }
                     },

@@ -2,6 +2,23 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.5] - 2026-11-04
+
+### 🩹 修复会话正文截断、手动刷新不更新、退出重进才完整的缺陷
+
+- **根因分析**：
+  1. `message_end` 未定稿：流式接收长文本时若网络抖动或服务端背压丢包，正文会停在半路；上游 pi-web 在 `message_end`（携带完整权威消息体）时直接以此置换气泡，而 App 过去在此事件中未提取正文，导致半截文本被永久定格；
+  2. `keepLoadedWindow` 误拦截对账：快照 revision 未变时，App 误将「不重置翻页游标」实现为「跳过整包正文对账」，导致即使服务端已将 3.7KB 完整正文写入磁盘，后台及手动刷新也因条件阻断而拒绝将完整文本写回界面；
+  3. 手动刷新未强制覆盖：右上角刷新按钮未标记 `replaceHistory = true`，无法打破增量对账惰性。
+- **对齐 pi-web 修复**：
+  - `PiSseClient` 在 `message_end` 事件中完整提取 `msgObj.content` 中的权威正文（`message_end_sync` 带回 `content`）；
+  - `MainActivity` 在 `message_end_sync` 收到权威全文时直接置换更新当前消息气泡，与 pi-web `case "message_end"` 行为 1:1 对齐；
+  - `keepLoadedWindow` 仅用于保护向前翻页游标不被收缩，不再阻断 `SessionSnapshotMerge.reconcileList` 的增量修复；
+  - 手动刷新按钮明确传入 `replaceHistory = true, force = true`，点击即强制以服务端磁盘最新权威记录覆盖本地视图。
+- **验证**：纯 JVM 单元测试覆盖对账逻辑，配合全量流水线编译。
+
+---
+
 ## [2.0.4] - 2026-11-04
 
 ### 🔎 Token HUD 增加「实时同步」读数（把“体感不同步”变成可读数字）

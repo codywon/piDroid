@@ -576,28 +576,30 @@ class PiSseClient(private val prefs: AppPreferences) {
                 it.isJsonObject && it.asJsonObject.get("type")?.takeIf { !it.isJsonNull }?.asString == "toolCall"
             } == true)
 
+        val sb = StringBuilder()
+        msgObj.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { item ->
+            if (item.isJsonObject) {
+                val o = item.asJsonObject
+                val t = o.get("type")?.takeIf { !it.isJsonNull }?.asString
+                if (t == "text" || t == "output_text") {
+                    val str = o.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    if (str.isNotEmpty()) {
+                        if (sb.isNotEmpty()) sb.append('\n')
+                        sb.append(str)
+                    }
+                }
+            }
+        }
+        val fullText = sb.toString()
+
         if (!isFinal) {
             // 重连时 pi-web 会下发「当前正在生成的 message 快照」（message_start）。
             // 对齐 pi-web 客户端：快照 = 整条消息覆盖（`dispatch({type:"snapshot"})`），
             // 因此即使正文为空也要上抛，让上层先把在途消息身份记下来。
-            val sb = StringBuilder()
-            msgObj.get("content")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { item ->
-                if (item.isJsonObject) {
-                    val o = item.asJsonObject
-                    val t = o.get("type")?.takeIf { !it.isJsonNull }?.asString
-                    if (t == "text" || t == "output_text") {
-                        val str = o.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        if (str.isNotEmpty()) {
-                            if (sb.isNotEmpty()) sb.append('\n')
-                            sb.append(str)
-                        }
-                    }
-                }
-            }
             return listOf(
                 AgentSseEvent(
                     type = "message_snapshot",
-                    content = sb.toString(),
+                    content = fullText,
                     isStreaming = true,
                     modelName = modelName,
                     messageId = assistantMessageId(msgObj)
@@ -605,9 +607,13 @@ class PiSseClient(private val prefs: AppPreferences) {
             )
         }
 
+        // 对齐 pi-web (useAgentSession.ts case "message_end"):
+        // message_end 携带着该消息定稿时的完整权威文本（event.message），
+        // 必须回传 content，防止流式期间网络丢包/背压导致的气泡截断无法被定稿更新。
         events.add(
             AgentSseEvent(
                 type = "message_end_sync",
+                content = fullText.takeIf { it.isNotEmpty() },
                 modelName = modelName,
                 usageSummary = usageSummary,
                 isStreaming = hasToolCalls,

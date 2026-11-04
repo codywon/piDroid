@@ -890,6 +890,66 @@ const proxyAgent = new http.Agent({
   timeout: 30000
 });
 
+// SSE（`/api/agent/<id>/events`）的空闲看门狗。
+//
+// 手机熄屏 / 切 4G / 进 Doze 之后，这条长连接会退化成「半开连接」：对端已经不读了，
+// 但服务端收不到 FIN。http-proxy 的 pipe 会被客户端的写缓冲反压住，于是 pi-web
+// 那边的事件队列一路涨（实测涨到 2277 KB、丢掉 26725 条可重建增量之后，
+// Next.js 直接以 code 1 退出，整条链路 502 到下一次重启）。
+//
+// 判定口径对齐 pi-web 的心跳：`/api/agent/*/events` 每 30s 发一条 heartbeat，
+// 所以「连续 3 个心跳周期没有收到任何字节」就足以说明这条流没有消费者，
+// 主动断开，让 pi-web 立刻释放那条队列。写成心跳的倍数而不是孤立秒数，
+// 改心跳周期时只改一处（与 App 侧 `PiSseClient.EVENT_HEARTBEAT_MS` 同口径）。
+const SSE_HEARTBEAT_MS = 30_000;
+const SSE_IDLE_TIMEOUT_MS = SSE_HEARTBEAT_MS * 3;
+
+function isEventStreamResponse(headers) {
+  return String((headers && headers['content-type']) || '').includes('text/event-stream');
+}
+
+/**
+ * 给一条 SSE 响应挂上「空闲即断开」的看门狗。导出是为了能单测（不启服务）。
+ *
+ * 任何字节（心跳、正文、工具事件）都算活跃，重置计时；
+ * 断开时同时销毁上下游：只关客户端会让 pi-web 继续排队，只关上游会让手机端挂死。
+ */
+function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS) {
+  const label = `${(req && req.method) || 'GET'} ${(req && (req.originalUrl || req.url)) || ''}`;
+  let timer = null;
+
+  const disarm = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const kill = () => {
+    disarm();
+    console.error(
+      `[SSE] ${Math.round(idleMs / 1000)}s 内没有收到任何事件（连心跳也没到），` +
+        `判定为僵尸长连接并主动断开，避免 pi-web 继续往队列里堆事件: ${label}`
+    );
+    try { proxyRes.destroy(); } catch (e) {}
+    try { res.destroy(); } catch (e) {}
+  };
+
+  const arm = () => {
+    disarm();
+    timer = setTimeout(kill, idleMs);
+    // 不拖住进程退出：看门狗只是清理，不该成为 launcher 的存活原因
+    if (typeof timer.unref === 'function') timer.unref();
+  };
+
+  proxyRes.on('data', arm);
+  proxyRes.on('end', disarm);
+  proxyRes.on('close', disarm);
+  proxyRes.on('error', disarm);
+  if (res && typeof res.on === 'function') res.on('close', disarm);
+  arm();
+}
+
 const proxy = createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
@@ -904,6 +964,11 @@ const proxy = createProxyMiddleware({
           error: 'Bad Gateway',
           message: `无法连接到本地 pi-web (${TARGET})。请确认 pi-web 是否已在后台启动 (运行 pi-web 或 npx @agegr/pi-web)`
         });
+      }
+    },
+    proxyRes: (proxyRes, req, res) => {
+      if (isEventStreamResponse(proxyRes.headers)) {
+        guardEventStreamIdle(proxyRes, req, res);
       }
     }
   }
@@ -1202,5 +1267,10 @@ module.exports = {
   resolveMediaReadPath,
   // 公网通道选择与 frp 守护
   resolveTunnelMode,
-  stopFrp: frpClient.stopFrp
+  stopFrp: frpClient.stopFrp,
+  // SSE 空闲看门狗（单测直接喂假事件流，不启服务）
+  SSE_HEARTBEAT_MS,
+  SSE_IDLE_TIMEOUT_MS,
+  isEventStreamResponse,
+  guardEventStreamIdle
 };
