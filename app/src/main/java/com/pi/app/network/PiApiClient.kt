@@ -56,9 +56,12 @@ data class SessionHistoryData(
      */
     val toolNames: List<String>? = null,
     /**
-     * 这份快照的 `context` 窗口**没有走到服务端自称的 leaf**（分支滞后）。
+     * 服务端给的不透明新鲜度令牌（pi-web `lib/session-revision.ts`）。
+     *
+     * 只做等值比较：相同 = 磁盘/运行时都没变（本地已翻页的历史可以按住不动）；
+     * `null` = 服务端判定快照不可靠，一律重取。见 [SessionRevision]。
      */
-    val branchLagged: Boolean = false,
+    val snapshotRevision: String? = null,
     val compactionRecords: List<CompactionRecord> = emptyList(),
     val branchTreeNodes: List<BranchTreeNode> = emptyList()
 )
@@ -121,21 +124,8 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** 大文件传输的重试次数（首次 + 1 次重试）。见 [getFileBytes]。 */
         private const val FILE_TRANSFER_ATTEMPTS = 2
-
-        /** 「补 force=1 也修不好」的滞后会话冷却时长（见 [lagRetryCooldownUntil]）。 */
-        private const val LAG_RETRY_COOLDOWN_MS = 5 * 60_000L
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
-
-    /**
-     * 「补过 `force=1` 也修不好」的会话 → 冷却截止时刻。
-     *
-     * 为什么需要：leaf 与 context 末条对不上有两种成因 —— 真的滞后（补 force 可解）与
-     * 天然不相等（整条分支最新 entry 是不产出消息的 model_change / thinking_level_change，
-     * 或 pi-web 那边卡在滞后状态本回合都修不好）。后两种情况下每次对账都双请求 + 一条 W 日志，
-     * 在跑的会话 3~10s 一轮就是持续的无效流量与日志噪音。命中一次仍修不好就冷却一段时间。
-     */
-    private val lagRetryCooldownUntil = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     /** 会话树形状认不出来的日志只报一次（进程内），见 [warnUnknownTreeShape]。 */
     @Volatile
@@ -272,8 +262,7 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 重试前 `evictAll()`：把连接池里的可疑旧连接全部清掉，保证第二次一定是新连接，
      * 否则复用同一条半开连接只会再超一次。SSE 用的是独立连接池（PiSseClient），不受影响。
      *
-     * [attempts] 供「上面已经有自己的重试逻辑」的调用方传 1：`getSessionDetail` 发现分支滞后时
-     * 会再补一次 `force=1`，那里如果又叠 2 次尝试，单个同步槽最坏会变成 4 个请求 × 30s。
+     * [attempts] 供已有自己重试策略的调用方传 1（避免一次同步叠加成 4 个请求 × 30s）。
      */
     private fun readGet(
         req: Request,
@@ -506,17 +495,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         attachEntryIds(initialCtxMsgs, initialEntryIds)
         val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
             (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
-        // 服务端自称的 leaf（未兜底）：分支滞后判定必须用它，不能用下面兜底后的值。
-        val payloadLeafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+        // 活跃叶：与 pi-web `loadSession` 一致，直接用服务端给的 leafId（缺失就没有活跃叶）。
+        val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
             ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
-        // 窗口末端 entry：优先取末条消息自身的 entryId，平行数组只作兜底
-        // （两者不等长时数组末项不一定是末条消息）。
-        val contextLastEntryId: String? = messageEntryId(initialCtxMsgs, fromEnd = true)
-            ?: initialEntryIds?.let { ids ->
-                if (ids.size() <= 0) null else ids.get(ids.size() - 1)?.takeIf { !it.isJsonNull }?.asString
-            }
-        // 活跃叶：旧网关不下发 leafId 时用窗口末端兜底，否则分支树高亮会整块消失。
-        val leafId = SessionBranchWindow.resolveActiveLeafId(payloadLeafId, contextLastEntryId)
 
         if (initialHasMore) {
             if (tail > 100) {
@@ -656,20 +637,10 @@ class PiApiClient(private val prefs: AppPreferences) {
             cost = cost
         )
 
-        // ── 分支滞后判定 ───────────────────────────────────────────────
-        // 响应自带 leafId，而 context 窗口是从 leaf 往回走的；两者对不上就是「滞后快照」：
-        // stats（覆盖全部 entry）是新的、context（按 leaf 往回走）是旧的。
-        // 以前完全无感，于是 App 拿着几分钟前的尾巴当权威，把本地更新的部分截掉了。
-        // 注意用**未兜底**的 payloadLeafId：兜底值就是窗口末端，比较了永远相等。
-        val branchLagged = SessionBranchWindow.branchLagsBehindLeaf(
-            payloadLeafId = payloadLeafId,
-            contextLastEntryId = contextLastEntryId
-        )
-
         // 翻页游标必须跟着**实际渲染窗口的第一条**走：用了条目树时窗口起点可能早于 context 窗口，
         // 继续用 context 的 oldestEntryId 会让下一页和已渲染内容重叠（同一段过程显示两遍）。
         val chosenOldestEntryId = if (usedEntries) {
-            messageEntryId(chosenMessages, fromEnd = false) ?: extractOldestEntryId(ctxObj, initialCtxMsgs)
+            messageEntryId(chosenMessages) ?: extractOldestEntryId(ctxObj, initialCtxMsgs)
         } else {
             extractOldestEntryId(ctxObj, initialCtxMsgs)
         }
@@ -696,7 +667,8 @@ class PiApiClient(private val prefs: AppPreferences) {
             turnsBefore = if (droppedEntryCount > 0) maxOf(droppedTurns, serverTurnsBefore) else serverTurnsBefore,
             leafId = leafId,
             toolNames = readPinnedToolNames(json),
-            branchLagged = branchLagged,
+            // 不透明新鲜度令牌：只做等值比较（pi-web 的 revisionUnchanged 判据）
+            snapshotRevision = json.get("snapshotRevision")?.takeIf { !it.isJsonNull }?.asString,
             compactionRecords = compactions,
             branchTreeNodes = treeNodes
         )
@@ -733,63 +705,40 @@ class PiApiClient(private val prefs: AppPreferences) {
         return arr.mapNotNull { el -> el.takeIf { !it.isJsonNull }?.asString }
     }
 
-    suspend fun getSessionDetail(sessionId: String, tail: Int = 60): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
+    /**
+     * 读一次会话快照（pi-web 的 `loadSession` 的单次请求）。
+     *
+     * 参数与 pi-web `useAgentSession.ts:786-790` 一致：`deferMedia=1&tree=summary`，
+     * `force=1` 只由调用方在**挂载 / 手动刷新 / 分支导航**时传（让 pi-web 做
+     * `evictIfDiskAhead()`，从磁盘而不是滞后的运行时 wrapper 重读）。
+     *
+     * 这里不再做任何"滞后检测/自动重试/冷却"：快照新不新鲜由服务端下发的
+     * `snapshotRevision` 决定，见 [SessionRevision]。
+     */
+    suspend fun getSessionDetail(
+        sessionId: String,
+        tail: Int = 60,
+        force: Boolean = false
+    ): Result<SessionHistoryData> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         try {
-            var lastFailure: IOException? = null
-            // 第一次按 pi-web 前端同一套参数取；只有解析发现「分支 leaf 滞后」时才补一次 `force=1`。
-            //
-            // `force=1` 会让 pi-web 执行 `evictIfDiskAhead()`（一次 statSync + 必要时重建 wrapper），
-            // 所以绝不能每次轮询都带 —— 但发现滞后时不带就永远拿不到新内容，
-            // 而 pi-web 自己的前端挂载会话时恰恰是一直带 force 的（`loadSession(..., {force:true})`）。
-            for (attempt in 0..1) {
-                val force = attempt > 0
-                // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
-                // 这两个开关把首屏快照从 ~200KB 压到 ~150KB，手机端打开会话明显更快。
-                val forceParam = if (force) "&force=1" else ""
-                val req = Request.Builder()
-                    .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
-                    .get()
-                    .build()
-                val payload = readGet(req, snapshotClient, attempts = if (force) 1 else 2)
-                if (payload.code !in 200..299) {
-                    lastFailure = readFailure(payload, "/api/sessions/{id}")
-                    if (force) return@withContext Result.failure(lastFailure ?: IOException("会话快照请求失败"))
-                    continue
-                }
-                val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
-                if (historyData.branchLagged) {
-                    if (!force && !isLagRetryCoolingDown(sessionId)) {
-                        Log.w("PiSync", "snapshot branch lagged for $sessionId → retry with force=1")
-                        continue
-                    }
-                    if (force) {
-                        // force=1 也修不好：这轮不再徒劳重试，冷却一段时间。
-                        // 上限保护：长期不打开的会话没必要一直占着这条记录。
-                        if (lagRetryCooldownUntil.size > 64) lagRetryCooldownUntil.clear()
-                        lagRetryCooldownUntil[sessionId] = System.currentTimeMillis() + LAG_RETRY_COOLDOWN_MS
-                    }
-                } else {
-                    lagRetryCooldownUntil.remove(sessionId)
-                }
-                sessionHistoryCache[sessionId] = historyData
-                persistSessionSnapshot(sessionId, payload.body)
-                return@withContext Result.success(historyData)
+            // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
+            val forceParam = if (force) "&force=1" else ""
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
+                .get()
+                .build()
+            val payload = readGet(req, snapshotClient)
+            if (payload.code !in 200..299) {
+                return@withContext Result.failure(readFailure(payload, "/api/sessions/{id}"))
             }
-            Result.failure(lastFailure ?: IOException("会话快照获取失败"))
+            val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
+            sessionHistoryCache[sessionId] = historyData
+            persistSessionSnapshot(sessionId, payload.body)
+            Result.success(historyData)
         } catch (e: Exception) {
             Result.failure(e)
         }
-    }
-
-    /** 该会话是否处于「补 force 也没用」的冷却期（见 [lagRetryCooldownUntil]）。 */
-    private fun isLagRetryCoolingDown(sessionId: String): Boolean {
-        val until = lagRetryCooldownUntil[sessionId] ?: return false
-        if (System.currentTimeMillis() >= until) {
-            lagRetryCooldownUntil.remove(sessionId)
-            return false
-        }
-        return true
     }
 
     /**
@@ -1059,16 +1008,10 @@ class PiApiClient(private val prefs: AppPreferences) {
         return msg.get("role")?.takeIf { !it.isJsonNull }?.asString
     }
 
-    /**
-     * 消息数组里某一条带 entryId 的 id。
-     *
-     * `fromEnd = true`：取最后一条（判断「窗口有没有走到 leaf」的主依据）；
-     * `fromEnd = false`：取第一条（向前翻页的指针）。
-     */
-    private fun messageEntryId(msgs: JsonArray?, fromEnd: Boolean): String? {
+    /** 消息数组里第一条带 entryId 的 id（向前翻页的游标）。 */
+    private fun messageEntryId(msgs: JsonArray?): String? {
         if (msgs == null || msgs.size() <= 0) return null
-        val indices = if (fromEnd) (msgs.size() - 1) downTo 0 else 0 until msgs.size()
-        for (i in indices) {
+        for (i in 0 until msgs.size()) {
             val el = msgs.get(i)
             if (!el.isJsonObject) continue
             val obj = el.asJsonObject

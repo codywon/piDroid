@@ -317,12 +317,11 @@ class MainActivity : ComponentActivity() {
         // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
         // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
         var sessionFetchInFlight by remember { mutableStateOf(false) }
+        // 会话快照单飞（pi-web `loadFlightsRef`）：并发读同一会话时共享同一份请求，
+        // 避免挂载 / SSE 收尾 / 边界重读同时打同一个大请求。
+        val loadFlights = remember { mutableMapOf<String, kotlinx.coroutines.CompletableDeferred<Unit>>() }
         // 会话同步失败提示的节流时间戳（避免每轮巡检都弹一次）
         var lastHistorySyncErrorAt by remember { mutableStateOf(0L) }
-        // 「快照滞后」日志的节流时间戳：滞后会持续存在，不节流就是每轮巡检一条 W 日志
-        var lastStaleSnapshotLogAt by remember { mutableStateOf(0L) }
-        // 连续多少轮对账发现「快照缺本地条目」（只追加模式的出口判据，见 SessionSnapshotMerge）
-        var staleSnapshotStreak by remember { mutableStateOf(0) }
         // 首屏历史是否还在路上：只用来在空白页画一具轻量骨架，不向用户投射「正在同步…」之类的噪音
         var isLoadingSessionHistory by remember { mutableStateOf(false) }
         var isAutoFillingFirstScreen by remember { mutableStateOf(false) }
@@ -1069,31 +1068,37 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 增量无损同步会话快照：
-        // 1) 保留本地正在流式接收 (isStreaming = true) 或正在执行的工具尾部项，绝不因磁盘尚未落盘而抹掉实时流式文本（彻底解决“挤牙膏”与闪烁问题）
-        // 2) 当检测到 PC 端刚启动任务 (!isAgentBusy && isRunning) 时，立即自动挂载 SSE 实时流
-        // 3) 仅在整个会话彻底结束（排除单条工具命令执行间隙与自动重试等待期）时触发完成震动与提示音
-        suspend fun syncSessionSnapshot(
+        /**
+         * 一次会话快照读取（pi-web 的 `loadSession`）：
+         *
+         * 1) 并行读运行时状态（`/api/agent/{id}`，轻）与历史快照（`/api/sessions/{id}`，重）；
+         * 2) `snapshotRevision` 未变 → 只刷新树/叶/统计/模型，**正文与翻页游标一律不动**；
+         * 3) revision 变了 → 用服务端窗口对账（`replaceHistory` 时整段替换）。
+         *
+         * 调用方一律走 [syncSessionSnapshot]（自带单飞）。
+         */
+        suspend fun syncSessionSnapshotOnce(
             sessionId: String,
-            allowCompletionTransition: Boolean = true,
-            /**
-             * 对标 pi-web 的 loadSession：分支回退导航后，服务端的活跃分支是唯一权威，
-             * 必须整段替换本地消息，不能保留任何「流式尾部 / 乐观消息」合并逻辑，
-             * 否则被放弃分支上的旧过程输出会被 inFlightTail 之类逻辑重新拼回来。
-             */
-            replaceHistory: Boolean = false
+            allowCompletionTransition: Boolean,
+            replaceHistory: Boolean,
+            force: Boolean
         ) {
             val requestedModelMetaRevision = modelMetaRevision
             // 这份快照是什么时候**发起**的：判定「乐观提问有没有被服务端收下」时必须用它，
             // 而不是响应到达时刻（否则「快照比发送晚」这条前提会被响应延迟伪造）。
             val snapshotStartedAt = System.currentTimeMillis()
+            // 本次请求**之前**的 revision（getSessionDetail 成功后会把内存缓存替换成新的，
+            // 所以必须在发起前取）。pi-web 的 `revisionUnchanged` 就是拿它和响应里的比。
+            val previousRevision = apiClient.getCachedSessionDetail(sessionId)?.snapshotRevision
+            val localEntryCount = messages.count { !it.entryId.isNullOrBlank() }
+            var keepLoadedWindow = false
             // 运行态改由 `GET /api/agent/{id}?systemPrompt=0` 判定（同理的轻量状态读，不带系统提示词），
             // 原先每次 GET /api/sessions 实测 273KB / 390 条会话，1.5s 一轮纯属浪费流量与电。
             // 同一个响应还带着 contextUsage 与排队消息，下面直接复用。
             // 注意：状态与历史快照并行拉取（以前串行等待状态，多花一个 RTT 才出正文）。
             val (runtimeResult, histResult) = coroutineScope {
                 val stateAsync = async { apiClient.getAgentState(sessionId) }
-                val histAsync = async { apiClient.getSessionDetail(sessionId) }
+                val histAsync = async { apiClient.getSessionDetail(sessionId, force = force) }
                 stateAsync.await() to histAsync.await()
             }
             // ── 会话切换竞态保护（对标 pi-web：拉取回来先比对当前会话 id，不一致就丢弃）──
@@ -1179,28 +1184,6 @@ class MainActivity : ComponentActivity() {
                 currentCompactionRecords = hist.compactionRecords
                 currentBranchTreeNodes = hist.branchTreeNodes
                 currentActiveLeafId = hist.leafId
-                // 快照是否**缺了本地已有的已落盘条目**（本地跑到快照前面去了）：
-                // 这种快照不能当“权威删除依据”，否则界面会永久停在几分钟前的那一步
-                // （“PC 一直在跑，手机不再往后长”）。
-                // 注意：用 hist.messages 判定（与 synced 仅差 isStreaming 标记，不影响 entryId），
-                // 因为翻页游标那段在本块之外也要用同一个结论。
-                val staleThisRound = !replaceHistory &&
-                    SessionSnapshotMerge.isSnapshotOlderThanLocal(messages, hist.messages)
-                staleSnapshotStreak = if (staleThisRound) staleSnapshotStreak + 1 else 0
-                // 出口：连续多轮都对不上、且会话已空闲 → 以服务端为准一次（避免永久只追加）。
-                val serverWins = SessionSnapshotMerge.shouldTrustServerOverLocal(
-                    staleSnapshotStreak,
-                    effectiveRunning
-                )
-                val snapshotStale = staleThisRound && !serverWins
-                if (serverWins) {
-                    staleSnapshotStreak = 0
-                    android.util.Log.i(
-                        "PiSync",
-                        "stale snapshot for $sessionId persisted while idle → server becomes authoritative once"
-                    )
-                }
-
                 if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
                     val synced = hist.messages.mapIndexed { idx, item ->
                         if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
@@ -1210,7 +1193,18 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    if (replaceHistory) {
+                    // ── revision 不变量（pi-web `useAgentSession.ts:813-849`）──
+                    // 服务端说「快照没变」且本地已有不少于该窗口的条目时：树/叶/统计已经
+                    // 在上面刷新过了，正文与翻页游标一律不动 —— 不再需要任何"滞后/stale"启发式。
+                    keepLoadedWindow = !replaceHistory && SessionRevision.keepLoadedWindow(
+                        cachedRevision = previousRevision,
+                        incomingRevision = hist.snapshotRevision,
+                        cachedEntryCount = localEntryCount,
+                        incomingEntryCount = synced.count { !it.entryId.isNullOrBlank() }
+                    )
+                    if (keepLoadedWindow) {
+                        // 什么都不做：保留已翻页的历史与本地在途内容
+                    } else if (replaceHistory) {
                         // 分支回退导航：不做任何增量合并，直接以服务端活跃分支覆盖本地，
                         // 让被放弃分支上的旧工具输出 / 中断的思考过程在界面上瞬间消失。
                         messages.clear()
@@ -1224,24 +1218,9 @@ class MainActivity : ComponentActivity() {
                     } else {
                         // 对账规则收敛至 SessionSnapshotMerge（纯 JVM，可单测）：
                         // 1) 严密保护本地乐观用户消息与实时流式在途消息，绝不因服务端 .jsonl 尚未落盘而抹去用户提问与实时输出；
-                        // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动；
-                        // 3) 快照落后时只往前长、不回滚（见上面的 snapshotStale）。
-                        if (snapshotStale) {
-                            val now = System.currentTimeMillis()
-                            if (now - lastStaleSnapshotLogAt > 60_000L) {
-                                lastStaleSnapshotLogAt = now
-                                android.util.Log.w(
-                                    "PiSync",
-                                    "stale snapshot for $sessionId (server leaf lag=${hist.branchLagged}) → append-only reconcile"
-                                )
-                            }
-                        }
-                        val reconciled = SessionSnapshotMerge.reconcileList(
-                            messages,
-                            synced,
-                            effectiveRunning,
-                            snapshotStale = snapshotStale
-                        )
+                        // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动。
+                        // 注：「快照是否新鲜」不在这里判断 —— 由服务端 `snapshotRevision` 决定（见 SessionRevision）。
+                        val reconciled = SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
                         for (i in reconciled.indices) {
                             if (i < messages.size) {
                                 if (messages[i] != reconciled[i]) {
@@ -1270,7 +1249,7 @@ class MainActivity : ComponentActivity() {
                 // 翻页元数据：一旦已经往前翻过页，真·最老游标来自更早页，不能被快照覆盖。
                 // （快照滞后时它的窗口只会**更早**，游标跟着它走不会跳过历史，重叠部分由
                 //  loadOlderHistory 里的指纹去重兑掉；反而不能因为滞后就不设游标，否则新开的会话无法续批。）
-                if (olderMessages.isEmpty()) {
+                if (olderMessages.isEmpty() && !keepLoadedWindow) {
                     olderCursor = hist.oldestEntryId
                     olderLeafId = hist.leafId
                     hasEarlierOnServer = hist.hasMoreOnServer
@@ -1318,7 +1297,7 @@ class MainActivity : ComponentActivity() {
                 // 会话正文拉取失败（隧道抖动 / 502 / 401 / 超时）必须给加载态一个出口。
                 // 以前这里完全没有 onFailure：isLoadingSessionHistory 永远停在 true，
                 // 用户只能看到一个永不结束的加载圈，连「失败了」都看不到。
-                if (currentSession?.id == sessionId && messages.isEmpty() && olderMessages.isEmpty()) {
+                if (currentSession?.id == sessionId) {
                     isLoadingSessionHistory = false
                     val now = System.currentTimeMillis()
                     if (!isAutoFillingFirstScreen && now - lastHistorySyncErrorAt > 10_000L) {
@@ -1418,6 +1397,39 @@ class MainActivity : ComponentActivity() {
          * 2) 失败分三类：取消 / 服务端明确拒收 / 结果未确认（见下面的 onFailure）；
          * 3) 服务端明确拒收时把命令文本还回输入框（pi-web 的 `prependText(`/compact ...`)`）。
          */
+        // 增量无损同步会话快照：
+        // 1) 保留本地正在流式接收 (isStreaming = true) 或正在执行的工具尾部项，绝不因磁盘尚未落盘而抹掉实时流式文本（彻底解决“挤牙膏”与闪烁问题）
+        // 2) 当检测到 PC 端刚启动任务 (!isAgentBusy && isRunning) 时，立即自动挂载 SSE 实时流
+        // 3) 仅在整个会话彻底结束（排除单条工具命令执行间隙与自动重试等待期）时触发完成震动与提示音
+        suspend fun syncSessionSnapshot(
+            sessionId: String,
+            allowCompletionTransition: Boolean = true,
+            /**
+             * 对标 pi-web 的 loadSession：分支回退导航后，服务端的活跃分支是唯一权威，
+             * 必须整段替换本地消息，不能保留任何「流式尾部 / 乐观消息」合并逻辑，
+             * 否则被放弃分支上的旧过程输出会被 inFlightTail 之类逻辑重新拼回来。
+             */
+            replaceHistory: Boolean = false,
+            /**
+             * pi-web `loadSession(..., { force: true })`：挂载 / 手动刷新 / 分支导航时让服务端
+             * 从磁盘重读（`?force=1` → `evictIfDiskAhead()`），避免读到滞后的运行时 wrapper。
+             */
+            force: Boolean = false
+        ) {
+            // 单飞（pi-web `loadFlightsRef`）：挂载、SSE 收尾、边界重读并发时共享同一份请求。
+            // `force` 单独成 key，不与他人合并。
+            val flightKey = if (force) "force:$sessionId" else sessionId
+            loadFlights[flightKey]?.let { it.await(); return }
+            val flight = kotlinx.coroutines.CompletableDeferred<Unit>()
+            loadFlights[flightKey] = flight
+            try {
+                syncSessionSnapshotOnce(sessionId, allowCompletionTransition, replaceHistory, force)
+            } finally {
+                loadFlights.remove(flightKey)
+                flight.complete(Unit)
+            }
+        }
+
         fun startCompaction(
             sid: String,
             customInstructions: String? = null,
@@ -2117,7 +2129,8 @@ class MainActivity : ComponentActivity() {
             startListeningEvents(session.id, session.isRunning)
 
             lifecycleScope.launch {
-                syncSessionSnapshot(session.id, allowCompletionTransition = false)
+                // pi-web 挂载会话时带 force=1：让服务端从磁盘重读，躲开滞后的运行时 wrapper
+                syncSessionSnapshot(session.id, allowCompletionTransition = false, force = true)
             }
         }
 
@@ -2199,8 +2212,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             } else {
-                var lastDetailSyncAt = System.currentTimeMillis()
-                var lastServerRunning = activeSession.isRunning
                 while (true) {
                     // 整轮包一层 try：单次解析/网络异常绝不能把这个 while 弄死，
                     // 否则「同步」会永久停掉（界面只能靠 SSE 正文动，模型/运行态全部冻结）。
@@ -2217,49 +2228,26 @@ class MainActivity : ComponentActivity() {
                             lastSessionListVersion = snap.sessionListVersion
                         }
                         val serverSaysRunning = snap?.runningIds?.contains(activeSession.id) == true
-                        // 事件流健康检查：服务端确实在跑，而流已断或者长时间没有任何事件 →
-                        // 重挂一次（pi-web 重连会补发当前正在生成的 message 快照，丢的正文能补回来）。
-                        // 静默阈值必须大于 pi 的心跳周期（30s，events 路由里的 NN），否则心跳之间的空白
-                        // 会被当成断流，造成「每 15s 重挂一次、每重挂一次补发一份快照」的雪崩。
+                        // 与 pi-web `AgentEventConnection` 一致：流"就绪但长时间无任何数据
+                        // （心跳也算）"超过 2.5 个心跳就判定已死并重挂。阈值写成心跳的倍数，
+                        // 而不是一个孤立秒数 —— 心跳周期由 pi-web 的 events 路由决定。
                         val nowMs = System.currentTimeMillis()
                         if (serverSaysRunning) {
                             val streamDown = sseConnectionState != SseConnectionState.CONNECTED
                             val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
-                                lastSseActivityAt > 0L && nowMs - lastSseActivityAt > 45_000L
+                                lastSseActivityAt > 0L &&
+                                nowMs - lastSseActivityAt > (PiSseClient.EVENT_HEARTBEAT_MS * 2.5).toLong()
                             if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
                                 lastSseReattachAt = nowMs
                                 lastSseActivityAt = nowMs
                                 reattachSseCallback?.invoke(activeSession.id, true)
                             }
                         }
-                        // 快照对账节奏（实测单次 230–435KB，旧实现“在跑就 1.5s 一次”会在手机上
-                        // 持续占满带宽，正文/列表全排队，看上去就是“进会话同步不下来”）：
-                        //   · 事件流健康 → 正文交给 SSE，快照只做 10s 安全网；
-                        //   · 流断了/长时间无事件 → 收紧到 3s，用快照兜底补正文；
-                        //   · 运行态翻转、列表版本变化 → 立刻对账（否则会弄丢“任务结束”）。
-                        val streamHealthy = SessionSyncCadence.isStreamHealthy(
-                            connected = sseConnectionState == SseConnectionState.CONNECTED,
-                            lastActivityAt = lastSseActivityAt,
-                            now = nowMs
-                        )
-                        val runTransition = snap != null && serverSaysRunning != lastServerRunning
-                        lastServerRunning = serverSaysRunning
-                        val shouldSyncDetail = SessionSyncCadence.shouldSyncDetail(
-                            now = nowMs,
-                            lastSyncAt = lastDetailSyncAt,
-                            listVersionChanged = versionChanged,
-                            runStateTransition = runTransition,
-                            serverSaysRunning = serverSaysRunning,
-                            streamHealthy = streamHealthy
-                        )
-                        if (shouldSyncDetail) {
-                            lastDetailSyncAt = System.currentTimeMillis()
-                            syncSessionSnapshot(activeSession.id, allowCompletionTransition = true)
-                        } else {
-                            // 每轮都跟一下「PC 端切的模型/思考档」：pi-web 的 set_model 不发 SSE 事件，
-                            // 不做这一步就得等下一次全量快照（空闲 15s / 在跑 10s）才跟上。
-                            refreshSessionModelFromRuntime(activeSession.id)
-                        }
+                        // 正文**不在轮询里读**（pi-web 的 useAgentSession 同样只轮询运行态/用量）：
+                        // 正文只在边界点重读 —— 挂载、agent_end、message_end、compaction_end、
+                        // 工具结束、历史翻页。这里每轮只跟一下「PC 端切的模型/思考档」：
+                        // pi-web 的 set_model 不发 SSE 事件，不跟就得等下一个边界才更新。
+                        refreshSessionModelFromRuntime(activeSession.id)
                     } catch (e: kotlinx.coroutines.CancellationException) {
                         throw e
                     } catch (e: Exception) {
@@ -2832,7 +2820,7 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this@MainActivity, "正在切换分支…", Toast.LENGTH_SHORT).show()
                                 apiClient.navigateTree(sid, targetEntryId).onSuccess {
                                     if (currentSession?.id != sid) return@onSuccess
-                                    syncSessionSnapshot(sid, allowCompletionTransition = false, replaceHistory = true)
+                                    syncSessionSnapshot(sid, allowCompletionTransition = false, replaceHistory = true, force = true)
                                     Toast.makeText(this@MainActivity, "已切换至目标分支", Toast.LENGTH_SHORT).show()
                                 }.onFailure { err ->
                                     if (currentSession?.id != sid) return@onFailure
@@ -2859,7 +2847,7 @@ class MainActivity : ComponentActivity() {
                     onRefreshSession = {
                         val sid = activeSessionId
                         lifecycleScope.launch {
-                            syncSessionSnapshot(sid, allowCompletionTransition = false)
+                            syncSessionSnapshot(sid, allowCompletionTransition = false, force = true)
                             Toast.makeText(this@MainActivity, "已同步最新任务状态", Toast.LENGTH_SHORT).show()
                         }
                     },

@@ -2,6 +2,21 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.1] - 2026-11-04
+
+### 🔁 会话页正文同步：源码级对齐 pi-web（去掉自造的滞后判定）
+
+- **现象**：PC 端已跑到十几步、手机端却停在某条正文下面只剩「正在等待模型…」，而且不报错。原因是对账**把正文恢复押在周期全量快照上**（本机会话实测单次 **552 KB**，每 3–10s 一次），这个请求在隧道上卡住/超时时，界面既没有边界重读也没有可见错误。
+- **对齐 pi-web 的三条机制（其余自造启发式全部删除）**：
+  1. **`snapshotRevision`**（pi-web `lib/session-revision.ts` + `useAgentSession.ts:813-849`）：响应的不透明新鲜度令牌只做等值比较 —— 相同且本地条目不少于新窗口时，**只刷新树/叶/统计/模型，正文与翻页游标一律不动**；`null` 则视为不新鲜、正常重取。取代此前的 `branchLagged` 检测、`force=1` 自动重试、冷却表、`isSnapshotOlderThanLocal`/`STALE_STREAK`/只追加模式（净删约 150 行）；
+  2. **单飞 + force 语义**（`loadFlightsRef`、`loadSession(..., { force: true })`）：挂载/手动刷新/分支导航带 `?force=1`，并发读同一会话共享同一份请求；
+  3. **正文只在边界点读**：挂载、`agent_end`、`message_end`、`compaction_end`、工具结束、历史翻页；**删掉跑动中的周期全量对账**（`SessionSyncCadence` 整个移除），轮询只保留轻量运行态/模型档位。
+- **同步失败不再静默**：此前只有「列表为空」时才提示，跑动中失败完全无声；现在沿用同一 toast 通道（10s 节流）+ 日志。
+- **流判死阈值**：`45s` → `PiSseClient.EVENT_HEARTBEAT_MS × 2.5`（对齐 pi-web `AgentEventConnection` 的 `EVENT_STREAM_STALE_MS`），不再写孤立秒数。
+- **不做**：不改 `tail`/`deferThinking`（πDroid 没有按需补 thinking 的通道，照抄会丢历史思考文本）、不加横幅、不加正则、不新增业务常量。
+
+---
+
 ## [2.0.0] - 2026-11-04
 
 ### 🚀 πDroid 2.0.0 正式发布

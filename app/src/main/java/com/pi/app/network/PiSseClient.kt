@@ -28,6 +28,16 @@ import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
 
 class PiSseClient(private val prefs: AppPreferences) {
+    companion object {
+        /**
+         * pi-web events 路由的心跳周期（`lib/agent-event-wire.ts` 的 `AGENT_EVENT_HEARTBEAT_MS`）。
+         *
+         * 判断"流已就绪但长时间没有任何数据（心跳也算）→ 已死，需要重挂"时，
+         * 阈值一律写成这个值的倍数（pi-web 是 2.5×），不要在调用处再写孤立秒数。
+         */
+        const val EVENT_HEARTBEAT_MS = 30_000L
+    }
+
     private val gson = Gson()
     private val client = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)

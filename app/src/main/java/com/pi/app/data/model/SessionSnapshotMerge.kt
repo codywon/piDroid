@@ -130,48 +130,6 @@ object SessionSnapshotMerge {
     }
 
     /**
-     * 服务端快照是否**落后于本地尾部**（快照的尾巴只到本地已经看过的中间位置）。
-     *
-     * 为什么需要这条判定：pi-web 的 live wrapper 在外部进程写同一个 jsonl 时，内存 leaf 会落后于磁盘，
-     * 同一个响应里 `stats` 是新的、`context` 是旧的（分支滞后）；磁盘快照回放 + 后续网络快照
-     * 也可能出现同样的“新本地 + 旧快照”组合。
-     *
-     * 判定方式：取快照里最新的 `entryId`，它**出现在本地、却不是本地的尾巴**就说明本地跑到了快照前面。
-     * 三种看起来更直接、实际都会误判的写法：
-     * - 时间戳（历史条目时间戳缺失时解析器会兜底成 `now`，而 `mergeItem` 又会保留本地时间戳）；
-     * - 「本地有快照没有的 entryId」（窗口向前滑动时，最老的几条天然掉出快照窗口，
-     *   那样每滑一次都会被当成滞后，界面长期卡在只追加模式）；
-     * - 「响应 leafId ≠ context 末条」（分支最后一条是不产出消息的 `model_change` 时恒不相等）。
-     */
-    fun isSnapshotOlderThanLocal(local: List<ChatItem>, synced: List<ChatItem>): Boolean {
-        val syncedNewestId = synced.asReversed()
-            .firstNotNullOfOrNull { it.entryId?.takeIf { id -> id.isNotBlank() } }
-            ?: return false
-        val localNewestId = local.asReversed()
-            .firstNotNullOfOrNull { it.entryId?.takeIf { id -> id.isNotBlank() } }
-            ?: return false
-        // 尾巴相同 = 快照追上了；本地多出来的只是尚未落盘的在途项，由 in-flight 规则保护。
-        if (localNewestId == syncedNewestId) return false
-        // 快照的尾巴落在本地中间 → 快照就是本地的前缀，比本地旧。
-        return local.any { it.entryId == syncedNewestId }
-    }
-
-    /**
-     * 连续多少轮「快照缺本地条目」之后，允许服务端权威覆盖一次（只在会话已空闲时）。
-     *
-     * 为什么要出口：只追加模式是对付滞后快照的止血手段，但如果服务端**真的**丢了一些条目
-     * （会话裁剪 / 分支重写而客户端没走 replaceHistory），界面会永久显示已不存在的内容。
-     * 会话空闲时本机的在途内容已经落盘，此时以服务端为准是安全的；在跑时绝不动（否则会扼断在途输出）。
-     */
-    const val STALE_STREAK_BEFORE_SERVER_WINS = 3
-
-    /** 本轮对账是否该放弃只追加模式、改以服务端为准。详见 [STALE_STREAK_BEFORE_SERVER_WINS]。 */
-    fun shouldTrustServerOverLocal(staleStreak: Int, effectiveRunning: Boolean): Boolean {
-        if (effectiveRunning) return false
-        return staleStreak >= STALE_STREAK_BEFORE_SERVER_WINS
-    }
-
-    /**
      * 将本地消息列表 [local] 与服务端权威快照 [synced] 进行对账合并（纯 JVM，可单测）。
      *
      * 核心契约与不变式：
@@ -180,15 +138,12 @@ object SessionSnapshotMerge {
      *    **绝不可被截断抹除**，无论此时网络轮询判定运行态与否；
      * 3) 仅在会话真正空闲且已无未提交内容时，才剔除已被远端抛弃的过时分支历史；
      * 4) 未落盘候选的内容匹配从**最新一条往前**找，避免陈旧的同文本气泡抢走服务端刚落盘的提问；
-     *    这些气泡的最终去留由 [PendingPromptSettlement] 判定（超时未确认即撤回）；
-     * 5) [snapshotStale] 为真（快照落后于本地尾部）时，本地**已落盘但快照里没有**的条目一律保留，
-     *    且已匹配条目优先保留本地（更新）的正文 —— 本回合的真相只能往前长，不会因一次滞后快照回滚。
+     *    这些气泡的最终去留由 [PendingPromptSettlement] 判定（超时未确认即撤回）。
      */
     fun reconcileList(
         local: List<ChatItem>,
         synced: List<ChatItem>,
-        effectiveRunning: Boolean,
-        snapshotStale: Boolean = false
+        effectiveRunning: Boolean
     ): List<ChatItem> {
         if (local.isEmpty()) return synced
         if (synced.isEmpty()) {
@@ -199,9 +154,6 @@ object SessionSnapshotMerge {
                 emptyList()
             }
         }
-
-        // 快照里已有的 entryId 集合：用于判断哪些本地条目是“快照还没追上”而不是“已过期”。
-        val syncedEntryIds = synced.mapNotNullTo(HashSet()) { it.entryId?.takeIf { id -> id.isNotBlank() } }
 
         // 1. 服务端权威历史对账
         //
@@ -314,38 +266,6 @@ object SessionSnapshotMerge {
                             modelName = keepModelName
                         )
                     )
-                } else if (snapshotStale) {
-                    // 快照落后于本地：同一条消息保留本地（更新）的正文/思考/工具输出，
-                    // 只把快照里才有、本地缺的元数据补上。否则一次滞后快照就会把已经流下来的
-                    // 内容回滚成几百字前的样子。快照追上后（snapshotStale=false）恢复正常以服务端为准。
-                    //
-                    // 工具卡片例外：服务端已经有结果的，必须单向补进来。否则 SSE 一旦断在
-                    // `tool_execution_end` 之前，那张卡会永远转圈（本机再也等不到结束事件）。
-                    val localTool = localItem.toolCall
-                    val diskTool = diskItem.toolCall
-                    val resolvedTool = if (localTool != null && diskTool != null &&
-                        localTool.isRunning && localTool.output.isNullOrBlank() && !diskTool.output.isNullOrBlank()
-                    ) {
-                        localTool.copy(
-                            output = diskTool.output,
-                            durationMs = diskTool.durationMs,
-                            isError = diskTool.isError,
-                            isRunning = false,
-                            fullOutputPath = diskTool.fullOutputPath ?: localTool.fullOutputPath,
-                            mediaList = if (diskTool.mediaList.isNotEmpty()) diskTool.mediaList else localTool.mediaList
-                        )
-                    } else {
-                        localTool
-                    }
-                    reconciledCommitted.add(
-                        localItem.copy(
-                            entryId = localItem.entryId ?: diskItem.entryId,
-                            usageSummary = localItem.usageSummary ?: diskItem.usageSummary,
-                            modelName = localItem.modelName ?: diskItem.modelName,
-                            thinkingDurationSec = localItem.thinkingDurationSec ?: diskItem.thinkingDurationSec,
-                            toolCall = resolvedTool
-                        )
-                    )
                 } else {
                     reconciledCommitted.add(mergeItem(localItem, diskItem))
                 }
@@ -371,9 +291,6 @@ object SessionSnapshotMerge {
                 item.role == MessageRole.AGENT && item.isStreaming -> true
                 // 正在执行的工具：保留
                 item.role == MessageRole.TOOL && item.toolCall?.isRunning == true -> true
-                // 快照落后于本地尾部（分支 leaf 滞后）：本机已经看到的这些条目绝不能当“过期分支”删掉，
-                // 否则界面会永久停在快照的旧尾巴上（“PC 一直在跑，手机不再往后长”的根因）。
-                snapshotStale && !item.entryId.isNullOrBlank() && item.entryId !in syncedEntryIds -> true
                 else -> false
             }
         }
