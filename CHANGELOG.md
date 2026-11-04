@@ -2,6 +2,29 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.91] - 2026-11-04
+
+### 🚨 紧急修复 1.8.90 冷启动闪退（工作区分组重复 key）
+
+- **现象**：升级到 1.8.90 后打开 App 立即闪退。
+- **根因（工作区身份键与展示路径取值不同源）**：
+  1. 1.8.90 为了让展示路径保留真实盘符大小写，把 `Session.workspaceKey` 改成「优先取裸 `projectKey`」，
+     而 `workspacePath` 仍按 `projectRoot` 优先推导；
+  2. pi-web 下发的 `projectKey` 是 `d:\myscript\pi-app`（小写 + 反斜杠），`projectRoot` 是 `D:\myscript\pi-app`，
+     两者归一化后虽然同源，但**分组键与自定义目录键**从此不再使用同一套优先级；
+  3. 于是同一个项目在 `groupWorkspaces` 里裂成两组，两组又都输出了同一条展示路径 `D:/myscript/pi-app`；
+  4. 抽屉工作区列表用 `items(key = { it.path })` 渲染，Compose `LazyColumn` 遇到重复 key 直接抛
+     `IllegalArgumentException: Key ... was already used` —— 这是**首帧即崩**，所以表现成「打开就闪退」。
+- **修复**：
+  - **单一取值源**：`workspaceKey` 与 `workspacePath` 全部由同一个 `rawWorkspacePath`（`projectRoot → cwd → projectKey`）推导，
+    既保留展示层的真实大小写，又保证身份键唯一，不得各自采用不同字段优先级；
+  - **分组层去重**：`groupWorkspaces` 按展示路径的身份键再合并一次，兼容历史上已经写坏的两份写法；
+  - **UI 层兜底**：工作区列表构建完成后追加 `distinctBy { path }`，永久关闭「重复 key 导致 LazyColumn 崩溃」这一整类故障。
+- **回归测试**：新增 `groupWorkspaces never emits duplicate display paths for windows projects` 与
+  `workspaceKey and workspacePath stay consistent regardless of field casing` 两条纯 JVM 单测。
+
+---
+
 ## [1.8.90] - 2026-11-04
 
 ### 🛡️ 代码质量与交互安全加固（Code Review 修复闭环）

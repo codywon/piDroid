@@ -116,15 +116,30 @@ fun groupWorkspaces(
         }
     }
 
-    return sessionsByKey.map { (key, list) ->
+    val grouped = LinkedHashMap<String, WorkspaceGroup>()
+    for ((key, list) in sessionsByKey) {
         val latest = list.maxByOrNull { it.modified ?: it.created ?: "" }
         val fromSession = latest?.workspacePath?.takeIf { it.isNotBlank() }
-        WorkspaceGroup(
-            key = key,
-            path = fromSession ?: customDisplayByKey[key] ?: key,
-            sessions = list
-        )
+        val finalPath = fromSession ?: customDisplayByKey[key] ?: key
+        val pathKey = WorkspacePaths.identityKey(finalPath)
+        val existing = grouped[pathKey]
+        if (existing == null) {
+            grouped[pathKey] = WorkspaceGroup(
+                key = key,
+                path = finalPath,
+                sessions = list
+            )
+        } else {
+            // 防御：若存在大小写或斜杠变体导致同路径，合并会话并保留有会话的那份路径展示
+            val preferredPath = if (existing.sessions.isEmpty() && list.isNotEmpty()) finalPath else existing.path
+            grouped[pathKey] = WorkspaceGroup(
+                key = existing.key,
+                path = preferredPath,
+                sessions = existing.sessions + list
+            )
+        }
     }
+    return grouped.values.toList()
 }
 
 /**

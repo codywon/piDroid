@@ -82,8 +82,20 @@ data class Session(
      * 但展示时仍保留各自来源的写法，避免把已有路径数据改掉。
      */
     val workspaceKey: String
-        get() = (projectKey?.takeIf { it.isNotBlank() } ?: WorkspacePaths.identityKey(rawWorkspacePath)).ifBlank { "默认工作区" }
+        get() = WorkspacePaths.identityKey(rawWorkspacePath).ifBlank { "默认工作区" }
 
+    /**
+     * 工作区**原始写法**（未归一化）。
+     *
+     * 取值顺序：`projectRoot` → `cwd` → `projectKey`。三者同源时保留 `projectRoot` 的真实大小写，
+     * 因为展示层要的是用户认识的盘符写法（`D:/myscript/pi-app`）。
+     *
+     * ❗️ 1.8.90 曾把 [workspaceKey] 改成「优先取裸 `projectKey`」，结果 `projectKey`（`d:\myscript\x`）
+     * 与 [workspacePath]（`D:/myscript/x`）不再是同一个字符串，分组键与自定义目录键分道扬镳，
+     * 同一个项目在 `groupWorkspaces` 里裂成两组、产出**重复的展示路径**，而抽屉列表用
+     * `items(key = { it.path })` 渲染 → `IllegalArgumentException: Key ... was already used` → 冷启动闪退。
+     * 因此 [workspaceKey] 必须始终由**同一个** [rawWorkspacePath] 归一化得来，不得另起一套优先级。
+     */
     private val rawWorkspacePath: String
         get() = projectRoot?.takeIf { it.isNotBlank() }
             ?: cwd?.takeIf { it.isNotBlank() }

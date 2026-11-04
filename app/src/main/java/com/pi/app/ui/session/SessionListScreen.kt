@@ -276,6 +276,11 @@ fun SessionListScreen(
                 .thenByDescending { it.latestModified }
                 .thenByDescending { it.sessionCount }
         )
+            // 🧷 抽屉列表用 `items(key = { it.path })` 渲染，LazyColumn 对重复 key 会直接抛
+            // IllegalArgumentException（"Key ... was already used"）——那是**冷启动闪退**级别的事故，
+            // 1.8.90 就因为分组键取值不一致真的裂出了重复路径。上游 groupWorkspaces 已按身份键去重，
+            // 这里再做一道展示路径级别的兜底，把这个崩溃面永久关闭。
+            .distinctBy { it.path.lowercase() }
     }
 
     // 置顶与排序以 pi-web 的 ui-state 为准；取不到时才回退到本地偏好
