@@ -75,4 +75,28 @@ class BranchTreeTopologyTest {
         assertTrue(rows[1].isActivePath)
         assertTrue(rows[1].isCurrentLeaf)
     }
+
+    @Test
+    fun `flattenTree computes parentLines correctly for nested children`() {
+        val leaf1 = BranchTreeNode(id = "leaf1", previewText = "Leaf 1")
+        val leaf2 = BranchTreeNode(id = "leaf2", previewText = "Leaf 2")
+        val branch1 = BranchTreeNode(id = "b1", children = listOf(leaf1), previewText = "Branch 1")
+        val branch2 = BranchTreeNode(id = "b2", children = listOf(leaf2), previewText = "Branch 2")
+        val root = BranchTreeNode(id = "root", children = listOf(branch1, branch2))
+
+        val rows = BranchTreeTopology.flattenTree(listOf(root), "leaf2")
+        assertEquals(5, rows.size)
+        // root: depth 0, parentLines empty
+        assertEquals(emptyList<Boolean>(), rows[0].parentLines)
+        // b1: depth 1, parentLines empty, isLastChild = false
+        assertEquals(emptyList<Boolean>(), rows[1].parentLines)
+        assertFalse(rows[1].isLastChild)
+        // leaf1: depth 2, parentLines = [true] (b1 was not last of depth 1)
+        assertEquals(listOf(true), rows[2].parentLines)
+        // b2: depth 1, parentLines empty, isLastChild = true
+        assertEquals(emptyList<Boolean>(), rows[3].parentLines)
+        assertTrue(rows[3].isLastChild)
+        // leaf2: depth 2, parentLines = [false] (b2 was last of depth 1)
+        assertEquals(listOf(false), rows[4].parentLines)
+    }
 }

@@ -2,6 +2,25 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [1.8.90] - 2026-11-04
+
+### 🛡️ 代码质量与交互安全加固（Code Review 修复闭环）
+
+- **Worktree 检出移除安全确认与脏工作树弹窗打通**：
+  - 点击移除检出增加二次确认弹窗，防止移动端手滑误删工作树目录；
+  - 打通 `dirtyWarningTarget` 状态与网关 `WORKTREE_DIRTY:` 错误反馈，当存在未提交改动时准确弹出“强制移除”确认框，修复提示用户强制清理却未弹出对话框的缺陷。
+- **文件监听 SSE 长连接保活与异常守护**：
+  - `PiApiClient.watchFileChanges` 改用无读取超时的专用 `sseStreamClient`（`readTimeout = 0`），消除静默 120 秒连接断开；
+  - `ArtifactViewerFullScreen` 在收集文件变更流时接入 `.catch {}` 错误守护，防止流异常抛出导致 Compose UI 崩溃。
+- **会话导出临时文件安全回收**：
+  - `SessionExporter` 在写入公共 MediaStore 异常时自动执行 `resolver.delete` 清理挂起的记录，防止在系统公共下载目录留下 0 字节悬挂文件；清理未使用的引用。
+- **分支树连线算法精细化**：
+  - `BranchTreeBottomSheet` 使用 `row.parentLines` 绘制前置缩进，修复已终结分支下方挂多余竖线的渲染瑕疵，并补充对应纯 JVM 单元测试覆盖。
+- **项目路径大小写保持**：
+  - `Models.kt` 恢复 `rawWorkspacePath` 对真实 `projectRoot` 路径大小写的优先选用，避免在 Windows 环境下展示路径被全部小写化。
+
+---
+
 ## [1.8.89] - 2026-11-04
 
 ### 🎨 提炼精简会话顶栏更多操作菜单文案

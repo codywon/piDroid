@@ -4024,7 +4024,7 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 },
-                onDeleteWorktree = { wt, force ->
+                onDeleteWorktree = { wt, force, onDirty ->
                     val root = wtResult.projectRoot
                     if (!isOperatingWorktree) {
                         isOperatingWorktree = true
@@ -4047,12 +4047,11 @@ class MainActivity : ComponentActivity() {
                                         Toast.makeText(this@MainActivity, "已移除该 Worktree 检出", Toast.LENGTH_SHORT).show()
                                     }
                                     .onFailure { err ->
-                                        val userMsg = if (err.message?.startsWith("WORKTREE_DIRTY:") == true) {
-                                            "本地存在未提交改动，请在弹窗中选择强制清理"
+                                        if (err.message?.startsWith("WORKTREE_DIRTY:") == true) {
+                                            onDirty(wt)
                                         } else {
-                                            "移除失败：${err.message}"
+                                            Toast.makeText(this@MainActivity, "移除失败：${err.message}", Toast.LENGTH_LONG).show()
                                         }
-                                        Toast.makeText(this@MainActivity, userMsg, Toast.LENGTH_LONG).show()
                                     }
                             } finally {
                                 isOperatingWorktree = false

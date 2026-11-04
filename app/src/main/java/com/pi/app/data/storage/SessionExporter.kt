@@ -3,7 +3,6 @@ package com.pi.app.data.storage
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -12,7 +11,6 @@ import com.pi.app.network.PiApiClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
 
 data class SessionExportResult(
@@ -92,14 +90,19 @@ object SessionExporter {
                 }
                 val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                 if (uri != null) {
-                    tempFile.inputStream().use { input ->
-                        resolver.openOutputStream(uri)?.use { output ->
-                            input.copyTo(output)
+                    try {
+                        tempFile.inputStream().use { input ->
+                            resolver.openOutputStream(uri)?.use { output ->
+                                input.copyTo(output)
+                            } ?: throw IOException("无法写入目标输出流")
                         }
+                        contentValues.clear()
+                        contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                        resolver.update(uri, contentValues, null, null)
+                    } catch (e: Exception) {
+                        runCatching { resolver.delete(uri, null, null) }
+                        throw e
                     }
-                    contentValues.clear()
-                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    resolver.update(uri, contentValues, null, null)
                 }
             } else {
                 val pubDir = File(

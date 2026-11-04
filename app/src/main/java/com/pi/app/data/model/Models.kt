@@ -82,12 +82,12 @@ data class Session(
      * 但展示时仍保留各自来源的写法，避免把已有路径数据改掉。
      */
     val workspaceKey: String
-        get() = WorkspacePaths.identityKey(rawWorkspacePath).ifBlank { "默认工作区" }
+        get() = (projectKey?.takeIf { it.isNotBlank() } ?: WorkspacePaths.identityKey(rawWorkspacePath)).ifBlank { "默认工作区" }
 
     private val rawWorkspacePath: String
-        get() = projectKey?.takeIf { it.isNotBlank() }
-            ?: projectRoot?.takeIf { it.isNotBlank() }
+        get() = projectRoot?.takeIf { it.isNotBlank() }
             ?: cwd?.takeIf { it.isNotBlank() }
+            ?: projectKey?.takeIf { it.isNotBlank() }
             ?: "默认工作区"
 
     val workspaceName: String

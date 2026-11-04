@@ -35,11 +35,12 @@ fun WorktreeManagementDialog(
     isOperating: Boolean = false,
     onSwitchWorktree: (WorktreeItem) -> Unit,
     onCreateWorktree: (branch: String) -> Unit,
-    onDeleteWorktree: (WorktreeItem, force: Boolean) -> Unit,
+    onDeleteWorktree: (item: WorktreeItem, force: Boolean, onDirty: (WorktreeItem) -> Unit) -> Unit,
     onDismiss: () -> Unit
 ) {
     val theme = LocalAppTheme.current
     var newBranchName by remember { mutableStateOf("") }
+    var pendingDeleteTarget by remember { mutableStateOf<WorktreeItem?>(null) }
     var dirtyWarningTarget by remember { mutableStateOf<WorktreeItem?>(null) }
 
     ModalBottomSheet(
@@ -107,7 +108,7 @@ fun WorktreeManagementDialog(
                         item = item,
                         isOperating = isOperating,
                         onSwitch = { onSwitchWorktree(item) },
-                        onDelete = { onDeleteWorktree(item, false) }
+                        onDelete = { pendingDeleteTarget = item }
                     )
                 }
             }
@@ -158,6 +159,39 @@ fun WorktreeManagementDialog(
         }
     }
 
+    // 移除普通检出确认弹窗
+    pendingDeleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDeleteTarget = null },
+            icon = { Icon(Icons.Default.DeleteOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+            title = { Text("移除 Worktree 检出", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Text(
+                    text = "确定移除该工作树检出吗？\n路径：${target.path}\n\n注意：本地工作树目录将被清理，Git 分支 (${target.branch ?: "detached"}) 仍会保留。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = theme.textSecondary
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val t = target
+                        pendingDeleteTarget = null
+                        onDeleteWorktree(t, false) { dirtyWarningTarget = it }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("确认移除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDeleteTarget = null }) {
+                    Text("取消")
+                }
+            }
+        )
+    }
+
     // 存在未提交更改时的二次确认弹窗
     dirtyWarningTarget?.let { target ->
         AlertDialog(
@@ -174,8 +208,9 @@ fun WorktreeManagementDialog(
             confirmButton = {
                 Button(
                     onClick = {
+                        val t = target
                         dirtyWarningTarget = null
-                        onDeleteWorktree(target, true)
+                        onDeleteWorktree(t, true) {}
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                 ) {

@@ -175,6 +175,11 @@ class PiApiClient(private val prefs: AppPreferences) {
     internal val okHttpClient: OkHttpClient get() = client
     internal val fileOkHttpClient: OkHttpClient get() = fileClient
 
+    /** 文件变更监听 SSE 专用：长连接无读取超时 */
+    private val sseStreamClient = client.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
     /**
      * 轮询 / 首屏读取专用客户端：共用连接池与鉴权，但给「整条请求（含读完 body）」加硬超时。
      *
@@ -5889,10 +5894,12 @@ data class CatalogPreset(
             .header("Cache-Control", "no-cache")
             .build()
 
-        val call = client.newCall(req)
+        val call = sseStreamClient.newCall(req)
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                close(e)
+                if (!call.isCanceled()) {
+                    close()
+                }
             }
 
             override fun onResponse(call: Call, response: Response) {

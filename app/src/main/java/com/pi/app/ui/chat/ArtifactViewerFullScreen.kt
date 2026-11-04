@@ -87,6 +87,7 @@ import com.pi.app.ui.files.OfficePreview
 import com.pi.app.ui.files.OfficeXmlPreview
 import com.pi.app.ui.theme.LocalAppTheme
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import java.io.File
 
 /**
@@ -152,10 +153,11 @@ internal fun ArtifactViewerFullScreen(
         path?.takeIf { it.isNotBlank() }?.let { onWatchFileChanges?.invoke(it) }
     }
     LaunchedEffect(watchFlow) {
-        watchFlow?.collect {
-            kotlinx.coroutines.delay(200L)
-            onReload()
-        }
+        watchFlow?.catch { android.util.Log.d("ArtifactViewer", "watch flow closed: ${it.message}") }
+            ?.collect {
+                kotlinx.coroutines.delay(200L)
+                onReload()
+            }
     }
 
     // 沉浸态（隐藏顶栏）用 rememberSaveable：转屏后仍保持用户选的阅读模式

@@ -165,8 +165,8 @@ private fun BranchTreeRowItem(
             // 前置缩进与连线字符
             if (row.depth > 0) {
                 val indentPrefix = buildString {
-                    for (i in 0 until (row.depth - 1)) {
-                        append("  │ ")
+                    for (hasLine in row.parentLines) {
+                        append(if (hasLine) "  │ " else "    ")
                     }
                     append(if (row.isLastChild) "  └─ " else "  ├─ ")
                 }
