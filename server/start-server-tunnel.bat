@@ -1,9 +1,10 @@
 @echo off
 title piDroid Unified Companion (Auto Cloudflare Tunnel)
 echo ======================================================
-echo    🌐 Starting piDroid Unified Companion with Tunnel
+echo    Starting piDroid Unified Companion with Tunnel (foreground)
 echo ======================================================
-cd /d %~dp0server
+rem This file lives in server/; %~dp0 is already the server folder.
+cd /d "%~dp0"
 
 if not exist node_modules (
     echo Installing server dependencies...
@@ -20,5 +21,5 @@ rem To pin a different one manually, set these before running:
 rem set "PI_TUNNEL_NAME=pi"
 rem set "PI_TUNNEL_HOSTNAME=your.domain.com"
 
-node --no-deprecation launcher.js --tunnel
+node --no-deprecation launcher.js --tunnel %*
 pause

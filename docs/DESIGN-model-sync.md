@@ -112,7 +112,7 @@ pi-web 侧 **0 行**（见 §2：`E$` 对未知类型原样透传）。
 ### 4.3 为什么它危险（必须配套护栏脚本）
 
 - 落点是**别人编译好的 node_modules**：`npm i -g @agegr/pi-web@latest`、或
-  `start-piweb.bat` 的 `npx -y @agegr/pi-web@latest`（临时目录）都会让它**静默消失**；
+  `server/start-piweb.bat` 的 `npx -y @agegr/pi-web@latest`（临时目录）都会让它**静默消失**；
 - 补丁锚点错位会让 pi-web 直接起不来 → 手机端全部功能瘫痪，回退成本最高。
 
 因此若要实施 B，**同时**提交一个启动前校验脚本（幂等）：
@@ -120,7 +120,7 @@ pi-web 侧 **0 行**（见 §2：`E$` 对未知类型原样透传）。
 1. 读 SDK 版本 + 文件哈希，已知版本 → 用锚点插入；未知版本 → **拒绝补丁并明确报错**；
 2. 已打过（存在 `model_changed`）→ 跳过；
 3. 校验：`node -c` 通过 + 起 pi-web 后 `set_model` 能收到事件，否则自动回滚到 `.bak`；
-4. 在 `start-piweb.bat` / `start-server*.bat` 前置调用；
+4. 在 `server/start-piweb.bat` / `server/start-server*.bat` 前置调用；
 5. README 与 CHANGELOG 标注「本地补丁，升级需重打」。
 
 ### 4.4 收益 / 代价

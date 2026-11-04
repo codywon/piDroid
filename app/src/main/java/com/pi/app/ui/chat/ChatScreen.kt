@@ -189,6 +189,7 @@ fun ChatScreen(
     onTogglePin: () -> Unit = {},
     onAutoGenerateTitle: () -> Unit = {},
     onExportSession: () -> Unit = {},
+    onRenameSession: (String) -> Unit = {},
     /**
      * 提示词增强：当前网关能力 + 目标连接/模型。
      *
@@ -379,6 +380,9 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     var showHudDialog by remember { mutableStateOf(false) }
     var showBranchTreeSheet by remember { mutableStateOf(false) }
+    var showTopMenu by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameInputText by remember { mutableStateOf("") }
     var showToolPresetSheet by remember { mutableStateOf(false) }
     var showToolDefinitionsSheet by remember { mutableStateOf(false) }
     // 通用查看器（bash 完整输出 / 文件内容 / 图片）：一个面板复用，避免各处各弹一种 UI
@@ -1276,51 +1280,18 @@ fun ChatScreen(
                             }
                         }
 
-                        // 第二行：会话标题 + 分支树入口胶囊
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = sessionTitle.ifBlank { "未命名会话" },
-                                style = MaterialTheme.typography.bodySmall,
-                                color = theme.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (branchTreeNodes.isNotEmpty()) {
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = theme.surfaceContainer,
-                                    border = BorderStroke(0.5.dp, theme.primary.copy(alpha = 0.5f)),
-                                    modifier = Modifier.clickable { showBranchTreeSheet = true }
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.AltRoute,
-                                            contentDescription = "查看分支拓扑",
-                                            modifier = Modifier.size(11.dp),
-                                            tint = theme.primary
-                                        )
-                                        Spacer(modifier = Modifier.width(3.dp))
-                                        Text(
-                                            text = "⑂ 分支",
-                                            fontSize = 9.5.sp,
-                                            color = theme.primary,
-                                            fontWeight = FontWeight.SemiBold
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                        // 第二行：纯会话标题（100% 独占整行，极简对称）
+                        Text(
+                            text = sessionTitle.ifBlank { "未命名会话" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = theme.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 },
                 actions = {
-                    // 顶栏只留核心高频动作，图标统一 18dp + 34dp 紧凑热区，将宝贵宽度让给会话标题。
-                    // 顺序：用模型重写标题 → 工作目录变更（全屏沉浸式） → 同步刷新（最右）。
-                    // 置顶操作已收敛至会话列表卡片的三点菜单中，避免顶栏拥挤导致标题被大量省略截断。
+                    // 1. 高频操作 1：AI 自动重写标题（1 步直达）
                     IconButton(onClick = onAutoGenerateTitle, modifier = Modifier.size(34.dp)) {
                         Icon(
                             imageVector = Icons.Default.AutoFixHigh,
@@ -1329,33 +1300,94 @@ fun ChatScreen(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    // 工作目录 git 变更：直接唤起独立全屏阅读界面，彻底消除弹层狭窄和下滑误退冲突
-                    IconButton(
-                        onClick = { showGitChangesScreen = true },
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Icon(
-                            Icons.Default.AccountTree,
-                            contentDescription = "工作目录变更",
-                            tint = theme.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                    IconButton(onClick = onExportSession, modifier = Modifier.size(34.dp)) {
-                        Icon(
-                            imageVector = Icons.Default.FileDownload,
-                            contentDescription = "导出完整会话为 HTML",
-                            tint = theme.textSecondary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
+                    // 2. 高频操作 2：重新加载会话状态并对账
                     IconButton(onClick = onRefreshSession, modifier = Modifier.size(34.dp)) {
                         Icon(
-                            Icons.Default.Sync,
+                            imageVector = Icons.Default.Sync,
                             contentDescription = "重新加载会话（同步最新任务状态）",
                             tint = theme.textSecondary,
                             modifier = Modifier.size(18.dp)
                         )
+                    }
+                    // 3. 统揽操作 3：更多操作三点菜单 (⋮)
+                    Box {
+                        IconButton(onClick = { showTopMenu = true }, modifier = Modifier.size(34.dp)) {
+                            Icon(
+                                imageVector = Icons.Default.MoreVert,
+                                contentDescription = "更多操作",
+                                tint = theme.textSecondary,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showTopMenu,
+                            onDismissRequest = { showTopMenu = false }
+                        ) {
+                            if (branchTreeNodes.isNotEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("会话分支拓扑...", style = MaterialTheme.typography.bodyMedium) },
+                                    leadingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.AltRoute,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp),
+                                            tint = theme.primary
+                                        )
+                                    },
+                                    onClick = {
+                                        showTopMenu = false
+                                        showBranchTreeSheet = true
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text("工作目录 Git 变更", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.AccountTree,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    showGitChangesScreen = true
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("导出会话为 HTML", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.FileDownload,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    onExportSession()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("重命名会话...", style = MaterialTheme.typography.bodyMedium) },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Edit,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(16.dp),
+                                        tint = theme.textSecondary
+                                    )
+                                },
+                                onClick = {
+                                    showTopMenu = false
+                                    renameInputText = sessionTitle
+                                    showRenameDialog = true
+                                }
+                            )
+                        }
                     }
                 }
             )
@@ -2770,6 +2802,40 @@ fun ChatScreen(
                 onNavigateToEntry(targetId)
             },
             onDismiss = { showBranchTreeSheet = false }
+        )
+    }
+
+    if (showRenameDialog) {
+        AlertDialog(
+            onDismissRequest = { showRenameDialog = false },
+            title = { Text("重命名会话", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                OutlinedTextField(
+                    value = renameInputText,
+                    onValueChange = { renameInputText = it },
+                    singleLine = true,
+                    label = { Text("会话标题") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val t = renameInputText.trim()
+                        if (t.isNotBlank()) {
+                            onRenameSession(t)
+                        }
+                        showRenameDialog = false
+                    }
+                ) {
+                    Text("保存")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text("取消")
+                }
+            }
         )
     }
     }

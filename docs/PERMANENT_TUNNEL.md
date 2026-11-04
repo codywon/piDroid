@@ -17,10 +17,10 @@
 ## 为什么以前每次重启都要重新扫码
 
 > 现状：只要你用 `--tunnel` 启动，且能读到 `~/.cloudflared/config.yml` 里指向网关端口的
-> ingress，`start-server-tunnel.bat` 就会直接走**固定域名隧道**（见下文「Cloudflare 模式下的现状」），
+> ingress，`server/start-server-tunnel.bat` 就会直接走**固定域名隧道**（见下文「Cloudflare 模式下的现状」），
 > 不再需要每次重扫。下面这段解释「为什么过去做不到」，排查时仍有用。
 
-没有配置命名隧道时，`start-server-tunnel.bat` 会退到 **Cloudflare Quick Tunnel**：
+没有配置命名隧道时，`server/start-server-tunnel.bat` 会退到 **Cloudflare Quick Tunnel**：
 
 ```bash
 cloudflared tunnel --url http://127.0.0.1:4100
@@ -51,7 +51,7 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 - 取 `tunnel:` 指向的隧道名（或 UUID）；
 - 只在 ingress 中找出 **`service` 端口等于网关端口（默认 4100）** 的那个 `hostname`。
 
-两者都拿到时，`start-server-tunnel.bat` 直接拉起这条命名隧道，公网地址恒为
+两者都拿到时，`server/start-server-tunnel.bat` 直接拉起这条命名隧道，公网地址恒为
 `https://<该 hostname>`，手机扫码一次即可长期使用。只有 `config.yml` 缺失、
 或其中没有指向网关端口的 ingress 时，才回退到 Quick Tunnel。
 
@@ -62,8 +62,8 @@ Quick Tunnel 是 Cloudflare 提供的「匿名试用隧道」，特点就是：
 ## 方案一（备用）：Cloudflare Named Tunnel + 自有域名
 
 > 日常请走 [FRP_TUNNEL.md](FRP_TUNNEL.md)（默认通道）。本节仅在需要走 Cloudflare 时用：
-> 启动必须是 `start-server-tunnel.bat`（它带 `--tunnel`），或手动
-> `node launcher.js --tunnel` / `node server/start.bat --tunnel`。
+> 启动必须是 `server/start-server-tunnel.bat`（它带 `--tunnel`），或在 `server/` 下
+> `node launcher.js --tunnel`。
 
 Cloudflare 的「命名隧道」把一条隧道绑定到你自己域名下的固定主机名，免费额度足够个人使用。
 配置好之后每次启动都是**同一个 URL + 同一个 Token**，手机扫码一次即可长期连接，除非你主动重置 Token。
@@ -109,7 +109,7 @@ ingress:
 
 **在 Cloudflare 模式下（`--tunnel`）通常什么都不用做。** 只要 `~/.cloudflared/config.yml`
 里存在「`tunnel:` + 一条 `service` 指向网关端口（默认 4100）的 `hostname`」，
-双击 `start-server-tunnel.bat` 就会自动用它：
+双击 `server/start-server-tunnel.bat` 就会自动用它：
 
 - 不再启动临时隧道，改为执行 `cloudflared tunnel run <tunnel>`；
 - 直接打印 `https://<hostname>` 的二维码，不再等待解析随机域名；
@@ -197,7 +197,7 @@ Token 保持不变即可，不必重新扫码。后续若需要，可以在 App 
 4. **Token 等同于本机命令行权限**：网关背后是 `pi-web`，它能执行 shell 命令、读写
    任意文件。请按「SSH 私钥」的级别对待 Token，不要放进聊天记录、截图或 Issue。
 5. **用完就关**：外网隧道是最直接的暴露面。不需要远程访问时直接关掉
-   `start-server-tunnel.bat` 的窗口，比任何加固都有效。
+   `server/start-server-tunnel.bat` 的窗口，比任何加固都有效。
 6. **定期轮换**：怀疑泄露时删除 `server/.token` 并重启网关，旧 Token 立刻失效。
 
 > 以上加固的完整升级方案（Cloudflare Access + Service Token 的无感接法、Tailscale Serve、

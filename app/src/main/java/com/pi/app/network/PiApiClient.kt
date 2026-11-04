@@ -5797,8 +5797,10 @@ data class CatalogPreset(
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    val msg = resp.body?.string()?.take(200) ?: ""
-                    return@withContext Result.failure(IOException("导出失败 (${resp.code})${if (msg.isNotBlank()) "：$msg" else ""}"))
+                    val rawBody = resp.body?.string()?.take(300) ?: ""
+                    val err = runCatching { JsonParser.parseString(rawBody).asJsonObject.get("error").asString }.getOrNull()
+                        ?: rawBody.ifBlank { "HTTP ${resp.code}" }
+                    return@withContext Result.failure(IOException("导出失败 (${resp.code})：$err"))
                 }
                 val body = resp.body ?: return@withContext Result.failure(IOException("导出响应为空"))
                 targetFile.parentFile?.mkdirs()

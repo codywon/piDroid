@@ -2803,6 +2803,26 @@ class MainActivity : ComponentActivity() {
                     onExportSession = {
                         exportSessionToHtml(activeSessionId, currentSession?.displayTitle)
                     },
+                    onRenameSession = { newTitle ->
+                        val sid = activeSessionId
+                        if (sid.isNotBlank()) {
+                            prefs.saveSessionCustomTitle(sid, newTitle)
+                            lifecycleScope.launch {
+                                apiClient.setSessionName(sid, newTitle).onSuccess {
+                                    loadSessions(silent = true)
+                                }.onFailure { err ->
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "改名已存本地，同步到 PC 失败：${err.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                            customTitles = customTitles + (sid to newTitle)
+                            currentSession = currentSession?.copy(name = newTitle)
+                            Toast.makeText(this@MainActivity, "已重命名会话", Toast.LENGTH_SHORT).show()
+                        }
+                    },
                     branchTreeNodes = currentBranchTreeNodes,
                     activeLeafId = currentActiveLeafId,
                     onNavigateToEntry = { targetEntryId ->

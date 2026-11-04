@@ -13,11 +13,12 @@
 #
 # NOTE: ASCII-only on purpose. Windows PowerShell 5.1 decodes a .ps1 without a
 # BOM as ANSI, so non-ASCII text here would be garbled (same rule as
-# start-hidden.cmd / stop-gateway.ps1 in server/).
+# start-hidden.cmd / stop-gateway.ps1 in this folder).
 
 $ErrorActionPreference = 'Continue'
 
-$repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+# This script lives in server/: the sibling lifecycle scripts are right here,
+# the repo root is one level up ($PSScriptRoot\..).
 $pkg = Join-Path $env:APPDATA 'npm\node_modules\@agegr\pi-web'
 $taskName = 'piDroid Gateway (frp)'
 
@@ -93,7 +94,7 @@ if ($holders) {
 } else {
     Write-Host '  no pi-web process reported by the command line scan'
 }
-$stopScript = Join-Path $repo 'server\stop-gateway.cmd'
+$stopScript = Join-Path $PSScriptRoot 'stop-gateway.cmd'
 if (Test-Path -LiteralPath $stopScript) {
     & $stopScript | Out-Host
 } else {
@@ -162,9 +163,9 @@ if ($LASTEXITCODE -eq 0) {
     schtasks /Run /TN $taskName | Out-Host
     Write-Host ("  started scheduled task: {0}" -f $taskName)
 } else {
-    $bat = Join-Path $repo 'start-server-tunnel.bat'
+    $bat = Join-Path $PSScriptRoot 'start-server-tunnel.bat'
     if (Test-Path -LiteralPath $bat) {
-        Start-Process -FilePath $bat -WorkingDirectory $repo
+        Start-Process -FilePath $bat -WorkingDirectory $PSScriptRoot
         Write-Host '  started start-server-tunnel.bat in a new window'
     } else {
         Write-Host '  nothing to start automatically; run start-server-tunnel.bat yourself' -ForegroundColor Yellow
@@ -189,7 +190,7 @@ if ($up) {
     Write-Host 'Open http://127.0.0.1:30141 in the browser and check the phone app.' -ForegroundColor Green
 } else {
     Write-Host 'pi-web did not answer within 60s.' -ForegroundColor Yellow
-    Write-Host 'Check the task output: server\server.log (start-hidden.cmd writes there)' -ForegroundColor Yellow
+    Write-Host 'Check the task output: server\logs\gateway.log (start-hidden.cmd writes there)' -ForegroundColor Yellow
 }
 Write-Host ''
 Read-Host 'Press Enter to close'

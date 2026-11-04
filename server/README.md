@@ -9,11 +9,30 @@
 
 ---
 
+## 📁 脚本清单（入口只有这里，仓库根目录不再放启动脚本）
+
+全部生命周期脚本都在 `server/` 下，按「怎么用」分成四层：
+
+| 层 | 文件 | 用途 | 什么时候用 |
+| --- | --- | --- | --- |
+| **常驻**（计划任务） | `start-hidden.vbs` → `start-hidden.cmd` | 隐藏窗口守护：单实例守卫 + launcher 退出后 5 秒重试 | 登录自启，**任务动作直接指向 `start-hidden.vbs`，不要改名/移动** |
+| **前台整套**（调试） | `start-server.bat`（frp 默认）/ `start-server-tunnel.bat`（Cloudflare）/ `start-server.sh`（Linux，`--tunnel` 传参） | 黑窗口里跑 launcher（= pi-web + 网关 + 隧道） | 排查问题、临时演示；关窗口即停 |
+| **只起 pi-web**（调试） | `start-piweb.bat` / `start-piweb.sh` | 只跑 30141，不含网关 | 只想开浏览器用 pi-web 时；**会占住 30141，把计划任务降级成旁观者** |
+| **运维** | `stop-gateway.cmd` / `.ps1`、`show-pairing.cmd`、`update-piweb.bat` / `.sh` + `upgrade-piweb.ps1` | 停止整棵树 / 重新出示配对二维码 / 升级 pi-web | 日常运维 |
+
+命名规则：`start-hidden*` = 计划任务（无窗口）；`start-server*` = 前台整套；`start-piweb*` = 只 pi-web；`stop-*` / `show-*` / `update-*` = 运维动作。
+
+> `npm start` / `npm run tunnel` 仍然可用，等价于 `start-server.bat` / `start-server-tunnel.bat`。
+
+---
+
 ## ⚡ 极速启动 (推荐)
 
-### 方式 1: 项目根目录双击启动
-- **默认模式（frp 公网隧道 + 局域网）**：双击根目录下的 `start-server.bat`
-- **改用 Cloudflare 隧道**：双击根目录下的 `start-server-tunnel.bat`
+### 方式 1: 在 `server/` 目录双击启动（前台窗口，调试/临时用）
+- **默认模式（frp 公网隧道 + 局域网）**：双击 `server\start-server.bat`
+- **改用 Cloudflare 隧道**：双击 `server\start-server-tunnel.bat`
+
+> 日常常驻请用计划任务（见下文「开机自启」），不要用这两个窗口脚本，也不要再用 `start-piweb.bat`。
 
 ### 方式 2: 命令行运行
 在 `server` 目录下运行：
@@ -64,7 +83,6 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settin
 | `start-hidden.vbs` | `Run(..., 0, True)` 隐藏窗口启动，并把退出码交回计划任务（任务因此显示 Running 而不是瞬间"成功"） |
 | `start-hidden.cmd` | 真正的守护：切目录 → 轮转日志 → 补依赖 → **单实例守卫** → `launcher.js` 退出后 5 秒重试 |
 | `stop-gateway.ps1` / `.cmd` | 按命令行匹配杀掉整棵树；只碰 `node/cmd/wscript/frpc`，不误伤其它隧道 |
-
 `launcher.js` 同时托管本地 pi-web（30141），所以**不需要第二个计划任务**：
 
 - 30141 空闲 → 由 `launcher.js` 自己拉起 `pi-web --no-open`（后台常驻，不再自动弹浏览器）；
@@ -72,7 +90,7 @@ Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settin
 - 30141 已被占用（例如手动开了 `start-piweb.bat`）→ 直接「接入」现有实例，
   **但不接管它的生命周期**：那个窗口一关，服务就没了。
 
-所以日常**不要**再用 `start-piweb.bat` / `start.bat` 起服务——那是调试入口，它会占住 30141，
+所以日常**不要**再用 `start-piweb.bat` 或用 `start-server.bat` 起服务——那是调试入口，它会占住 30141，
 把计划任务降级成旁观者，还得一直挂着黑窗口。要常驻就用计划任务，要停就 `stop-gateway.cmd`。
 
 ### 日常操作
@@ -84,6 +102,12 @@ schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
 ```
 
 日志：`server\logs\gateway.log`（超过 5 MB 时轮转为 `.log.1`）。
+
+### 升级 pi-web
+
+双击 `server\update-piweb.bat`（Linux：`./server/update-piweb.sh`）。
+Windows 下真正的实现是 `upgrade-piweb.ps1`：停整棵树 → 重命名探测确认目录已解锁 → `npm install -g @agegr/pi-web@latest`（最多 3 次）
+→ 校验版本 → `schtasks /Run` 重启任务 → 等 30141 重新就绪。**不要**在 pi-web 自己打开的终端里跑（会把自己的父进程一起杀掉）。
 
 ### 无窗口模式下怎么拿配对二维码
 

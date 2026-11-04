@@ -66,20 +66,20 @@
    ```bash
    npx @agegr/pi-web@latest
    ```
-   Windows 下可直接双击项目根目录的 `start-piweb.bat`（只启动 pi-web，端口 30141）。
+   Windows 下可直接双击 `server\start-piweb.bat`（只启动 pi-web，端口 30141；仅调试用）。
 2. 进入本项目 `server/` 目录：
    ```bash
    cd server
    npm install
    npm start
-   # 或者 Windows 下直接双击 start.bat
+   # 或者 Windows 下直接双击 server\start-server.bat
    ```
 3. 终端将输出一个带有高熵密钥的安全配对二维码。
 
 #### （可选）开启公网外网访问：
 
 默认通道是**自建 frp 隧道**（TCP 直连，公网地址固定）：配好 `frpc.toml` 后直接
-`npm start` 或用 `start-server.bat`，启动器会把公网地址推导出来并写进配对二维码。
+`npm start` 或双击 `server\start-server.bat`，启动器会把公网地址推导出来并写进配对二维码。
 部署步骤见 [docs/FRP_TUNNEL.md](docs/FRP_TUNNEL.md)。
 
 不想自建服务器时，也可以走 Cloudflare：

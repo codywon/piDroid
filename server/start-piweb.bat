@@ -3,7 +3,10 @@ title piDroid pi-web (Native Web UI)
 echo ======================================================
 echo    pi-web Native Web UI (port 30141)
 echo ======================================================
-cd /d %~dp0
+rem Only pi-web, no gateway (debug entry). Living in server/ means %~dp0 is the
+rem server folder, but pi-web used to be started from the repo root, so keep that
+rem cwd (%~dp0..) to stay behaviour-compatible.
+cd /d "%~dp0.."
 
 rem Reuse an already running instance on 30141 to avoid a port conflict
 netstat -ano | findstr /C:":30141 " | findstr /C:"LISTENING" >nul 2>&1

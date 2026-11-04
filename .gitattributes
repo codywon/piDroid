@@ -1,8 +1,11 @@
 # 服务端脚本在 Linux 上执行：仓库里与 Windows 检出都必须保持 LF，
 # 否则 scp 上去会变成 CRLF，bash 直接报 "$'\r': command not found"。
 deploy/frp/*.sh text eol=lf
+server/*.sh text eol=lf
 
 # Windows 批处理 / VBScript 由 cmd.exe 与 wscript 解析，必须是 CRLF；
 # 否则 if( ... ) 块与标签在部分系统上会解析异常。
+# .bat 与 .cmd 同理（两者都由 cmd.exe 读取，规则没有区别）。
+*.bat text eol=crlf
 *.cmd text eol=crlf
 *.vbs text eol=crlf
