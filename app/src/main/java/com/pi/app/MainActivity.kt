@@ -1522,7 +1522,7 @@ class MainActivity : ComponentActivity() {
                                         isGatewayOnline = false
                                         Toast.makeText(
                                             this@MainActivity,
-                                            "连不上网关：请确认 PC 端已运行 start-server-tunnel.bat，或重新扫码配对",
+                                            "连不上网关：请确认电脑端服务正在运行，或重新扫码配对",
                                             Toast.LENGTH_LONG
                                         ).show()
                                     }

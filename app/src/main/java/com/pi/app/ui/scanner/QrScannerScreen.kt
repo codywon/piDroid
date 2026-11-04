@@ -292,7 +292,7 @@ fun QrScannerScreen(
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.16f))
                 ) {
                     Text(
-                        text = "对准 PC 终端二维码 · 或从下方相册选图 / 手动填写",
+                        text = "对准电脑屏幕上的二维码 · 或从下方相册选图 / 手动填写",
                         color = Color(ThemePalette.ScrimOnSurface),
                         style = MaterialTheme.typography.labelMedium,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)

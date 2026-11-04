@@ -2319,7 +2319,7 @@ fun GlobalMcpTab(
                             Text(
                                 text = "工具曝光数：受「工具清单 Token 预算」裁切后，实际暴露给模型的工具数量。\n\n" +
                                     "启用此服务器：关闭后它的工具会从模型清单中移除，模型不再看到也无法调用。\n\n" +
-                                    "移除服务器：只从手机端注册表移除，PC 端（pi-web ui-state）的配置不受影响。",
+                                    "移除服务器：只从手机端注册表移除，电脑端 pi-web 里保存的配置不受影响。",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = theme.textSecondary
                             )
@@ -2577,7 +2577,7 @@ fun GlobalMcpTab(
                         if (mcpServers.isEmpty()) {
                             SettingsRow(
                                 title = "还没有 MCP 服务器",
-                                subtitle = "点右上角添加，或先在 PC 端模型配置里声明",
+                                subtitle = "点右上角添加，或先在电脑端的模型配置里声明",
                                 value = "添加",
                                 valueColor = theme.primary,
                                 onClick = {
@@ -2614,7 +2614,7 @@ fun GlobalMcpTab(
                     }
                     Spacer(modifier = Modifier.height(10.dp))
                     Text(
-                        text = "服务器在 PC 端 pi 配置中定义；手机端负责启用、测试与查看工具曝光。",
+                        text = "服务器在电脑端的 pi 配置里定义；手机端负责启用、测试与查看工具曝光。",
                         fontSize = 11.sp,
                         lineHeight = 15.sp,
                         color = theme.textMuted,
@@ -2725,7 +2725,7 @@ fun GlobalMcpTab(
                         placeholder = {
                             Text(
                                 if (transportInput == "http") "如 http://127.0.0.1:8888/mcp"
-                                else "如 npx -y @modelcontextprotocol/server-filesystem .",
+                                else "如 npx -y <包名>",
                                 fontSize = 11.5.sp,
                                 color = theme.textMuted,
                                 maxLines = 1,
