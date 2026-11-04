@@ -837,6 +837,30 @@ app.post('/api/cwd/browse', authMiddleware, express.json(), (req, res, next) => 
   next();
 });
 
+// 3.55 App 崩溃上报：写到 logs/crash-*.log，供开发侧排查「闪退」。
+// 只收纯文本堆栈（限制长度），文件名由服务端生成，不让客户端参与路径构造。
+const CRASH_MAX_BYTES = 200 * 1024;
+app.post(
+  '/api/mobile/crash',
+  authMiddleware,
+  express.text({ type: '*/*', limit: CRASH_MAX_BYTES }),
+  (req, res) => {
+    try {
+      const body = typeof req.body === 'string' ? req.body : '';
+      if (!body.trim()) return res.status(400).json({ error: 'empty crash report' });
+      fs.mkdirSync(LOG_DIR, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const file = path.join(LOG_DIR, `crash-${stamp}.log`);
+      fs.writeFileSync(file, body.slice(0, CRASH_MAX_BYTES), 'utf8');
+      console.warn(`[crash] App 崩溃日志已保存: ${file}`);
+      return res.json({ ok: true, file: path.basename(file) });
+    } catch (e) {
+      console.warn('[crash] 保存失败:', e && e.message);
+      return res.status(500).json({ error: 'failed to save crash report' });
+    }
+  }
+);
+
 // 3.6 支持直接读取工作区中的图片、SVG、PDF 原始文件供 App 渲染缩略图与全屏预览
 app.get('/api/files/raw', authMiddleware, (req, res, next) => {
   try {

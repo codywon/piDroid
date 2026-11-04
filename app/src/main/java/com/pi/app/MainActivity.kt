@@ -116,6 +116,26 @@ class MainActivity : ComponentActivity() {
         syncPersistentForegroundService(isBusy = false, project = "默认工作区")
     }
 
+    /**
+     * 上一次进程如果是被未捕获异常带走的（`PiApp` 已落盘），这里把堆栈写进 logcat
+     * 并上传给配对网关（`POST /api/mobile/crash`）——「跑一会就闪退」没有堆栈无法定位。
+     * 上传成功后删除文件（避免每次启动重复上报）；失败则保留，下次再试。
+     */
+    private fun reportPreviousCrashIfAny() {
+        lifecycleScope.launch {
+            val file = java.io.File(filesDir, com.pi.app.PiApp.CRASH_FILE)
+            if (!file.exists()) return@launch
+            val text = runCatching { file.readText() }.getOrNull()
+            if (text.isNullOrBlank()) {
+                runCatching { file.delete() }
+                return@launch
+            }
+            android.util.Log.e("PiCrash", text)
+            apiClient.reportCrash(text)
+                .onSuccess { uploaded -> if (uploaded) runCatching { file.delete() } }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -130,6 +150,8 @@ class MainActivity : ComponentActivity() {
 
         // 初始化主题管理
         com.pi.app.ui.theme.ThemeManager.init(this)
+
+        reportPreviousCrashIfAny()
 
         checkAndRequestPermissions()
         handleDeepLink(intent)

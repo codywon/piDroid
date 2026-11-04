@@ -124,8 +124,24 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** 大文件传输的重试次数（首次 + 1 次重试）。见 [getFileBytes]。 */
         private const val FILE_TRANSFER_ATTEMPTS = 2
+
+        /** 内存快照缓存上限（见 [cacheSessionDetail]）。 */
+        private const val MAX_CACHED_SESSIONS = 4
     }
     private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
+
+    /**
+     * 内存里的会话快照缓存（已解析的 ChatItem 列表，含工具输出/媒体）只留最近几次打开的会话。
+     *
+     * 不设上限的话它会随「打开过的会话数」线性增长 —— 长时间使用后进程被系统回收，
+     * 用户看到的就是「看着一个任务，过一会直接闪退」。淘汰顺序不保证是 LRU（缓存而已）。
+     */
+    private fun cacheSessionDetail(sessionId: String, data: SessionHistoryData) {
+        if (sessionHistoryCache.size >= MAX_CACHED_SESSIONS && !sessionHistoryCache.containsKey(sessionId)) {
+            sessionHistoryCache.keys.firstOrNull()?.let { sessionHistoryCache.remove(it) }
+        }
+        sessionHistoryCache[sessionId] = data
+    }
 
     /** 会话树形状认不出来的日志只报一次（进程内），见 [warnUnknownTreeShape]。 */
     @Volatile
@@ -715,6 +731,26 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 这里不再做任何"滞后检测/自动重试/冷却"：快照新不新鲜由服务端下发的
      * `snapshotRevision` 决定，见 [SessionRevision]。
      */
+    /**
+     * 把上一次的崩溃堆栈上传给伴侣网关（`POST /api/mobile/crash` → PC 侧 `server/logs/crash-*.log`）。
+     *
+     * 纯诊断通道：失败一律静默（不影响任何业务路径），成功与否都不重试。
+     */
+    suspend fun reportCrash(stackTrace: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank() || stackTrace.isBlank()) return@withContext Result.success(false)
+        try {
+            val req = Request.Builder()
+                .url("$baseUrl/api/mobile/crash")
+                .post(stackTrace.toRequestBody("text/plain; charset=utf-8".toMediaType()))
+                .build()
+            // 诊断通道不重试（readGet 会重试一次）—— 失败就下次启动再报。
+            client.newCall(req).execute().use { resp -> Result.success(resp.isSuccessful) }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     suspend fun getSessionDetail(
         sessionId: String,
         tail: Int = 60,
@@ -733,7 +769,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 return@withContext Result.failure(readFailure(payload, "/api/sessions/{id}"))
             }
             val historyData = parseSessionHistoryBody(sessionId, payload.body, tail)
-            sessionHistoryCache[sessionId] = historyData
+            cacheSessionDetail(sessionId, historyData)
             persistSessionSnapshot(sessionId, payload.body)
             Result.success(historyData)
         } catch (e: Exception) {
@@ -815,7 +851,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             val file = snapshotFile(sessionId)
             if (!file.exists() || file.length() < 64L) return@runCatching null
             parseSessionHistoryBody(sessionId, file.readText(), 60).also {
-                sessionHistoryCache[sessionId] = it
+                cacheSessionDetail(sessionId, it)
             }
         }.getOrNull()
     }
