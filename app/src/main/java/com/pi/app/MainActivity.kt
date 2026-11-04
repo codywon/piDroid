@@ -339,6 +339,8 @@ class MainActivity : ComponentActivity() {
         // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
         // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
         var sessionFetchInFlight by remember { mutableStateOf(false) }
+        // 最后一次成功拿到会话快照的时刻（HUD 的「同步健康」读数用）
+        var lastSnapshotAtMs by remember { mutableStateOf(0L) }
         // 会话快照单飞（pi-web `loadFlightsRef`）：并发读同一会话时共享同一份请求，
         // 避免挂载 / SSE 收尾 / 边界重读同时打同一个大请求。
         val loadFlights = remember { mutableMapOf<String, kotlinx.coroutines.CompletableDeferred<Unit>>() }
@@ -1203,6 +1205,7 @@ class MainActivity : ComponentActivity() {
 
             histResult.onSuccess { hist ->
                 isGatewayOnline = true
+                lastSnapshotAtMs = System.currentTimeMillis()
                 currentCompactionRecords = hist.compactionRecords
                 currentBranchTreeNodes = hist.branchTreeNodes
                 currentActiveLeafId = hist.leafId
@@ -2773,6 +2776,8 @@ class MainActivity : ComponentActivity() {
                     agentPhaseLabel = agentPhaseLabel,
                     isLoadingSessionHistory = isLoadingSessionHistory,
                     sseState = sseConnectionState,
+                    streamLastEventAtMs = lastSseActivityAt,
+                    lastSnapshotAtMs = lastSnapshotAtMs,
                     queuedMessages = queuedMessages,
                     compactionRecords = currentCompactionRecords,
                     isCompacting = compactionState.isCompacting(activeSessionId),

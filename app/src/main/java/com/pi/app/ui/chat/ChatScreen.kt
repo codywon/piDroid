@@ -166,6 +166,10 @@ fun ChatScreen(
     /** 首屏历史正在从 PC 拉取（只用于画骨架，不向用户展示具体状态文案） */
     isLoadingSessionHistory: Boolean = false,
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
+    /** 事件流最后一条事件的时间戳（0 = 从未收到） */
+    streamLastEventAtMs: Long = 0L,
+    /** 最后一次成功会话快照的时间戳（0 = 从未成功） */
+    lastSnapshotAtMs: Long = 0L,
     queuedMessages: List<QueuedMessage> = emptyList(),
     compactionRecords: List<com.pi.app.data.model.CompactionRecord> = emptyList(),
     branchTreeNodes: List<com.pi.app.data.model.BranchTreeNode> = emptyList(),
@@ -2772,6 +2776,9 @@ fun ChatScreen(
         TokenStatsHudDialog(
             stats = tokenStats,
             compactionRecords = compactionRecords,
+            streamLastEventAtMs = streamLastEventAtMs,
+            lastSnapshotAtMs = lastSnapshotAtMs,
+            sseConnected = sseState == SseConnectionState.CONNECTED,
             onCompactClick = {
                 showHudDialog = false
                 onCompactContext()

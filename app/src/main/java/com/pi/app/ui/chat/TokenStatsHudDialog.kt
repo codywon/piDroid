@@ -7,6 +7,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Compress
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
@@ -21,6 +26,11 @@ import com.pi.app.ui.theme.*
 fun TokenStatsHudDialog(
     stats: TokenStats,
     compactionRecords: List<CompactionRecord> = emptyList(),
+    /** 事件流最后一条事件的时间戳（0 = 从未收到） */
+    streamLastEventAtMs: Long = 0L,
+    /** 最后一次成功会话快照的时间戳（0 = 从未成功） */
+    lastSnapshotAtMs: Long = 0L,
+    sseConnected: Boolean = false,
     onCompactClick: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -52,6 +62,13 @@ fun TokenStatsHudDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // 0. 同步健康：把「体感不同步」变成可读的数字（事件流最后事件 / 最后一次快照）
+                SyncHealthRow(
+                    sseConnected = sseConnected,
+                    streamLastEventAtMs = streamLastEventAtMs,
+                    lastSnapshotAtMs = lastSnapshotAtMs
+                )
+
                 // 1. 上下文进度条
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
@@ -233,4 +250,50 @@ fun TokenStatsHudDialog(
             }
         }
     )
+}
+
+/**
+ * 同步健康一行：`实时流 已连接 · 事件 2s 前 · 快照 8s 前`。
+ *
+ * 存在的理由：之前判断「App 不同步」只能凭感觉和截图比对，没有数字。
+ * 这里每拿一次读数就自增一个 tick，让「事件流是否还在动、快照多久没成功」变成可截图的事实。
+ */
+@Composable
+private fun SyncHealthRow(
+    sseConnected: Boolean,
+    streamLastEventAtMs: Long,
+    lastSnapshotAtMs: Long
+) {
+    val theme = LocalAppTheme.current
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            kotlinx.coroutines.delay(1_000)
+            now = System.currentTimeMillis()
+        }
+    }
+    fun ageText(at: Long): String = if (at <= 0L) "—" else {
+        val sec = ((now - at).coerceAtLeast(0L)) / 1000
+        if (sec < 1) "刚刚" else "${sec}s 前"
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        InfoTitle(
+            title = "实时同步",
+            infoDescription = "事件流与快照的最后更新时间",
+            style = MaterialTheme.typography.labelMedium
+        )
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            text = "${if (sseConnected) "流已连接" else "流已断开"} · 事件 ${ageText(streamLastEventAtMs)} · 快照 ${ageText(lastSnapshotAtMs)}",
+            style = MaterialTheme.typography.labelSmall,
+            fontFamily = FontFamily.Monospace,
+            maxLines = 1,
+            softWrap = false,
+            color = if (sseConnected) theme.textMuted else theme.warning
+        )
+    }
 }
