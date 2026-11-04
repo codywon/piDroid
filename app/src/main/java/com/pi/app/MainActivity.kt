@@ -1074,21 +1074,45 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        fun scheduleAgentCompletionSettle(sessionId: String, delayMs: Long = 800L) {
+        /**
+         * 会话收尾等待（对齐 pi-web `useAgentSession.ts` 的 `rh()`）：
+         * 先等 initialDelayMs → **每 600ms 探一次运行态，最多 20s**；
+         * 一旦读到「不在跑」立刻收尾并重读正文，20s 没结论就静默放弃。
+         *
+         * 与旧实现的差别：以前只探一次（读失败或还在跑就直接 return），
+         * 于是「agent_end 之后服务端还差最后几笔落盘」的窗口里正文就停在半路。
+         */
+        fun scheduleAgentCompletionSettle(
+            sessionId: String,
+            initialDelayMs: Long = AgentSettlePolicy.INITIAL_DELAY_MS
+        ) {
             completionSettleJob?.cancel()
             completionSettleJob = lifecycleScope.launch {
-                kotlinx.coroutines.delay(delayMs)
-                if (isAutoRetrying || isToolExecuting) return@launch
-                // 探不到状态 ≠ 跑完了：旧实现 `?: false` 把隧道 404/网关 502 当成「已结束」，
-                // 于是界面在任务还在跑时翻回空闲态（发送箭头又出现 → 下一次发送必然被内核拒掉）。
-                // pi-web 的 reconcileAgentState 同样只在拿到服务端状态后才改运行态。
-                val state = apiClient.getAgentState(sessionId).getOrNull()
-                if (state == null) {
-                    syncSnapshotCallback?.invoke(sessionId)
-                    return@launch
+                kotlinx.coroutines.delay(initialDelayMs)
+                // 起点与 pi-web 一致：从首次等待之后开始计时（`Date.now()` 在 `dC(800)` 之后）
+                val startedAt = System.currentTimeMillis()
+                while (currentSession?.id == sessionId) {
+                    // 探不到状态 ≠ 跑完了：旧实现 `?: false` 把隧道 404/网关 502 当成「已结束」，
+                    // 于是界面在任务还在跑时翻回空闲态（发送箭头又出现 → 下一次发送必然被内核拒掉）。
+                    val state = apiClient.getAgentState(sessionId).getOrNull()
+                    when (
+                        AgentSettlePolicy.decide(
+                            elapsedMs = System.currentTimeMillis() - startedAt,
+                            stateKnown = state != null,
+                            running = state?.running == true,
+                            isToolExecuting = isToolExecuting,
+                            isAutoRetrying = isAutoRetrying
+                        )
+                    ) {
+                        AgentSettleDecision.Settle -> {
+                            completeAgentSessionRun(sessionId, syncSnapshot = true)
+                            return@launch
+                        }
+                        AgentSettleDecision.Abandon -> return@launch
+                        AgentSettleDecision.Continue ->
+                            kotlinx.coroutines.delay(AgentSettlePolicy.POLL_INTERVAL_MS)
+                    }
                 }
-                if (state.running || isAutoRetrying || isToolExecuting) return@launch
-                completeAgentSessionRun(sessionId, syncSnapshot = true)
             }
         }
 
@@ -1621,7 +1645,7 @@ class MainActivity : ComponentActivity() {
                                         )
                                     }
                                 }
-                                scheduleAgentCompletionSettle(sessionId, delayMs = 300L)
+                                scheduleAgentCompletionSettle(sessionId, initialDelayMs = 300L)
                             } else {
                                 markAgentRunActive(phase = event.phaseLabel ?: "重试成功，正在继续...")
                             }
@@ -1990,7 +2014,7 @@ class MainActivity : ComponentActivity() {
                                 completionSettleJob = null
                                 completeAgentSessionRun(sessionId, syncSnapshot = true)
                             } else if (!isAutoRetrying) {
-                                scheduleAgentCompletionSettle(sessionId, delayMs = 800L)
+                                scheduleAgentCompletionSettle(sessionId)
                             }
                         }
                     }

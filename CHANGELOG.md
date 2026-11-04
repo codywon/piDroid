@@ -2,6 +2,18 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.6] - 2026-11-04
+
+### ⚖️ 收尾等待对齐 pi-web `rh()`：从「探一次」改成「600ms × 20s 直到 settle」
+
+- **对照对象**：pi-web `useAgentSession.ts` 的 `rh()` —— 发完指令后 `await sleep(800)`，之后**每 600ms** 探一次 agent 状态，**上限 20s**；只要某一次读到「不在跑」就立刻 `loadSession` 重读正文，20s 没结论则静默放弃。
+- **Fix**：App 的 `scheduleAgentCompletionSettle` 原来是“等 800ms 只探一次”，探不到状态或还在跑就直接返回 —— 命中「`agent_end` 之后服务端还差最后几笔落盘」的窗口时，正文就停在半路（表现为“明明又跑了几步，手机上没跟上”）。
+- **复刻内容**（新增 `data/model/AgentSettlePolicy.kt`，纯逻辑，带 JVM 单测）：
+  - 节奏：`INITIAL_DELAY_MS = 800` / `POLL_INTERVAL_MS = 600` / `TIMEOUT_MS = 20_000`，计时起点与 pi-web 一致（首等待之后）；
+  - 判据：`stateKnown && !running && !isToolExecuting && !isAutoRetrying` 才收尾；**读状态失败不当成“跑完了”**；settle 优先于 timeout；超时静默放弃。
+
+---
+
 ## [2.0.5] - 2026-11-04
 
 ### 🩹 修复会话正文截断、手动刷新不更新、退出重进才完整的缺陷
