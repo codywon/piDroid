@@ -103,6 +103,23 @@ schtasks /Query /TN "piDroid Gateway (frp)"   :: 看状态
 
 日志：`server\logs\gateway.log`（超过 5 MB 时轮转为 `.log.1`）。
 
+### 僵尸 SSE 看门狗（App 一直转圈的常见原因）
+
+`/api/agent/<id>/events` 是长连接，手机熄屏 / 切 4G / 进 Doze 后会变成**半开连接**：
+对端已经不读了，但服务端收不到 FIN。此时网关往客户端的写缓冲被反压，pi-web 的事件队列
+就会一路涨（实测涨到 2277 KB、丢掉 26725 条可重建增量之后 Next.js 直接退出）。
+
+因此 `gateway.js` 给每条 SSE 挂了空闲看门狗：**3 个心跳周期（3 × 30s = 90s）没收到任何字节**
+就判定没有消费者，同时销毁上下游（只断一侧会留下另一半继续排队）。日志里是：
+
+```
+[SSE] 90s 内没有收到任何事件（连心跳也没到），判定为僵尸长连接并主动断开，避免 pi-web 继续往队列里堆事件: GET /api/agent/.../events
+```
+
+健康的长连接不会被误杀：心跳 30s 一条，实测 120s 的空闲会话 `maxGap` 只有 30s。
+阈值写成心跳的倍数（`SSE_HEARTBEAT_MS * 3`），与 App 侧 `PiSseClient.EVENT_HEARTBEAT_MS` 同口径；
+单测在 `server/test/gateway-sse.test.mjs`（`node --test`，不启服务）。
+
 ### 升级 pi-web
 
 双击 `server\update-piweb.bat`（Linux：`./server/update-piweb.sh`）。
