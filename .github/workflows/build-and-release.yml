@@ -185,7 +185,10 @@ jobs:
           name: "πDroid ${{ steps.prepare_apk.outputs.version }}"
           draft: false
           prerelease: false
-          generate_release_notes: true
+          # 2.0.0 起 Releases 历史已清空（不再保留 1.x 的 tag），自动生成对比日志
+          # 没有基线可用、只会在 body 里多加一段无意义的 Full Changelog。
+          # 说明文本统一以 CHANGELOG.md 为准，这里关掉以免首次发布多一个失败面。
+          generate_release_notes: false
           # 重跑发布时覆盖 assets，避免 "already_exists" 失败
           overwrite_files: true
           files: |
