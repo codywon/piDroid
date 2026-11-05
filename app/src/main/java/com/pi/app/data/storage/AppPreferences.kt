@@ -13,9 +13,17 @@ class AppPreferences(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("pidroid_prefs", Context.MODE_PRIVATE)
 
+    /**
+     * 网关地址。
+     *
+     * 写入和读取都做 `trim()`：扫码 / 复制粘贴经常带前后空格，而 OkHttp 的
+     * `Request.Builder().url(" http://…")` 会直接抛 `IllegalArgumentException: Unexpected char`，
+     * 用户看到的是一句莫名其妙“获取会话失败”，根本猜不到是空格。前期只做了
+     * `trimEnd('/')`，于是历史版本里已经存进本地的那条脏值需要 getter 兼容一下。
+     */
     var serverUrl: String
-        get() = prefs.getString(KEY_SERVER_URL, "") ?: ""
-        set(value) = prefs.edit().putString(KEY_SERVER_URL, value.trimEnd('/')).apply()
+        get() = (prefs.getString(KEY_SERVER_URL, "") ?: "").trim()
+        set(value) = prefs.edit().putString(KEY_SERVER_URL, value.trim().trimEnd('/')).apply()
 
     var authToken: String
         get() = prefs.getString(KEY_AUTH_TOKEN, "") ?: ""
@@ -443,7 +451,7 @@ class AppPreferences(context: Context) {
 
     fun saveConnection(url: String, token: String, name: String? = null) {
         prefs.edit().apply {
-            putString(KEY_SERVER_URL, url.trimEnd('/'))
+            putString(KEY_SERVER_URL, url.trim().trimEnd('/'))
             putString(KEY_AUTH_TOKEN, token.trim())
             if (!name.isNullOrBlank()) {
                 putString(KEY_DEVICE_NAME, name)

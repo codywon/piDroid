@@ -61,6 +61,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaKind
 import com.pi.app.data.model.MediaLoadPolicy
+import com.pi.app.network.AuthScope
 import com.pi.app.ui.theme.LocalAppTheme
 import com.pi.app.ui.theme.ThemePalette
 import kotlinx.coroutines.Dispatchers
@@ -124,12 +125,18 @@ private object MediaByteCache {
      */
     private val networkPermits = Semaphore(3)
 
-    /** 真正发请求取字节（受并发闸门约束）。 */
-    suspend fun fetchBytes(url: String, authToken: String): ByteArray? =
+    /** 真正发请求取字节（受并发闸门约束）。
+     *
+     * [gatewayServerUrl] 必须是用户配置的网关地址，**不能**默认空字符串：
+     * 这里会拒绝向网关以外的 host 附带 Bearer Token。原因是这个函数接收的 url 可能是
+     * Markdown 里的任意外链图片（`![](https://图床/x.png)`），而网关 Token 等于「伴侣 PC
+     * 的全权凭据」（能执行命令、读写文件）——旧实现无条件附加，任何图床都能接管用户电脑。
+     */
+    suspend fun fetchBytes(url: String, gatewayServerUrl: String, authToken: String): ByteArray? =
         networkPermits.withPermit {
             try {
                 val reqBuilder = Request.Builder().url(url).get()
-                if (authToken.isNotBlank()) {
+                if (authToken.isNotBlank() && AuthScope.shouldAttachToken(gatewayServerUrl, url)) {
                     reqBuilder.header("Authorization", "Bearer ${authToken.trim()}")
                 }
                 httpClient.newCall(reqBuilder.build()).execute().use { resp ->
@@ -309,7 +316,9 @@ suspend fun resolveMediaBytes(
     }
 
     for (url in candidateUrls.distinct()) {
-        val bytes = MediaByteCache.fetchBytes(url, gateway.authToken)
+        // 外链图片（模型输出的公网图床、README 里的远程图片）只能裸取：
+        // 是否附带 Token 由 [AuthScope] 按 host 判定，不在这里假定「都是网关」。
+        val bytes = MediaByteCache.fetchBytes(url, gateway.serverUrl, gateway.authToken)
         if (bytes != null && bytes.isNotEmpty()) {
             return@withContext deliver(bytes)
         }

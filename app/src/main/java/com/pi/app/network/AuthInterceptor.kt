@@ -22,6 +22,14 @@ class AuthInterceptor(private val prefs: AppPreferences) : Interceptor {
             return chain.proceed(originalRequest)
         }
 
+        // 只对「网关自己」附加 Token。这个 client 并不是只跑网关流量：技能市场的兜底
+        // 直连（`https://skills.sh/api/search`）用的就是它。无条件附加等于把伴侣 PC 的
+        // 全权凭据交给第三方；而且外站的 401 还会被 [classify] 误判成「网关收回了密钥」，
+        // 反过来弹窗逼用户重新扫码。判定逻辑见 [AuthScope]。
+        if (!AuthScope.shouldAttachToken(prefs.serverUrl, originalRequest.url.toString())) {
+            return chain.proceed(originalRequest)
+        }
+
         val requestBuilder = originalRequest.newBuilder()
             .header("Authorization", "Bearer $token")
 
@@ -34,6 +42,9 @@ class AuthInterceptor(private val prefs: AppPreferences) : Interceptor {
      * 只做一件事：把「网关拒绝了我们存的 Token」这个事实交给 [AuthRejectionSignal]，
      * 让轮询能停下、界面能提示重新扫码（此前这类 401 被各条轮询静默吞掉，
      * 网关日志却满屏都是）。
+     *
+     * 调用方必须保证这条响应**来自网关本身**（见 [AuthScope]）；外站返回的 401
+     * 说明不了本机密钥是否有效，拿它置位会让正在用的会话被莫名停掉。
      */
     private fun classify(response: Response, usedStoredToken: Boolean): Response {
         AuthRejectionSignal.apply(

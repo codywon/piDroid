@@ -109,6 +109,17 @@ class MainActivity : ComponentActivity() {
     private var pendingTargetSessionId: String? = null
     private var lastFinishedTaskTitle: String? = null
 
+    /**
+     * 一条来自外部页面的 `pidroid://connect` 连接请求，等待用户确认。
+     *
+     * 这个 scheme 在清单里是 `BROWSABLE` 的（微信/浏览器/任意网页都能唤起），
+     * 所以“收到链接”与“改变网关配置”之间必须隔着一次用户确认：
+     * 换绑会把之后所有指令发往链接里给的地址，是不可逆的方向性变更。
+     */
+    private data class PendingConnectLink(val url: String, val token: String, val name: String)
+
+    private var pendingConnectLink by mutableStateOf<PendingConnectLink?>(null)
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -281,18 +292,19 @@ class MainActivity : ComponentActivity() {
     private fun handleDeepLink(intent: Intent?) {
         val data = intent?.data ?: return
         if (data.scheme == "pidroid" && data.host == "connect") {
-            val url = data.getQueryParameter("url") ?: return
-            val token = data.getQueryParameter("token") ?: ""
-            val name = data.getQueryParameter("name") ?: "Remote PC"
-            lifecycleScope.launch {
-                apiClient.ping(url, token).onSuccess {
-                    prefs.saveConnection(url, token, name)
-                    syncPersistentForegroundService(isBusy = false, project = "默认工作区")
-                    Toast.makeText(this@MainActivity, "已绑定设备：$name", Toast.LENGTH_SHORT).show()
-                }.onFailure {
-                    Toast.makeText(this@MainActivity, connectErrorMessage(it), Toast.LENGTH_LONG).show()
-                }
+            val url = data.getQueryParameter("url")?.trim() ?: return
+            val token = data.getQueryParameter("token")?.trim() ?: ""
+            val name = data.getQueryParameter("name")?.trim()?.ifBlank { null } ?: "Remote PC"
+            if (!url.startsWith("http://") && !url.startsWith("https://")) {
+                Toast.makeText(this, "连接链接无效：地址必须是 http(s)", Toast.LENGTH_LONG).show()
+                return
             }
+            // 只挂起，**不落盘**：等用户在确认弹窗里看清目标 host 再决定（见 MainAppNav 里的
+            // ConnectLinkConfirmDialog → connectToServer）。旧实现在 ping 通后直接 saveConnection，
+            // 任何网页都能不提一句就把用户换绑到攻击者服务器。
+            val current = pendingConnectLink
+            if (current != null && current.url == url && current.token == token) return
+            pendingConnectLink = PendingConnectLink(url = url, token = token, name = name)
         }
     }
 
@@ -2367,6 +2379,20 @@ class MainActivity : ComponentActivity() {
                     connectToServer(url, token, name)
                 },
                 onDismiss = { showManualConfigDialog = false }
+            )
+        }
+
+        // 外部 `pidroid://connect` 链接的落地确认。与扫码/手动配置共用 connectToServer
+        // （ping 通才落盘），区别只多这一道确认：扫码是用户自己扫的，链接是别人递过来的。
+        pendingConnectLink?.let { link ->
+            com.pi.app.ui.settings.ConnectLinkConfirmDialog(
+                targetName = link.name,
+                targetUrl = link.url,
+                onConfirm = {
+                    pendingConnectLink = null
+                    connectToServer(link.url, link.token, link.name)
+                },
+                onDismiss = { pendingConnectLink = null }
             )
         }
 

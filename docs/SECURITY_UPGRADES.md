@@ -27,6 +27,8 @@
 | 401 机器可读 | 网关 401 固定带 `WWW-Authenticate: Bearer realm="pi-gateway", error="invalid_token"` 与响应体 `{"code":"TOKEN_INVALID"}`；App 只认这个标记才判「密钥失效」——pi-web 自己的 `401 Invalid API key`（模型 Key 填错）不参与判定 |
 | 401 日志节流 | 只节流「压根没带 token」的（公网扫描器，3s 一条）；**带了 token 却不匹配的永远记**，避免扫描器刷屏时把轮换 Token 后 App 的失败记录挤掉 |
 | 文件接口路径边界 | Token 等价于本机权限，所以网关自己的文件接口再做一层限制：`/api/skills/content` 读写只接受 realpath 落在技能库（`~/.pi/agent/skills`、`<cwd>/.pi/skills`、`.claude/skills`）或带 `skills` 目录段的 `.md`；`/api/files/raw` 必须是会话 cwd（无 cwd 时为主目录）内的图片/PDF；`/api/cwd/browse` 只创建绝对路径、子目录名单段。单测见 `server/test/gateway-paths.test.mjs` |
+| 客户端只对网关附带 Token | 网关之外的 host **一律不带** `Authorization`。唯一判定点是 `AuthScope.shouldAttachToken(scheme+host+port 全等)`，拦截器与媒体加载器共用；单测 `AuthScopeTest`（纯 JVM）。堵的是两条真实泄密面：① 技能市场兜底直连 `https://skills.sh/api/search` 复用带拦截器的 client；② Markdown 外链图片（`![](https://图床/x.png)`）进视口即自动请求，旧实现会把 Token 发给任意图床。附带修掉一个误判：外站的 401 不再被当成「网关收回了密钥」 |
+| 换绑必须用户确认 | `pidroid://connect` 是 `BROWSABLE` 的（任何网页都能唤起），旧实现 ping 通就 `saveConnection`，等于一个陌生页面可以把用户**静默**换绑到攻击者服务器。现在只挂起请求，必须经 `ConnectLinkConfirmDialog` 展示完整 host 并用户手动确认，之后才走与扫码/手动配置相同的 `connectToServer`（ping 成功才落盘） |
 
 **核心事实**：Token 等价于本机命令行权限（pi-web 能执行 shell、读写任意文件），
 所以它必须按 SSH 私钥对待。当前没有第二因子。
@@ -57,6 +59,8 @@
 
 - 使用者：**只有自己的手机**，国内网络；
 - 现实风险：二维码/截图/终端回滚/日志导致 Token 外泄 → 单点失守；
+  以及 **App 自己把 Token 发给第三方**（上面「客户端只对网关附带 Token」那一行）——
+  这条比“二维码被截图”更隐蔽，因为它不需要用户做错任何事；
 - 非风险：公网扫描、暴力破解（128 bit 不可猜，且扫描器只拿到 401）。
 
 ---
