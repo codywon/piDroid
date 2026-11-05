@@ -56,6 +56,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.semantics.contentDescription
@@ -1702,13 +1703,20 @@ fun ChatScreen(
                             }
                         }
                         // 1. 圆圈 + 压缩 / 停止压缩按钮
-                        // 对齐 pi-web：同一位置在压缩中变成红色「停止压缩」
-                        // （`{type:"abort_compaction"}`），而不是把按钮置灰。
-                        // 压缩请求本身没有客户端超时（pi-web 就是裸 fetch），卡住时的逃生口就是这个按钮。
+                        // 对齐 pi-web：同一位置在压缩中变成「停止压缩」（`{type:"abort_compaction"}`），
+                        // 而不是把按钮置灰 —— 压缩请求本身没有客户端超时（pi-web 就是裸 fetch），
+                        // 卡住时的逃生口就是这个按钮，所以压缩中它必须仍然可点。
+                        //
+                        // 形态：压缩图标 + 一道斜杠（「不可用 / 取消」的通用语义）。
+                        // 不再用 pi-web 那个「红底白方块」：输入框右侧的「停止本轮」就是红底白方块，
+                        // 压缩时两个按钮必然同时出现，同形会被读成「重复渲染」的 bug。
                         Surface(
                             shape = CircleShape,
-                            color = if (isCompacting) MaterialTheme.colorScheme.error else theme.surfaceContainer,
-                            border = BorderStroke(1.dp, if (isCompacting) MaterialTheme.colorScheme.error else theme.outline),
+                            color = theme.surfaceContainer,
+                            border = BorderStroke(
+                                1.dp,
+                                if (isCompacting) MaterialTheme.colorScheme.error else theme.outline
+                            ),
                             modifier = Modifier
                                 .size(28.dp)
                                 .clickable {
@@ -1716,18 +1724,22 @@ fun ChatScreen(
                                 }
                         ) {
                             Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.Compress,
+                                    contentDescription = if (isCompacting) "停止压缩" else "压缩上下文",
+                                    modifier = Modifier.size(14.dp),
+                                    tint = if (isCompacting) MaterialTheme.colorScheme.error else theme.textSecondary
+                                )
                                 if (isCompacting) {
+                                    // 斜杠压在图标上（左下 → 右上），与输入框的实心停止键区分开
                                     Box(
                                         modifier = Modifier
-                                            .size(9.dp)
-                                            .background(Color.White, RoundedCornerShape(1.5.dp))
-                                    )
-                                } else {
-                                    Icon(
-                                        Icons.Default.Compress,
-                                        contentDescription = "压缩上下文",
-                                        modifier = Modifier.size(14.dp),
-                                        tint = theme.textSecondary
+                                            .size(width = 17.dp, height = 1.6.dp)
+                                            .rotate(-45f)
+                                            .background(
+                                                MaterialTheme.colorScheme.error,
+                                                RoundedCornerShape(1.dp)
+                                            )
                                     )
                                 }
                             }

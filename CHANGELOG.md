@@ -19,6 +19,12 @@ java.lang.IllegalArgumentException: Key "hist_<sessionId>_78_agent" was already 
 - **防御层**：新增 `SessionSnapshotMerge.ensureUniqueIds()`（纯 JVM，幂等）。React 里重复 key 只是 console warning，`LazyColumn` 是进程级崩溃，所以这一处必须比上游更严格：快照 `synced`、对账结果、翻页页 prepend 三个写回点各兜一道；重复时**只改 id 不裁内容**（确定性 `dup<n>_` 前缀），宁可多显示一条也不静默吞掉用户可见内容。
 - **单测**：新增 `HistoryItemKeysTest`（6 例）——同一条目跨窗口 key 不变、旧下标规则确实会给同一条消息两个 id（根因钉死）、同 entry 的正文/工具卡互不撞 key、跨会话不撞、entryId 缺失时锚点确定、窗口前移后对账结果无重复 key；`SessionSnapshotMergeTest` 增补 4 例覆盖 `ensureUniqueIds` 的幂等、内容不裁剪与后缀顺延。
 
+### 🛑 压缩中不再显示第二个「红底白方块」：改成压缩图标 + 斜杠
+
+- **现象**：压缩中屏幕上同时出现两个一模一样的红底白方块（chips 行一个、输入框右侧一个），会被读成「重复渲染」的 bug。
+- **真相**：两者语义不同（`abort_compaction` vs `abort`），pi-web 也是两个按钮，但它用形态区分：压缩键 `title=stopCompaction` 是小方块图标按钮，`stopAgent` 是带文字的红色按钮。App 把两个都画成了红底白方块。
+- **Fix**：压缩中的压缩键改为「压缩图标 + 一道斜杠」（红描边、红图标，背景戻回常规容器色），斜杠即「取消/不可用」的通用语义；`contentDescription` 随之变成「停止压缩」。**行为不变**：仍然可点、仍然发 `abort_compaction` —— 压缩请求没有客户端超时，卡住时的逃生口就是它，不能真的禁用。输入框右侧的停止键保持实心红圆，两者一眼可分。
+
 
 ## [2.0.8] - 2026-11-05
 
