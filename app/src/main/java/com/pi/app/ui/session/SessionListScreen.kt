@@ -39,16 +39,12 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.withStyle
-import com.pi.app.data.model.SessionStatsFormatting
-import com.pi.app.data.model.SessionStatsSummary
+import com.pi.app.data.model.SessionTimeFormatting
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -75,7 +71,8 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.pi.app.data.model.PINNED_WORKSPACE_KEY
-import com.pi.app.data.model.resolveInitialWorkspaceSelection
+import com.pi.app.data.model.WorkspaceSelectionDecision
+import com.pi.app.data.model.decideWorkspaceSelection
 import kotlin.math.abs
 
 private enum class SessionStatusFilter {
@@ -139,6 +136,14 @@ fun SessionListScreen(
     /** 工作区选中变更回调（供上层同步状态并持久化落盘） */
     onWorkspaceSelected: (String) -> Unit = {},
     isLoading: Boolean,
+    /**
+     * 首份**完整**会话快照是否已到达（由上层在 `/api/sessions` 成功回包后置位）。
+     *
+     * ⚠️ 不能用 [isLoading] 代替：冷启动走的是静默拉取（`loadSessions(silent = true)`），
+     * 那条路径不会置位 `isLoading`，于是首帧就会拿「只有离线自定义目录」的半成品列表
+     * 去判「上次停留的工作区是否已失效」，把选区钉在第一个自定义项目（历史 termius 事故）。
+     */
+    isInitialSnapshotReady: Boolean = true,
     pinnedSessionIds: Set<String> = emptySet(),
     archivedSessionIds: Set<String> = emptySet(),
     customTitles: Map<String, String> = emptyMap(),
@@ -173,7 +178,6 @@ fun SessionListScreen(
     onRenameSession: (sessionId: String, newTitle: String) -> Unit = { _, _ -> },
     onForkSession: (Session) -> Unit = {},
     onDeleteSession: (String) -> Unit = {},
-    sessionStatsMap: Map<String, SessionStatsSummary> = emptyMap(),
     onExportSession: (Session) -> Unit = {},
     onManageWorktrees: (workspacePath: String) -> Unit = {},
     onRefresh: () -> Unit,
@@ -319,43 +323,41 @@ fun SessionListScreen(
         onWorkspaceSelected(targetPath)
     }
 
-    LaunchedEffect(initialWorkspacePath, sortedWorkspaces, isLoading, sessions.isEmpty()) {
-        // 🧷 对标 pi-web 的 0 !== sessions.length 门禁：
-        // 初始网络拉取在途期间（isLoading && sessions.isEmpty()），绝对不能拿只有离线 customWorkspaces 的半成品列表做有效性判决，
-        // 否则必定误判上次工作区“已失效”并把选区错误洗回首项！
-        if (isLoading && sessions.isEmpty()) return@LaunchedEffect
-
-        val sortedPaths = sortedWorkspaces.map { it.path }
-        val hint = initialWorkspacePath
-        val hintUsable = hint.isNotBlank() &&
-            (hint == PINNED_WORKSPACE_KEY || sortedPaths.any { WorkspacePaths.samePath(it, hint) })
-        if (hintUsable) {
-            val resolved = if (hint == PINNED_WORKSPACE_KEY) {
-                hint
-            } else {
-                sortedPaths.firstOrNull { WorkspacePaths.samePath(it, hint) } ?: hint
-            }
-            if (hint != appliedWorkspaceHint) {
+    LaunchedEffect(
+        initialWorkspacePath,
+        sortedWorkspaces,
+        isLoading,
+        sessions.isEmpty(),
+        isInitialSnapshotReady
+    ) {
+        // 规则本体抽到纯函数里（[decideWorkspaceSelection]），便于用单测钉住：
+        // 首帧数据未就绪时 Defer，绝不拿半成品列表判「上次选区已失效」。
+        // 对标 pi-web 的 `0 !== sessions.length` 门禁，但判据换成「首份完整快照是否到达」——
+        // 静默拉取下 isLoading 恒为 false，用它当门禁等于没门禁。
+        when (
+            val decision = decideWorkspaceSelection(
+                currentSelection = selectedWorkspacePath,
+                hint = initialWorkspacePath,
+                sortedWorkspacePaths = sortedWorkspaces.map { it.path },
+                hintAlreadyApplied = appliedWorkspaceHint == initialWorkspacePath,
+                dataReady = isInitialSnapshotReady && !(isLoading && sessions.isEmpty())
+            )
+        ) {
+            is WorkspaceSelectionDecision.ApplyHint -> {
                 // 提示只应用一次（初次注入或切会话返回时变），之后不抢用户在抽屉手动切换的工作区
-                appliedWorkspaceHint = hint
-                if (selectedWorkspacePath != resolved) {
-                    selectedWorkspacePath = resolved
+                appliedWorkspaceHint = initialWorkspacePath
+                if (selectedWorkspacePath != decision.path) {
+                    selectedWorkspacePath = decision.path
                 }
             }
-        } else if (selectedWorkspacePath.isBlank() ||
-            (selectedWorkspacePath != PINNED_WORKSPACE_KEY &&
-                sortedPaths.isNotEmpty() &&
-                sortedPaths.none { WorkspacePaths.samePath(it, selectedWorkspacePath) })
-        ) {
-            val resolved = resolveInitialWorkspaceSelection(
-                preferredPath = selectedWorkspacePath.ifBlank { hint },
-                sortedWorkspacePaths = sortedPaths
-            )
             // 🧷 铁律：系统被动兜底只更新当前的临时 UI 选区指针，绝不反向调用 onWorkspaceSelected 改写用户的持久化磁盘！
             // 只有用户在抽屉/菜单中主动点击切换，才允许调用 onWorkspaceSelected 写盘。
-            if (resolved.isNotBlank() && selectedWorkspacePath != resolved) {
-                selectedWorkspacePath = resolved
+            is WorkspaceSelectionDecision.Fallback -> {
+                if (selectedWorkspacePath != decision.path) {
+                    selectedWorkspacePath = decision.path
+                }
             }
+            is WorkspaceSelectionDecision.Defer, is WorkspaceSelectionDecision.Keep -> Unit
         }
     }
 
@@ -1278,9 +1280,8 @@ fun SessionListScreen(
                                 }
                             }
                         }
-                        IconButton(onClick = onScanClick) {
-                            Icon(Icons.Default.QrCodeScanner, contentDescription = "扫码配对", tint = theme.primary)
-                        }
+                        // 扫码配对入口不放顶栏：未连接时有横幅主按钮、已连接后由「系统设置中心」
+                        // 的配对入口承担，顶栏留白避免误触。
                         IconButton(onClick = onSettingsClick) {
                             Icon(Icons.Default.Settings, contentDescription = "系统设置中心", tint = theme.textPrimary)
                         }
@@ -1675,7 +1676,6 @@ fun SessionListScreen(
                                     onToggleArchive = { onToggleArchiveSession(session.id) },
                                     onToggleUnread = { onToggleUnreadSession(session.id) },
                                     onDelete = { deletingSession = session },
-                                    stats = sessionStatsMap[session.id],
                                     onExport = { onExportSession(session) },
                                     onClick = { onSessionClick(session) }
                                 )
@@ -1742,7 +1742,6 @@ fun SessionListScreen(
                                             onToggleArchive = { onToggleArchiveSession(session.id) },
                                             onToggleUnread = { onToggleUnreadSession(session.id) },
                                             onDelete = { deletingSession = session },
-                                            stats = sessionStatsMap[session.id],
                                             onExport = { onExportSession(session) },
                                             onClick = { onSessionClick(session) }
                                         )
@@ -1949,7 +1948,7 @@ fun SessionListScreen(
                 val olderSessions = remember(projectSessions, weekAgo) {
                     projectSessions.filter { s ->
                         if (s.isLive || prefs.isSessionArchived(s.id)) return@filter false
-                        val t = parseSessionTimeMillis(s.modified ?: s.created)
+                        val t = SessionTimeFormatting.parseMillis(s.modified ?: s.created)
                         t in 1..<weekAgo
                     }
                 }
@@ -2732,7 +2731,10 @@ private fun FilterPill(
  * 对标 pi-web SessionTree.tsx 的任务行卡片：
  * - 正在运行 (`session.isLive`)：左侧动态旋转圆弧 `PiWebRunningSpinner` + 右侧绿色 `运行中` 徽章 + 翠绿高亮边框
  * - 等待输入 (`session.awaitingInput`)：左侧琥珀色脉冲圆点 + 右侧 `等待确认` 徽章
- * - 已完成 (`!session.isLive`)：左侧已完成打勾图标 (`CheckCircle`) + 消息条数统计 + 格式化时间
+ * - 已完成 (`!session.isLive`)：左侧已完成打勾图标 (`CheckCircle`) + 右侧相对时间
+ *   （置顶区里改为显示它所属的项目名，与 pi-web 的置顶槽位一致）
+ * - 卡片**不再**显示耗时 / token / 费用：pi-web 侧栏会话行没有这些读数，
+ *   它们来自 `POST /api/sessions/stats`（服务端按会话文件逐个解析的重活）
  * - 支持置顶与自定义上下文取名展示
  */
 @Composable
@@ -2742,7 +2744,6 @@ fun SessionCard(
     isArchived: Boolean = false,
     isUnread: Boolean = false,
     customTitle: String? = null,
-    stats: SessionStatsSummary? = null,
     onTogglePin: () -> Unit = {},
     onRename: () -> Unit = {},
     onFork: () -> Unit = {},
@@ -2755,20 +2756,10 @@ fun SessionCard(
     val theme = LocalAppTheme.current
     var showMenu by remember { mutableStateOf(false) }
     val timeRaw = session.modified ?: session.created ?: ""
-    // pi-web 的 modified 是 UTC ISO 串（如 2026-10-27T08:31:27.266Z）。
-    // 以前直接 take(16) 截字符串，手机列表显示的是 UTC 时间，看上去比 pi-web 的
-    // 本地时间「慢 8 小时」，很像没同步。这里转成本地时区再格式化。
-    val dateStr = remember(timeRaw) {
-        val millis = parseSessionTimeMillis(timeRaw)
-        if (millis > 0L) {
-            java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault())
-                .format(java.util.Date(millis))
-        } else if (timeRaw.length >= 16) {
-            timeRaw.take(16).replace("T", " ").substringAfter("-")
-        } else {
-            timeRaw
-        }
-    }
+    // 右侧槽位的相对时间：1:1 对标 pi-web `Rg()`（刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年）。
+    // 旧实现把 UTC ISO 串按本地时区格式成 "MM-dd HH:mm"，既与 pi-web 不一致，也踩过时区；
+    // 而卡片上曾经那行「耗时 · token · 费用」已整个删掉（侧栏会话行不显示统计读数）。
+    val relativeTime = remember(timeRaw) { SessionTimeFormatting.formatRelative(timeRaw) }
 
     val isRunning = session.isLive
     val isAwaiting = session.awaitingInput
@@ -2929,14 +2920,23 @@ fun SessionCard(
                             }
                         }
                         else -> {
-                            Text(
-                                text = "已完成",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontSize = 10.5.sp,
-                                maxLines = 1,
-                                softWrap = false,
-                                color = theme.textMuted
-                            )
+                            // 对齐 pi-web 的右侧槽位：置顶区显示它所属的项目名，其余显示相对时间。
+                            // （侧栏会话行只在这里放「状态 / 时间 / 项目名」，没有 token / 费用 / 耗时）
+                            val slotText = if (isPinned) session.workspaceName else relativeTime
+                            if (slotText.isNotBlank()) {
+                                Text(
+                                    text = slotText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontSize = 10.5.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    overflow = TextOverflow.Ellipsis,
+                                    color = theme.textMuted,
+                                    // 项目名可能很长（如 eldercare-agent-platform）：
+                                    // 限个宽度，否则会把左侧标题挤成 "…"
+                                    modifier = Modifier.widthIn(max = 96.dp)
+                                )
+                            }
                         }
                     }
 
@@ -3095,76 +3095,6 @@ fun SessionCard(
                     modifier = Modifier.padding(start = 22.dp)
                 )
             }
-
-            // 底部元信息行（方案 A）：最左端只有 [时钟图标 + 耗时]，右侧 token / 费用 / 时间。
-            // 以前最左端先塞 workspaceName + 条数 + 分支，右侧又按固有宽度硬排：
-            // 屏窄时左侧被压成 "…"、"p…" 这类噪点，右侧最后一段还会被卡片边缘直接裁掉。
-            // 工作区名在当前列表里本就重复（标题栏与工作区胶囊都有），条数/分支让位给指标。
-            val metaParts = SessionStatsFormatting.buildSessionMetaParts(
-                dateStr = dateStr,
-                totalActiveMs = stats?.totalActiveMs ?: session.totalActiveMs,
-                totalTokens = stats?.totalTokens ?: session.tokenUsage,
-                cost = stats?.cost ?: session.cost
-            )
-            val durationText = metaParts
-                .firstOrNull { it.kind == SessionStatsFormatting.SessionMetaKind.DURATION }
-                ?.text
-            val rightParts = metaParts.filter {
-                it.kind != SessionStatsFormatting.SessionMetaKind.DURATION
-            }
-
-            if (durationText != null || rightParts.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(5.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 22.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    if (durationText != null) {
-                        Icon(
-                            imageVector = Icons.Default.Schedule,
-                            contentDescription = null,
-                            modifier = Modifier.size(11.dp),
-                            tint = theme.textMuted
-                        )
-                        Spacer(modifier = Modifier.width(3.dp))
-                        Text(
-                            text = durationText,
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = theme.textMuted,
-                            maxLines = 1,
-                            softWrap = false
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    // 右段合成一条 AnnotatedString：整行尾部省略，不再让最后一段被裁切。
-                    Text(
-                        text = buildAnnotatedString {
-                            rightParts.forEachIndexed { index, part ->
-                                if (index > 0) append(" · ")
-                                val color = when (part.kind) {
-                                    SessionStatsFormatting.SessionMetaKind.COST ->
-                                        theme.success.copy(alpha = 0.9f)
-                                    else -> theme.textMuted
-                                }
-                                withStyle(SpanStyle(color = color)) { append(part.text) }
-                            }
-                        },
-                        fontSize = 10.5.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = theme.textMuted,
-                        maxLines = 1,
-                        softWrap = false,
-                        overflow = TextOverflow.Ellipsis,
-                        textAlign = TextAlign.End,
-                        modifier = Modifier.padding(start = 8.dp)
-                    )
-                }
-            }
         }
     }
 }
@@ -3237,23 +3167,4 @@ private fun WorkspaceMenuActionItem(
     }
 }
 
-private fun parseSessionTimeMillis(timeStr: String?): Long {
-    if (timeStr.isNullOrBlank()) return 0L
-    timeStr.toLongOrNull()?.let { return it }
-    return try {
-        java.time.Instant.parse(timeStr).toEpochMilli()
-    } catch (_: Exception) {
-        try {
-            java.time.OffsetDateTime.parse(timeStr).toInstant().toEpochMilli()
-        } catch (_: Exception) {
-            try {
-                val cleaned = timeStr.replace("T", " ").take(19)
-                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-                sdf.parse(cleaned)?.time ?: 0L
-            } catch (_: Exception) {
-                0L
-            }
-        }
-    }
-}
 

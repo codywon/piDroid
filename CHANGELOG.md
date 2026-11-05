@@ -2,6 +2,31 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.17] - 2026-11-05
+
+### ⏱️ 从会话返回工作区，右上角不再转三十多秒
+
+- **根因**：`loadSessions` 把 `POST /api/sessions/stats` 挂在转圈协程的 `finally` 之前，而这是服务端按会话文件逐个算 token / 耗时的重活 —— 本机 484 条会话分成 3 个 200 条分片，实测 20.3s + 10.1s + 0.6s ≈ **31 秒**。列表其实早就渲染完了，图标却要等统计算完才停；而「从会话返回」还走非静默刷新，所以每次都必现。
+- **修复**：转圈只覆盖 `/api/sessions` 本身，回包即复位（取消 / 失败同样走 `finally`，闸门不会卡死）；`ui-state` 降为后台附属请求；返回列表改为静默对账。
+- **完全对齐 pi-web**：核对上游客户端包后确认，该统计接口只服务于**会话家族**（`[rootSessionId, ...subagents]`，通常 1 个 id），侧栏会话行从不显示 token / 费用 / 耗时。因此本次把客户端整条链路删除：`getBatchSessionStats`、卡片的 `stats` 参数、`SessionStatsFormatting` 与对应单测一并下线。列表页从此不再发起这个请求。
+
+### 🧭 冷启动不再固定落回 termius（1.8.88 没修干净的那一半）
+
+- **根因**：1.8.88 的就绪门禁写的是 `isLoading && sessions.isEmpty()`，而冷启动走的是静默拉取（`loadSessions(silent = true)`），`isLoading` 恒为 false —— 门禁在冷启动从未生效。首帧只拿到离线自定义目录（历史上有 `D:\myscript\termius`），「上次停留的工作区」被判“已失效”，兜底把**内存选区指针**钉在 termius；之后真实数据到达也不会纠偏，因为兜底分支只在「当前指针无效」时才动手。磁盘里的记忆一直是对的，被钉死的是界面。
+- **修复**：判据换成「首份**完整**会话快照是否到达」（`sessionsSnapshotLoaded` → `isInitialSnapshotReady`），并把选区仲裁抽成纯函数 `decideWorkspaceSelection`（`Defer / Keep / ApplyHint / Fallback`）：数据未就绪一律 `Defer`，被动兜底仍然只挪内存指针、绝不回写磁盘。
+
+### 🕒 会话卡右侧改为相对时间（对齐 pi-web 右侧槽位）
+
+- 时间口径照抄上游 `Rg()`（zh-CN 单位表）：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年；置顶区按上游口径显示所属项目名。顺带消掉「UTC ISO 串按本地时区格式化」造成的“比 pi-web 慢 8 小时”类时区问题。
+- 卡片底部那行「耗时 · token · 费用」整行移除（上游侧栏会话行没有这些读数，实测它们才是那 31 秒的来源）。
+- 顶栏移除扫码图标（未连接时已有横幅主按钮、已连接后由「系统设置中心」承担），避免列表页误触。
+
+### 🧪 测试
+
+- 新增 `SessionTimeFormattingTest`：相对时间全部分档边界、未来时间归「刚刚」、非法输入空串、UTC ISO 不漂移。
+- `WorkspacePathsTest` 新增 7 条选区仲裁回归用例，第一条即「首帧只有 termius 时必须 Defer，不得钉死」。
+- 移除 `SessionStatsFormattingTest`（功能整体下线，不是改断言迁就实现）。
+
 ## [2.0.16] - 2026-11-05
 
 ### 📄 PDF 双指缩放极度卡顿修复：手势协程稳定化 + Draw 阶段零重组

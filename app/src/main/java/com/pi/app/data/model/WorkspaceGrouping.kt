@@ -163,3 +163,82 @@ fun resolveInitialWorkspaceSelection(
     return matched ?: sortedWorkspacePaths.firstOrNull().orEmpty()
 }
 
+/**
+ * 首帧 / 切会话返回时「该显示哪个工作区」的判决结果。
+ *
+ * 拆成显式类型是为了让这条规则**可以被单测钉住**：它涉及的几个变量（上次选区、当前指针、
+ * 数据是否就绪）此前散落在 `LaunchedEffect` 的 if/else 里，改一句就可能把冷启动重新
+ * 推回「永远落到第一个自定义工作区（历史 termius）」的老毛病。
+ */
+sealed interface WorkspaceSelectionDecision {
+    /** 首份**完整**会话快照还没到：保持现状，绝不拿半成品列表判决。 */
+    data object Defer : WorkspaceSelectionDecision
+
+    /** 保持当前指针（hint 已应用过 / 当前指针仍然有效）。 */
+    data object Keep : WorkspaceSelectionDecision
+
+    /** 应用「上次停留的工作区」提示，并把它记为已应用。 */
+    data class ApplyHint(val path: String) : WorkspaceSelectionDecision
+
+    /** 被动兜底：只移动内存里的选区指针，绝不回写磁盘。 */
+    data class Fallback(val path: String) : WorkspaceSelectionDecision
+}
+
+/**
+ * 工作区选区仲裁（纯函数）。
+ *
+ * 历史故障（1.8.88 只修掉了一半）：冷启动首帧 `sessions` 还在网络在途中，而离线自定义目录
+ * （用户曾通过浏览添加过 `D:\myscript\termius`）已经同步加载，于是列表里只有 `["termius"]`，
+ * 「上次停留的工作区」被误判成「已被物理删除」→ 兜底取首项 → 指针被钉在 termius。
+ * 1.8.88 拿掉了「兜底反写磁盘」，但那次加的 `if (isLoading && sessions.isEmpty()) return` 门禁
+ * 对冷启动**无效**：冷启动走的是静默拉取（`loadSessions(silent = true)`），`isLoading` 恒为 false。
+ * 一旦指针被钉在 termius，后续真数据到达也不会纠偏（兜底分支只在「当前指针无效」时才动手），
+ * 于是每次重新进入 App 都停在 termius —— 这正是 [dataReady] 参数存在的原因。
+ *
+ * @param currentSelection 当前内存里的选区指针（`selectedWorkspacePath`）
+ * @param hint 上次停留的工作区（磁盘持久化值，冷启动时注入）
+ * @param sortedWorkspacePaths 当前已知的工作区（抽屉展示顺序）
+ * @param hintAlreadyApplied 本次组合实例里 hint 是否已经应用过（应用后不抢用户手动切换）
+ * @param dataReady 首份**完整**会话快照是否已到达（不是「有没有请求在飞」）
+ */
+fun decideWorkspaceSelection(
+    currentSelection: String?,
+    hint: String?,
+    sortedWorkspacePaths: List<String>,
+    hintAlreadyApplied: Boolean,
+    dataReady: Boolean
+): WorkspaceSelectionDecision {
+    if (!dataReady) return WorkspaceSelectionDecision.Defer
+
+    val current = currentSelection?.trim().orEmpty()
+    val target = hint?.trim().orEmpty()
+    val hintUsable = target.isNotBlank() &&
+        (target == PINNED_WORKSPACE_KEY || sortedWorkspacePaths.any { WorkspacePaths.samePath(it, target) })
+
+    if (hintUsable) {
+        if (hintAlreadyApplied) return WorkspaceSelectionDecision.Keep
+        // 回到上次的工作区时用列表里真实的那份写法（可能与会话快照里的写法差个分隔符）
+        val resolved = if (target == PINNED_WORKSPACE_KEY) {
+            target
+        } else {
+            sortedWorkspacePaths.firstOrNull { WorkspacePaths.samePath(it, target) } ?: target
+        }
+        return WorkspaceSelectionDecision.ApplyHint(resolved)
+    }
+
+    // hint 已不可用（目录被删/改名，或磁盘里就没有记忆）：只有当前指针也失效时才被动兜底。
+    val currentUsable = current.isNotBlank() &&
+        (current == PINNED_WORKSPACE_KEY || sortedWorkspacePaths.any { WorkspacePaths.samePath(it, current) })
+    if (currentUsable) return WorkspaceSelectionDecision.Keep
+
+    val fallback = resolveInitialWorkspaceSelection(
+        preferredPath = current.ifBlank { target },
+        sortedWorkspacePaths = sortedWorkspacePaths
+    )
+    return if (fallback.isBlank()) {
+        WorkspaceSelectionDecision.Keep
+    } else {
+        WorkspaceSelectionDecision.Fallback(fallback)
+    }
+}
+

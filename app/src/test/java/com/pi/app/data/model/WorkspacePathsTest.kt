@@ -189,6 +189,101 @@ class WorkspacePathsTest {
         assertEquals(PINNED_WORKSPACE_KEY, resolveInitialWorkspaceSelection(PINNED_WORKSPACE_KEY, emptyList()))
     }
 
+    // ---- 冷启动 / 返回列表的工作区选区仲裁（回归：每次重进 App 都落到 termius）----
+
+    /**
+     * 线上故障：冷启动首帧只有离线自定义目录（用户曾浏览添加过 `termius`），
+     * 上面那句 `if (isLoading && sessions.isEmpty()) return` 门禁又对静默拉取无效，
+     * 于是「上次停留的工作区」被误判为已失效，选区被钉到 termius。
+     */
+    @Test
+    fun `workspace arbitration defers until the first full snapshot arrives`() {
+        val decision = decideWorkspaceSelection(
+            currentSelection = "D:/myscript/pi-app",
+            hint = "D:/myscript/pi-app",
+            // 首帧只有离线自定义目录
+            sortedWorkspacePaths = listOf("D:/myscript/termius"),
+            hintAlreadyApplied = false,
+            dataReady = false
+        )
+        assertEquals(WorkspaceSelectionDecision.Defer, decision)
+    }
+
+    @Test
+    fun `workspace arbitration applies the remembered workspace in the list spelling`() {
+        val list = listOf("D:/myscript/pi-app", "D:/myscript/termius")
+        val decision = decideWorkspaceSelection(
+            currentSelection = "D:/myscript/termius",
+            hint = "d:\\myscript\\pi-app",
+            sortedWorkspacePaths = list,
+            hintAlreadyApplied = false,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.ApplyHint("D:/myscript/pi-app"), decision)
+    }
+
+    @Test
+    fun `workspace arbitration keeps the pinned zone hint`() {
+        val decision = decideWorkspaceSelection(
+            currentSelection = "",
+            hint = PINNED_WORKSPACE_KEY,
+            sortedWorkspacePaths = listOf("D:/myscript/pi-app"),
+            hintAlreadyApplied = false,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.ApplyHint(PINNED_WORKSPACE_KEY), decision)
+    }
+
+    @Test
+    fun `workspace arbitration does not fight a manual switch after the hint was applied`() {
+        val decision = decideWorkspaceSelection(
+            currentSelection = "D:/myscript/termius",
+            hint = "D:/myscript/pi-app",
+            sortedWorkspacePaths = listOf("D:/myscript/pi-app", "D:/myscript/termius"),
+            hintAlreadyApplied = true,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.Keep, decision)
+    }
+
+    @Test
+    fun `workspace arbitration falls back only when the remembered workspace is really gone`() {
+        val list = listOf("D:/myscript/pi-app", "D:/myscript/termius")
+        val decision = decideWorkspaceSelection(
+            currentSelection = "D:/myscript/deleted-project",
+            hint = "D:/myscript/deleted-project",
+            sortedWorkspacePaths = list,
+            hintAlreadyApplied = false,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.Fallback("D:/myscript/pi-app"), decision)
+    }
+
+    @Test
+    fun `workspace arbitration keeps a selection the data has confirmed`() {
+        val decision = decideWorkspaceSelection(
+            // 没有持久化记忆（例如刚断开重连后清过本地配置）
+            currentSelection = "D:/myscript/termius",
+            hint = "",
+            sortedWorkspacePaths = listOf("D:/myscript/pi-app", "D:/myscript/termius"),
+            hintAlreadyApplied = false,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.Keep, decision)
+    }
+
+    @Test
+    fun `workspace arbitration keeps the selection when nothing is known yet`() {
+        val decision = decideWorkspaceSelection(
+            currentSelection = "",
+            hint = "",
+            sortedWorkspacePaths = emptyList(),
+            hintAlreadyApplied = false,
+            dataReady = true
+        )
+        assertEquals(WorkspaceSelectionDecision.Keep, decision)
+    }
+
     @Test
     fun `workspaces comparator prioritizes latest modified over session count (align with pi-web)`() {
         val oldProjectManySessions = WorkspaceInfo(

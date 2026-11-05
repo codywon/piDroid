@@ -355,6 +355,10 @@ class MainActivity : ComponentActivity() {
         // 最近一次打开/创建的会话所属工作区：返回列表时用它定位工作区，冷启动优先读取持久化值
         var lastOpenedWorkspacePath by rememberSaveable { mutableStateOf(prefs.lastSelectedWorkspacePath.ifBlank { prefs.lastSelectedCwd }) }
         var isLoadingSessions by remember { mutableStateOf(false) }
+        // 首份**完整**会话快照是否已到达（不是「有没有请求在飞」）。
+        // 工作区初值仲裁必须等它：冷启动走静默拉取，isLoading 不会置位，
+        // 拿「只有离线自定义目录」的半成品列表判「上次工作区已失效」就会钉到历史 termius。
+        var sessionsSnapshotLoaded by remember { mutableStateOf(false) }
         // 全量会话列表（实测 300–400KB）的并发闸门：巡检、返回列表、手动刷新会同时触发，
         // 以前允许 2–3 条同时在飞，直接把手机带宽与隧道占满 —— 表现就是「右上角一直转圈」。
         var sessionFetchInFlight by remember { mutableStateOf(false) }
@@ -429,7 +433,6 @@ class MainActivity : ComponentActivity() {
         var skillsLoadError by remember { mutableStateOf<String?>(null) }
         var pluginsLoadError by remember { mutableStateOf<String?>(null) }
         var modelsLoadError by remember { mutableStateOf<String?>(null) }
-        var sessionStatsMap by remember { mutableStateOf<Map<String, SessionStatsSummary>>(emptyMap()) }
         var currentCompactionRecords by remember { mutableStateOf<List<CompactionRecord>>(emptyList()) }
         var currentBranchTreeNodes by remember { mutableStateOf<List<BranchTreeNode>>(emptyList()) }
         var currentActiveLeafId by remember { mutableStateOf<String?>(null) }
@@ -662,6 +665,19 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /**
+         * 全量会话列表的唯一入口。
+         *
+         * **右上角的转圈（[isLoadingSessions]）只覆盖「会话列表」本身**：列表一到手就停转，
+         * 置顶/归档（`ui-state`）是该列表的附属数据，放到后台补，不再占着「正在同步」的指示。
+         *
+         * 历史上这里还串行等过一个 `POST /api/sessions/stats`：它按会话文件逐个算 token / 耗时，
+         * 本机 484 条会话分 3 个分片实测 20.3s + 10.1s + 0.6s ≈ **31 秒**，而它只被放在
+         * `finally` 之前，于是每次从会话返回列表，那圈都要转三十多秒（列表早就画完了）。
+         * 现在整条链路已删掉：按「完全对齐 pi-web」的结论，这个接口只服务于**会话家族**
+         * （`[rootSessionId, ...subagents]`，通常 1 个 id），侧栏会话行从不显示
+         * token / 费用 / 耗时 —— 我们拿它给 484 张卡片取数据属于自创需求，一并移除。
+         */
         fun loadSessions(silent: Boolean = false) {
             if (!prefs.isConfigured) return
             if (sessionFetchInFlight) {
@@ -673,72 +689,86 @@ class MainActivity : ComponentActivity() {
             sessionFetchInFlight = true
             if (!silent) isLoadingSessions = true
             lifecycleScope.launch {
+                var snapshot: List<Session>? = null
+                var failure: Throwable? = null
                 try {
-                    apiClient.getSessions().onSuccess {
-                        sessions = it
-                        cachedSessions = it
-                        pinnedSessionIds = prefs.getPinnedSessionIds()
-                        // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
-                        // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
-                        apiClient.getSessionUiState().onSuccess { ui ->
-                            val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
-                            val archived = ui.sessionFlags.filterValues { it.archived }.keys
-                            pinnedSessionIds = pinned
-                            archivedSessionIds = archived
-                            prefs.setPinnedSessionIds(pinned)
-                            prefs.setArchivedSessionIds(archived)
-                            // 项目（工作区）置顶与排序同样以 PC 为准
-                            serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
-                            serverWorkspaceOrder = ui.projectOrder
-                        }
-                        // 清理已在服务端彻底删除的会话的本地未读残留（与 pi-web unreadEligibleIds 一致）
-                        val currentIds = it.map { s -> s.id }.toSet()
-                        val validUnread = SessionUnreadState.prune(unreadSessionIds, currentIds)
-                        if (validUnread.size != unreadSessionIds.size) {
-                            unreadSessionIds = validUnread
-                            prefs.setUnreadSessionIds(validUnread)
-                        }
-                        customTitles = it.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
-                        val sessionIds = it.map { s -> s.id }
-                        if (sessionIds.isNotEmpty()) {
-                            apiClient.getBatchSessionStats(sessionIds).onSuccess { sMap ->
-                                sessionStatsMap = sMap
-                            }
-                        }
-                        isGatewayOnline = true
-                        syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
-                    }.onFailure { err ->
-                        isGatewayOnline = false
-                        // 隧道重连的那一两秒里，一轮请求会同时失败；原文案（“timeout”/“404”）
-                        // 既看不懂也看不出该等还是该改配置，所以先归类再决定说什么、要不要说。
-                        val failure = GatewayErrorClassifier.classify(err)
-                        android.util.Log.w(
-                            "PiNet",
-                            "loadSessions failed: ${err.javaClass.simpleName}: ${err.message} -> ${failure.kind}"
-                        )
-                        if (!silent && errorToastGate.shouldShow(failure.toastKey)) {
-                            Toast.makeText(
-                                this@MainActivity,
-                                failure.userMessage,
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    }
-                } catch (e: java.util.concurrent.CancellationException) {
-                    // 协程被取消（页面销毁 / 重新挂载）：交回上层，不做错误提示
-                    throw e
+                    val fetched = apiClient.getSessions()
+                    snapshot = fetched.getOrNull()
+                    failure = fetched.exceptionOrNull()
                 } catch (e: Exception) {
-                    // 未预料的异常（本地缓存 / 通知栏保活 / 解析）以前会直接终结这个协程，
-                    // isLoadingSessions 就永远停在 true —— 加载圈再也没有出口。
-                    isGatewayOnline = false
-                    android.util.Log.e("PiSync", "loadSessions failed", e)
-                    if (!silent) {
-                        Toast.makeText(this@MainActivity, "同步会话列表失败：${e.message ?: "未知错误"}", Toast.LENGTH_SHORT).show()
-                    }
+                    // 取消必须原样抛回（finally 收尾），其余异常统一记成失败，
+                    // 否则闸门会卡死在 true 上，加载圈再也没有出口。
+                    if (e is java.util.concurrent.CancellationException) throw e
+                    failure = e
                 } finally {
-                    // 闸门放开就收尾：只要没有在飞的全量拉取，右上角就不该还在转圈。
+                    // 列表回包（成功/失败/被取消）就释放闸门与转圈：
+                    // 后面的附属数据不得再拖着它跑。
                     sessionFetchInFlight = false
                     isLoadingSessions = false
+                }
+
+                val loaded = snapshot
+                if (loaded == null) {
+                    isGatewayOnline = false
+                    val err = failure ?: IllegalStateException("未能读取会话列表")
+                    // 隧道重连的那一两秒里，一轮请求会同时失败；原文案（“timeout”/“404”）
+                    // 既看不懂也看不出该等还是该改配置，所以先归类再决定说什么、要不要说。
+                    val classified = GatewayErrorClassifier.classify(err)
+                    android.util.Log.w(
+                        "PiNet",
+                        "loadSessions failed: ${err.javaClass.simpleName}: ${err.message} -> ${classified.kind}"
+                    )
+                    if (!silent && errorToastGate.shouldShow(classified.toastKey)) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            classified.userMessage,
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                    return@launch
+                }
+
+                sessions = loaded
+                // 首份完整快照到了：工作区初值仲裁从现在起才允许判「上次选区是否已失效」。
+                sessionsSnapshotLoaded = true
+                cachedSessions = loaded
+                isGatewayOnline = true
+                pinnedSessionIds = prefs.getPinnedSessionIds()
+                // 清理已在服务端彻底删除的会话的本地未读残留（与 pi-web unreadEligibleIds 一致）
+                val currentIds = loaded.map { s -> s.id }.toSet()
+                val validUnread = SessionUnreadState.prune(unreadSessionIds, currentIds)
+                if (validUnread.size != unreadSessionIds.size) {
+                    unreadSessionIds = validUnread
+                    prefs.setUnreadSessionIds(validUnread)
+                }
+                customTitles = loaded.mapNotNull { s -> prefs.getSessionCustomTitle(s.id)?.let { t -> s.id to t } }.toMap()
+                syncPersistentForegroundService(isBusy = isAgentBusy, project = currentProject, phase = agentPhaseLabel)
+
+                // 置顶/归档/项目排序：不参与首屏渲染，也不参与右上角的加载指示
+                refreshSessionUiState()
+            }
+        }
+
+        /**
+         * 拉 pi-web 的 ui-state（会话置顶/归档 + 项目置顶与排序）。
+         *
+         * 与 [loadSessions] 解耦：它只有几 KB，但同样要过一次隧道往返，
+         * 没必要拿它拖着会话列表的转圈。
+         */
+        fun refreshSessionUiState() {
+            lifecycleScope.launch {
+                // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
+                // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
+                apiClient.getSessionUiState().onSuccess { ui ->
+                    val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
+                    val archived = ui.sessionFlags.filterValues { it.archived }.keys
+                    pinnedSessionIds = pinned
+                    archivedSessionIds = archived
+                    prefs.setPinnedSessionIds(pinned)
+                    prefs.setArchivedSessionIds(archived)
+                    // 项目（工作区）置顶与排序同样以 PC 为准
+                    serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
+                    serverWorkspaceOrder = ui.projectOrder
                 }
             }
         }
@@ -2971,7 +3001,10 @@ class MainActivity : ComponentActivity() {
                         keepAliveManager.releaseWakeLock()
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
                         hapticsAndNotify.clearNotification()
-                        loadSessions()
+                        // 列表已经在内存里（巡检一直维护着它），返回列表只静默对账一次：
+                        // 以前这里走非静默刷新，右上角那圈要等「列表 + ui-state + 全部会话统计」
+                        // 串行跑完才停（实测三十多秒），而用户已经看到列表了。
+                        loadSessions(silent = true)
                     },
                     onRefreshSession = {
                         val sid = activeSessionId
@@ -3749,6 +3782,8 @@ class MainActivity : ComponentActivity() {
                     isGatewayOnline = isGatewayOnline,
                     sessions = sessions,
                     isLoading = isLoadingSessions,
+                    // 首份完整快照到位后才允许工作区初值仲裁（见 loadSessions 里的说明）
+                    isInitialSnapshotReady = sessionsSnapshotLoaded,
                     // 左滑返回时定位到「刚才那个会话所在的工作区」，冷启动时使用上次持久化的工作区
                     initialWorkspacePath = lastOpenedWorkspacePath.ifBlank {
                         prefs.lastSelectedWorkspacePath.ifBlank {
@@ -3916,7 +3951,6 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
-                    sessionStatsMap = sessionStatsMap,
                     onExportSession = { session ->
                         exportSessionToHtml(session.id, session.displayTitle)
                     },
