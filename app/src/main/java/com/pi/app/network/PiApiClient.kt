@@ -648,14 +648,20 @@ class PiApiClient(private val prefs: AppPreferences) {
             fallbackInputTokens = inTokens
         )
 
-        val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else inTokens
-        val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else outTokens
+        // 输入/输出必须与 cacheRead/cacheWrite 同口径（会话累计），否则缓存率就是拿
+        // 「累计命中」除以「单轮输入」：本会话 27.5 M cache R 配 169 in，比值 99.9994%，
+        // 四舍五入后永远顶格 100.0%（详见 `TokenStats.cacheHitRate`）。上游 pi-web 的
+        // 「平均缓存命中率」三个数全部取自 sessionStats.tokens，这里同源。
+        // 累计缺失（旧网关不返回 stats.tokens）时才退回最后一条 assistant 消息的 usage，
+        // 那是「有真实来源的退路」，而不是编造。上下文占用仍单独用 lastAssistant* 计算。
+        val summaryInTokens = if (inTokens > 0L) inTokens else lastAssistantInTokens
+        val summaryOutTokens = if (outTokens > 0L) outTokens else lastAssistantOutTokens
 
         val tokenStats = TokenStats(
             contextTokens = realContext,
             maxContextWindow = effectiveMaxContext,
-            inputTokens = currentInTokens,
-            outputTokens = currentOutTokens,
+            inputTokens = summaryInTokens,
+            outputTokens = summaryOutTokens,
             cacheReadTokens = cacheRead,
             cacheWriteTokens = cacheWrite,
             cost = cost

@@ -470,10 +470,24 @@ data class TokenStats(
     val isContextOverflow: Boolean
         get() = isContextOverflow(contextTokens, maxContextWindow)
 
+    /**
+     * 平均缓存命中率，与上游 pi-web 的 `session.cacheHitRate` 同一式子：
+     *
+     * ```ts
+     * cacheRead / (cacheRead + cacheWrite + input) * 100
+     * ```
+     *
+     * 两个约束都不能少：
+     *  - 分母必须包含 cacheWrite（写缓存也是「本该命中却没命中」的输入类 token，
+     *    漏掉它会让 Anthropic 这类同时报 cacheWrite 的供应商命中率虚高）；
+     *  - 三个数必须同口径（都取会话累计）。旧实现分母用最后一轮的 `input`、
+     *    分子用累计 `cacheRead`，等于拿「累计命中」除以「单轮输入」，任何有前缀
+     *    缓存的会话都算成 99.99% → 显示顶格 100.0%，这个数就不携带任何信息了。
+     */
     val cacheHitRate: Float
         get() {
-            val totalPrompt = inputTokens + cacheReadTokens
-            return if (totalPrompt > 0) (cacheReadTokens.toFloat() / totalPrompt) * 100f else 0f
+            val totalPrompt = inputTokens + cacheReadTokens + cacheWriteTokens
+            return if (totalPrompt > 0L) (cacheReadTokens.toFloat() / totalPrompt) * 100f else 0f
         }
 
     companion object {
