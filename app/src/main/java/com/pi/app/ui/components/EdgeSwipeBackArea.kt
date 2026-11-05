@@ -1,5 +1,6 @@
 package com.pi.app.ui.components
 
+import android.os.Build
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.Modifier
@@ -26,12 +27,22 @@ import androidx.compose.ui.unit.dp
  * - 横向位移先超过 [edgeWidth] 才算「边缘右滑」（排除列表轻微抖动）；
  * - 位移达到 [threshold] 时触发一次 [onSwipeBack]，随后吞掉本次手势剩余事件，
  *   避免一次滑动连续触发；纯点击（无位移）不会消费任何事件。
+ *
+ * **Android 13+ 直接停用**：清单里开启了 `enableOnBackInvokedCallback`，系统已经在
+ * 同一块左边缘接管了返回手势（带预测动效）。继续用 `PointerEventPass.Initial` 抢它，
+ * 手感上是「滑到一半卡住」或者一次手势触发两次返回。三处调用方
+ * （FilesScreen / ArtifactViewerFullScreen / GitChangesFullScreen）都注册了 `BackHandler`，
+ * 系统回退走的就是同一个处理函数，所以这里停用不丢任何功能，只是不再和系统抢手势。
+ *
+ * SDK 判断放在 Modifier 工厂里而不是组合里：它是运行期常量，不需要状态跟踪。
  */
 fun Modifier.edgeSwipeBack(
     onSwipeBack: () -> Unit,
     edgeWidth: Dp = 28.dp,
     threshold: Dp = 48.dp
-): Modifier = this.pointerInput(onSwipeBack, edgeWidth, threshold) {
+): Modifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+    this
+} else this.pointerInput(onSwipeBack, edgeWidth, threshold) {
     val edgePx = edgeWidth.toPx()
     val thresholdPx = threshold.toPx()
     awaitEachGesture {

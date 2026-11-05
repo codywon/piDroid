@@ -3,10 +3,10 @@ package com.pi.app.ui.session
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.WarningAmber
@@ -51,6 +51,11 @@ fun WorktreeManagementDialog(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                // 整个弹窗只有**一个**滚动容器。旧实现在这里嵌了一个定高 LazyColumn，
+                // 属于同方向嵌套滚动：滑到列表底部再继续往上拖，ModalBottomSheet 会把这段
+                // 手势解释成「下拉收起」，手感就是“列表抖一下、弹窗想关”。
+                // worktree 的数量等于真实的分支检出数（通常个位数），不需要做虚拟化。
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 24.dp)
         ) {
@@ -96,14 +101,12 @@ fun WorktreeManagementDialog(
             HorizontalDivider(color = theme.outline.copy(alpha = 0.5f))
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Worktree 列表
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 280.dp),
+            // Worktree 列表（不再用 LazyColumn，理由见外层 Column 上的注释）
+            Column(
+                modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(worktreesResult.worktrees, key = { it.path }) { item ->
+                worktreesResult.worktrees.forEach { item ->
                     WorktreeCardItem(
                         item = item,
                         isOperating = isOperating,

@@ -11,8 +11,10 @@ import android.os.ParcelFileDescriptor
 import android.util.Base64
 import android.util.LruCache
 import android.view.ViewGroup
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.Image
@@ -73,6 +75,7 @@ import okhttp3.Request
 import java.io.File
 import java.net.URLEncoder
 import java.util.Locale
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
@@ -99,7 +102,9 @@ val LocalMediaGatewayConfig = compositionLocalOf { MediaGatewayConfig() }
  * 提到顶层的原因：它们在 `remember(svgContent)` 里执行，同一份 SVG 只会跑一次，
  * 收益有限；真正的原因是这三个模式**固定不变**，内联写法把一个纯编译产物变成了
  * 藏在渲染代码里的字面量，安全审查时不好集中看。行为完全不变（仍是正则过滤，
- * 只能当纵深防御，真正的边界是 WebView 本身没有 JS Bridge / 文件访问）。
+ * 只能当纵深防御：真正的边界是 `SvgWebViewCanvas` 里的一次性 CSP nonce —— 浏览器会
+ * 拒绝执行任何没有本次 nonce 的脚本与事件处理器，正则是否被绕过都不影响这一层。
+ * 不可信输入永远不应该指望一串正则可以“清洗干净”。
  */
 private val SVG_SCRIPT_TAG = Regex("(?i)<script\\b[^>]*>[\\s\\S]*?</script>")
 private val SVG_SCRIPT_SELF_CLOSING = Regex("(?i)<script\\b[^>]*/>")
@@ -785,7 +790,21 @@ internal fun SvgWebViewCanvas(
             .replace(SVG_EVENT_HANDLER_ATTR, "")
     }
 
-    val html = remember(cleanSvg, isDark, enableZoom) {
+    /**
+     * 本次渲染的 CSP nonce。
+     *
+     * 每次（每份 SVG）重新生成，**不可预测**，所以被嵌入的内容无法在自己的
+     * `<script nonce="…">` 里伪造它 —— 这正是它比正则过滤强的地方：
+     * 无论恶意脚本怎么变形，浏览器都直接拒执行。
+     */
+    val scriptNonce = remember(svgContent) { UUID.randomUUID().toString().replace("-", "") }
+
+    // 只放行“我们自己的”内联样式与本页脚本；其余（外部图片、字体、帧、表单）全部禁止。
+    // `img-src data: blob:` 是为了让 SVG 里内联的 base64 图能显示。
+    val cspMeta =
+        """<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-$scriptNonce'">"""
+
+    val html = remember(cleanSvg, isDark, enableZoom, scriptNonce) {
         val bgHex = if (isDark) "#14161F" else "#F8FAFC"
         val fgHex = if (isDark) "#E2E8F0" else "#1E293B"
         val tokens = widgetTokens(isDark)
@@ -796,6 +815,7 @@ internal fun SvgWebViewCanvas(
             <html>
             <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+            $cspMeta
             <style>
               $tokens
               html, body {
@@ -820,6 +840,7 @@ internal fun SvgWebViewCanvas(
             <html>
             <head>
             <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+            $cspMeta
             <style>
               $tokens
               * { box-sizing: border-box; }
@@ -858,14 +879,18 @@ internal fun SvgWebViewCanvas(
             <div id="container">
               $cleanSvg
             </div>
-            <div id="zoom-badge" onclick="resetZoom()">100%</div>
-            <script>
+            <div id="zoom-badge">100%</div>
+            <script nonce="$scriptNonce">
             (function() {
               var svg = document.querySelector('svg');
               if (!svg) return;
 
               var container = document.getElementById('container');
               var badge = document.getElementById('zoom-badge');
+
+              // CSP 禁掉了内联事件处理器（script-src 只有 nonce，没有 unsafe-inline），
+              // 所以“点徽标复位”必须在这里用 addEventListener 绑定。
+              if (badge) badge.addEventListener('click', function() { window.resetZoom(); });
 
               // 1. 初始化并保证 viewBox 存在。
               // 关键：通过直接操作 SVG 的 viewBox 进行缩放与平移，由浏览器矢量渲染管线
@@ -1019,6 +1044,16 @@ internal fun SvgWebViewCanvas(
                     builtInZoomControls = enableZoom
                     displayZoomControls = false
                     cacheMode = WebSettings.LOAD_NO_CACHE
+                }
+                // 不设 WebViewClient 时，SVG 里的 <a href> 会直接在本 WebView 内导航：
+                // 用户点一下图里的链接，查看器本身就变成了一个任意网页（“还以为在看着
+                // 自己的图”是最典型的钓鱼面）。这里一律拦掉：这个 WebView 只用于画图，
+                // 没有任何合法的跳转目的地。
+                webViewClient = object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView?,
+                        request: WebResourceRequest?
+                    ): Boolean = true
                 }
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
             }

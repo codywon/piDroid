@@ -2,6 +2,23 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.14] - 2026-11-05
+
+### 🔐 不可信 SVG：用 CSP nonce 当边界，而不是“更努力地写正则”
+
+- **为什么要换**：旧实现用三条正则剥 `<script>` 与 `on*`。这类过滤天然可绕（`<svg/onload=…>`、大小写/编码变形、`javascript:` 链接），把正则写得更全是无止境的军备竞赛，且改错一次就是漏洞。
+- **新边界**：每次渲染生成一个随机 nonce，页面带 `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-<random>'`。浏览器直接拒绝执行一切没有本次 nonce 的脚本与内联事件处理器 —— 嵌入内容无法猜到随机 nonce，无论怎么变形都跑不起来。正则保留，但只当“去掉噪声”的预处理，注释里明确它**不是**安全边界。
+- **顺带修掉一个真问题**：这个 WebView 是唯一没设 `WebViewClient` 的（`GenerativeUi`、`KaTeX` 都有）。不设时 SVG 里的 `<a href>` 会直接在查看器内导航 —— 点一下图里的链接，整个查看器就变成一个任意网页。现在一律拦截（这个 WebView 只用来画图，没有合法的跳转目的地）。
+- 缩放 JS 保留（去掉它才是真风险：`builtInZoomControls` 的体验与本实现的“双击放大到落点/拖动带边界”并不等价）。CSP 只放行带 nonce 的那一段我们自己的脚本；徽标原本的 `onclick=` 被 CSP 拦掉，已改成 `addEventListener` 绑定。
+
+### 📱 边缘返回手势：Android 13+ 交给系统，不再抢同一块区域
+
+清单已开启 `enableOnBackInvokedCallback`，系统在左边缘有带预测动效的返回手势。自定义的 28dp 边缘右滑用 `PointerEventPass.Initial` 抢先消费，结果是“滑到一半卡住”或一次手势触发两次返回。三处调用方（`FilesScreen` / `ArtifactViewerFullScreen` / `GitChangesFullScreen`）都已注册 `BackHandler`，系统回退走同一处理函数 —— 所以在 API 33+ 直接停用自定义手势，功能不减，只是不再和系统抢。
+
+### 🧵 Worktree 弹窗：去掉同方向嵌套滚动
+
+`ModalBottomSheet` 里原本内嵌一个 `heightIn(max = 280.dp)` 的 `LazyColumn`：滑到列表底部再继续拖，手势会被外层解释成“下拉收起”，手感是列表抖一下、弹窗想关。改为整个弹窗只有一个滚动容器（外层 `verticalScroll` + 普通 `Column` 铺项）。worktree 数量等于真实分支检出数，通常个位数，不需要虚拟化。
+
 ## [2.0.13] - 2026-11-05
 
 ### ⚙️ 热路径正则常量：不再每次调用都 `Pattern.compile`
