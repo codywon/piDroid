@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.25] - 2026-11-06
+
+### ⬆️ 工具链第 1 步：Kotlin 2.0.21 → 2.2.21（Gradle / AGP 未动）
+
+- **为什么先升 KGP 而不先升 wrapper**：查 Kotlin 官方兼容表，**KGP 2.0.21 的上限只是 Gradle 8.8 / AGP 8.5**，而项目已经跑在 Gradle 8.11.1 + AGP 8.7.3（超出上限仍能绿，但那不是“支持”）。绑定最紧的是 KGP，先把 wrapper 推到 8.14 只会扩大偏离。升到 2.2.21 后，Gradle 7.6.3–8.14、AGP 7.3.1–8.11.1 两个区间同时容纳当前值 —— 这是项目第一次回到支持窗口内。
+- **改动范围极小**：只改 `gradle/libs.versions.toml` 的 `kotlin`（`kotlin.plugin.compose` 共用同一版本号，随之升级）；Gradle 8.11.1、AGP 8.7.3、`compileSdk`/`targetSdk` 35 全部不变。
+- **前置条件已就位**：2.0.21 那次把 `android.kotlinOptions` 迁到 `kotlin { compilerOptions { } }`，否则新 KGP 已经不认旧 DSL。
+- **后续步骤**（写在 `docs/PLAN-toolchain-upgrade.md`）：AGP 8.7.3 → 8.10.x（最低 Gradle 恰好 8.11.1）→ wrapper → 8.14.6。每步一个补丁版本、一次 CI。
+
 ## [2.0.24] - 2026-11-06
 
 ### 🔧 修复 2.0.23 的单测源集编译失败，内容与 2.0.23 一致
