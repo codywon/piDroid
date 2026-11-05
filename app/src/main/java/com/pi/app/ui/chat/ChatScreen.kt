@@ -167,8 +167,16 @@ fun ChatScreen(
     /** 首屏历史正在从 PC 拉取（只用于画骨架，不向用户展示具体状态文案） */
     isLoadingSessionHistory: Boolean = false,
     sseState: SseConnectionState = SseConnectionState.CONNECTED,
-    /** 事件流最后一条事件的时间戳（0 = 从未收到） */
-    streamLastEventAtMs: Long = 0L,
+    /**
+     * 事件流最后一条事件的时间戳（0 = 从未收到），**以 lambda 形式传入**。
+     *
+     * 为什么不能直接传 `Long`：`lastSseActivityAt` 在流式期间**每个 token 都会变**，
+     * 而它只在用户点开 Token 监控弹窗时才被读一次。传值的话，MainAppNav 会因这个
+     * 状态变化而重组 → 参数变更 → 连带 4200 行的 `ChatScreen` 全屏大重组，每来一个
+     * SSE 事件就发生一次。传成 lambda 后，读取被推到 `SyncHealthRow` 内部
+     * （它本来就有 1s ticker 负责让“事件 Ns 前”跟着走）。
+     */
+    streamLastEventAtMs: () -> Long = { 0L },
     /** 最后一次成功会话快照的时间戳（0 = 从未成功） */
     lastSnapshotAtMs: Long = 0L,
     queuedMessages: List<QueuedMessage> = emptyList(),
@@ -926,7 +934,11 @@ fun ChatScreen(
     // 永远“没变”。首屏在 messages 还是空的时候就把它缓存成了空列表，之后快照填满 messages
     // 也不会重算 —— 于是正文一直空着，直到 olderMessages（普通 List，翻页时换新实例）变化
     // 才突然全部出现。这就是「打开历史会话必须点一下上滑加载才出正文」的根因。
-    val conversation = olderMessages + messages
+    //
+    // 没翻过页时直接复用 `messages`，不做拷贝：这里是**每个重组**都会走的一段，
+    // 而绝大多数会话从来没加载过更早记录（olderMessages 为空）。`+` 每次都会新建
+    // 一个 ArrayList 并把全部引用抄一遍，流式期间就是每个 token 一次完全无谓的分配。
+    val conversation = if (olderMessages.isEmpty()) messages else olderMessages + messages
 
     /**
      * pi-web 的 reducer 里 `streamingMessage` 是**单数**（一个 store 只持一条正在流式的消息），

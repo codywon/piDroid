@@ -26,8 +26,13 @@ import com.pi.app.ui.theme.*
 fun TokenStatsHudDialog(
     stats: TokenStats,
     compactionRecords: List<CompactionRecord> = emptyList(),
-    /** 事件流最后一条事件的时间戳（0 = 从未收到） */
-    streamLastEventAtMs: Long = 0L,
+    /**
+     * 事件流最后一条事件的时间戳（0 = 从未收到），以 lambda 形式传入。
+     *
+     * 原因见 `ChatScreen` 同名参数：这个值流式期间每个 token 都变，直接传值会让
+     * 整个聊天页跟着重组。推迟到 [SyncHealthRow] 里读，只有弹窗真的打开时才会被追踪。
+     */
+    streamLastEventAtMs: () -> Long = { 0L },
     /** 最后一次成功会话快照的时间戳（0 = 从未成功） */
     lastSnapshotAtMs: Long = 0L,
     sseConnected: Boolean = false,
@@ -261,7 +266,7 @@ fun TokenStatsHudDialog(
 @Composable
 private fun SyncHealthRow(
     sseConnected: Boolean,
-    streamLastEventAtMs: Long,
+    streamLastEventAtMs: () -> Long,
     lastSnapshotAtMs: Long
 ) {
     val theme = LocalAppTheme.current
@@ -288,7 +293,7 @@ private fun SyncHealthRow(
         )
         Spacer(modifier = Modifier.width(6.dp))
         Text(
-            text = "${if (sseConnected) "流已连接" else "流已断开"} · 事件 ${ageText(streamLastEventAtMs)} · 快照 ${ageText(lastSnapshotAtMs)}",
+            text = "${if (sseConnected) "流已连接" else "流已断开"} · 事件 ${ageText(streamLastEventAtMs())} · 快照 ${ageText(lastSnapshotAtMs)}",
             style = MaterialTheme.typography.labelSmall,
             fontFamily = FontFamily.Monospace,
             maxLines = 1,

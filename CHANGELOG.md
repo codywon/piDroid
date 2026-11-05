@@ -2,6 +2,16 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.12] - 2026-11-05
+
+### ⚡ 流式每个 token 不再连带整个聊天页重组
+
+- **问题**：`MainAppNav` 把 `lastSseActivityAt`（SSE 最后事件时间戳）当**值**传给 `ChatScreen`。这个值在流式期间**每个 token 都会变**，于是 MainAppNav 重组 → 参数变更 → 4200 行的 `ChatScreen` 全屏大重组，每来一个 SSE 事件就发生一次。而它真正的用处只有一个：打开 Token 监控弹窗时显示「事件 Ns 前」。
+- **Fix**：改成传 lambda（`streamLastEventAtMs: () -> Long`），读取推迟到弹窗内部的 `SyncHealthRow` —— 那里本来就有 1s ticker 负责让相对时间持续走动。弹窗没开时，这个状态变化不再触发任何重组。
+- 顺带把 `conversation = olderMessages + messages` 改成「没翻过页就直接复用 `messages`」：这行**每个重组都会走**，而绝大多数会话从未加载过更早记录，原来的写法在流式期间就是每个 token 新建一个 ArrayList 抄一遍全部引用（`+` 不共享底层数组）。
+- 未动 `lastSnapshotAtMs`：它只在快照成功时变化（每分钟几次量级），不值得为它增加一个参数层。
+
+
 ## [2.0.11] - 2026-11-05
 
 ### 🚫 不再用假数据兜底：网络失败就如实说失败

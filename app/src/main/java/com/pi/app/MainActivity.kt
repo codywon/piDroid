@@ -2848,7 +2848,7 @@ class MainActivity : ComponentActivity() {
                     agentPhaseLabel = agentPhaseLabel,
                     isLoadingSessionHistory = isLoadingSessionHistory,
                     sseState = sseConnectionState,
-                    streamLastEventAtMs = lastSseActivityAt,
+                    streamLastEventAtMs = { lastSseActivityAt },
                     lastSnapshotAtMs = lastSnapshotAtMs,
                     queuedMessages = queuedMessages,
                     compactionRecords = currentCompactionRecords,
