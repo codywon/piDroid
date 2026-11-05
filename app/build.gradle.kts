@@ -40,8 +40,8 @@ android {
         applicationId = "com.pi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 218
-        versionName = "2.0.20"
+        versionCode = 219
+        versionName = "2.0.21"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -88,11 +88,17 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
+    }
+}
+
+// `android.kotlinOptions` 从 Kotlin 2.0 起已废弃（KGP 2.0.21），现在只出 warning，
+// 未来版本会变成 error。对齐官方迁移路径：`kotlin { compilerOptions { … } }`。
+// 必须与上面的 Java 17 sourceCompatibility/targetCompatibility 保持一致。
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
 
@@ -106,6 +112,10 @@ android {
 val releasePackagingTaskNames = setOf(
     "assembleRelease",
     "bundleRelease",
+    // AGP 的 bundle 子任务：现在只出 APK，这条链路用不上，但列上只是多两个名字；
+    // 漏了它们在 AAB 路径上会退化成 AGP 的原始报错，而不是我们这句中文提示。
+    "signReleaseBundle",
+    "packageReleaseBundle",
     "packageRelease",
     "validateSigningRelease"
 )
@@ -154,8 +164,9 @@ dependencies {
     implementation(libs.mlkit.barcode.scanning)
 
     // Markdown Standard Renderer (CommonMark + GFM Tables + Strikethrough + Autolink)
-    implementation("org.commonmark:commonmark:0.21.0")
-    implementation("org.commonmark:commonmark-ext-gfm-tables:0.21.0")
-    implementation("org.commonmark:commonmark-ext-gfm-strikethrough:0.21.0")
-    implementation("org.commonmark:commonmark-ext-autolink:0.21.0")
+    // 版本统一在 gradle/libs.versions.toml 的 commonmark 里
+    implementation(libs.commonmark)
+    implementation(libs.commonmark.gfm.tables)
+    implementation(libs.commonmark.gfm.strikethrough)
+    implementation(libs.commonmark.autolink)
 }

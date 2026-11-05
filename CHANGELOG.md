@@ -2,25 +2,43 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+> 版本标题里的日期一律为本地时间（UTC+8）。
+
+## [2.0.21] - 2026-11-06
+
+### 🎛️ Token HUD 对齐 pi-web 会话信息面板（显示条件 / 两个缓存计数 / 格式化）
+
+- **缓存率卡片改为条件显示**：上游 `components/AppShell.tsx` 把这一行包在 `cacheRead + cacheWrite > 0 && cacheRead + cacheWrite + input > 0` 里。以前我们无条件渲染，从未走过前缀缓存的会话也摆一个毫无意义的 `0.0%`。
+- **副标题改成两个独立读数**：由「缓存命中: cacheRead 单值」改为上游口径的「缓存读取 / 缓存写入」（各自 `> 0` 才出现）。把 `cacheRead` 一个数当成“缓存命中总数”是不对的。
+- **成本行同样按上游 `cost > 0` 条件显示**，并改用 `Locale.US`：上游是 `$${cost.toFixed(4)}`，而 `toFixed()` 永远输出点号小数；旧代码跟随系统 Locale，德语等地区会显示成 `0,0426$`。
+- **命中率文案收敛为一份实现**：新增 `TokenStats.formatCacheHitRate()`，HUD 与单测共用（此前测试里是格式串的副本，只能证明“测试和自己一致”）；`TokenStats.cacheHitRateAvailable` 把上游的显示条件变成可单测的纯逻辑。
+
+### 🧹 工程卫生（不改运行行为）
+
+- `android.kotlinOptions` 迁移到顶层 `kotlin { compilerOptions { } }`：KGP 2.0（本项目 2.0.21）起前者已废弃，现在只出 warning，将来会变成 error。`jvmTarget` 仍为 17，与 `compileOptions` 一致。
+- commonmark 四个坐标移入 `gradle/libs.versions.toml`（此前只有它们硬编码版本，升级要改四处）。
+- 发布签名前置校验补上 `signReleaseBundle` / `packageReleaseBundle`：只出 APK 时用不到，但走 AAB 时缺 secret 会退化成 AGP 的原始报错。
+- CHANGELOG：版本标题的日期基准已在文件头注明（本地时间 UTC+8），最近四版的弯引号统一为「」。
+
 ## [2.0.20] - 2026-11-06
 
-### 🔍 缓存命中率的“累计口径”改成整体回退（修 2.0.19 的边界）
+### 🔍 缓存命中率的「累计口径」改成整体回退（修 2.0.19 的边界）
 
-- **问题**：2.0.19 把三个数统一到了会话累计，但回退判据是**逐字段**的（`if (inTokens > 0L) … else 单轮 input`）。整段 prompt 全命中缓存时 `stats.tokens.input` 合法地为 0，此时分母会把单轮 input 拼回来 —— 与本次修掉的“混口径”是同一类。
-- **修复**：新增纯函数 `TokenStats.resolveSummaryTokens`，判据换成“网关到底有没有下发 `stats.tokens`”这一个布尔：有就整体用累计（即使 input 为 0），没有才 input/output 一起退回最后一条 assistant 消息的 usage。另外对负值做了 `coerceAtLeast(0)` —— 负 token 无论来自哪个源都不该进分母。
+- **问题**：2.0.19 把三个数统一到了会话累计，但回退判据是**逐字段**的（`if (inTokens > 0L) … else 单轮 input`）。整段 prompt 全命中缓存时 `stats.tokens.input` 合法地为 0，此时分母会把单轮 input 拼回来 —— 与本次修掉的「混口径」是同一类。
+- **修复**：新增纯函数 `TokenStats.resolveSummaryTokens`，判据换成「网关到底有没有下发 `stats.tokens`」这一个布尔：有就整体用累计（即使 input 为 0），没有才 input/output 一起退回最后一条 assistant 消息的 usage。另外对负值做了 `coerceAtLeast(0)` —— 负 token 无论来自哪个源都不该进分母。
 - **测试**：`TokenStatsCacheRateTest` 新增 4 条（累计为 0 不被单轮顶替、累计缺失时整体回退、回退后的值确实参与比值、负值不泄漏）。
 
 ### 🧹 文档与发版流程
 
-- `CHANGELOG` 的 `2.0.17` 段落标注“未发布（构建失败，内容随 2.0.18 出货）”，避免把从未存在的版本读成已发布版本。
-- 发版流水线新增前置门禁：tag（或手动触发输入）与 `app/build.gradle.kts` 的 `versionName` 不一致、或 `CHANGELOG` 缺对应段落时，几秒内直接失败 —— 否则会出现“Release 叫 vX.Y.Z、装完仍提示有新版本”的死循环。
+- `CHANGELOG` 的 `2.0.17` 段落标注「未发布（构建失败，内容随 2.0.18 出货）」，避免把从未存在的版本读成已发布版本。
+- 发版流水线新增前置门禁：tag（或手动触发输入）与 `app/build.gradle.kts` 的 `versionName` 不一致、或 `CHANGELOG` 缺对应段落时，几秒内直接失败 —— 否则会出现「Release 叫 vX.Y.Z、装完仍提示有新版本」的死循环。
 
 ## [2.0.19] - 2026-11-06
 
 ### 📊 Token HUD 缓存命中率对齐 pi-web（不再永远顶格 100.0%）
 
-- **根因**：HUD 的命中率分子取会话**累计** `cacheRead`，分母却用最后一条 assistant 消息的**单轮** `input`，且漏掉了 `cacheWrite`。两个口径一混，“累计命中 ÷ 单轮输入”在任何带前缀缓存的会话上都会算成 99.99% → 四舍五入后永远显示 100.0%（实测 27.5 M cacheRead 配 169 input），这个数字既不真实也不携带信息。
-- **修复**：口径与上游 `session.cacheHitRate` 完全一致 —— `cacheRead / (cacheRead + cacheWrite + input)`，三个数**全部取自会话累计**；仅当网关不返回 `stats.tokens`（累计缺席）时才退回最后一条 assistant 消息的 usage，那是“有真实来源的退路”而不是编造。上下文占用仍单独按最后一条消息计算，不受影响。
+- **根因**：HUD 的命中率分子取会话**累计** `cacheRead`，分母却用最后一条 assistant 消息的**单轮** `input`，且漏掉了 `cacheWrite`。两个口径一混，「累计命中 ÷ 单轮输入」在任何带前缀缓存的会话上都会算成 99.99% → 四舍五入后永远显示 100.0%（实测 27.5 M cacheRead 配 169 input），这个数字既不真实也不携带信息。
+- **修复**：口径与上游 `session.cacheHitRate` 完全一致 —— `cacheRead / (cacheRead + cacheWrite + input)`，三个数**全部取自会话累计**；仅当网关不返回 `stats.tokens`（累计缺席）时才退回最后一条 assistant 消息的 usage，那是「有真实来源的退路」而不是编造。上下文占用仍单独按最后一条消息计算，不受影响。
 - **测试**：新增 `TokenStatsCacheRateTest` —— 分母包含 `cacheWrite`、累计口径不顶格、混合口径必然 100.0% 的证据固化、零用量不除零。
 
 ## [2.0.18] - 2026-11-05
@@ -29,13 +47,13 @@ All notable changes to the πDroid application will be documented in this file.
 
 - **失败原因**：`loadSessions` 调用了在它**后面**才声明的局部函数 `refreshSessionUiState()`，Kotlin 的局部函数必须先声明后使用（这一点与成员函数不同），因此 `:app:compileDebugKotlin` 报 `Unresolved reference`，2.0.17 未产出安装包。
 - **修法**：把该函数整段上提到 `loadSessions` 之前，逻辑零改动；行为与 2.0.17 完全相同。
-- **发版说明**：按发版 SOP 不复用已推送过的 `v2.0.17` tag，直接递增到 `2.0.18`（versionCode 216）重跑流水线；2.0.17 从未发布，用户端只会看到 2.0.18。
+- **发版说明**：按发版 SOP 不复用已推送过的 `v2.0.17` tag，直接递增到 `2.0.18`（当时的 versionCode 216）重跑流水线；2.0.17 从未发布，用户端只会看到 2.0.18。
 
 本版包含的完整内容（同 2.0.17）：
 
 - **右上角不再转三十多秒**：转圈只覆盖 `/api/sessions` 本身，回包即复位（取消/失败也走 `finally`）；`ui-state` 降为后台附属请求；从会话返回列表改为静默对账。根据「完全对齐 pi-web」的结论，`POST /api/sessions/stats`（服务端按会话文件逐个解析，484 条会话实测 ≈ 31 秒）在客户端整条下线：`getBatchSessionStats`、卡片 `stats` 参数、`SessionStatsFormatting` 及对应单测一并移除。上游该接口只服务于会话家族（`[rootSessionId, ...subagents]`），侧栏会话行从不显示 token / 费用 / 耗时。
 - **冷启动不再固定落回 termius**：1.8.88 的就绪门禁写的是 `isLoading && sessions.isEmpty()`，而冷启动走静默拉取、`isLoading` 恒为 false，门禁从未生效。现在以「首份完整会话快照是否到达」为判据（`sessionsSnapshotLoaded` → `isInitialSnapshotReady`），并把选区仲裁抽成纯函数 `decideWorkspaceSelection`（`Defer / Keep / ApplyHint / Fallback`）：数据未就绪一律 `Defer`，被动兜底仍然只挪内存指针、不写盘。
-- **会话卡右侧槽位对齐 pi-web**：`运行中 / 等待确认 / 未读` 保持原样，其余显示相对时间（`Rg()` 口径：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年），置顶区显示所属项目名；底部「耗时 · token · 费用」整行移除（同时消掉 UTC ISO 按本地时区格式化造成的“慢 8 小时”类时区问题）。
+- **会话卡右侧槽位对齐 pi-web**：`运行中 / 等待确认 / 未读` 保持原样，其余显示相对时间（`Rg()` 口径：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年），置顶区显示所属项目名；底部「耗时 · token · 费用」整行移除（同时消掉 UTC ISO 按本地时区格式化造成的「慢 8 小时」类时区问题）。
 - **顶栏移除扫码图标**：未连接时已有横幅主按钮、已连接后由「系统设置中心」承担，避免列表页误触。
 - **测试**：新增 `SessionTimeFormattingTest`（相对时间全部分档边界、未来时间、非法输入、UTC ISO 不漂移）；`WorkspacePathsTest` 新增 7 条选区仲裁回归（含「首帧只有 termius 时必须 Defer」）；移除已下线功能的 `SessionStatsFormattingTest`。
 
@@ -51,12 +69,12 @@ All notable changes to the πDroid application will be documented in this file.
 
 ### 🧭 冷启动不再固定落回 termius（1.8.88 没修干净的那一半）
 
-- **根因**：1.8.88 的就绪门禁写的是 `isLoading && sessions.isEmpty()`，而冷启动走的是静默拉取（`loadSessions(silent = true)`），`isLoading` 恒为 false —— 门禁在冷启动从未生效。首帧只拿到离线自定义目录（历史上有 `D:\myscript\termius`），「上次停留的工作区」被判“已失效”，兜底把**内存选区指针**钉在 termius；之后真实数据到达也不会纠偏，因为兜底分支只在「当前指针无效」时才动手。磁盘里的记忆一直是对的，被钉死的是界面。
+- **根因**：1.8.88 的就绪门禁写的是 `isLoading && sessions.isEmpty()`，而冷启动走的是静默拉取（`loadSessions(silent = true)`），`isLoading` 恒为 false —— 门禁在冷启动从未生效。首帧只拿到离线自定义目录（历史上有 `D:\myscript\termius`），「上次停留的工作区」被判「已失效」，兜底把**内存选区指针**钉在 termius；之后真实数据到达也不会纠偏，因为兜底分支只在「当前指针无效」时才动手。磁盘里的记忆一直是对的，被钉死的是界面。
 - **修复**：判据换成「首份**完整**会话快照是否到达」（`sessionsSnapshotLoaded` → `isInitialSnapshotReady`），并把选区仲裁抽成纯函数 `decideWorkspaceSelection`（`Defer / Keep / ApplyHint / Fallback`）：数据未就绪一律 `Defer`，被动兜底仍然只挪内存指针、绝不回写磁盘。
 
 ### 🕒 会话卡右侧改为相对时间（对齐 pi-web 右侧槽位）
 
-- 时间口径照抄上游 `Rg()`（zh-CN 单位表）：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年；置顶区按上游口径显示所属项目名。顺带消掉「UTC ISO 串按本地时区格式化」造成的“比 pi-web 慢 8 小时”类时区问题。
+- 时间口径照抄上游 `Rg()`（zh-CN 单位表）：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年；置顶区按上游口径显示所属项目名。顺带消掉「UTC ISO 串按本地时区格式化」造成的「比 pi-web 慢 8 小时」类时区问题。
 - 卡片底部那行「耗时 · token · 费用」整行移除（上游侧栏会话行没有这些读数，实测它们才是那 31 秒的来源）。
 - 顶栏移除扫码图标（未连接时已有横幅主按钮、已连接后由「系统设置中心」承担），避免列表页误触。
 
