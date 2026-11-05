@@ -629,7 +629,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             overrideModel != null && overrideModel.contextWindow > 0L -> overrideModel.contextWindow
             modelContextWindow > 0L -> modelContextWindow
             catalogWindow > 0L -> catalogWindow
-            else -> 200000L
+            else -> ModelDefaults.DEFAULT_CONTEXT_WINDOW
         }
 
         // 上下文占用只能有一个真实来源：最后一条 assistant 消息的 usage（input + cacheRead）。
@@ -1646,12 +1646,21 @@ class PiApiClient(private val prefs: AppPreferences) {
     // ==========================================
 
     /**
-     * 公开入口：拿不到目录时回退到内置默认目录（聊天侧选择器需要「总有东西可选」）。
+     * 公开入口：拿不到目录时**只在未配置网关时**回退到内置默认目录（聊天侧选择器需要「总有东西可选」）。
+     *
+     * 为什么要把两种失败分开：一旦连上了网关，失败就只能如实返回 failure。
+     * 旧实现在这里无条件 `getOrElse { 内置目录 }` 并 `Result.success(...)`，于是
+     * 「隧道 502 / pi-web 没起来 / 密钥失效」全部被伪装成「加载成功」，界面上只剩一份
+     * 与 PC 毫无关系的假模型列表 —— 用户既看不到故障，也无法排查。
+     * 未配置网关（首次启动、刚断开）是唯一合理的内置目录兜底：那时本来就没有可问的地方。
      */
     suspend fun getDynamicModels(): Result<DynamicModelCatalog> = withContext(Dispatchers.IO) {
-        getDynamicModelsInternal(prefs.serverUrl, null, null)
-            .getOrElse { applyModelOverrides(getDefaultCatalog(), null) }
-            .let { Result.success(it) }
+        val result = getDynamicModelsInternal(prefs.serverUrl, null, null)
+        if (result.isSuccess) return@withContext result
+        if (prefs.serverUrl.isBlank()) {
+            return@withContext Result.success(applyModelOverrides(getDefaultCatalog(), null))
+        }
+        result
     }
 
     /**
@@ -1664,9 +1673,6 @@ class PiApiClient(private val prefs: AppPreferences) {
         baseUrl: String,
         preFetchedConfig: JsonObject?,
         preFetchedAuth: Map<String, ProviderAuthState>?,
-        // 目录为空时是否回退到硬编码默认目录。只给模型选择器用：
-        // 模型管理页必须如实反映网关目录（可能真的为空），不允许凭空造模型
-        fallbackToDefaultCatalog: Boolean = true,
         // 是否把服务端默认模型/思考档位写回 App 全局偏好。只读同步路径必须传 false，
         // 否则开一次模型管理页就会悄悄改掉用户的全局默认模型
         applyServerDefaults: Boolean = true
@@ -1690,7 +1696,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
                         val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
                         val provider = obj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: "Default"
-                        val ctxWin = obj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 200000L
+                        val ctxWin = obj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
+                            ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW
                         val maxTok = obj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong ?: 8192L
                         val reasoning = obj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
                         val input = obj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
@@ -1740,12 +1747,11 @@ class PiApiClient(private val prefs: AppPreferences) {
 
                 // 同时拉取 /api/models-config (models.json) 与本地保存的模型参数覆盖，确保用户修改的 contextWindow 等参数100%生效且不回退
                 val serverModelsConfig = preFetchedConfig ?: fetchServerModelsConfigObject(baseUrl)
+                // 目录为空就是空：不允许用内置模型列表顶替一个**真实存在但为空**的目录，
+                // 那会让「网关一个模型都没配」看起来像「一切正常」。内置目录只在未配置网关时
+                // 使用（见 [getDynamicModels]）。
                 val baseCatalog = DynamicModelCatalog(
-                    models = if (fallbackToDefaultCatalog) {
-                        models.ifEmpty { getDefaultCatalog().models }
-                    } else {
-                        models
-                    },
+                    models = models,
                     thinkingLevelsMap = levelsMap,
                     defaultModel = defaultModelRef,
                     defaultThinkingLevel = defaultThinking
@@ -2074,7 +2080,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     id = mId,
                                     name = mName,
                                     provider = provName,
-                                    contextWindow = ctxWin ?: 200000L,
+                                    contextWindow = ctxWin ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW,
                                     maxTokens = maxTok ?: 8192L,
                                     supportsThinking = reasoning ?: true,
                                     supportsVision = inputs.contains("image"),
@@ -3288,7 +3294,10 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getSkills(cwd: String = ""): Result<List<SkillInfo>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(getDefaultSkills())
+        // 未配置网关就是没有技能可列。旧实现这里返回一份写死的「hindsight / context-mode /
+        // terminal-controller …」假技能表，每个还带着编造的 SKILL.md 正文 —— 用户以为
+        // 这些真的装在他电脑上，点进去看到的却是本地模板。
+        if (baseUrl.isBlank()) return@withContext Result.success(emptyList())
         val validCwd = sanitizeCwd(cwd)
         val urlsToTry = if (validCwd.isNotBlank()) {
             val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
@@ -3388,13 +3397,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.success(parsedList)
                 }
             } catch (e: Exception) {
-                // 逐个候选 URL 回退属正常流程；全部失败才会回退到内置示例数据，
-                // 这里必须留痕，否则「接口挂了」会伪装成「加载成功」。
+                // 逐个候选 URL 回退属正常流程；全部失败必须如实报错，
+                // 否则「接口挂了」会伪装成「加载成功」（带上假的技能列表）。
                 Log.w("PiApiClient", "技能接口候选 URL 失败: ${e.message}")
             }
         }
-        Log.w("PiApiClient", "加载技能列表失败，回退到内置示例数据")
-        Result.success(getDefaultSkills())
+        Log.w("PiApiClient", "加载技能列表失败")
+        Result.failure(IOException("加载技能列表失败"))
     }
 
     // ==========================================
@@ -3403,7 +3412,8 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     suspend fun getPlugins(cwd: String = ""): Result<List<PluginPackage>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
-        if (baseUrl.isBlank()) return@withContext Result.success(getDefaultPlugins())
+        // 同技能：未配置网关就是没有插件，不给编造清单
+        if (baseUrl.isBlank()) return@withContext Result.success(emptyList())
         val validCwd = sanitizeCwd(cwd)
         val urlsToTry = if (validCwd.isNotBlank()) {
             val encodedCwd = URLEncoder.encode(validCwd, "UTF-8")
@@ -3455,8 +3465,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                 Log.w("PiApiClient", "插件接口候选 URL 失败: ${e.message}")
             }
         }
-        Log.w("PiApiClient", "加载插件列表失败，回退到内置示例数据")
-        Result.success(getDefaultPlugins())
+        Log.w("PiApiClient", "加载插件列表失败")
+        Result.failure(IOException("加载插件列表失败"))
     }
 
     // ==========================================
@@ -3543,169 +3553,12 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun getDefaultCatalog() = DynamicModelCatalog(
         models = listOf(
-            ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", 200000L, 8192L, supportsThinking = true, supportsVision = true, isActive = true),
+            ModelInfo("gpt-6.1-sol", "GPT-6.1 Sol", "codywon", ModelDefaults.DEFAULT_CONTEXT_WINDOW, ModelDefaults.DEFAULT_MAX_OUTPUT_TOKENS, supportsThinking = true, supportsVision = true, isActive = true),
             ModelInfo("deepseek-flash", "DeepSeek Flash", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
             ModelInfo("deepseek-v4-pro", "DeepSeek V4 Pro", "codywon", 128000L, 8192L, supportsThinking = true, supportsVision = false),
             ModelInfo("gemini-3.8-flash-high", "Gemini 3.8 Flash High", "codywon", 1000000L, 16384L, supportsThinking = true, supportsVision = true)
         ),
         thinkingLevelsMap = emptyMap()
-    )
-
-    private fun getBuiltInSkillMarkdown(skillName: String, description: String?): String {
-        return when (skillName) {
-            "hindsight-coding-agent" -> """
-                ---
-                name: hindsight-coding-agent
-                description: Hindsight 长效记忆与反思决策系统，自动检索历史架构决策并在任务完成后沉淀经验。
-                ---
-
-                # Hindsight 长效记忆与反思决策系统
-
-                ## 适用场景 (When to Use)
-                - 当需要回顾当前工作区过往的架构选型、踩坑记录或历史修复方案时。
-                - 当遇到重复出现的编译错误、环境依赖冲突或跨模块接口变更时。
-                - 在完成复杂重构任务后，需要将关键技术决策沉淀至长期记忆库时。
-
-                ## 核心工作流 (Workflow)
-                1. **前置检索 (`recall`)**：
-                   - 在修改核心架构文件前，先检索与当前模块相关的历史记忆条目。
-                   - 优先遵循已验证的工程约束，避免重复引入曾被废弃的实现方案。
-                2. **执行期对比 (`reflect`)**：
-                   - 当工具调用或构建失败超过 1 次时，结合历史失败模式快速定位根因。
-                3. **经验归档 (`retain`)**：
-                   - 任务验证通过后，将新增的配置约定、关键修复路径以精简摘要写入长效记忆。
-            """.trimIndent()
-
-            "context-mode" -> """
-                ---
-                name: context-mode
-                description: 智能上下文隔离与代码语义压缩模式，优先拉取符号签名与局部片段以降低 Token 消耗。
-                ---
-
-                # 智能上下文隔离与代码语义压缩模式 (Context Mode)
-
-                ## 适用场景 (When to Use)
-                - 处理大型代码仓库（单文件超过 500 行或涉及多模块调用链）时。
-                - 当前会话上下文占用率超过 60%，需要精细控制每次文件读取范围时。
-
-                ## 核心指令与规范 (Guidelines)
-                1. **精准切片读取**：
-                   - 优先通过 `grep` 定位目标函数或类的行号区间，再按需读取对应行范围，避免整文件盲读。
-                2. **工具输出降噪**：
-                   - 执行构建或日志查询命令时，优先过滤关键错误行，避免将冗长无关日志注入主上下文。
-                3. **增量编辑优先**：
-                   - 修改代码时仅替换最小必要的连续代码块，保持周围上下文稳定。
-            """.trimIndent()
-
-            "terminal-controller" -> """
-                ---
-                name: terminal-controller
-                description: 安全沙箱终端交互与批处理执行器，规范后台进程管理、超时控制与高危命令审批。
-                ---
-
-                # 安全沙箱终端交互与批处理执行器 (Terminal Controller)
-
-                ## 适用场景 (When to Use)
-                - 需要执行构建编译、单元测试、依赖检查或脚本自动化任务时。
-                - 需要启动或管理后台常驻服务进程时。
-
-                ## 执行守则 (Execution Rules)
-                1. **非交互式优先**：
-                   - 所有终端命令必须附带非交互参数（如 `-y`、`--no-pager`），防止进程挂起等待标准输入。
-                2. **工作目录约束**：
-                   - 显式指定命令执行的工作目录 (`cwd`)，禁止依赖隐式 `cd` 状态。
-                3. **安全边界**：
-                   - 涉及删除文件、重置仓库或修改系统级配置的操作，必须先经过安全确认。
-            """.trimIndent()
-
-            "ui-plugin-navigation" -> """
-                ---
-                name: ui-plugin-navigation
-                description: UI 插件面板与生成式交互看板导航，支持富组件状态展示与多端布局自适应。
-                ---
-
-                # UI 插件面板与生成式交互看板导航
-
-                ## 适用场景 (When to Use)
-                - 构建或调整多端自适应界面、配置弹窗、状态监控看板与可交互卡片时。
-
-                ## 设计与实现规范 (Design Rules)
-                1. **高信息密度与清晰层级**：
-                   - 采用统一的圆角卡片、清晰的色彩语义（运行中、已完成、告警）与单行防折行标签。
-                2. **响应式布局**：
-                   - 表单输入框标签保持简短不折行，长示例文本放入 `placeholder` 占位提示中。
-                3. **状态即时反馈**：
-                   - 所有配置保存、开关切换与远程同步操作均需提供即时视觉反馈。
-            """.trimIndent()
-
-            else -> """
-                ---
-                name: $skillName
-                description: ${description ?: "自定义智能体技能指令包"}
-                ---
-
-                # $skillName
-
-                ## 技能说明
-                ${description ?: "在此编写该技能的核心职责、触发条件与执行规范。"}
-
-                ## 触发条件 (When to Use)
-                - 当用户请求涉及本技能相关领域的分析、编码或工具调用时自动加载。
-
-                ## 核心执行指令 (Instructions)
-                1. 分析当前任务上下文与目标路径。
-                2. 按步骤执行最小化验证与变更。
-                3. 输出清晰、可验证的执行结果。
-            """.trimIndent()
-        }
-    }
-
-    private fun getDefaultSkills() = listOf(
-        SkillInfo(
-            name = "hindsight-coding-agent",
-            description = "Hindsight 长效记忆与反思决策系统",
-            alias = "记忆反思",
-            filePath = "~/.pi/agent/skills/hindsight-coding-agent/SKILL.md",
-            baseDir = "~/.pi/agent/skills/hindsight-coding-agent",
-            enabled = true,
-            category = "全局技能",
-            content = getBuiltInSkillMarkdown("hindsight-coding-agent", "Hindsight 长效记忆与反思决策系统")
-        ),
-        SkillInfo(
-            name = "context-mode",
-            description = "智能上下文隔离与代码语义压缩模式",
-            alias = "上下文节能",
-            filePath = "~/.pi/agent/skills/context-mode/SKILL.md",
-            baseDir = "~/.pi/agent/skills/context-mode",
-            enabled = true,
-            category = "全局技能",
-            content = getBuiltInSkillMarkdown("context-mode", "智能上下文隔离与代码语义压缩模式")
-        ),
-        SkillInfo(
-            name = "terminal-controller",
-            description = "安全沙箱终端交互与批处理执行器",
-            alias = "沙箱终端",
-            filePath = "~/.pi/agent/skills/terminal-controller/SKILL.md",
-            baseDir = "~/.pi/agent/skills/terminal-controller",
-            enabled = true,
-            category = "全局技能",
-            content = getBuiltInSkillMarkdown("terminal-controller", "安全沙箱终端交互与批处理执行器")
-        ),
-        SkillInfo(
-            name = "ui-plugin-navigation",
-            description = "UI 插件面板与生成式交互看板导航",
-            alias = "UI看板",
-            filePath = "~/.pi/agent/skills/ui-plugin-navigation/SKILL.md",
-            baseDir = "~/.pi/agent/skills/ui-plugin-navigation",
-            enabled = true,
-            category = "全局技能",
-            content = getBuiltInSkillMarkdown("ui-plugin-navigation", "UI 插件面板与生成式交互看板导航")
-        )
-    )
-
-    private fun getDefaultPlugins() = listOf(
-        PluginPackage("pi-smart-compact", "9.3.1", "智能上下文压缩扩展，具备验证与安全检查机制", "npm:pi-smart-compact@9.3.1"),
-        PluginPackage("pi-generative-ui", "2.1.0", "生成式 UI 与富交互微组件渲染支持", "npm:pi-generative-ui@2.1.0")
     )
 
     suspend fun getAgentRunningState(sessionId: String): Result<Boolean> = withContext(Dispatchers.IO) {
@@ -4188,10 +4041,12 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
 
-        // 4. 若服务端已经内联携带 content 或属于内置技能包，则返回完整的 SKILL.md 源码模板
-        val fallback = skill.content?.takeIf { it.isNotBlank() }
-            ?: getBuiltInSkillMarkdown(skill.name, skill.description)
-        Result.success(fallback)
+        // 4. 最后只认服务端内联携带的 content，读不到就如实报错。
+        // 旧实现这里会拿 getBuiltInSkillMarkdown() 生成一份「看起来像真的」SKILL.md 模板：
+        // 用户看到的是编造的技能正文，而且一旦点保存就会真的写回磁盘（把假内容变成真文件）。
+        val inline = skill.content?.takeIf { it.isNotBlank() }
+            ?: return@withContext Result.failure(IOException("读取技能内容失败：${skill.name}"))
+        Result.success(inline)
     }
 
     private fun extractSkillMarkdownFromBody(body: String): String? {
@@ -4587,7 +4442,6 @@ data class CatalogPreset(
                 baseUrl = baseUrl,
                 preFetchedConfig = rootObj,
                 preFetchedAuth = effectiveAuth,
-                fallbackToDefaultCatalog = false,
                 applyServerDefaults = false
             )
 

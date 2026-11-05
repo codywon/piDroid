@@ -1989,7 +1989,7 @@ fun SessionListScreen(
                     icon = Icons.Default.DeleteForever,
                     iconTint = MaterialTheme.colorScheme.error,
                     title = "删除该项目全部会话 · ${projectSessions.size}",
-                    subtitle = "删除所有历史会话（正在运行的会话会自动保留）",
+                    subtitle = "正在运行的会话不受影响",
                     titleColor = MaterialTheme.colorScheme.error,
                     danger = true,
                     enabled = projectSessions.isNotEmpty(),

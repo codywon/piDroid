@@ -440,7 +440,7 @@ data class UploadFilesResult(
  */
 data class TokenStats(
     val contextTokens: Long = 0L,
-    val maxContextWindow: Long = 200000L,
+    val maxContextWindow: Long = ModelDefaults.DEFAULT_CONTEXT_WINDOW,
     val inputTokens: Long = 0L,
     val outputTokens: Long = 0L,
     val cacheReadTokens: Long = 0L,
@@ -559,7 +559,7 @@ data class ModelInfo(
     @SerializedName("id") val id: String,
     @SerializedName("name") val name: String,
     @SerializedName("provider") val provider: String,
-    @SerializedName("contextWindow") val contextWindow: Long = 200000L,
+    @SerializedName("contextWindow") val contextWindow: Long = ModelDefaults.DEFAULT_CONTEXT_WINDOW,
     @SerializedName("maxTokens") val maxTokens: Long = 8192L,
     @SerializedName("supportsThinking") val supportsThinking: Boolean = true,
     @SerializedName("supportsVision") val supportsVision: Boolean = false,
@@ -1134,7 +1134,7 @@ data class ModelConfigItem(
     val name: String = "",
     val reasoning: Boolean = false,
     val hasVision: Boolean = false,
-    val contextWindow: Long = 200000L,
+    val contextWindow: Long = ModelDefaults.DEFAULT_CONTEXT_WINDOW,
     val maxTokens: Long = 8192L,
     val costInput: Double = 0.0,
     val costOutput: Double = 0.0,
@@ -1224,7 +1224,8 @@ object ModelConfigConverter {
                         mObj.getAsJsonArray("input").any { it.isJsonPrimitive && it.asString == "image" }
                     } else false
 
-                    val contextWindow = mObj.get("contextWindow").asSafeLong(200000L).takeIf { it > 0 } ?: 200000L
+                    val contextWindow = mObj.get("contextWindow").asSafeLong(ModelDefaults.DEFAULT_CONTEXT_WINDOW)
+                        .takeIf { it > 0 } ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW
                     val maxTokens = mObj.get("maxTokens").asSafeLong(8192L).takeIf { it > 0 } ?: 8192L
 
                     // 价格

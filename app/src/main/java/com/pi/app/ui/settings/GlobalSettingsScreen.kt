@@ -923,7 +923,9 @@ fun GlobalModelsTab(
         var apiType by remember(target) { mutableStateOf(target?.apiType?.takeIf { it.isNotBlank() } ?: "openai-completions") }
         var modelId by remember(target) { mutableStateOf(target?.id ?: "") }
         var modelName by remember(target) { mutableStateOf(target?.name ?: "") }
-        var contextWindowStr by remember(target) { mutableStateOf((target?.contextWindow ?: 200000L).toString()) }
+        var contextWindowStr by remember(target) {
+            mutableStateOf((target?.contextWindow ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW).toString())
+        }
         var maxTokensStr by remember(target) { mutableStateOf((target?.maxTokens ?: 8192L).toString()) }
         var supportsReasoning by remember(target) { mutableStateOf(target?.supportsThinking ?: true) }
         var supportsVision by remember(target) { mutableStateOf(target?.hasVision ?: false) }
@@ -1071,7 +1073,7 @@ fun GlobalModelsTab(
                 TextButton(
                     onClick = {
                         if (providerName.isNotBlank() && modelId.isNotBlank()) {
-                            val ctxWin = contextWindowStr.toLongOrNull() ?: 200000L
+                            val ctxWin = contextWindowStr.toLongOrNull() ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW
                             val maxTok = maxTokensStr.toLongOrNull() ?: 8192L
                             onSaveCustomModel(
                                 providerName.trim(),
@@ -2577,7 +2579,7 @@ fun GlobalMcpTab(
                         if (mcpServers.isEmpty()) {
                             SettingsRow(
                                 title = "还没有 MCP 服务器",
-                                subtitle = "点右上角添加，或先在电脑端的模型配置里声明",
+                                subtitle = "点右上角添加",
                                 value = "添加",
                                 valueColor = theme.primary,
                                 onClick = {
@@ -2919,7 +2921,7 @@ fun GlobalPluginsTab(
                     SettingsGroup {
                         SettingsRow(
                             title = "还没有安装插件",
-                            subtitle = "支持 npm: / git: / 本地路径安装",
+                            subtitle = "npm: / git: / 本地路径",
                             value = "安装",
                             valueColor = theme.primary,
                             showChevron = true,
@@ -3538,7 +3540,7 @@ fun GlobalSystemSettingsTab(
                     }
                     SettingsRow(
                         title = "使用第三方加速镜像",
-                        subtitle = "ghfast.top / ghproxy.net / gh-proxy.com 中转下载",
+                        subtitle = "经第三方镜像中转下载",
                         topDivider = true,
                         trailing = {
                             Row(verticalAlignment = Alignment.CenterVertically) {

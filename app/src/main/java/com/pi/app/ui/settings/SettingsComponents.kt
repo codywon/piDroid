@@ -156,7 +156,9 @@ fun SettingsRow(
                         lineHeight = 15.sp,
                         color = theme.textMuted,
                         fontFamily = if (monoSubtitle) FontFamily.Monospace else null,
-                        maxLines = 2,
+                        // docs/DESIGN-labels.md §4：subtitle 必须 **1 行**装得下（≤18 个汉字）。
+                        // 允许折两行等于默许写长文案，规范就此失效；超长的内容应当进 ⓘ。
+                        maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }

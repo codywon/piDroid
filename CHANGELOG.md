@@ -2,6 +2,33 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.11] - 2026-11-05
+
+### 🚫 不再用假数据兜底：网络失败就如实说失败
+
+`AGENTS.md` 要求「对齐 pi-web 的真实状态」，但这几处一直在 App 侧编造内容，而且伪装成 `Result.success`，让真实故障彻底不可见。
+
+- **技能 / 插件**：未配置网关时返回写死的「hindsight-coding-agent / context-mode / terminal-controller / ui-plugin-navigation」四个技能（每个还带着编造的 SKILL.md 正文）与两个插件；接口挂掉时同样回退到这四份假数据。现在未配置网关 → `emptyList()`（本来就没有可列的东西），接口失败 → `Result.failure`。
+- **技能正文**：`getSkillContent` 读不到内容时会生成一份「看起来像真的」SKILL.md 模板。这不只是显示问题——用户在 App 里点保存，假模板会**真的写回磁盘**，把编造内容变成真文件。现在读不到就报错。
+- **模型目录**：`getDynamicModels()` 原本无条件 `getOrElse { 内置目录 }` 再包成成功，于是隧道 502 / pi-web 没起来 / 密钥失效全部显示成「加载成功」，界面上只剩一份和 PC 无关的模型列表。现在**只有未配置网关**（首次启动、刚断开）才用内置目录，连上过网关后失败一律返回 failure。`/api/models` 成功但目录为空时也不再塞内置模型顶替。
+- 内置目录本身保留（首次安装时模型选择器需要「总有东西可选」），但收窄成唯一一个触发条件。
+
+### 🧹 死代码与权限清理
+
+- 删除 `voice/VoiceInputManager.kt`、`voice/SmartTtsManager.kt`（全仓零引用，从未被任何界面调用）。
+- 移除清单里的 `RECORD_AUDIO` 声明：声明了危险权限却无对应功能，是应用市场合规审查的直接失分项。相机权限保留（扫码在用）。
+
+### 🔢 上下文窗口默认值收口
+
+`200000L` 此前散落在 6 个文件 11 处（data class 默认值、快照解析兜底、模型覆盖读取、目录合并、内置目录、设置页输入框初始值与解析兜底）。新增 `ModelDefaults.DEFAULT_CONTEXT_WINDOW` / `DEFAULT_MAX_OUTPUT_TOKENS` 统一，避免「界面初始值、解析兜底、目录合并各说各话」导致同一设备上上下文上限时大时小。
+
+### 📐 文案规范对齐 `docs/DESIGN-labels.md`
+
+- `SettingsComponents` 的 subtitle `maxLines` 由 2 改回 **1**（§4 硬约束；允许折行等于默许写长文案）。
+- 4 处超 18 字的 subtitle 收敛：「删除所有历史会话（正在运行的会话会自动保留）」→「正在运行的会话不受影响」；「ghfast.top / ghproxy.net / gh-proxy.com 中转下载」→「经第三方镜像中转下载」（域名清单本来就在 `ⓘ` 弹窗里）；「点右上角添加，或先在电脑端的模型配置里声明」→「点右上角添加」；「支持 npm: / git: / 本地路径安装」→「npm: / git: / 本地路径」（同时去掉禁用语「支持…」）。
+- 修掉 `DESIGN-labels.md` 自身的矛盾：§2 把「…会话会自动保留」当**允许范例**，§4 又把「会自动」列为禁用语。现在 §2 范例改成合规写法，并在 §4 注明「会自动」的替身是「…不受影响」，两节口径统一。
+
+
 ## [2.0.10] - 2026-11-05
 
 ### 🐛 工具跑完还在转圈、中间正文不刷新：回合大纲不再用那套伪缓存键

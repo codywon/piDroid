@@ -2,6 +2,7 @@ package com.pi.app.data.storage
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.pi.app.data.model.ModelDefaults
 import com.pi.app.data.model.PINNED_WORKSPACE_KEY
 import com.pi.app.data.model.SessionModelIdentityCodec
 import com.pi.app.data.model.WorkspacePaths
@@ -437,7 +438,7 @@ class AppPreferences(context: Context) {
                 name = o.get("name")?.asString ?: modelId,
                 baseUrl = o.get("baseUrl")?.asString ?: "",
                 apiType = o.get("apiType")?.asString ?: "openai-completions",
-                contextWindow = o.get("contextWindow")?.asLong ?: 200000L,
+                contextWindow = o.get("contextWindow")?.asLong ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW,
                 maxTokens = o.get("maxTokens")?.asLong ?: 8192L,
                 reasoning = o.get("reasoning")?.asBoolean ?: true,
                 supportsVision = o.get("supportsVision")?.asBoolean ?: false

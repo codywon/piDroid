@@ -3,7 +3,9 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 录音权限曾用于语音输入/朗读（voice/VoiceInputManager、SmartTtsManager），
+         但那两个管理器从未被任何界面引用，属于死代码，已删除。
+         这里不再声明 RECORD_AUDIO：声明了却无实际功能会直接触发应用市场的合规审查。 -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
