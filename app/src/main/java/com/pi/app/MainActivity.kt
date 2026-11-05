@@ -666,6 +666,30 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
+         * 拉 pi-web 的 ui-state（会话置顶/归档 + 项目置顶与排序）。
+         *
+         * 与 [loadSessions] 解耦：它只有几 KB，但同样要过一次隧道往返，
+         * 没必要拿它拖着会话列表的转圈。
+         */
+        fun refreshSessionUiState() {
+            lifecycleScope.launch {
+                // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
+                // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
+                apiClient.getSessionUiState().onSuccess { ui ->
+                    val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
+                    val archived = ui.sessionFlags.filterValues { it.archived }.keys
+                    pinnedSessionIds = pinned
+                    archivedSessionIds = archived
+                    prefs.setPinnedSessionIds(pinned)
+                    prefs.setArchivedSessionIds(archived)
+                    // 项目（工作区）置顶与排序同样以 PC 为准
+                    serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
+                    serverWorkspaceOrder = ui.projectOrder
+                }
+            }
+        }
+
+        /**
          * 全量会话列表的唯一入口。
          *
          * **右上角的转圈（[isLoadingSessions]）只覆盖「会话列表」本身**：列表一到手就停转，
@@ -746,30 +770,6 @@ class MainActivity : ComponentActivity() {
 
                 // 置顶/归档/项目排序：不参与首屏渲染，也不参与右上角的加载指示
                 refreshSessionUiState()
-            }
-        }
-
-        /**
-         * 拉 pi-web 的 ui-state（会话置顶/归档 + 项目置顶与排序）。
-         *
-         * 与 [loadSessions] 解耦：它只有几 KB，但同样要过一次隧道往返，
-         * 没必要拿它拖着会话列表的转圈。
-         */
-        fun refreshSessionUiState() {
-            lifecycleScope.launch {
-                // 置顶/归档的真源在 pi-web（~/.pi 下的 session-state 文件），本地 SharedPreferences
-                // 只是离线兜底。这里以服务端为准拉一次，并把结果镜像回本地。
-                apiClient.getSessionUiState().onSuccess { ui ->
-                    val pinned = ui.sessionFlags.filterValues { it.pinned }.keys
-                    val archived = ui.sessionFlags.filterValues { it.archived }.keys
-                    pinnedSessionIds = pinned
-                    archivedSessionIds = archived
-                    prefs.setPinnedSessionIds(pinned)
-                    prefs.setArchivedSessionIds(archived)
-                    // 项目（工作区）置顶与排序同样以 PC 为准
-                    serverPinnedWorkspaceKeys = ui.pinnedProjectKeys
-                    serverWorkspaceOrder = ui.projectOrder
-                }
             }
         }
 

@@ -2,6 +2,22 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.18] - 2026-11-05
+
+### 🔧 修复 2.0.17 的构建失败（局部函数前向引用），内容与 2.0.17 一致
+
+- **失败原因**：`loadSessions` 调用了在它**后面**才声明的局部函数 `refreshSessionUiState()`，Kotlin 的局部函数必须先声明后使用（这一点与成员函数不同），因此 `:app:compileDebugKotlin` 报 `Unresolved reference`，2.0.17 未产出安装包。
+- **修法**：把该函数整段上提到 `loadSessions` 之前，逻辑零改动；行为与 2.0.17 完全相同。
+- **发版说明**：按发版 SOP 不复用已推送过的 `v2.0.17` tag，直接递增到 `2.0.18`（versionCode 216）重跑流水线；2.0.17 从未发布，用户端只会看到 2.0.18。
+
+本版包含的完整内容（同 2.0.17）：
+
+- **右上角不再转三十多秒**：转圈只覆盖 `/api/sessions` 本身，回包即复位（取消/失败也走 `finally`）；`ui-state` 降为后台附属请求；从会话返回列表改为静默对账。根据「完全对齐 pi-web」的结论，`POST /api/sessions/stats`（服务端按会话文件逐个解析，484 条会话实测 ≈ 31 秒）在客户端整条下线：`getBatchSessionStats`、卡片 `stats` 参数、`SessionStatsFormatting` 及对应单测一并移除。上游该接口只服务于会话家族（`[rootSessionId, ...subagents]`），侧栏会话行从不显示 token / 费用 / 耗时。
+- **冷启动不再固定落回 termius**：1.8.88 的就绪门禁写的是 `isLoading && sessions.isEmpty()`，而冷启动走静默拉取、`isLoading` 恒为 false，门禁从未生效。现在以「首份完整会话快照是否到达」为判据（`sessionsSnapshotLoaded` → `isInitialSnapshotReady`），并把选区仲裁抽成纯函数 `decideWorkspaceSelection`（`Defer / Keep / ApplyHint / Fallback`）：数据未就绪一律 `Defer`，被动兜底仍然只挪内存指针、不写盘。
+- **会话卡右侧槽位对齐 pi-web**：`运行中 / 等待确认 / 未读` 保持原样，其余显示相对时间（`Rg()` 口径：刚刚 / N分 / N小时 / N天 / N周 / N个月 / N年），置顶区显示所属项目名；底部「耗时 · token · 费用」整行移除（同时消掉 UTC ISO 按本地时区格式化造成的“慢 8 小时”类时区问题）。
+- **顶栏移除扫码图标**：未连接时已有横幅主按钮、已连接后由「系统设置中心」承担，避免列表页误触。
+- **测试**：新增 `SessionTimeFormattingTest`（相对时间全部分档边界、未来时间、非法输入、UTC ISO 不漂移）；`WorkspacePathsTest` 新增 7 条选区仲裁回归（含「首帧只有 termius 时必须 Defer」）；移除已下线功能的 `SessionStatsFormattingTest`。
+
 ## [2.0.17] - 2026-11-05
 
 ### ⏱️ 从会话返回工作区，右上角不再转三十多秒
