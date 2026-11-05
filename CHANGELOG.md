@@ -4,6 +4,19 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.22] - 2026-11-06
+
+### 🔧 修复 2.0.21 的编译失败（格式化函数放错了作用域），内容与 2.0.21 一致
+
+- **失败原因**：`TokenStats.formatCacheHitRate` 被写在了 **class 体**里（紧跟 `cacheHitRate` 属性），而 HUD 与单测都是按 `TokenStats.formatCacheHitRate(…)` 的**伴生对象**方式调用 —— `:app:compileDebugKotlin` 报 `Unresolved reference 'formatCacheHitRate'`，2.0.21 未产出安装包。
+- **修法**：把该函数移入 `companion object`；`cacheHitRateAvailable` 读的是实例字段，保留在 class 体（它是 `val … get()`，调用点 `stats.cacheHitRateAvailable` 不变）。逻辑零改动。
+- **发版说明**：按发版 SOP 不复用已推送过的 `v2.0.21` tag，递增到 `2.0.22`（versionCode 220）；2.0.21 从未发布，用户端只会看到 2.0.22。
+
+本版完整内容（同 2.0.21）：
+
+- **Token HUD 对齐 pi-web 会话信息面板**：缓存率卡片改为条件显示（`cacheRead + cacheWrite > 0` 且分母 > 0），从未用过前缀缓存的会话不再摆一个 `0.0%`；副标题由「缓存命中: cacheRead 单值」改为上游口径的「缓存读取 / 缓存写入」两个独立读数；成本行同样按 `cost > 0` 条件显示，并用 `Locale.US` 固定点号小数（上游 `toFixed(4)` 的口径，德语环境不再显示 `0,0426$`）；命中率文案收敛为 `TokenStats.formatCacheHitRate()` 一份实现，HUD 与单测共用。
+- **工程卫生**：`android.kotlinOptions` → 顶层 `kotlin { compilerOptions { } }`（KGP 2.0 起前者已废弃）；commonmark 四个坐标移入 `gradle/libs.versions.toml`；发布签名前置校验补上 `signReleaseBundle` / `packageReleaseBundle`。
+
 ## [2.0.21] - 2026-11-06
 
 ### 🎛️ Token HUD 对齐 pi-web 会话信息面板（显示条件 / 两个缓存计数 / 格式化）

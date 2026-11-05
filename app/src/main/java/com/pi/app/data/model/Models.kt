@@ -499,10 +499,11 @@ data class TokenStats(
          * ```
          * 也就是说，从未走过前缀缓存的会话**不出现这一行**，而不是显示一个毫无意义的 `0.0%`。
          */
-        val cacheHitRateAvailable: Boolean
-            get() = cacheReadTokens + cacheWriteTokens > 0L &&
-                cacheReadTokens + cacheWriteTokens + inputTokens > 0L
+    val cacheHitRateAvailable: Boolean
+        get() = cacheReadTokens + cacheWriteTokens > 0L &&
+            cacheReadTokens + cacheWriteTokens + inputTokens > 0L
 
+    companion object {
         /**
          * 命中率文案：与上游 `${(cacheRead / (cacheRead + cacheWrite + input) * 100).toFixed(1)}%` 一致。
          *
@@ -511,7 +512,6 @@ data class TokenStats(
          */
         fun formatCacheHitRate(rate: Float): String = String.format(Locale.US, "%.1f%%", rate)
 
-    companion object {
         /**
          * 上下文占用应当展示的真实 token 数。
          *
