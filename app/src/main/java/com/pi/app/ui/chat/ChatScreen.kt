@@ -857,10 +857,11 @@ fun ChatScreen(
             artifactPdfFile = preview.pdfFile
             artifactText = preview.text
             if (preview.imageBytes != null) {
-                artifactImage = runCatching {
-                    android.graphics.BitmapFactory.decodeByteArray(preview.imageBytes, 0, preview.imageBytes.size)
-                        ?.asImageBitmap()
-                }.getOrNull()
+                val (decodedImg, dims) = com.pi.app.ui.components.decodeFullImagePreview(preview.imageBytes)
+                artifactImage = decodedImg
+                if (decodedImg != null && dims.isNotBlank()) {
+                    artifactMeta = if (artifactMeta.isNullOrBlank()) dims else "$artifactMeta · $dims"
+                }
                 if (artifactImage == null && artifactMessage == null) {
                     artifactMessage = "图片解码失败（可能过大或格式不支持）"
                 }

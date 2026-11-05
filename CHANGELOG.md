@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.16] - 2026-11-05
+
+### 📄 PDF 双指缩放极度卡顿修复：手势协程稳定化 + Draw 阶段零重组
+
+- **根因修复**：`PdfDocumentView` 的 `pointerInput` 误将 `scale` 变量作为重启 key，导致双指放大过程中每秒几十次微小缩放都会强制中断并重启整个手势协程，造成手势检测器状态丢失与严重卡顿跳屏。现解除 `scale` key 绑定，协程平稳常驻；
+- **消除全量重组**：将 `Modifier.graphicsLayer(scaleX = scale, ...)` 传值形式重构成 Lambda 块 `graphicsLayer { scaleX = scale; ... }`，将所有矩阵计算推迟至绘制（Draw）阶段执行，彻底消除放大时的界面全树 Recomposition；
+- **手势与交互对标**：支持 0.75x ~ 6x 平滑自由缩放、视口边界平移限制与双击 1x/2.5x 切换，放大比例大于 1.15x 时在右下角提供便捷的「XX% · 点击复位」胶囊（与 `ZoomableImageCanvas` 交互完全统一）。
+
+### 🖼️ 图片全屏预览对标 pi-web：4K 原画级 1:1 输出 + 顶栏尺寸呈现
+
+- **杜绝放大模糊**：旧实现将图片解码目标硬编码为 `maxDimension = 2048`，导致常见的 2K/4K 电脑截图与架构图被强制降采样丢弃大量像素。现新增 `FULLSCREEN_DECODE_TARGET_PX = 4096`，4K UHD（3840×2160）以内图片保持 1:1 原画质解码进内存，双指放大后小字、线条分毫毕现；
+- **防 OOM 自适应兜底**：仅针对大于 4096px 的极端超长/超大长图按 2 的幂次安全降采样，Native 内存绝对受控；
+- **对齐 pi-web 尺寸展示**：统一通过 `decodeFullImagePreview` 提取图片的真实物理分辨率（如 `3840×2160`），并格式化呈现到顶栏（例如 `1.4 MB · 3840×2160 · 2026-03-01`），完全对标 pi-web 的 `naturalSize` 展示体验。
+
 ## [2.0.15] - 2026-11-05
 
 ### 📉 列表加载失败不再显示成“一条都没有”（对标 pi-web 的失败呈现）

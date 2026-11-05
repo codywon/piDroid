@@ -48,6 +48,16 @@ class MediaLoadPolicyTest {
         }
     }
 
+    @Test
+    fun `全屏预览目标4096覆盖4K截图保持1比1原画不降采样`() {
+        // 4K UHD 3840×2160
+        assertEquals(1, MediaLoadPolicy.sampleSizeFor(3840, 2160, MediaLoadPolicy.FULLSCREEN_DECODE_TARGET_PX))
+        // 2K QHD 2560×1440
+        assertEquals(1, MediaLoadPolicy.sampleSizeFor(2560, 1440, MediaLoadPolicy.FULLSCREEN_DECODE_TARGET_PX))
+        // 8K 7680×4320 降一档到 3840，依然具备 4K 级清晰度且防止 OOM
+        assertEquals(2, MediaLoadPolicy.sampleSizeFor(7680, 4320, MediaLoadPolicy.FULLSCREEN_DECODE_TARGET_PX))
+    }
+
     // ── 磁盘缓存 key ────────────────────────────────────────────
 
     @Test

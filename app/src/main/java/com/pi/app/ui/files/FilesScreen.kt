@@ -270,7 +270,11 @@ internal fun FilesScreen(
             previewText = data.text
 
             data.imageBytes?.let { bytes ->
-                previewImage = decodeDownsampledBitmap(bytes, maxDimension = 2048)
+                val (decodedImg, dims) = com.pi.app.ui.components.decodeFullImagePreview(bytes)
+                previewImage = decodedImg
+                if (decodedImg != null && dims.isNotBlank()) {
+                    previewMeta = if (previewMeta.isNullOrBlank()) dims else "$previewMeta · $dims"
+                }
                 if (previewImage == null && previewMessage == null) {
                     previewMessage = "图片解码失败（可能过大或格式不支持）"
                 }
@@ -797,23 +801,4 @@ internal fun ParentDirectoryRow(
     }
 }
 
-/**
- * 按最长边降采样解码图片。
- *
- * 4K PNG（6.1MB）直接 `decodeByteArray` 会产出一张 4096×4096 的 ARGB_8888 位图，
- * 即 67MB 堆内存 —— 在手机上大概率 OOM，表现出来就是「图片打不开」。
- * 这里先读尺寸、按 2 的幂次降采样到 [maxDimension] 以内再真正解码。
- */
-private fun decodeDownsampledBitmap(bytes: ByteArray, maxDimension: Int): ImageBitmap? {
-    return runCatching {
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        var sampleSize = 1
-        val longest = maxOf(bounds.outWidth, bounds.outHeight)
-        while (longest > 0 && longest / sampleSize > maxDimension) {
-            sampleSize *= 2
-        }
-        val options = BitmapFactory.Options().apply { inSampleSize = sampleSize }
-        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.asImageBitmap()
-    }.getOrNull()
-}
+

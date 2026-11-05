@@ -412,6 +412,34 @@ internal fun decodeSampledImage(bytes: ByteArray, maxLongEdgePx: Int): Pair<Imag
 }
 
 /**
+ * 全屏大图安全解码（完全对标 pi-web 原图高清呈现）。
+ *
+ * 覆盖常见 4K 截图与设计图（<= 4096px）：保持 1:1 原画质不压缩（inSampleSize = 1），
+ * 杜绝双指放大时的像素模糊发虚；
+ * 仅对 >4096px 的超大长图进行按 2 的幂次安全降采样，防止极端 Native 内存溢出。
+ * 同时返回原始图片尺寸字串（例如 "3840×2160"），供顶栏对齐 pi-web naturalSize 展示。
+ */
+internal fun decodeFullImagePreview(
+    bytes: ByteArray,
+    maxLongEdgePx: Int = MediaLoadPolicy.FULLSCREEN_DECODE_TARGET_PX
+): Pair<ImageBitmap?, String> {
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val origW = bounds.outWidth
+        val origH = bounds.outHeight
+        val dimLabel = if (origW > 0 && origH > 0) "${origW}×${origH}" else ""
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = MediaLoadPolicy.sampleSizeFor(origW, origH, maxLongEdgePx)
+            inPreferredConfig = android.graphics.Bitmap.Config.ARGB_8888
+        }
+        val bitmap = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return Pair(null, dimLabel)
+        bitmap.asImageBitmap() to dimLabel
+    }.getOrElse { null to "" }
+}
+
+/**
  * 多媒体附件画廊列表：渲染工具输出或消息中包含的所有图片、SVG、PDF、脑图附件
  */
 @Composable

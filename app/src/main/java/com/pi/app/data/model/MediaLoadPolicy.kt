@@ -20,6 +20,9 @@ object MediaLoadPolicy {
     /** 兜底解码目标（拿不到屏幕信息时用）：1080×2 对手机足够清晰。 */
     const val FALLBACK_DECODE_TARGET_PX = 2160
 
+    /** 全屏大图预览的解码目标（对标 pi-web 原画质高清呈现，覆盖 4K 屏幕截图像素不失真）：4096px。 */
+    const val FULLSCREEN_DECODE_TARGET_PX = 4096
+
     /** 内存池上限：按**字节**计，不再按项数计。 */
     const val MEMORY_CACHE_MAX_BYTES = 24 * 1024 * 1024
 

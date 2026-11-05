@@ -40,6 +40,7 @@ server/logs/
 server/launcher.log
 server/server.log
 server/cloudflared.log
+server/*.log
 
 # 本地诊断脚本（不入库）
 server/.diag-*.mjs
