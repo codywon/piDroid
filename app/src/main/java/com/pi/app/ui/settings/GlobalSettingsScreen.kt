@@ -80,6 +80,8 @@ fun GlobalSettingsScreen(
     onSetDefaultModel: (ModelInfo) -> Unit,
     onSetDefaultThinkingLevel: (ThinkingLevel) -> Unit,
     onRefreshModels: () -> Unit = {},
+    /** 模型目录上次加载失败的原因（null = 正常）；各 Tab 用它渲染“加载失败 · 重试” */
+    modelsLoadError: String? = null,
     onSaveProviderApiKey: (provider: String, apiKey: String) -> Unit = { _, _ -> },
     onSaveCustomModel: (
         providerName: String,
@@ -105,7 +107,11 @@ fun GlobalSettingsScreen(
     onSaveSkillContent: (SkillInfo, String) -> Unit = { _, _ -> },
     onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> },
     onRefreshSkills: () -> Unit = {},
+    /** 技能列表上次加载失败的原因（null = 正常） */
+    skillsLoadError: String? = null,
     plugins: List<PluginPackage>,
+    /** 插件列表上次加载失败的原因（null = 正常） */
+    pluginsLoadError: String? = null,
     onManagePlugin: (action: String, source: String, scope: String) -> Unit = { _, _, _ -> },
     onEditPlugin: (oldPkg: PluginPackage, newSource: String, newVersion: String, newDesc: String, newScope: String) -> Unit = { _, _, _, _, _ -> },
     mcpConfig: McpCodeModeConfig,
@@ -258,6 +264,7 @@ fun GlobalSettingsScreen(
                             onSetDefaultModel = onSetDefaultModel,
                             onSetDefaultThinkingLevel = onSetDefaultThinkingLevel,
                             onRefreshModels = onRefreshModels,
+                            modelsLoadError = modelsLoadError,
                             onSaveProviderApiKey = onSaveProviderApiKey,
                             onSaveCustomModel = onSaveCustomModel,
                             onDeleteModel = onDeleteModel,
@@ -303,7 +310,8 @@ fun GlobalSettingsScreen(
                         }
                     },
                     onInstallSkill = onInstallSkill,
-                    onRefreshSkills = onRefreshSkills
+                    onRefreshSkills = onRefreshSkills,
+                    loadError = skillsLoadError
                 )
                 GlobalSettingsTab.Mcp -> GlobalMcpTab(
                     mcpConfig = mcpConfig,
@@ -315,6 +323,8 @@ fun GlobalSettingsScreen(
                 )
                 GlobalSettingsTab.Plugins -> GlobalPluginsTab(
                     plugins = plugins,
+                    loadError = pluginsLoadError,
+                    onRetry = onRefreshSkills,
                     onManagePlugin = onManagePlugin,
                     onEditPlugin = onEditPlugin
                 )
@@ -555,6 +565,8 @@ fun GlobalModelsTab(
     onSetDefaultModel: (ModelInfo) -> Unit,
     onSetDefaultThinkingLevel: (ThinkingLevel) -> Unit,
     onRefreshModels: () -> Unit = {},
+    /** 模型目录上次加载失败的原因（null = 正常）；非空时列表上方给一行“重试” */
+    modelsLoadError: String? = null,
     onSaveProviderApiKey: (provider: String, apiKey: String) -> Unit = { _, _ -> },
     onSaveCustomModel: (
         providerName: String,
@@ -696,6 +708,18 @@ fun GlobalModelsTab(
             }
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            // 加载失败先说失败：列表空的时候，用户看到的本来是“一个模型都没有”，
+            // 但真相往往是接口没拿到（隧道 502 / pi-web 没起来）。
+            if (modelsLoadError != null) {
+                SettingsRow(
+                    title = "模型列表加载失败（$modelsLoadError）",
+                    value = "重试",
+                    valueColor = theme.primary,
+                    onClick = onRefreshModels
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Provider 筛选栏
             Row(
@@ -1204,7 +1228,9 @@ fun GlobalSkillsTab(
     onEditAlias: (SkillInfo) -> Unit,
     onViewDetail: (SkillInfo) -> Unit,
     onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> },
-    onRefreshSkills: () -> Unit = {}
+    onRefreshSkills: () -> Unit = {},
+    /** 技能接口上次失败的原因（null = 正常）。非空时列表空态改成“加载失败 · 重试” */
+    loadError: String? = null
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
@@ -1521,10 +1547,19 @@ fun GlobalSkillsTab(
                         }
                         if (projectSkills.isEmpty()) {
                             item(key = "project-empty") {
-                                SkillHintRow(
-                                    text = "暂无项目技能 · 去添加",
-                                    onClick = { currentSection = SkillSection.ADD_SKILL }
-                                )
+                                // 加载失败时先报失败：这种情况下两个分组都会是空的，
+                                // 继续写“暂无技能 · 去添加”会把网络故障说成“你没装”。
+                                if (loadError != null) {
+                                    SkillHintRow(
+                                        text = "技能加载失败（$loadError）· 点此重试",
+                                        onClick = onRefreshSkills
+                                    )
+                                } else {
+                                    SkillHintRow(
+                                        text = "暂无项目技能 · 去添加",
+                                        onClick = { currentSection = SkillSection.ADD_SKILL }
+                                    )
+                                }
                             }
                         } else {
                             skillRows(filteredProject, "project")
@@ -1548,10 +1583,17 @@ fun GlobalSkillsTab(
                         }
                         if (globalSkills.isEmpty()) {
                             item(key = "global-empty") {
-                                SkillHintRow(
-                                    text = "暂无全局技能 · 去添加",
-                                    onClick = { currentSection = SkillSection.ADD_SKILL }
-                                )
+                                if (loadError != null) {
+                                    SkillHintRow(
+                                        text = "技能加载失败（$loadError）· 点此重试",
+                                        onClick = onRefreshSkills
+                                    )
+                                } else {
+                                    SkillHintRow(
+                                        text = "暂无全局技能 · 去添加",
+                                        onClick = { currentSection = SkillSection.ADD_SKILL }
+                                    )
+                                }
                             }
                         } else {
                             skillRows(filteredGlobal, "global")
@@ -2851,6 +2893,9 @@ fun GlobalMcpTab(
 @Composable
 fun GlobalPluginsTab(
     plugins: List<PluginPackage>,
+    /** 插件接口上次失败的原因（null = 正常）。非空时列表空态改成“加载失败 · 重试” */
+    loadError: String? = null,
+    onRetry: () -> Unit = {},
     onManagePlugin: (action: String, source: String, scope: String) -> Unit = { _, _, _ -> },
     onEditPlugin: (oldPkg: PluginPackage, newSource: String, newVersion: String, newDesc: String, newScope: String) -> Unit = { _, _, _, _, _ -> }
 ) {
@@ -2919,14 +2964,25 @@ fun GlobalPluginsTab(
 
                 if (plugins.isEmpty()) {
                     SettingsGroup {
-                        SettingsRow(
-                            title = "还没有安装插件",
-                            subtitle = "npm: / git: / 本地路径",
-                            value = "安装",
-                            valueColor = theme.primary,
-                            showChevron = true,
-                            onClick = { showInstallPluginDialog = true }
-                        )
+                        // 加载失败先说失败：否则用户看到的是“还没有安装插件”，
+                        // 以为真的没装，而真相是压根没拿到数据（对标 pi-web 的失败可见）。
+                        if (loadError != null) {
+                            SettingsRow(
+                                title = "插件列表加载失败（$loadError）",
+                                value = "重试",
+                                valueColor = theme.primary,
+                                onClick = onRetry
+                            )
+                        } else {
+                            SettingsRow(
+                                title = "还没有安装插件",
+                                subtitle = "npm: / git: / 本地路径",
+                                value = "安装",
+                                valueColor = theme.primary,
+                                showChevron = true,
+                                onClick = { showInstallPluginDialog = true }
+                            )
+                        }
                     }
                 } else {
                     SettingsGroupLabel(

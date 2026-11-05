@@ -1,6 +1,7 @@
 package com.pi.app.ui.chat
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -15,10 +16,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pi.app.data.model.ModelInfo
@@ -50,6 +53,15 @@ fun ModelAndThinkingSheet(
     onModelSelected: (ModelInfo) -> Unit,
     onThinkingLevelChanged: ((ThinkingLevel) -> Unit)? = null,
     onSetDefaultModel: ((ModelInfo) -> Unit)? = null,
+    /**
+     * 模型目录上次加载失败的原因（null = 正常）。
+     *
+     * 对标 pi-web：模型列表拿不到时要直接把错误呈现出来，而不是给一个空白列表 ——
+     * 空白会被读成“这个账号没有可用模型”，真实原因却是请求失败。
+     */
+    modelsLoadError: String? = null,
+    /** 点“重试”时重新拉目录；null = 不提供重试入口 */
+    onRetryLoad: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val theme = LocalAppTheme.current
@@ -179,6 +191,40 @@ fun ModelAndThinkingSheet(
             }
 
             // 2. Provider 分组选择
+            // 拿不到目录时先说明原因（带 HTTP 状态），并给一个就地重试的入口。
+            if (availableModels.isEmpty() && modelsLoadError != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(theme.surfaceContainer)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "模型列表加载失败（$modelsLoadError）",
+                        fontSize = 12.sp,
+                        color = theme.textSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (onRetryLoad != null) {
+                        Text(
+                            text = "重试",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = theme.primary,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .clickable { onRetryLoad() }
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+            }
+
             if (providers.size > 1) {
                 Row(
                     modifier = Modifier

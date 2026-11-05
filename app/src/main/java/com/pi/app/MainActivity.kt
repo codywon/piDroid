@@ -417,6 +417,18 @@ class MainActivity : ComponentActivity() {
         }
         var skills by remember { mutableStateOf<List<SkillInfo>>(emptyList()) }
         var plugins by remember { mutableStateOf<List<PluginPackage>>(emptyList()) }
+
+        /**
+         * 三个列表接口的失败原因（null = 上一次加载成功）
+         *
+         * 对标 pi-web：拉取失败要把错误交给界面（它直接写 `Failed to load models (HTTP 502)`），
+         * 而不是静默保留一个空列表 —— 那样用户看到的是“一个技能也没装”，
+         * 而真相是“根本没请求成功”。内容本身只用一句短原因（`HTTP 502` / `网络错误`），
+         * 具体异常在 [com.pi.app.network.PiApiClient] 里已经记过日志。
+         */
+        var skillsLoadError by remember { mutableStateOf<String?>(null) }
+        var pluginsLoadError by remember { mutableStateOf<String?>(null) }
+        var modelsLoadError by remember { mutableStateOf<String?>(null) }
         var sessionStatsMap by remember { mutableStateOf<Map<String, SessionStatsSummary>>(emptyMap()) }
         var currentCompactionRecords by remember { mutableStateOf<List<CompactionRecord>>(emptyList()) }
         var currentBranchTreeNodes by remember { mutableStateOf<List<BranchTreeNode>>(emptyList()) }
@@ -577,30 +589,38 @@ class MainActivity : ComponentActivity() {
                         // 这里曾经直接把失败当成 null，于是网络抖一下入口就消失；
                         // 更糟的是它会连带取消正在进行的增强请求，服务端随后返回 499。
                 }
-                apiClient.getDynamicModels().onSuccess { catalog ->
-                    dynamicCatalog = catalog
-                    catalog.defaultModel?.let { def ->
-                        currentDefaultModelId = def.modelId
-                        currentDefaultProvider = def.provider
+                apiClient.getDynamicModels()
+                    .onSuccess { catalog ->
+                        modelsLoadError = null
+                        dynamicCatalog = catalog
+                        catalog.defaultModel?.let { def ->
+                            currentDefaultModelId = def.modelId
+                            currentDefaultProvider = def.provider
+                        }
+                        selectedModel = SessionModelSelection.afterCatalogRefresh(
+                            models = catalog.models,
+                            current = selectedModel,
+                            hasOpenSession = currentSession != null,
+                            defaultProvider = catalog.defaultModel?.provider ?: prefs.defaultProvider,
+                            defaultModelId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
+                        )
                     }
-                    selectedModel = SessionModelSelection.afterCatalogRefresh(
-                        models = catalog.models,
-                        current = selectedModel,
-                        hasOpenSession = currentSession != null,
-                        defaultProvider = catalog.defaultModel?.provider ?: prefs.defaultProvider,
-                        defaultModelId = catalog.defaultModel?.modelId ?: prefs.defaultModelId
-                    )
-                }
+                    // 失败就把原因留下来，让界面能显示「加载失败 · 重试」
+                    // （对标 pi-web：它也是把 `Failed to load models (HTTP 502)` 直接呈现给用户）。
+                    .onFailure { modelsLoadError = it.message ?: "加载失败" }
                 if (modelsOnly) return@launch
 
                 val cwd = currentProject
                 apiClient.getSkills(cwd).onSuccess { list ->
+                    skillsLoadError = null
                     skills = list.map {
                         val customAlias = prefs.getSkillAlias(it.name)
                         if (!customAlias.isNullOrBlank()) it.copy(alias = customAlias) else it
                     }
-                }
-                apiClient.getPlugins(cwd).onSuccess { plugins = it }
+                }.onFailure { skillsLoadError = it.message ?: "加载失败" }
+                apiClient.getPlugins(cwd)
+                    .onSuccess { pluginsLoadError = null; plugins = it }
+                    .onFailure { pluginsLoadError = it.message ?: "加载失败" }
                 apiClient.getMcpServers(cwd).onSuccess { mcpServers = it }
                 // 代码模式三个旋钮在 /api/tools/settings（上游 GET），不再从 /api/mcp 里猜测
                 apiClient.getToolSettings().onSuccess { mcpConfig = it.toCodeModeConfig() }
@@ -2430,6 +2450,9 @@ class MainActivity : ComponentActivity() {
                 GlobalSettingsScreen(
                     apiClient = apiClient,
                     models = dynamicCatalog.models,
+                    modelsLoadError = modelsLoadError,
+                    skillsLoadError = skillsLoadError,
+                    pluginsLoadError = pluginsLoadError,
                     currentDefaultModelId = prefs.defaultModelId,
                     currentDefaultProvider = prefs.defaultProvider,
                     currentDefaultThinkingLevel = ThinkingLevel.fromValue(prefs.defaultThinkingLevel),
@@ -3482,6 +3505,11 @@ class MainActivity : ComponentActivity() {
                         currentThinkingLevel = currentThinkingLevel,
                         defaultModelId = currentDefaultModelId,
                         defaultProvider = currentDefaultProvider,
+                        modelsLoadError = modelsLoadError,
+                        onRetryLoad = {
+                            // 失败后直接重拉目录（与设置页的刷新按钮同一条路径）
+                            loadCapabilitiesAndModels(modelsOnly = true)
+                        },
                         onModelSelected = { model ->
                             val previous = selectedModel
                             modelMetaRevision++

@@ -3312,11 +3312,17 @@ class PiApiClient(private val prefs: AppPreferences) {
             listOf("$baseUrl/api/skills")
         }
 
+        // 记住最后一次非 2xx 的状态码：失败时要把 HTTP 码带出去（对齐 pi-web 的
+        // `Failed to load skills (HTTP 502)`），而不是只给一句笼统的“加载失败”。
+        var lastHttpCode: Int? = null
         for (url in urlsToTry) {
             try {
                 val req = Request.Builder().url(url).get().build()
                 val parsedList = client.newCall(req).execute().use { response ->
-                    if (!response.isSuccessful) return@use null
+                    if (!response.isSuccessful) {
+                        lastHttpCode = response.code
+                        return@use null
+                    }
                     val body = response.body?.string() ?: "{}"
                     val jsonEl = runCatching { JsonParser.parseString(body) }.getOrNull() ?: return@use null
                     val array = when {
@@ -3409,7 +3415,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
         Log.w("PiApiClient", "加载技能列表失败")
-        Result.failure(IOException("加载技能列表失败"))
+        Result.failure(IOException(lastHttpCode?.let { "HTTP $it" } ?: "网络错误"))
     }
 
     // ==========================================
@@ -3428,11 +3434,16 @@ class PiApiClient(private val prefs: AppPreferences) {
             listOf("$baseUrl/api/plugins")
         }
 
+        // 同 getSkills：把 HTTP 码带出去，供界面显示并决定是否需要重试。
+        var lastHttpCode: Int? = null
         for (url in urlsToTry) {
             try {
                 val req = Request.Builder().url(url).get().build()
                 val parsedList = client.newCall(req).execute().use { response ->
-                    if (!response.isSuccessful) return@use null
+                    if (!response.isSuccessful) {
+                        lastHttpCode = response.code
+                        return@use null
+                    }
                     val body = response.body?.string() ?: "{}"
                     val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
                     val list = mutableListOf<PluginPackage>()
@@ -3472,7 +3483,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
         Log.w("PiApiClient", "加载插件列表失败")
-        Result.failure(IOException("加载插件列表失败"))
+        Result.failure(IOException(lastHttpCode?.let { "HTTP $it" } ?: "网络错误"))
     }
 
     // ==========================================
