@@ -2,6 +2,14 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.19] - 2026-11-06
+
+### 📊 Token HUD 缓存命中率对齐 pi-web（不再永远顶格 100.0%）
+
+- **根因**：HUD 的命中率分子取会话**累计** `cacheRead`，分母却用最后一条 assistant 消息的**单轮** `input`，且漏掉了 `cacheWrite`。两个口径一混，“累计命中 ÷ 单轮输入”在任何带前缀缓存的会话上都会算成 99.99% → 四舍五入后永远显示 100.0%（实测 27.5 M cacheRead 配 169 input），这个数字既不真实也不携带信息。
+- **修复**：口径与上游 `session.cacheHitRate` 完全一致 —— `cacheRead / (cacheRead + cacheWrite + input)`，三个数**全部取自会话累计**；仅当网关不返回 `stats.tokens`（累计缺席）时才退回最后一条 assistant 消息的 usage，那是“有真实来源的退路”而不是编造。上下文占用仍单独按最后一条消息计算，不受影响。
+- **测试**：新增 `TokenStatsCacheRateTest` —— 分母包含 `cacheWrite`、累计口径不顶格、混合口径必然 100.0% 的证据固化、零用量不除零。
+
 ## [2.0.18] - 2026-11-05
 
 ### 🔧 修复 2.0.17 的构建失败（局部函数前向引用），内容与 2.0.17 一致
