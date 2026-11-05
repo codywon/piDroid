@@ -4,6 +4,16 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.24] - 2026-11-06
+
+### 🔧 修复 2.0.23 的单测源集编译失败，内容与 2.0.23 一致
+
+- **失败一**：`SessionRelationVisibilityTest` 还在断已删除的 `Session.cost`（`Unresolved reference 'cost'`）。移除该断言，并把 fixture 里那个已经不会被任何字段接收的 `"cost":0.42` 一并删掉 —— 真实列表响应（实测 484 条）本来就没有这个 key。
+- **失败二**：`SessionSaverTest` 里 `SessionSaver.restore(emptyList())` 推不出元素类型（`restore` 的形参是 `Any`）。改成 `emptyList<String>()` / `listOf<String>(…)`。
+- **发版说明**：`v2.0.23` 已推送且有 CI 记录，按 SOP 不复用，递增到 `2.0.24`（versionCode 222）；2.0.23 从未发布。
+
+本版完整内容（同 2.0.23）：删除 `Session` 上三个从未被列表响应赋值的字段（`tokenUsage` / `cost` / `totalActiveMs`），`SessionSaver` 的槽位同步重排；新增 `SessionSaverTest` 钉住位置化存档的线格式；`docs/PLAN-toolchain-upgrade.md` 记录 Gradle wrapper → AGP 的分步升级计划。
+
 ## [2.0.23] - 2026-11-06
 
 ### 🧽 删掉会话模型里三个“永远为 0”的字段（与 pi-web 的列表契约对齐）

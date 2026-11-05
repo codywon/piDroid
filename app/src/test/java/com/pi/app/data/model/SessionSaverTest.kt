@@ -62,12 +62,12 @@ class SessionSaverTest {
 
     @Test
     fun `empty state restores to no session`() {
-        assertNull(SessionSaver.restore(emptyList()))
+        assertNull(SessionSaver.restore(emptyList<String>()))
     }
 
     @Test
     fun `truncated state falls back to defaults instead of crashing`() {
-        val restored = SessionSaver.restore(listOf("s1"))!!
+        val restored = SessionSaver.restore(listOf<String>("s1"))!!
 
         assertEquals("s1", restored.id)
         assertEquals(0, restored.messageCount)

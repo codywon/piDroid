@@ -80,7 +80,7 @@ class SessionRelationVisibilityTest {
         val s = session(
             """
             {"id":"h","name":"实施 pi-web 0.14 同步","cwd":"D:\\myscript\\pi-app",
-             "project":"pi-app","messageCount":12,"cost":0.42,"active":true,
+             "project":"pi-app","messageCount":12,"active":true,
              "relation":{"kind":"side","parentSessionId":"parent-1"}}
             """.trimIndent()
         )
@@ -88,7 +88,6 @@ class SessionRelationVisibilityTest {
         Assert.assertEquals("实施 pi-web 0.14 同步", s.name)
         Assert.assertEquals("D:\\myscript\\pi-app", s.cwd)
         Assert.assertEquals(12, s.messageCount)
-        Assert.assertEquals(0.42, s.cost, 0.0001)
         Assert.assertTrue(s.active)
         Assert.assertEquals("parent-1", s.relation?.parentSessionId)
     }
