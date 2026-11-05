@@ -1,6 +1,6 @@
 # PLAN — 工具链升级（KGP → AGP → Gradle wrapper）
 
-> 状态：**进行中**（第 1、2 步已完成；下一步 = 第 3 步 wrapper）
+> 状态：**已完成**（第 1–3 步均已发布；第 4 步为可选、未排期）
 > 记录时间：2026-11-06，兼容矩阵核对日期：2026-11-06
 
 ## 为什么要单独做
@@ -46,10 +46,12 @@ Gradle 8.11.1 is out of date: consider updating to the latest Gradle version.
 - 选 8.10.1 而不是 8.11.x：后者把最低 Gradle 抬到 8.13，会跟第 3 步混在一起；
 - 若 AGP 提高 `compileSdk` / build-tools 要求，同步处理（当前 compileSdk 35）。
 
-### 第 3 步：Gradle wrapper 8.11.1 → 8.14.6（下一步）
+### 第 3 步：Gradle wrapper 8.11.1 → 8.14.6（✅ 已随 2.0.27 发布）
 
 - 8.14.6 是 8.14 线的最后一个安全补丁版本；KGP 2.2 的上限正好是 8.14，落点刚好；
-- 这步之后 CI 那句 "Gradle 8.11.1 is out of date" 才会消失。
+- 只改 `distributionUrl`：该文件没有 `distributionSha256Sum`，`gradle-wrapper.jar` 也不用重生成
+  （wrapper 只负责按 URL 拉起发行版；本地按 §1.1 不跑 `gradle wrapper`）；
+- 这步之后 CI 那句 "Gradle 8.11.1 is out of date" 消失。
 
 ### 第 4 步（可选，看需要）：KGP 2.3.x + AGP 8.13 + Gradle 9.x
 

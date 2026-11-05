@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.27] - 2026-11-06
+
+### ⬆️ 工具链第 3 步：Gradle wrapper 8.11.1 → 8.14.6（计划收尾）
+
+- **选 8.14.6**：8.14 线的最后一个安全补丁（2026-10-08），也是 KGP 2.2.21 官方支持的上限（Gradle 7.6.3–8.14）；AGP 8.10.1 的最低要求是 8.11.1，8.14 在其之上（允许）。升级前已确认 `https://services.gradle.org/distributions/gradle-8.14.6-bin.zip` 可解析（307 → gradle-distributions）。
+- **只改 `distributionUrl`**：`gradle-wrapper.properties` 里没有 `distributionSha256Sum`，因此不需要同步校验和；`gradle-wrapper.jar` 保持原样 —— wrapper 的职责是“按 URL 下载并拉起发行版”，jar 版本与发行版版本无需一致（且按 `AGENTS.md` §1.1 本地不跑 `gradle wrapper` 去重生成）。
+- **效果**：CI 那句 `Gradle 8.11.1 is out of date` 从这一版起消失。
+- **工具链现状（三者互相都在官方支持区间内）**：KGP **2.2.21** + AGP **8.10.1** + Gradle **8.14.6**。后续的可选第 4 步（KGP 2.3.x + AGP 8.13 + Gradle 9.x）未排期，见 `docs/PLAN-toolchain-upgrade.md`。
+
 ## [2.0.26] - 2026-11-06
 
 ### ⬆️ 工具链第 2 步：AGP 8.7.3 → 8.10.1（wrapper 仍为 8.11.1）
