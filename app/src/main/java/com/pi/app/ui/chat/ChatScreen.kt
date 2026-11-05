@@ -948,86 +948,14 @@ fun ChatScreen(
     val isFirstScreenLoading = conversation.isEmpty() && (isLoadingSessionHistory || isAgentBusy)
 
     // 1:1 对标 pi-web：将整场会话的消息按用户提问构建回合大纲列表 (TurnOutline)
-    val allTurns = remember(
-        conversation.size,
-        conversation.firstOrNull()?.id,
-        conversation.lastOrNull()?.id,
-        conversation.lastOrNull()?.content?.length,
-        conversation.lastOrNull()?.thinking?.length,
-        isAgentBusy
-    ) {
-        val userIndices = mutableListOf<Int>()
-        conversation.forEachIndexed { i, m ->
-            if (m.role == MessageRole.USER) {
-                userIndices.add(i)
-            }
-        }
-
-        userIndices.mapIndexed { turnIdx, uIdx ->
-            val turnNum = turnIdx + 1
-            val userMsg = conversation[uIdx]
-            val nextUIdx = if (turnIdx + 1 < userIndices.size) userIndices[turnIdx + 1] else conversation.size
-            val turnSlice = conversation.subList(uIdx + 1, nextUIdx)
-
-            // 如果处于最后一轮且正在运行，按 pi-web 规范：未答复回合里正文只是过程的一部分
-            val isCurrentRunning = (turnIdx == userIndices.lastIndex) && isAgentBusy
-
-            // 本回合是否产生了生成式 UI 微组件。若**是**，流式正文要提成独立的最终答复行：
-            // 折叠组排在微组件卡片**上方**，正文每多一行就把卡片往下推一行，
-            // 真机上看到的就是「每输出一行，卡片跳一下」。
-            val turnHasWidget = turnSlice.any { m ->
-                m.toolCall?.let { showWidgetPayload(it) } != null
-            }
-
-            // 拆分规则见 [TurnPartition]：与 pi-web 一致（未答复不拆），且**绝不丢项** ——
-            // 旧实现用 subList(0, finalAnsIdx) 把最终答复之后的过程项整段丢掉，
-            // 表现就是「界面停在最后一句正文 + 正在等待模型」，而 PC 上还在继续跑。
-            val split = TurnPartition.split(
-                items = turnSlice,
-                isCurrentRunning = isCurrentRunning,
-                turnHasWidget = turnHasWidget
-            )
-            val finalAns: ChatItem? = split.finalAnswerIndex?.let { turnSlice[it] }
-            val finalAnsIdx: Int? = split.finalAnswerIndex?.let { uIdx + 1 + it }
-            val processItems: List<ChatItem> = split.processIndices.map { turnSlice[it] }
-
-            var toolCount = 0
-            turnSlice.forEach { m ->
-                // `visualize_read_me` 是插件内部步骤（本身就不在聊天流里展示），
-                // 继续把它算进「M 次工具调用」会让折叠组多报一次，与所见不符。
-                if ((m.role == MessageRole.TOOL || m.toolCall != null) &&
-                    m.toolCall?.let { isGenerativeUiInternalTool(it) } != true
-                ) {
-                    toolCount++
-                }
-            }
-
-            // 生成式 UI 微组件是**内容**不是**过程**：从过程折叠组里剥出来，独立成行渲染
-            // （排在过程组之后、最终答复之前）。不剥离的话，回合一旦答完，
-            // ProcessDetailsGroup 自动收起，用户必须先展开那行灰字才看得见图。
-            val (widgetItems, processOnly) = processItems.partition { item ->
-                item.toolCall?.let { showWidgetPayload(it) } != null
-            }
-
-            val endTime = (finalAns ?: processItems.lastOrNull() ?: userMsg).timestamp
-            val durationMs = if (endTime > userMsg.timestamp) endTime - userMsg.timestamp else null
-            val headings = extractAssistantOutline(finalAns?.content ?: processItems.lastOrNull { it.role == MessageRole.AGENT }?.content)
-
-            TurnOutline(
-                turnNumber = turnNum,
-                userIndex = uIdx,
-                userMessage = userMsg,
-                toolCount = toolCount,
-                assistantIndex = finalAnsIdx,
-                assistantHeadings = headings,
-                processItems = processOnly,
-                widgetItems = widgetItems,
-                finalAnswerItem = finalAns,
-                durationMs = durationMs,
-                isRunning = isCurrentRunning
-            )
-        }
-    }
+    //
+    // 这里**不能**再用 remember(...) 缓存（旧实现用 size / 首尾 id / 尾部 content 与
+    // thinking 长度 / isAgentBusy 当 key）。工具结果回来走的是 messages[idx] = copy(...)：
+    // 长度不变、首尾 id 不变，而 TOOL 项的 content 恒为 "" —— 六个 key 一个都不动，
+    // 大纲于是继续返回旧快照，表现为「工具跑完卡片还在转圈」；模型把正文回填给
+    // 非尾部的 AGENT 气泡时同理，正文被缓存吃掉。直接重算的代价与流式期间相同
+    // （那时尾部每个 token 都在变，旧 key 本来就每次失效），规则详见 [buildTurnOutlines]。
+    val allTurns = buildTurnOutlines(conversation, isAgentBusy)
 
     // 记录用户是否正在通过时间轴或手动上翻回看历史，避免后台轮询或流式输出强制拉回底部打断阅读
     //
@@ -2193,6 +2121,9 @@ fun ChatScreen(
 
                 // 4. 底部极简指标栏（4 个核心参数合理分布，左右安全边距避免圆角屏遮挡，点击呼出 HUD）
                 val percent = (tokenStats.contextUsagePercent * 100).toInt().coerceIn(0, 100)
+                // 进度条百分比必须夹在 0~100，但超窗时不能再写「100%」了事 ——
+                // 那和「刚好装满」长得一模一样，用户看不出真实上下文已经爆了。
+                val ctxPercentLabel = if (tokenStats.isContextOverflow) "$percent%+" else "$percent%"
                 val inTokens = TokenStats.formatTokenCompact(tokenStats.inputTokens)
                 val outTokens = TokenStats.formatTokenCompact(tokenStats.outputTokens)
                 val cacheTokensStr = TokenStats.formatCacheCompact(tokenStats.cacheReadTokens)
@@ -2227,7 +2158,7 @@ fun ChatScreen(
                                 tint = ctxColor
                             )
                             Text(
-                                text = "$percent%",
+                                text = ctxPercentLabel,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.SemiBold,

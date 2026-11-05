@@ -83,7 +83,7 @@ fun TokenStatsHudDialog(
                         )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = "${TokenStats.formatTokenStandard(stats.contextTokens)} / ${TokenStats.formatTokenStandard(stats.maxContextWindow)} (${String.format(java.util.Locale.US, "%.1f%%", stats.contextUsagePercent * 100)})",
+                            text = TokenStats.formatContextUsage(stats.contextTokens, stats.maxContextWindow),
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold,

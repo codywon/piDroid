@@ -2,6 +2,24 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.10] - 2026-11-05
+
+### 🐛 工具跑完还在转圈、中间正文不刷新：回合大纲不再用那套伪缓存键
+
+- **现象**：① 工具已经执行完，卡片上的转圈一直不停，要等新消息入队才刷过来；② 模型把正文回填给前面（非尾部）的 AGENT 气泡时，界面上的旧正文被“吃掉”，也是延后一阵才闪出来。
+- **根因**：`ChatScreen` 把整场会话的回合大纲包在 `remember` 里，key 是 `conversation.size` / 首尾两条 id / 尾部 `content` 与 `thinking` 长度 / `isAgentBusy`。而工具结果回来走的是 `messages[idx] = existing.copy(toolCall = …)`：列表长度不变、首尾 id 不变，TOOL 项的 `content` 恒为 `""`（长度恒 0）—— 六个 key 一个都不动，大纲于是继续返回旧快照。非尾部正文回填同理。
+- **Fix**：把大纲构建抽成纯 JVM 的 `buildTurnOutlines()`（`ui/chat/TurnOutlineBuilder.kt`）并取消那套启发式缓存，改为每次基于传入列表重算。`messages` 是 `SnapshotStateList`，写入粒度本就是整个列表 —— 任何一处就地更新都会让 `ChatScreen` 重组，所以旧 key 在流式期间根本不可能命中（尾部每个 token 都在变），它的收益只发生在“重组但消息未变”时。
+- **代价与取舍**：重组时会多走一次 O(n)（与既有的 `olderMessages + messages` 拷贝同级）；换来的是**构造上正确**。`conversation` 那次拷贝留到后续统一优化（两者的正确解法是同一个会话版本号）。
+- **单测**：`TurnOutlineBuilderTest` 直接钉住两个回归 —— 「就地替换工具结果必须进大纲」与「非尾部正文回填必须可见」；另覆盖最终答复提升、未答复不拆、`visualize_read_me` 不计入工具次数、回合编号与空会话。
+
+### 🧮 上下文 Token 不再取模造假，超窗就如实说超窗
+
+- **根因**：`PiApiClient` 在「会话累计输入 > 模型窗口」时返回 `inTokens % 80000`（下限 24000）。真实的 340K 会被显示成 20K，用户既看不到已经超窗，也无从排查“上下文怎么爆的”。
+- **Fix**：只保留两个真实来源 —— 最后一条 assistant 消息的 usage（`input + cacheRead`，即此刻上下文大小）为正时用它；否则退回会话累计输入（`stats.tokens.input`）。两者都是服务端实际给出的数值，不再做任何加工。
+- **UI 口径**：超窗时不再写「100%」（那和“刚好装满”无法区分）—— HUD 显示 `340 K / 200 K (已超窗)`，底部指标栏显示 `100%+`。进度条本身仍夹在 0~1，否则会画出界。
+- **单测**：`TokenStatsContextTest` 覆盖权威值优先、累计值兜底、脏数据夹零、超窗边界（`>` 而非 `>=`）、窗口未知不告警、文案格式与超窗文案。
+
+
 ## [2.0.9] - 2026-11-05
 
 ### 💥 修掉「跑一会就闪退」：历史消息 id 改为对齐 pi-web `messageKeys` 的条目身份

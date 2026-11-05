@@ -450,6 +450,15 @@ data class TokenStats(
     val contextUsagePercent: Float
         get() = if (maxContextWindow > 0) (contextTokens.toFloat() / maxContextWindow).coerceIn(0f, 1f) else 0f
 
+    /**
+     * 上下文已超出模型窗口。
+     *
+     * 进度条本身要夹到 0~1（否则画出界），但百分比文案不能跟着变成 100% ——
+     * 那会把「已超窗」说成「刚好装满」。
+     */
+    val isContextOverflow: Boolean
+        get() = isContextOverflow(contextTokens, maxContextWindow)
+
     val cacheHitRate: Float
         get() {
             val totalPrompt = inputTokens + cacheReadTokens
@@ -457,6 +466,43 @@ data class TokenStats(
         }
 
     companion object {
+        /**
+         * 上下文占用应当展示的真实 token 数。
+         *
+         * [authoritativeContextTokens] 来自**最后一条 assistant 消息**的 usage（`input + cacheRead`），
+         * 那才是「此刻上下文有多大」；[fallbackInputTokens] 是会话**累计**输入
+         * （`stats.tokens.input`），两者语义不同，只有前者缺失时才退而用它。
+         *
+         * 旧实现在 fallback 超过窗口上限时还有第三跳：返回 `inTokens % 80000`
+         * （下限 24000）。那是为了「看起来不爆表」而编造的数值 —— 真实 340K 会被显示成 20K，
+         * 用户既看不到超窗，也看不到真实消耗，属于对运行态造假设。超窗就应当显示超窗。
+         */
+        fun resolveContextTokens(
+            authoritativeContextTokens: Long,
+            fallbackInputTokens: Long
+        ): Long = if (authoritativeContextTokens > 0L) {
+            authoritativeContextTokens
+        } else {
+            fallbackInputTokens.coerceAtLeast(0L)
+        }
+
+        fun isContextOverflow(contextTokens: Long, maxContextWindow: Long): Boolean =
+            maxContextWindow > 0L && contextTokens > maxContextWindow
+
+        /**
+         * 上下文用量文案：`128 K / 200 K (64.0%)`；超窗时写「已超窗」而不伪造百分比。
+         */
+        fun formatContextUsage(contextTokens: Long, maxContextWindow: Long): String {
+            val head = "${formatTokenStandard(contextTokens)} / ${formatTokenStandard(maxContextWindow)}"
+            if (isContextOverflow(contextTokens, maxContextWindow)) return "$head (已超窗)"
+            val percent = if (maxContextWindow > 0L) {
+                contextTokens.toDouble() / maxContextWindow * 100.0
+            } else {
+                0.0
+            }
+            return "$head (${String.format(Locale.US, "%.1f%%", percent)})"
+        }
+
         fun formatTurnUsage(
             input: Long,
             output: Long,

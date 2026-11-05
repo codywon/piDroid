@@ -632,13 +632,15 @@ class PiApiClient(private val prefs: AppPreferences) {
             else -> 200000L
         }
 
-        val realContext = if (lastAssistantContextTokens > 0) {
-            lastAssistantContextTokens
-        } else if (inTokens > effectiveMaxContext) {
-            (inTokens % 80000L).coerceAtLeast(24000L)
-        } else {
-            inTokens.coerceAtLeast(0L)
-        }
+        // 上下文占用只能有一个真实来源：最后一条 assistant 消息的 usage（input + cacheRead）。
+        // 它缺失时才退回会话**累计**输入（stats.tokens.input）—— 两者语义不同，但都是
+        // 服务端实际给出的数值。旧实现还有第三跳：fallback 超窗时返回 `inTokens % 80000`
+        // （下限 24000），把真实的 340K 显示成 20K，纯粹为了「看起来不爆表」。
+        // 那是在 App 侧编造运行态，既让用户看不到超窗，也让排查“上下文怎么爆的”失去依据。
+        val realContext = TokenStats.resolveContextTokens(
+            authoritativeContextTokens = lastAssistantContextTokens,
+            fallbackInputTokens = inTokens
+        )
 
         val currentInTokens = if (lastAssistantInTokens > 0) lastAssistantInTokens else inTokens
         val currentOutTokens = if (lastAssistantOutTokens > 0) lastAssistantOutTokens else outTokens
