@@ -4,6 +4,27 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.23] - 2026-11-06
+
+### 🧽 删掉会话模型里三个“永远为 0”的字段（与 pi-web 的列表契约对齐）
+
+- **依据（实测，不是推测）**：拉本机网关的 `GET /api/sessions`（484 条会话），单个对象的 key 只有
+  `id / path / cwd / projectRoot / projectKey / branch / firstMessage / messageCount / created / modified / transient`（以及家族的 `relation`）。
+  `tokenUsage` / `cost` / `totalActiveMs` **一个都没有** —— 上游把它们放在
+  `GET /api/sessions/{id}` 的 `stats`（会话信息面板）与 `POST /api/sessions/stats`（会话家族汇总）里，不在列表里。
+- **之前的状态**：`Session` 里挂了这三个 `@SerializedName` 字段，永远是默认值 0，而卡片上那行
+  「耗时 · token · 费用」曾把它们当真实读数展示（那些数字其实来自 stats 接口）。卡片元信息下线后，
+  它们变成纯死负载：解析、落盘、从不展示。
+- **现在**：三个字段连同 `SessionSaver` 的两个槽位一起删除（位置化编码的下标同步重排），
+  并在 `Session` 的 KDoc 里写清列表契约与这三个数的真实出处，防止以后把“列表不发的字段”再加回来。
+- **测试**：新增 `SessionSaverTest`（四个用例）——位置化存档最容易静默坏掉，把
+  `active / awaitingInput / isRunning / isWorktree` 的槽位与默认值钉死；另覆盖空存档与截断存档。
+
+### 🗺️ 工具链升级排期（仅文档，不改代码）
+
+- CI 每次提示 Gradle 8.11.1 已过期。新增 `docs/PLAN-toolchain-upgrade.md`，把 wrapper → AGP 的升级
+  拆成分步计划（每步一个补丁版本、一次 CI），并写明禁止本地编译、不复用 tag、不动签名材料等约束。
+
 ## [2.0.22] - 2026-11-06
 
 ### 🔧 修复 2.0.21 的编译失败（格式化函数放错了作用域），内容与 2.0.21 一致

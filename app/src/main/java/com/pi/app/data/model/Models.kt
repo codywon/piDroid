@@ -33,7 +33,21 @@ data class ProjectInfo(
 )
 
 /**
- * Pi 历史任务会话模型（对标 pi-web SessionInfo & Runtime 状态）
+ * Pi 历史任务会话模型（对标 pi-web 的 `SessionInfo` & Runtime 状态）。
+ *
+ * ⚠️ **加字段前先确认它有真实来源**。实测 `GET /api/sessions`（484 条会话）单个对象的 key 只有：
+ * ```
+ * id, path, cwd, projectRoot, projectKey, branch, firstMessage, messageCount,
+ * created, modified, transient
+ * ```
+ * 下列字段另外有出处，但**不是列表契约**：家族的 `relation`（列表按家族下发）、
+ * `name` / `title`（会话详情与重命名）、`isRunning` / `awaitingInput`（由 `/api/agent/running` 合并）。
+ *
+ * token 数 / 费用 / 活跃时长**不在列表里**：它们在 `GET /api/sessions/{id}` 的 `stats`
+ * （会话信息面板）与 `POST /api/sessions/stats`（会话家族汇总）里。
+ * 历史上这里曾摆过 `tokenUsage` / `cost` / `totalActiveMs` 三个 `@SerializedName`，
+ * 但从未被任何列表响应赋值过（永远 0），只为卡片上那行自创的「耗时 · token · 费用」服务 ——
+ * 那行随 2.0.17 下线后它们已是死负载，2.0.23 删除。不要再往这里加列表不发的字段。
  */
 data class Session(
     @SerializedName("id") val id: String,
@@ -48,11 +62,8 @@ data class Session(
     @SerializedName("created") val created: String? = null,
     @SerializedName("modified") val modified: String? = null,
     @SerializedName("messageCount") val messageCount: Int = 0,
-    @SerializedName("tokenUsage") val tokenUsage: Long = 0L,
-    @SerializedName("cost") val cost: Double = 0.0,
     @SerializedName("active") val active: Boolean = false,
     @SerializedName("isWorktree") val isWorktree: Boolean = false,
-    @SerializedName("totalActiveMs") val totalActiveMs: Long = 0L,
     val isRunning: Boolean = false,
     val awaitingInput: Boolean = false,
     /** pi-web 的 `SessionInfo.relation`：侧聊 / 子代理 / fork 的来源关系。 */

@@ -32,13 +32,10 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 session.created ?: "",
                 session.modified ?: "",
                 session.messageCount.toString(),
-                session.tokenUsage.toString(),
-                session.cost.toString(),
                 session.active.toString(),
                 session.awaitingInput.toString(),
                 session.isRunning.toString(),
-                session.isWorktree.toString(),
-                session.totalActiveMs.toString()
+                session.isWorktree.toString()
             )
         }
     },
@@ -61,13 +58,10 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 created = optional(9),
                 modified = optional(10),
                 messageCount = text(11).toIntOrNull() ?: 0,
-                tokenUsage = text(12).toLongOrNull() ?: 0L,
-                cost = text(13).toDoubleOrNull() ?: 0.0,
-                active = text(14).toBooleanStrictOrNull() ?: false,
-                awaitingInput = text(15).toBooleanStrictOrNull() ?: false,
-                isRunning = text(16).toBooleanStrictOrNull() ?: false,
-                isWorktree = text(17).toBooleanStrictOrNull() ?: false,
-                totalActiveMs = text(18).toLongOrNull() ?: 0L
+                active = text(12).toBooleanStrictOrNull() ?: false,
+                awaitingInput = text(13).toBooleanStrictOrNull() ?: false,
+                isRunning = text(14).toBooleanStrictOrNull() ?: false,
+                isWorktree = text(15).toBooleanStrictOrNull() ?: false
             )
         }
     }
