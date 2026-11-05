@@ -13,6 +13,44 @@ package com.pi.app.data.model
  */
 object SessionSnapshotMerge {
 
+    /**
+     * 最后一道 key 不变式：列表里不允许出现两条相同 id。
+     *
+     * 为什么必须有这一层：
+     * - `LazyColumn(key = { it.id })` 对重复 key 抛的是**主线程致命异常**（整个进程被杀 = 闪退），
+     *   不是 React 那种 console warning；
+     * - id 有多个生成入口（快照解析、翻页页、磁盘缓存回放、乐观消息），再加一次对账混合，
+     *   靠「每一处都正确」不如在写回列表前兜一次；
+     * - 这里**不裁剪内容**：重复只改 id（确定性的 `dup<n>_` 前缀），宁可多显示一条，
+     *   也不静默吞掉用户看得见的东西。
+     *
+     * 幂等：已经唯一时原样返回（同一个 List 实例），不制造无意义的重组。
+     */
+    fun ensureUniqueIds(items: List<ChatItem>): List<ChatItem> {
+        if (items.size < 2) return items
+        val seen = HashMap<String, Int>(items.size * 2)
+        var changed = false
+        val out = ArrayList<ChatItem>(items.size)
+        for (item in items) {
+            val count = seen[item.id] ?: 0
+            seen[item.id] = count + 1
+            if (count == 0) {
+                out.add(item)
+                continue
+            }
+            changed = true
+            var suffix = count + 1
+            var candidate = "dup${suffix}_${item.id}"
+            while (seen.containsKey(candidate)) {
+                suffix++
+                candidate = "dup${suffix}_${item.id}"
+            }
+            seen[candidate] = 1
+            out.add(item.copy(id = candidate))
+        }
+        return if (changed) out else items
+    }
+
     private fun isSameBase64(a: String?, b: String?): Boolean {
         if (a == b) return true
         if (a.isNullOrBlank() && b.isNullOrBlank()) return true

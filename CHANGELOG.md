@@ -2,6 +2,24 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.9] - 2026-11-05
+
+### 💥 修掉「跑一会就闪退」：历史消息 id 改为对齐 pi-web `messageKeys` 的条目身份
+
+线上两轮崩溃日志（`server/logs/crash-2026-11-05T05-17-00-673Z.log`、`crash-2026-11-04T15-35-43-701Z.log`）都是同一个签名：
+
+```
+java.lang.IllegalArgumentException: Key "hist_<sessionId>_78_agent" was already used.
+  at … android.os.Looper.loop  (thread=main)
+```
+
+- **根因**：历史消息 id 是 `hist_<sessionId>_<窗口内下标>_<role>`，而渲染窗口的起点会随会话增长前移（`SessionBranchWindow.visibleTailStart` 与 `floorStart`），压缩、自动重试换手、entries 树 / context 窗口两条解析路径切换都会让它跳变。于是同一个下标在两次快照里指向不同消息 → 对账（`SessionSnapshotMerge.reconcileList`）后一条配对成功保留本地 id、一条未配对按新快照自带 id 入列 → 两条相同 id → `LazyColumn` 抛主线程致命异常，进程被杀。弱网只是触发器：断流重连 → `reconnected_sync` → 反复重拉快照，把「同一段历史被多次以不同窗口解析」的概率放大。
+- **对齐上游**：pi-web `useAgentSession` 的 `messageKeys` 是「条目有 id 就用它，只有还没落盘的那条才退化成 `live:<末尾 entryId>:<距尾偏移>`」——身份是**会话条目**，不是窗口位置。新增纯 JVM `HistoryItemKeys`（`data/model/HistoryItemKeys.kt`）落实这条规则，8 处历史 id 生成全部改用它；`entryId` 缺失时退化锚点是消息时间戳，仍然不含下标。工具卡与正文气泡同属一个 assistant entry，用 `kind` 区分（`agent` / `tool_<toolCallId>` / `toolres_<id>` / `error` / `compaction` / `sys`）。
+- **为什么不采用内容指纹**：流式期间正文持续增长，哈希每帧都变 → key 抖动 → 气泡重建、工具卡折叠态与滚动位置丢失。pi-web 用「距尾偏移」而不是哈希，正是为了流式期间 key 稳定。
+- **防御层**：新增 `SessionSnapshotMerge.ensureUniqueIds()`（纯 JVM，幂等）。React 里重复 key 只是 console warning，`LazyColumn` 是进程级崩溃，所以这一处必须比上游更严格：快照 `synced`、对账结果、翻页页 prepend 三个写回点各兜一道；重复时**只改 id 不裁内容**（确定性 `dup<n>_` 前缀），宁可多显示一条也不静默吞掉用户可见内容。
+- **单测**：新增 `HistoryItemKeysTest`（6 例）——同一条目跨窗口 key 不变、旧下标规则确实会给同一条消息两个 id（根因钉死）、同 entry 的正文/工具卡互不撞 key、跨会话不撞、entryId 缺失时锚点确定、窗口前移后对账结果无重复 key；`SessionSnapshotMergeTest` 增补 4 例覆盖 `ensureUniqueIds` 的幂等、内容不裁剪与后缀顺延。
+
+
 ## [2.0.8] - 2026-11-05
 
 ### 🔒 网关 Token 收口：只对网关自己附带，外部链接换绑必须用户确认

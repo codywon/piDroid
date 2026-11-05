@@ -1312,7 +1312,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                                 .removeSuffix("</compaction_summary>")
                                 .trim()
                             chatItems.add(ChatItem(
-                                id = "hist_${sessionId}_${chatItems.size}_compaction",
+                                // key 的取值规则见 [HistoryItemKeys]（对齐 pi-web 的 messageKeys）：
+                                // 身份 = 条目 id，不是窗口内下标 —— 下标会随窗口起点前移而重排，
+                                // 两次快照就能给两条不同消息铸出同一个 key，LazyColumn 直接崩。
+                                id = HistoryItemKeys.of(sessionId, entryId, "compaction", timestamp),
                                 entryId = entryId,
                                 role = MessageRole.SYSTEM,
                                 content = "📦 上下文已归档压缩" + if (cleanSummary.isNotBlank()) "\n$cleanSummary" else "",
@@ -1320,7 +1323,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             ))
                         } else {
                             chatItems.add(ChatItem(
-                                id = "hist_${sessionId}_${chatItems.size}_user",
+                                id = HistoryItemKeys.of(sessionId, entryId, "user", timestamp),
                                 entryId = entryId,
                                 role = MessageRole.USER,
                                 content = userText,
@@ -1412,7 +1415,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             else -> (text + "\n\n⚠️ 模型服务异常: $errMsg").trim()
                         }
                         chatItems.add(ChatItem(
-                            id = "hist_${sessionId}_${chatItems.size}_agent",
+                            id = HistoryItemKeys.of(sessionId, entryId, "agent", timestamp),
                             entryId = entryId,
                             role = MessageRole.AGENT,
                             content = fullContent,
@@ -1426,7 +1429,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     } else if (!errMsg.isNullOrBlank() && toolCalls.isEmpty() && !isAbortLike) {
                         // 彻底解决上游报错且内容为空时静默吞掉的问题 (如 HTTP 422 developer 角色拒收报错)
                         chatItems.add(ChatItem(
-                            id = "hist_${sessionId}_${chatItems.size}_error",
+                            id = HistoryItemKeys.of(sessionId, entryId, "error", timestamp),
                             entryId = entryId,
                             role = MessageRole.AGENT,
                             content = "⚠️ 模型服务异常:\n$errMsg",
@@ -1438,7 +1441,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val isFirstItemInTurn = (chatItems.size == startIndexForTurn)
                         val isLastToolInTurn = (idx == toolCalls.lastIndex)
                         chatItems.add(ChatItem(
-                            id = "hist_${sessionId}_${chatItems.size}_tool_${tc.toolCallId ?: idx}",
+                            // 工具卡与正文气泡同属一个 assistant entry，用 kind 区分（role 不够细）
+                            id = HistoryItemKeys.of(
+                                sessionId,
+                                entryId,
+                                "tool_${tc.toolCallId ?: idx}",
+                                timestamp
+                            ),
                             role = MessageRole.TOOL,
                             content = "",
                             toolCall = tc,
@@ -1483,7 +1492,12 @@ class PiApiClient(private val prefs: AppPreferences) {
                             )
                         } else {
                             chatItems.add(ChatItem(
-                                id = "hist_${sessionId}_${chatItems.size}_toolres_${tcId ?: toolName}",
+                                id = HistoryItemKeys.of(
+                                    sessionId,
+                                    entryId,
+                                    "toolres_${tcId ?: toolName}",
+                                    timestamp
+                                ),
                                 role = MessageRole.TOOL,
                                 content = "",
                                 toolCall = ToolCallInfo(
@@ -1509,7 +1523,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         "📦 上下文已归档压缩"
                     }
                     chatItems.add(ChatItem(
-                        id = "hist_${sessionId}_${chatItems.size}_compaction",
+                        id = HistoryItemKeys.of(sessionId, entryId, "compaction", timestamp),
                         role = MessageRole.SYSTEM,
                         content = if (summary.isNotBlank()) "$header\n$summary" else header,
                         timestamp = timestamp
@@ -1519,7 +1533,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val sysText = extractTextFromContent(msgObj.get("content") ?: msgObj.get("text"))
                     if (sysText.isNotBlank()) {
                         chatItems.add(ChatItem(
-                            id = "hist_${sessionId}_${chatItems.size}_sys",
+                            id = HistoryItemKeys.of(sessionId, entryId, "sys", timestamp),
                             role = MessageRole.SYSTEM,
                             content = sysText,
                             timestamp = timestamp

@@ -800,7 +800,9 @@ class MainActivity : ComponentActivity() {
                             val seen = (olderMessages + messages).map { fingerprint(it) }.toHashSet()
                             val fresh = page.messages.filter { seen.add(fingerprint(it)) }
                             if (fresh.isNotEmpty()) {
-                                olderMessages = fresh + olderMessages
+                                // 指纹相同只是「内容重复」；key 唯一性另算一道（同一游标被重复
+                                // 拉回来时页内 id 会撞，重复 key 会直接崩进程）。
+                                olderMessages = SessionSnapshotMerge.ensureUniqueIds(fresh + olderMessages)
                             }
                             olderCursor = page.oldestEntryId ?: cursor
                             hasEarlierOnServer = page.hasMore
@@ -1246,13 +1248,18 @@ class MainActivity : ComponentActivity() {
                 currentBranchTreeNodes = hist.branchTreeNodes
                 currentActiveLeafId = hist.leafId
                 if (replaceHistory || hist.messages.isNotEmpty() || !effectiveRunning) {
-                    val synced = hist.messages.mapIndexed { idx, item ->
-                        if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
-                            item.copy(isStreaming = true)
-                        } else {
-                            item
+                    // 写回列表前兜一道 key 不变式：LazyColumn 对重复 key 是**主线程致命异常**
+                    // （整个进程被杀 = 闪退），而 id 有多个生成入口 + 一次对账混合。
+                    // 语义见 SessionSnapshotMerge.ensureUniqueIds（只改 id，不裁内容）。
+                    val synced = SessionSnapshotMerge.ensureUniqueIds(
+                        hist.messages.mapIndexed { idx, item ->
+                            if (effectiveRunning && idx == hist.messages.lastIndex && item.role == MessageRole.AGENT) {
+                                item.copy(isStreaming = true)
+                            } else {
+                                item
+                            }
                         }
-                    }
+                    )
 
                     // ── revision 不变量（pi-web `useAgentSession.ts:813-849`）──
                     // 仅用于保护向前翻页的 olderCursor 游标不被 50 条窗口覆盖重置
@@ -1277,7 +1284,9 @@ class MainActivity : ComponentActivity() {
                         // 对账规则收敛至 SessionSnapshotMerge（纯 JVM，可单测）：
                         // 1) 严密保护本地乐观用户消息与实时流式在途消息，绝不因服务端 .jsonl 尚未落盘而抹去用户提问与实时输出；
                         // 2) 逐项就地更新 SnapshotStateList，保留稳定的消息 id，杜绝 Compose 重组与滚动跳动。
-                        val reconciled = SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
+                        val reconciled = SessionSnapshotMerge.ensureUniqueIds(
+                            SessionSnapshotMerge.reconcileList(messages, synced, effectiveRunning)
+                        )
                         for (i in reconciled.indices) {
                             if (i < messages.size) {
                                 if (messages[i] != reconciled[i]) {

@@ -3,6 +3,7 @@ package com.pi.app.data.model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,5 +93,67 @@ class SessionSnapshotMergeTest {
         assertEquals(2, merged.size)
         assertTrue(merged.any { it.id == "t1" })
         assertNull(merged.first { it.id == "t1" }.entryId)
+    }
+
+    // ── key 不变式（ensureUniqueIds）──────────────────────────────────────────
+    // LazyColumn 对重复 key 是主线程致命异常（进程被杀 = 闪退），不是 React 的 warning。
+
+    @Test
+    fun `重复 key 只改 id 不裁内容`() {
+        val items = listOf(
+            item("hist_S_75_agent", MessageRole.AGENT, "第一条"),
+            item("hist_S_75_agent", MessageRole.AGENT, "第二条"),
+            item("hist_S_75_agent", MessageRole.AGENT, "第三条")
+        )
+
+        val guarded = SessionSnapshotMerge.ensureUniqueIds(items)
+
+        assertEquals("一条内容都不能丢", 3, guarded.size)
+        assertEquals(listOf("第一条", "第二条", "第三条"), guarded.map { it.content })
+        assertEquals("重复的 id 必须被改掉", 3, guarded.map { it.id }.toSet().size)
+        assertEquals("首次出现的 id 保持不变", "hist_S_75_agent", guarded[0].id)
+    }
+
+    @Test
+    fun `id 唯一时幂等并原样返回`() {
+        val items = listOf(
+            item("a", MessageRole.USER, "x"),
+            item("b", MessageRole.AGENT, "y")
+        )
+        assertSame("不制造无意义的重组", items, SessionSnapshotMerge.ensureUniqueIds(items))
+    }
+
+    @Test
+    fun `后缀 id 本身与已有 id 撞车时继续顺延`() {
+        val items = listOf(
+            item("k", MessageRole.AGENT, "1"),
+            item("dup2_k", MessageRole.AGENT, "2"),
+            item("k", MessageRole.AGENT, "3")
+        )
+
+        val guarded = SessionSnapshotMerge.ensureUniqueIds(items)
+
+        assertEquals(3, guarded.size)
+        assertEquals(3, guarded.map { it.id }.toSet().size)
+    }
+
+    @Test
+    fun `旧下标 id 对账出的重复在兜底后唯一`() {
+        // 场景：本地持旧窗口（下标 id 0..N），新快照窗口前移 k 位后也铸了下标 id 0..N，
+        // 于是未配对的那几条会跟已配对的本地条目撞 key。
+        val local = (0 until 10).map { item("hist_S_${it}_agent", MessageRole.AGENT, "本地 $it", entryId = "e$it") }
+        val synced = (3 until 13).map { i ->
+            item("hist_S_${i - 3}_agent", MessageRole.AGENT, "服务端 e$i", entryId = "e$i")
+        }
+
+        val reconciled = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning = true)
+        val guarded = SessionSnapshotMerge.ensureUniqueIds(reconciled)
+
+        assertTrue(
+            "兜底前确实会撞（证明这个用例能复现问题）",
+            reconciled.size != reconciled.map { it.id }.toSet().size
+        )
+        assertEquals("兜底后必须唯一", guarded.size, guarded.map { it.id }.toSet().size)
+        assertEquals(reconciled.size, guarded.size)
     }
 }
