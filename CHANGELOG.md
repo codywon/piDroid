@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.26] - 2026-11-06
+
+### ⬆️ 工具链第 2 步：AGP 8.7.3 → 8.10.1（wrapper 仍为 8.11.1）
+
+- **为什么是 8.10.1**：AGP 8.10 的最低 Gradle 恰好是 **8.11.1**（= 当前 wrapper），所以这一步**不需要动 wrapper**；同时它仍在 KGP 2.2.21 的 AGP 上限（8.11.1）之内。再往上到 8.11.x 会把最低 Gradle 抬到 8.13，那就得与第 3 步合并——违反“每步只动一件事”。
+- **改动范围**：只改 `gradle/libs.versions.toml` 的 `agp`；Kotlin 2.2.21、Gradle 8.11.1、`compileSdk`/`targetSdk` 35、`minSdk` 26 全不变。
+- **验收**：CI 的 `Run Unit Tests` + `Build Release APK` 全绿；签名前置校验（依赖 `assembleRelease` / `validateSigningRelease` 等真实任务名）仍在生效。
+- **下一步**（`docs/PLAN-toolchain-upgrade.md`）：wrapper 8.11.1 → 8.14.6——这步之后 CI 那句 “Gradle 8.11.1 is out of date” 才会消失。
+
 ## [2.0.25] - 2026-11-06
 
 ### ⬆️ 工具链第 1 步：Kotlin 2.0.21 → 2.2.21（Gradle / AGP 未动）

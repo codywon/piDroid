@@ -1,6 +1,6 @@
 # PLAN — 工具链升级（KGP → AGP → Gradle wrapper）
 
-> 状态：**进行中**（第 1 步）
+> 状态：**进行中**（第 1、2 步已完成；下一步 = 第 3 步 wrapper）
 > 记录时间：2026-11-06，兼容矩阵核对日期：2026-11-06
 
 ## 为什么要单独做
@@ -31,7 +31,7 @@ Gradle 8.11.1 is out of date: consider updating to the latest Gradle version.
 
 ## 步骤（每步 = 一个补丁版本 + 一次 CI，失败即回滚该步、递增补丁号重来）
 
-### 第 1 步：KGP 2.0.21 → 2.2.21（进行中）
+### 第 1 步：KGP 2.0.21 → 2.2.21（✅ 已随 2.0.25 发布）
 
 - 只改 `gradle/libs.versions.toml` 的 `kotlin`（`kotlin-compose` 插件共用同一个版本号，
   会一起升级——这正是 2026-11-06 把 `kotlinOptions` 迁到 `kotlin { compilerOptions {} }`
@@ -39,13 +39,14 @@ Gradle 8.11.1 is out of date: consider updating to the latest Gradle version.
 - 升级后 Gradle 8.11.1 与 AGP 8.7.3 **同时**落回支持区间（8.14 / 8.11.1 之内）；
 - 验收：CI 的 `Run Unit Tests` + `Build Release APK` 全绿，且安装后能启动、能进会话。
 
-### 第 2 步：AGP 8.7.3 → 8.10.x
+### 第 2 步：AGP 8.7.3 → 8.10.1（✅ 已随 2.0.26 发布）
 
 - AGP 8.10 的最低 Gradle 恰好是 8.11.1（= 当前值），所以这步不用动 wrapper；
 - 仍在 KGP 2.2 的 AGP 上限 8.11.1 之内；
+- 选 8.10.1 而不是 8.11.x：后者把最低 Gradle 抬到 8.13，会跟第 3 步混在一起；
 - 若 AGP 提高 `compileSdk` / build-tools 要求，同步处理（当前 compileSdk 35）。
 
-### 第 3 步：Gradle wrapper 8.11.1 → 8.14.6
+### 第 3 步：Gradle wrapper 8.11.1 → 8.14.6（下一步）
 
 - 8.14.6 是 8.14 线的最后一个安全补丁版本；KGP 2.2 的上限正好是 8.14，落点刚好；
 - 这步之后 CI 那句 "Gradle 8.11.1 is out of date" 才会消失。
