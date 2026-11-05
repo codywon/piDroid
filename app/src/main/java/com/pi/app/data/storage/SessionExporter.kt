@@ -24,14 +24,25 @@ data class SessionExportResult(
 object SessionExporter {
 
     /**
+     * 文件名里不能出现的字符（Windows / Android 公共目录共用一套）。
+     *
+     * 提成常量：内联写法的 `Regex(...)` 每次调用都要 `Pattern.compile` 一次，
+     * 而这两个正则都是**固定字符集**、与输入无关，没有任何理由重复编译。
+     */
+    private val ILLEGAL_FILENAME_CHARS = Regex("[\\\\/:*?\"<>|\\r\\n]")
+
+    /** 导出名里的连续空白转成连字符。 */
+    private val WHITESPACE_RUN = Regex("\\s+")
+
+    /**
      * 生成合法且易读的导出 HTML 文件名。
      * 格式：pi-session-${title或id}.html
      */
     fun exportFileName(sessionId: String, title: String?): String {
         val rawName = title?.takeIf { it.isNotBlank() } ?: sessionId.take(8)
         val clean = rawName.trim()
-            .replace(Regex("[\\\\/:*?\"<>|\\r\\n]"), "_")
-            .replace(Regex("\\s+"), "-")
+            .replace(ILLEGAL_FILENAME_CHARS, "_")
+            .replace(WHITESPACE_RUN, "-")
             .trim('_', '-')
             .take(50)
         val finalName = if (clean.isBlank()) sessionId.take(8) else clean

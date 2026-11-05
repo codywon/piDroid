@@ -116,6 +116,12 @@ class PiApiClient(private val prefs: AppPreferences) {
         /** 非 2xx 时随异常带出的正文长度：足够判断是 HTML 还是 JSON，又不至于把日志撑爆。 */
         private const val BODY_PREVIEW_CHARS = 512
 
+        /** 缓存文件名里不能出现的字符（与 FileDownloader / SessionExporter 同一套规则）。 */
+        private val CACHE_FILE_NAME_ILLEGAL_CHARS = Regex("[\\\\/:*?\"<>|]")
+
+        /** `stdio` 传输的 MCP 命令按连续空白切成「命令 + 参数」。 */
+        private val STDIO_COMMAND_WHITESPACE_RUN = Regex("\\s+")
+
         /** 候选 Key 联网自检时使用的一次性 provider 名后缀（避开已保存凭据的遮蔽）。 */
         private const val VERIFY_PROVIDER_SUFFIX = "-key-verify"
 
@@ -2496,7 +2502,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         val name = absPath.replace('\\', '/').substringAfterLast('/').ifBlank { "file" }
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .replace(CACHE_FILE_NAME_ILLEGAL_CHARS, "_")
         val dir = File(prefs.cacheDir, "opened")
         if (!dir.exists() && !dir.mkdirs()) {
             return@withContext Result.failure(IOException("无法创建缓存目录"))
@@ -4281,7 +4287,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             )
             if (description.isNotBlank()) serverCfg["description"] = description.trim()
             if (transport == "stdio") {
-                val parts = endpointOrCommand.trim().split(Regex("\\s+"))
+                val parts = endpointOrCommand.trim().split(STDIO_COMMAND_WHITESPACE_RUN)
                 serverCfg["command"] = parts.firstOrNull() ?: endpointOrCommand.trim()
                 if (parts.size > 1) serverCfg["args"] = parts.drop(1)
             } else {

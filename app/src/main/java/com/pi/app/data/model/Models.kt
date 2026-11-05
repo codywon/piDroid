@@ -274,6 +274,14 @@ data class SessionUiSnapshot(
 )
 
 /**
+ * 会话搜索片段里的连续空白（含换行）。
+ *
+ * 提成顶层常量：`snippet` 是 **getter**，会话列表每滑过一个 item 都会读它一次，
+ * 而内联的 `Regex("\\s+")` 每次都要重新走一遍 `Pattern.compile`。
+ */
+private val SNIPPET_WHITESPACE_RUN = Regex("\\s+")
+
+/**
  * 服务端全文搜索的一条命中（GET /api/sessions/search?q=）。
  *
  * pi-web 的返回是**按命中条目**展开的：`{results:[{session, entryId, blockIndex, match, before, after}], truncated}`，
@@ -288,7 +296,10 @@ data class SessionSearchHit(
 ) {
     /** 拼成一行可读片段 */
     val snippet: String
-        get() = ("…" + before + match + after + "…").replace("\n", " ").replace(Regex("\\s+"), " ").trim()
+        get() = ("…" + before + match + after + "…")
+            .replace("\n", " ")
+            .replace(SNIPPET_WHITESPACE_RUN, " ")
+            .trim()
 }
 
 /** pi 的斜杠命令（agent get_commands）：扩展命令 / prompt 模板 / 技能 */

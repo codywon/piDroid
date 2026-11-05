@@ -94,6 +94,18 @@ data class MediaGatewayConfig(
 val LocalMediaGatewayConfig = compositionLocalOf { MediaGatewayConfig() }
 
 /**
+ * 不可信 SVG 的清洗正则。
+ *
+ * 提到顶层的原因：它们在 `remember(svgContent)` 里执行，同一份 SVG 只会跑一次，
+ * 收益有限；真正的原因是这三个模式**固定不变**，内联写法把一个纯编译产物变成了
+ * 藏在渲染代码里的字面量，安全审查时不好集中看。行为完全不变（仍是正则过滤，
+ * 只能当纵深防御，真正的边界是 WebView 本身没有 JS Bridge / 文件访问）。
+ */
+private val SVG_SCRIPT_TAG = Regex("(?i)<script\\b[^>]*>[\\s\\S]*?</script>")
+private val SVG_SCRIPT_SELF_CLOSING = Regex("(?i)<script\\b[^>]*/>")
+private val SVG_EVENT_HANDLER_ATTR = Regex("(?i)\\s+on[a-z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)")
+
+/**
  * 聊天页列表区域的可见视口（窗口坐标）。
  *
  * 卡片用它判断自己有没有「进过屏幕」：没进过就只画一个文件名占位、不发请求。
@@ -768,9 +780,9 @@ internal fun SvgWebViewCanvas(
     val cleanSvg = remember(svgContent) {
         // 安全防护：彻底剥除 SVG 中可能夹带的 <script> 标签（含自闭合）与 on* 事件处理器
         svgContent
-            .replace(Regex("(?i)<script\\b[^>]*>[\\s\\S]*?</script>"), "")
-            .replace(Regex("(?i)<script\\b[^>]*/>"), "")
-            .replace(Regex("(?i)\\s+on[a-z]+\\s*=\\s*(\"[^\"]*\"|'[^']*'|[^\\s>]+)"), "")
+            .replace(SVG_SCRIPT_TAG, "")
+            .replace(SVG_SCRIPT_SELF_CLOSING, "")
+            .replace(SVG_EVENT_HANDLER_ATTR, "")
     }
 
     val html = remember(cleanSvg, isDark, enableZoom) {

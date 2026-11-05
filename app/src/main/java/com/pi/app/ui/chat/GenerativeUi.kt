@@ -630,7 +630,7 @@ internal object WidgetExportHelper {
 
     fun cleanFilename(title: String, defaultName: String): String {
         return title.trim()
-            .replace(Regex("[^a-zA-Z0-9_\\-\u4e00-\u9fa5]+"), "_")
+            .replace(WIDGET_FILENAME_ILLEGAL_CHARS, "_")
             .trim('_')
             .ifBlank { defaultName }
     }
@@ -1454,3 +1454,6 @@ private fun WidgetSourceFallback(
         }
     }
 }
+
+/** 微组件下载时的文件名净化（保留字母数字、下划线、连字符与汉字）。 */
+private val WIDGET_FILENAME_ILLEGAL_CHARS = Regex("[^a-zA-Z0-9_\\-\u4e00-\u9fa5]+")

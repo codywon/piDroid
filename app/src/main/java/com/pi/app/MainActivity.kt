@@ -86,6 +86,13 @@ private const val COMPACT_REQUEST_UI_GRACE_MS = 30_000L
 private const val RECONNECT_NOTICE_DELAY_MS = 20_000L
 
 /**
+ * 自动生成会话标题时剔掉的 Markdown 噪声字符（`#`、`*`、反引号、`>`、方括号）。
+ *
+ * 顶层常量：这段代码在每个新会话的开场消息上都会跑一次，内联 `Regex(...)` 没必要每次重编译。
+ */
+private val AUTO_TITLE_NOISE_CHARS = Regex("[#*`>\\[\\]]")
+
+/**
  * 斜杠命令解析：与 pi-web 的 dispatcher 同一正则（`^\/([^\s]+)(?:\s+([\s\S]+))?$`）。
  *
  * 只用于 App 侧自己实现的内置命令（目前只有 /auto-compact）。其余命令（技能 / 模板 /
@@ -3216,7 +3223,7 @@ class MainActivity : ComponentActivity() {
                             val stillHere = currentSession?.id == sid
                             if (stillHere && messages.none { it.role == MessageRole.USER } && prefs.getSessionCustomTitle(sid) == null) {
                                 val clean = prompt.lines().firstOrNull { it.isNotBlank() }?.trim() ?: prompt.trim()
-                                val autoTitle = clean.take(24).replace(Regex("[#*`>\\[\\]]"), "")
+                                val autoTitle = clean.take(24).replace(AUTO_TITLE_NOISE_CHARS, "")
                                 if (autoTitle.isNotBlank()) {
                                     prefs.saveSessionCustomTitle(sid, autoTitle)
                                     customTitles = customTitles + (sid to autoTitle)

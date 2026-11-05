@@ -27,15 +27,24 @@ import java.util.Locale
  */
 object FileDownloader {
 
+    /** 文件名里不能出现的字符（与 [SessionExporter] 同套 Windows / Android 公共规则）。 */
+    private val ILLEGAL_FILENAME_CHARS = Regex("[\\\\/:*?\"<>|]")
+
     /**
      * 净化文件名，替换操作系统保留的非法字符。
+     *
+     * 额外的“只由点组成”守卫：`".."`、`"."` 不含非法字符，清洗后仍原样保留，
+     * 而 `File(targetDir, "..")` 在 Android 9 及以下（公共下载目录）会解析成**父目录**；
+     * 真去写盘只会得到一句语焉不明的 IOException，同时返回给用户的保存路径里
+     * 会出现一个形似路径穿越的 `..`。这类名字没有任何实际意义，直接退回兜底名。
      */
     fun sanitizeFileName(fileName: String, fallback: String = "download"): String {
         val cleaned = fileName.trim()
-            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .replace(ILLEGAL_FILENAME_CHARS, "_")
             .trim('_')
             .trim()
-        return if (cleaned.isBlank()) fallback else cleaned
+        if (cleaned.isBlank() || cleaned.all { it == '.' }) return fallback
+        return cleaned
     }
 
     /**

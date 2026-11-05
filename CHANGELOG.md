@@ -2,6 +2,20 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.13] - 2026-11-05
+
+### ⚙️ 热路径正则常量：不再每次调用都 `Pattern.compile`
+
+Kotlin 的 `Regex("…")` 每次求值都会新建一个 `Pattern`，而这些模式全是**固定字符集**、与输入无关。全仓扫描出 16 处内联写法（3 处本来就在 `val` 列表里），本次把其余 13 处提到常量。
+
+- **真正的热路径**：`Models.kt` 的 `SessionSearchHit.snippet` 是 getter，会话列表每滑过一个 item 读一次；`ChatScreen` 的系统状态卡片标题与思考预览在**流式期间每个 token** 都会重算（`remember(content)` 的 key 就是 content）；`MainActivity` 的自动标题在每个新会话开场消息上跑一次。
+- 其余（`SessionExporter`、`FileDownloader`、`PiApiClient` 的缓存文件名、`GenerativeUi` 的微组件文件名、`MediaPreviewComponents` 的 SVG 清洗）调用频次不高，但同样没有理由把编译产物写成散落的字面量 —— 尤其 SVG 那几个是安全相关规则，集中在一处才好审。
+- **行为零变化**：每个常量字面量与被替换的内联字面量逐字节一致，已用 diff 逐条核对。
+
+### 🛡️ 加固文件名净化：`..` 不再原样放行
+
+`FileDownloader.sanitizeFileName` 只替换 `\ / : * ? " < > |`，所以 `..`、`.`、`...` 会被原样保留。在 Android 9 及以下（走 `File(targetDir, safeName)`）`..` 会解析成**父目录**：写盘只能得到一句语焉不明的 IOException，返回给用户的保存路径里还会出现形似路径穿越的 `..`。现在只由点组成的名字直接退回兜底名，含点的正常文件名（`v1.2.pdf`、`..hidden`）不受影响。`FileNamingTest` 补了两组用例钉住这条边界，原有 7 条断言全部保持。
+
 ## [2.0.12] - 2026-11-05
 
 ### ⚡ 流式每个 token 不再连带整个聊天页重组

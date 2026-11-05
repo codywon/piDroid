@@ -112,6 +112,17 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
+/**
+ * 系统状态卡片标题的 Markdown 前缀（`#`、`>`、`*`、`-`、空白）。
+ *
+ * 顶层常量：流式输出时 `remember(item.content, …)` 每来一个 token 就重算一次，
+ * 内联写法的 `Regex(...)` 相当于每个 token 都 `Pattern.compile` 一遭。
+ */
+private val SYSTEM_CARD_TITLE_PREFIX_CHARS = Regex("^[#>*\\-\\s]+")
+
+/** 思考折叠行预览里抹掉的 Markdown 装饰字符。同样是流式热路径，见上。 */
+private val THINKING_PREVIEW_NOISE_CHARS = Regex("[#*_>`~]")
+
 data class ChatAttachment(
     val name: String,
     /** 本地选中的 Uri；从历史消息回填的内联图片为 null */
@@ -3138,7 +3149,7 @@ fun ChatMessageItem(
                     if (isCompactionCard) {
                         firstLine
                     } else {
-                        firstLine.replace(Regex("^[#>*\\-\\s]+"), "").ifBlank { "系统状态摘要" }
+                        firstLine.replace(SYSTEM_CARD_TITLE_PREFIX_CHARS, "").ifBlank { "系统状态摘要" }
                     }
                 }
                 val bodyMarkdown = remember(item.content, isCompactionCard) {
@@ -3250,7 +3261,7 @@ fun PiWebThinkingCard(
             .map { it.trim() }
             .filter { it.isNotEmpty() }
             .lastOrNull()
-            ?.replace(Regex("[#*_>`~]"), "")
+            ?.replace(THINKING_PREVIEW_NOISE_CHARS, "")
             ?.trim()
             ?: thinking.replace('\n', ' ').trim()
     }
