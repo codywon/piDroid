@@ -1,6 +1,7 @@
 # PLAN — 工具链升级（KGP → AGP → Gradle wrapper）
 
-> 状态：**已完成**（第 1–3 步均已发布；第 4 步为可选、未排期）
+> 状态：**第 1–3 步已完成**（2.0.25 / 2.0.26 / 2.0.27）。第 4 步（Gradle 9）**未排期但非纯可选**：
+> 见下方「实测结论」。
 > 记录时间：2026-11-06，兼容矩阵核对日期：2026-11-06
 
 ## 为什么要单独做
@@ -51,11 +52,17 @@ Gradle 8.11.1 is out of date: consider updating to the latest Gradle version.
 - 8.14.6 是 8.14 线的最后一个安全补丁版本；KGP 2.2 的上限正好是 8.14，落点刚好；
 - 只改 `distributionUrl`：该文件没有 `distributionSha256Sum`，`gradle-wrapper.jar` 也不用重生成
   （wrapper 只负责按 URL 拉起发行版；本地按 §1.1 不跑 `gradle wrapper`）；
-- 这步之后 CI 那句 "Gradle 8.11.1 is out of date" 消失。
+- **实测结论（2026-11-06，v2.0.27 的 CI）**：注解**没有**消失，只是变成
+  `Gradle 8.14.6 is out of date`。因为 Gradle **8 整条线**都已是“仅安全修复”
+  （active support 2025-07-31 结束），只要还在 8.x 上，提示就会一直存在。
+  因此第 3 步的收益是“落在 KGP 支持上限内”，而不是“消警告”。
 
-### 第 4 步（可选，看需要）：KGP 2.3.x + AGP 8.13 + Gradle 9.x
+### 第 4 步：Gradle 9.x（KGP 2.3.x + AGP 8.13+）—— 未排期
 
-- 跨度更大（KGP 2.3 的 AGP 下限升到 8.2.2、支持到 9.0），单独立项评估，不与其他改动混。
+- 想真正消掉 CI 的 EOL 注解，只有这一步能做到（Gradle 8 已全线仅安全修复）；
+- 可参考的一张组合：KGP 2.3.20–2.3.21（Gradle 7.6.3–9.3.0 / AGP 8.2.2–9.0.0）
+  + AGP 8.13.x（最低 Gradle 8.13）+ Gradle 9.0/9.1；
+- 跨度比前三步大得多（Gradle 9 移除了一批旧 API），单独立项，仍按“一步一版本一次 CI”的节奏。
 
 ## 约束（不可协商）
 
