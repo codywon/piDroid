@@ -60,6 +60,66 @@ class TokenStatsCacheRateTest {
         assertEquals(0f, TokenStats(cacheWriteTokens = 0L, inputTokens = 0L, cacheReadTokens = 0L).cacheHitRate, 0.0001f)
     }
 
+    // ---- 汇总口径的回退：只能整体退，不能逐字段退 ----
+
+    @Test
+    fun `cumulative tokens win even when input is legitimately zero`() {
+        // 整段 prompt 全命中缓存：stats.tokens.input 合法地为 0，cacheRead 为正。
+        // 逐字段回退会把这个 0 换成单轮 input(169)，分母就成了「累计 + 单轮」的混合物。
+        val (input, output) = TokenStats.resolveSummaryTokens(
+            hasCumulativeTokens = true,
+            cumulativeInput = 0L,
+            cumulativeOutput = 0L,
+            lastAssistantInput = 169L,
+            lastAssistantOutput = 42L
+        )
+        assertEquals(0L, input)
+        assertEquals(0L, output)
+    }
+
+    @Test
+    fun `missing cumulative block falls back to the last assistant usage`() {
+        val (input, output) = TokenStats.resolveSummaryTokens(
+            hasCumulativeTokens = false,
+            cumulativeInput = 0L,
+            cumulativeOutput = 0L,
+            lastAssistantInput = 1_400L,
+            lastAssistantOutput = 260L
+        )
+        assertEquals(1_400L, input)
+        assertEquals(260L, output)
+    }
+
+    @Test
+    fun `cumulative values are what the ratio is computed from`() {
+        val (input, output) = TokenStats.resolveSummaryTokens(
+            hasCumulativeTokens = true,
+            cumulativeInput = 46_000L,
+            cumulativeOutput = 3_100L,
+            lastAssistantInput = 169L,
+            lastAssistantOutput = 42L
+        )
+        val stats = TokenStats(
+            inputTokens = input,
+            outputTokens = output,
+            cacheReadTokens = 27_500_000L
+        )
+        assertEquals(99.8329f, stats.cacheHitRate, 0.001f)
+    }
+
+    @Test
+    fun `negative inputs never leak into the summary`() {
+        val (input, output) = TokenStats.resolveSummaryTokens(
+            hasCumulativeTokens = true,
+            cumulativeInput = -5L,
+            cumulativeOutput = -1L,
+            lastAssistantInput = 10L,
+            lastAssistantOutput = 20L
+        )
+        assertEquals(0L, input)
+        assertEquals(0L, output)
+    }
+
     /** 与 HUD 里的 `String.format(Locale.US, "%.1f%%", stats.cacheHitRate)` 逐字一致 */
     private fun format(rate: Float): String = String.format(Locale.US, "%.1f%%", rate)
 }

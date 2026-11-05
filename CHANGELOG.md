@@ -2,6 +2,19 @@
 
 All notable changes to the πDroid application will be documented in this file.
 
+## [2.0.20] - 2026-11-06
+
+### 🔍 缓存命中率的“累计口径”改成整体回退（修 2.0.19 的边界）
+
+- **问题**：2.0.19 把三个数统一到了会话累计，但回退判据是**逐字段**的（`if (inTokens > 0L) … else 单轮 input`）。整段 prompt 全命中缓存时 `stats.tokens.input` 合法地为 0，此时分母会把单轮 input 拼回来 —— 与本次修掉的“混口径”是同一类。
+- **修复**：新增纯函数 `TokenStats.resolveSummaryTokens`，判据换成“网关到底有没有下发 `stats.tokens`”这一个布尔：有就整体用累计（即使 input 为 0），没有才 input/output 一起退回最后一条 assistant 消息的 usage。另外对负值做了 `coerceAtLeast(0)` —— 负 token 无论来自哪个源都不该进分母。
+- **测试**：`TokenStatsCacheRateTest` 新增 4 条（累计为 0 不被单轮顶替、累计缺失时整体回退、回退后的值确实参与比值、负值不泄漏）。
+
+### 🧹 文档与发版流程
+
+- `CHANGELOG` 的 `2.0.17` 段落标注“未发布（构建失败，内容随 2.0.18 出货）”，避免把从未存在的版本读成已发布版本。
+- 发版流水线新增前置门禁：tag（或手动触发输入）与 `app/build.gradle.kts` 的 `versionName` 不一致、或 `CHANGELOG` 缺对应段落时，几秒内直接失败 —— 否则会出现“Release 叫 vX.Y.Z、装完仍提示有新版本”的死循环。
+
 ## [2.0.19] - 2026-11-06
 
 ### 📊 Token HUD 缓存命中率对齐 pi-web（不再永远顶格 100.0%）
@@ -27,6 +40,8 @@ All notable changes to the πDroid application will be documented in this file.
 - **测试**：新增 `SessionTimeFormattingTest`（相对时间全部分档边界、未来时间、非法输入、UTC ISO 不漂移）；`WorkspacePathsTest` 新增 7 条选区仲裁回归（含「首帧只有 termius 时必须 Defer」）；移除已下线功能的 `SessionStatsFormattingTest`。
 
 ## [2.0.17] - 2026-11-05
+
+> ⚠️ **未发布**：构建在 `Run Unit Tests` 阶段失败（`Unresolved reference 'refreshSessionUiState'`），未产出安装包、未创建 Release。下列内容实际随 **2.0.18** 出货。
 
 ### ⏱️ 从会话返回工作区，右上角不再转三十多秒
 

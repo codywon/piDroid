@@ -597,6 +597,10 @@ class PiApiClient(private val prefs: AppPreferences) {
         var cacheRead = 0L
         var cacheWrite = 0L
         var cost = 0.0
+        // 「会话累计」这块到底有没有真的解析出来。汇总口径的回退必须**整体**判断，
+        // 不能逐字段看 > 0：整段 prompt 全命中缓存时 `stats.tokens.input` 合法地为 0，
+        // 逐字段回退会把单轮 input 拼进累计 cacheRead 的分母，命中率又被钉回 100%。
+        var hasCumulativeTokens = false
 
         if (json.has("stats") && json.get("stats").isJsonObject) {
             val stats = json.getAsJsonObject("stats")
@@ -619,6 +623,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 outTokens = tok.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                 cacheRead = tok.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
                 cacheWrite = tok.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                hasCumulativeTokens = true
             }
         }
 
@@ -652,10 +657,15 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 「累计命中」除以「单轮输入」：本会话 27.5 M cache R 配 169 in，比值 99.9994%，
         // 四舍五入后永远顶格 100.0%（详见 `TokenStats.cacheHitRate`）。上游 pi-web 的
         // 「平均缓存命中率」三个数全部取自 sessionStats.tokens，这里同源。
-        // 累计缺失（旧网关不返回 stats.tokens）时才退回最后一条 assistant 消息的 usage，
+        // 累计缺失（旧网关不返回 stats.tokens）时才整体退回最后一条 assistant 消息的 usage，
         // 那是「有真实来源的退路」，而不是编造。上下文占用仍单独用 lastAssistant* 计算。
-        val summaryInTokens = if (inTokens > 0L) inTokens else lastAssistantInTokens
-        val summaryOutTokens = if (outTokens > 0L) outTokens else lastAssistantOutTokens
+        val (summaryInTokens, summaryOutTokens) = TokenStats.resolveSummaryTokens(
+            hasCumulativeTokens = hasCumulativeTokens,
+            cumulativeInput = inTokens,
+            cumulativeOutput = outTokens,
+            lastAssistantInput = lastAssistantInTokens,
+            lastAssistantOutput = lastAssistantOutTokens
+        )
 
         val tokenStats = TokenStats(
             contextTokens = realContext,

@@ -515,6 +515,26 @@ data class TokenStats(
             maxContextWindow > 0L && contextTokens > maxContextWindow
 
         /**
+         * 汇总口径的 `input` / `output`（喂给 [cacheHitRate] 与 HUD 用量行）。
+         *
+         * 必须与 `cacheRead` / `cacheWrite` **同源**（都是会话累计），所以回退只能整体做：
+         * 只有网关**根本没下发** `stats.tokens` 时，才两个字段一起退回最后一条 assistant
+         * 消息的 usage。逐字段判 `> 0` 回退是错的 —— 整段 prompt 全命中缓存时
+         * `stats.tokens.input` 合法地为 0，那时分母就会拼进单轮 input，命中率重新钉到 100%。
+         */
+        fun resolveSummaryTokens(
+            hasCumulativeTokens: Boolean,
+            cumulativeInput: Long,
+            cumulativeOutput: Long,
+            lastAssistantInput: Long,
+            lastAssistantOutput: Long
+        ): Pair<Long, Long> = if (hasCumulativeTokens) {
+            cumulativeInput.coerceAtLeast(0L) to cumulativeOutput.coerceAtLeast(0L)
+        } else {
+            lastAssistantInput.coerceAtLeast(0L) to lastAssistantOutput.coerceAtLeast(0L)
+        }
+
+        /**
          * 上下文用量文案：`128 K / 200 K (64.0%)`；超窗时写「已超窗」而不伪造百分比。
          */
         fun formatContextUsage(contextTokens: Long, maxContextWindow: Long): String {
