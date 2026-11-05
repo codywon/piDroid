@@ -107,43 +107,63 @@ fun TokenStatsHudDialog(
                     )
                 }
 
-                // 2. 缓存命中率卡片：容器用不透明语义色（半透明容器会让对比度不可计算、不可断言）
-                Surface(
-                    color = theme.successContainer,
-                    shape = RoundedCornerShape(10.dp),
-                    border = BorderStroke(1.dp, theme.success.copy(alpha = 0.35f))
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                // 2. 缓存命中率卡片
+                //
+                // 两个细节对齐 pi-web 的会话信息面板：
+                //  - **只在有缓存活动时出现**（`cacheRead + cacheWrite > 0` 且分母 > 0）；
+                //    从未走过前缀缓存的会话，上游不画这一行，而不是摆一个 0.0%；
+                //  - 缓存读取 / 缓存写入是**两个独立读数**（各自 > 0 才出现），
+                //    而不是把 cacheRead 一个值当成「缓存命中」总数。
+                if (stats.cacheHitRateAvailable) {
+                    // 容器用不透明语义色（半透明容器会让对比度不可计算、不可断言）
+                    Surface(
+                        color = theme.successContainer,
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, theme.success.copy(alpha = 0.35f))
                     ) {
-                        Column(modifier = Modifier.weight(1f, fill = false)) {
-                            InfoTitle(
-                                title = "Prompt 缓存率",
-                                infoDescription = "前缀缓存命中可省约 90% 费用",
-                                style = MaterialTheme.typography.labelMedium
-                            )
-                            Spacer(modifier = Modifier.height(2.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f, fill = false)) {
+                                InfoTitle(
+                                    title = "Prompt 缓存率",
+                                    infoDescription = "前缀缓存命中可省约 90% 费用",
+                                    style = MaterialTheme.typography.labelMedium
+                                )
+                                if (stats.cacheReadTokens > 0L) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "缓存读取: ${TokenStats.formatTokenStandard(stats.cacheReadTokens)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = theme.success,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                if (stats.cacheWriteTokens > 0L) {
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "缓存写入: ${TokenStats.formatTokenStandard(stats.cacheWriteTokens)}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = theme.success,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "缓存命中: ${TokenStats.formatTokenStandard(stats.cacheReadTokens)} Tokens",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = theme.success,
-                                fontFamily = FontFamily.Monospace
+                                text = TokenStats.formatCacheHitRate(stats.cacheHitRate),
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                softWrap = false,
+                                color = theme.success
                             )
                         }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = String.format(java.util.Locale.US, "%.1f%%", stats.cacheHitRate),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            softWrap = false,
-                            color = theme.success
-                        )
                     }
                 }
 
@@ -185,20 +205,23 @@ fun TokenStatsHudDialog(
                     }
                 }
 
-                // 4. 预估成本
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("当前会话成本", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
-                    Text(
-                        "\$${String.format("%.4f", stats.cost)}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace,
-                        color = theme.textPrimary
-                    )
+                // 4. 预估成本：上游同样只在 `cost > 0` 时显示这一行（`$` + toFixed(4)）
+                if (stats.cost > 0.0) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("当前会话成本", style = MaterialTheme.typography.bodySmall, color = theme.textSecondary)
+                        // Locale.US 固定点号小数，与上游 `toFixed(4)` 对齐
+                        Text(
+                            text = String.format(java.util.Locale.US, "\$%.4f", stats.cost),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textPrimary
+                        )
+                    }
                 }
 
                 // 5. 压缩历史明细

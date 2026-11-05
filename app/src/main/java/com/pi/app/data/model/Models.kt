@@ -490,6 +490,27 @@ data class TokenStats(
             return if (totalPrompt > 0L) (cacheReadTokens.toFloat() / totalPrompt) * 100f else 0f
         }
 
+        /**
+         * 本会话到底该不该展示“平均缓存命中率”这一行。
+         *
+         * 上游 pi-web 的会话信息面板（`components/AppShell.tsx`）把它包在一个条件里：
+         * ```ts
+         * cacheRead + cacheWrite > 0 && cacheRead + cacheWrite + input > 0
+         * ```
+         * 也就是说，从未走过前缀缓存的会话**不出现这一行**，而不是显示一个毫无意义的 `0.0%`。
+         */
+        val cacheHitRateAvailable: Boolean
+            get() = cacheReadTokens + cacheWriteTokens > 0L &&
+                cacheReadTokens + cacheWriteTokens + inputTokens > 0L
+
+        /**
+         * 命中率文案：与上游 `${(cacheRead / (cacheRead + cacheWrite + input) * 100).toFixed(1)}%` 一致。
+         *
+         * 刻意固定 `Locale.US`：`toFixed()` 永远输出点号小数，而 `String.format` 默认
+         * 跟随系统 Locale——德语等地区会变成 `99,8%`，与 pi-web 的读数看起来不是同一个数。
+         */
+        fun formatCacheHitRate(rate: Float): String = String.format(Locale.US, "%.1f%%", rate)
+
     companion object {
         /**
          * 上下文占用应当展示的真实 token 数。

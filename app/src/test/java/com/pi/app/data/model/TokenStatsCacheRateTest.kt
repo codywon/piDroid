@@ -3,7 +3,6 @@ package com.pi.app.data.model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.Locale
 
 /**
  * Prompt 缓存命中率的回归测试：口径必须与上游 pi-web 一致。
@@ -120,6 +119,34 @@ class TokenStatsCacheRateTest {
         assertEquals(0L, output)
     }
 
-    /** 与 HUD 里的 `String.format(Locale.US, "%.1f%%", stats.cacheHitRate)` 逐字一致 */
-    private fun format(rate: Float): String = String.format(Locale.US, "%.1f%%", rate)
+    /** 与 HUD 共用同一份实现，不再在这里留第二份格式串副本。 */
+    private fun format(rate: Float): String = TokenStats.formatCacheHitRate(rate)
+
+    // ---- 展示条件与文案：对齐 pi-web 会话信息面板的那个条件 ----------
+
+    @Test
+    fun `cache hit rate row is hidden when the session never used the cache`() {
+        // 上游：cacheRead + cacheWrite > 0 才画这一行
+        val noCache = TokenStats(inputTokens = 1_200L, outputTokens = 300L)
+        assertTrue(!noCache.cacheHitRateAvailable)
+    }
+
+    @Test
+    fun `cache hit rate row appears for either cache counter`() {
+        assertTrue(TokenStats(cacheReadTokens = 8_000L, inputTokens = 1_000L).cacheHitRateAvailable)
+        assertTrue(TokenStats(cacheWriteTokens = 1_000L, inputTokens = 1_000L).cacheHitRateAvailable)
+    }
+
+    @Test
+    fun `zero denominator hides the row even with cache counters`() {
+        // 理论上不可能，但上游同样要求分母 > 0；这里把契约钉死，防除零回归
+        assertTrue(!TokenStats().cacheHitRateAvailable)
+    }
+
+    @Test
+    fun `format keeps the dot decimal separator like toFixed`() {
+        assertEquals("99.8%", TokenStats.formatCacheHitRate(99.8329f))
+        assertEquals("100.0%", TokenStats.formatCacheHitRate(99.9994f))
+        assertEquals("0.0%", TokenStats.formatCacheHitRate(0f))
+    }
 }
