@@ -1179,7 +1179,12 @@ class MainActivity : ComponentActivity() {
                             completeAgentSessionRun(sessionId, syncSnapshot = true)
                             return@launch
                         }
-                        AgentSettleDecision.Abandon -> return@launch
+                        AgentSettleDecision.Abandon -> {
+                            // 20s 内未探到结论（网络波动或网关未响应），兜底完成收尾，
+                            // 避免 isAgentBusy 永久卡死在 true 导致界面假死残留状态条
+                            completeAgentSessionRun(sessionId, syncSnapshot = true)
+                            return@launch
+                        }
                         AgentSettleDecision.Continue ->
                             kotlinx.coroutines.delay(AgentSettlePolicy.POLL_INTERVAL_MS)
                     }
@@ -2075,6 +2080,9 @@ class MainActivity : ComponentActivity() {
                         "agent_end" -> {
                             // 仅当整个 Agent 会话执行链结束（且未处于自动重试等待期）时，经防抖确认后触发震动与提示音
                             isToolExecuting = false
+                            // 1:1 对标 pi-web useAgentSession.ts 的 setAgentPhase(null)：
+                            // 收到 agent_end 立即抹掉等待阶段，绝不留到 settle 期间甚至永久残留
+                            agentPhaseLabel = null
                             // 本轮彻底结束：在途消息身份作废（对齐 pi-web 的 finishRun 清 streamingMessage）
                             streamingMessageId = null
                             settleStaleStreamingAgents()

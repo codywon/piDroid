@@ -2554,19 +2554,25 @@ fun ChatScreen(
                         }
                     }
 
-                    // 对标 pi-web：底部脉冲状态只在「已经有正文」时展示，首屏空白不再刷「正在等待模型...」
-                    if ((isAgentBusy || isCompacting) && conversation.isNotEmpty()) {
+                    // 1:1 对标 pi-web ChatWindow.tsx:1337：
+                    // {agentRunning && !hasStreamingContent && (agentPhase || isCompacting) && (...)}
+                    // 1) 仅在有明确阶段（!agentPhaseLabel.isNullOrBlank()）或压缩中时呈现，严禁无脑 fallback "正在等待模型..."；
+                    // 2) 若当前尾部正在流式吐字（hasStreamingContent），绝不呈现等待状态条；
+                    // 3) 会话有正文时才展示（避免首屏空白刷噪音）。
+                    val hasStreamingContent = messages.lastOrNull()?.let {
+                        it.isStreaming && (it.content.isNotEmpty() || !it.thinking.isNullOrEmpty())
+                    } == true
+                    val effectivePhaseText = when {
+                        // 对齐 pi-web 的 `chat.compactingQueued`：「正在压缩… · N 条排队中」
+                        isCompacting && queuedMessages.isNotEmpty() ->
+                            "正在压缩上下文… · ${queuedMessages.size} 条排队中"
+                        isCompacting -> "正在压缩上下文..."
+                        !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
+                        else -> null
+                    }
+                    if ((isAgentBusy || isCompacting) && conversation.isNotEmpty() && !hasStreamingContent && effectivePhaseText != null) {
                         item(key = "pi_web_agent_phase_indicator") {
-                            PiWebPhaseIndicator(
-                                text = when {
-                                    // 对齐 pi-web 的 `chat.compactingQueued`：「正在压缩… · N 条排队中」
-                                    isCompacting && queuedMessages.isNotEmpty() ->
-                                        "正在压缩上下文… · ${queuedMessages.size} 条排队中"
-                                    isCompacting -> "正在压缩上下文..."
-                                    !agentPhaseLabel.isNullOrBlank() -> agentPhaseLabel
-                                    else -> "正在等待模型..."
-                                }
-                            )
+                            PiWebPhaseIndicator(text = effectivePhaseText)
                         }
                     }
                 }

@@ -4,6 +4,14 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.32] - 2026-11-06
+
+### 🩹 修复任务结束后底部残留「正在等待模型」幽灵状态（对标 pi-web）
+
+- **收到 `agent_end` 立即抹除阶段**：1:1 对标 pi-web `useAgentSession.ts` 的 `setAgentPhase(null)`，收到服务端 `agent_end` 瞬间立即将 `agentPhaseLabel` 置空，不再留给 settle 防抖期间展示，彻底消除任务结束到收尾期间的视觉残留。
+- **移除无脑兜底 fallback**：`ChatScreen.kt` 底部脉冲条严格对齐 `ChatWindow.tsx:1337`（`agentRunning && !hasStreamingContent && (agentPhase || isCompacting)`），彻底移除 `else -> "正在等待模型..."` 的强行 fallback；且增加 `!hasStreamingContent` 互斥保护，流式输出正文期间绝不展示等待条。
+- **Settle 超时兜底收尾**：`scheduleAgentCompletionSettle` 在遇到 20s 超时（`Abandon`）时执行兜底收尾并刷新快照，防止弱网下 `isAgentBusy` 永久卡死在 `true` 导致界面假死。
+
 ## [2.0.31] - 2026-11-06
 
 ### 🩹 修复「跟随底部偶尔彻底失效」与拖动被抢
