@@ -4,6 +4,12 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.33] - 2026-11-06
+
+### 🛡️ 完善 Settle 放弃分支的运行态保护
+
+- **避免运行中任务被 Abandon 误判完成**：`scheduleAgentCompletionSettle` 超时到达 20s 放弃点时，仅当服务端状态未明（网络断开或网关未响应）且本地无工具/重试时才执行兜底收尾；若服务端明确仍在运行（`running == true`），绝不强行触发完成提示音与空闲切回，防止任务仍在后台执行时界面误报完成。
+
 ## [2.0.32] - 2026-11-06
 
 ### 🩹 修复任务结束后底部残留「正在等待模型」幽灵状态（对标 pi-web）

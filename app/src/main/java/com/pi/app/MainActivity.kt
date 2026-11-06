@@ -1180,9 +1180,12 @@ class MainActivity : ComponentActivity() {
                             return@launch
                         }
                         AgentSettleDecision.Abandon -> {
-                            // 20s 内未探到结论（网络波动或网关未响应），兜底完成收尾，
-                            // 避免 isAgentBusy 永久卡死在 true 导致界面假死残留状态条
-                            completeAgentSessionRun(sessionId, syncSnapshot = true)
+                            // 20s 超时放弃：若服务端未能探明状态（网络波动/网关无响应）且本地无工具/重试在飞，
+                            // 才兜底完成收尾，避免 isAgentBusy 永久卡死；若服务端明确仍在运行（running == true）
+                            // 或本地仍在执行工具，绝不能伪造完成信号
+                            if (state?.running != true && !isToolExecuting && !isAutoRetrying) {
+                                completeAgentSessionRun(sessionId, syncSnapshot = true)
+                            }
                             return@launch
                         }
                         AgentSettleDecision.Continue ->
