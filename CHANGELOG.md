@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.30] - 2026-11-06
+
+### 🩹 修复流式输出时底部闪烁（对齐 pi-web 的瞬时贴底）
+
+- **根因**：跟随底部用的是 `animateScrollBy` 缓动动画，而跟随效果以「正文长度」为 key —— 每来一个 token 就换 key，上一轮跟随协程被 cancel、动画刚起步就被掰断重开，速度归零、永远收敛不了；正文于是每帧「长高一点 + 被拉回一点」，快输出的模型下底部那几行就在抖。pi-web 的跟随完全不带动画：每个 delta 只登记一次 `requestAnimationFrame`，同一帧的增量合并，然后在 rAF 里一次性 `scrollTo({top: scrollHeight, behavior: "auto"})`。
+- **改为常驻协程 + `conflate()` + 瞬时贴底**：触发源只认内容（滚动位置不进 key，避免跟随自己触发自己、抢走用户惯性滚动），同一帧的多次变化合并成一次，延后一帧等新内容布局落地（等价 `requestAnimationFrame`），再一次性滚到真正尽头。同时移除 `followToBottomSmoothly()` 与 `ScrollFollowPolicy.needsInstantJump`（不再存在「动画/瞬移」两种贴底模式）。
+- **修正滚动方向判定**：非 `reverseLayout` 列表里「首条可见项索引变大」其实是往下滚，历史实现把它当成「用户上翻」，于是跟随每跨一行（工具卡 / 过程组 / 最终答复都是独立行）就自我脱离一帧再接上 —— 表现为跟随走一下停一下。现按「索引变大 / 位移变小」严格互斥地判定，并新增 `ScrollFollowPolicy.scrollDirections` 与对应单元测试。
+- **「回到底部」悬浮按钮不再闪**：显示条件从裸的 `listState.canScrollForward`（流式期间每帧翻一次，`AnimatedVisibility` 的 fadeIn/scaleIn 反复重开）改为对齐 pi-web 的 `shouldShowScrollToLatest`（距底 8px 容差），并且只在已经不再跟随时才出现。
+
 ## [2.0.29] - 2026-11-06
 
 ### 🎨 全局思考深度卡片 UI 精简与消除歧义

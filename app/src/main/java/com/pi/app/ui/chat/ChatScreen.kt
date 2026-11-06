@@ -27,7 +27,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
@@ -106,6 +105,8 @@ import com.pi.app.ui.theme.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -381,21 +382,25 @@ fun ChatScreen(
     LaunchedEffect(listState) {
         var prevIndex = -1
         var prevOffset = 0
-        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+        // 方向必须由**行的实际位置**推：`visibleItemsInfo.first().offset` 是该项相对视口起点的
+        // 位移（往下滚越来越负，整行被推出去时索引才 +1）。换算规则与它为什么不能只看索引
+        // 见 [ScrollFollowPolicy.scrollDirections]。
+        snapshotFlow {
+            listState.layoutInfo.visibleItemsInfo.firstOrNull()?.let { it.index to it.offset }
+        }
+            .filterNotNull()
             .collect { (index, offset) ->
-                if (prevIndex >= 0) {
-                    val scrolledUp = index > prevIndex || (index == prevIndex && offset > prevOffset)
-                    val scrolledDown = index < prevIndex || (index == prevIndex && offset < prevOffset)
-                    val attached = ScrollFollowPolicy.resolveAttached(
-                        wasAttached = followTail,
-                        scrolledUp = scrolledUp,
-                        scrolledDown = scrolledDown,
-                        distanceToBottom = distanceToBottom
-                    )
-                    if (attached != followTail) followTail = attached
-                }
+                val direction = ScrollFollowPolicy.scrollDirections(prevIndex, prevOffset, index, offset)
                 prevIndex = index
                 prevOffset = offset
+                if (!direction.changed) return@collect
+                val attached = ScrollFollowPolicy.resolveAttached(
+                    wasAttached = followTail,
+                    scrolledUp = direction.scrolledUp,
+                    scrolledDown = direction.scrolledDown,
+                    distanceToBottom = distanceToBottom
+                )
+                if (attached != followTail) followTail = attached
             }
     }
     // 列表区域的可见视口：图片/PDF 卡片只有在落进这块矩形之后才会真去取字节，
@@ -1038,32 +1043,15 @@ fun ChatScreen(
     // 回到底部 / 跟随新消息：按像素一直滚到真正尽头。
     // 之前用「算出来的行号」scrollToItem，行数估算偏一点、或者动画期间又来了新消息，
     // 就会停在半路 —— 这正是「点了一键到底却没到底」的原因。
+    //
+    // 这是**唯一**的贴底方式（1:1 对齐 pi-web 的 scrollToBottom("auto")）：每一跳都会被
+    // 当前已测得的可用距离 clamp（不会越界），而列表是按需组合的，量到尽头后上限才会变大，
+    // 所以这里循环几次直到 canScrollForward 为假 —— 也就是真的到底了。
     suspend fun scrollToVeryBottom() {
         var guard = 0
         while (listState.canScrollForward && guard < 400) {
             guard++
             listState.scroll { scrollBy(6_000f) }
-        }
-    }
-
-    /**
-     * 流式跟随用的平滑版本。
-     *
-     * `scrollToVeryBottom()` 是「瞬间滚到尽头」（6000px 硬跳），而流式正文每秒会触发十几次，
-     * 于是整屏被反复猛拽 —— 视觉上就是正文和它上方的微组件卡片在抖。
-     *
-     * 这里改成按视口高度分步、带动画：滚动本身会被 clamp 到真实剩余距离，所以内容只多了一行
-     * 时它就是「平滑移动那一行」，不会过冲；一次性插入一张大卡片时才需要多步循环。
-     *
-     * 用默认 spring 而不是 tween：流式期间本动画会被下一段增量的重组反复重启，
-     * spring 会带上当前速度继续，tween 则会从头缓入，看起来更顿。
-     */
-    suspend fun followToBottomSmoothly() {
-        var guard = 0
-        while (listState.canScrollForward && guard < 200) {
-            guard++
-            val step = listState.layoutInfo.viewportSize.height.toFloat().coerceAtLeast(1f)
-            listState.animateScrollBy(step)
         }
     }
 
@@ -1128,34 +1116,80 @@ fun ChatScreen(
     val imeBottomPx = WindowInsets.ime.getBottom(density)
     val isImeVisible = imeBottomPx > 0
 
-    LaunchedEffect(
-        conversation.size,
-        conversation.lastOrNull()?.content?.length,
-        conversation.lastOrNull()?.thinking?.length,
-        isAgentBusy,
-        agentPhaseLabel,
-        isImeVisible
-    ) {
-        if (conversation.isEmpty()) return@LaunchedEffect
-        if (isImeVisible || followTail) {
-            if (!hasInitialScrolled) {
-                // 首屏（或内容还没量好）：瞬时贴底；**只有真的到底了才认账**，
-                // 否则一帧后新快照又下来一截，界面就停在半路再也回不去（以前就是这样）。
+    // ── 跟随底部：常驻协程 + 合并增量 + 瞬时贴底（1:1 对齐 pi-web）────────────────
+    // pi-web 的跟随**不是动画**：每个 delta 只在 rAF 闸门里登记一次
+    // （hooks/useAgentSession.ts:1660 的 liveFollowFrameRef，同一帧 N 个增量合并成一次），
+    // 然后在 rAF 里调 scrollToBottom("auto") → scrollTo({top: scrollHeight, behavior:"auto"})。
+    //
+    // 旧实现把跟随写在 `LaunchedEffect(正文长度, …)` 里，用 animateScrollBy 逐屏动画追：
+    // 每个 token 都换 key → 上一轮跟随协程被 cancel → 动画刚起步就被下一轮掰断重开，
+    // 速度归零、永远收敛不了；正文于是每帧“长高一点 + 被拉回一点”，
+    // 快输出的模型下底部那几行就是在抖（用户报的「快速输出时底部闪烁」）。
+    //
+    // 现在：触发源只认**内容**（滚动位置一律不进 key，否则跟随会自己触发自己、还会抢走
+    // 用户的惯性滚动），用 conflate 把同一帧的多次变化合并成一次，延后一帧等新内容的
+    // 布局落地（等价 pi-web 的 requestAnimationFrame），再一次性瞬时贴底。
+    //
+    // ⚠ 三个括号坑，改动前先看：
+    // 1) `isAgentBusy` / `agentPhaseLabel` / `isImeVisible` 是**参数与组合期算好的普通值**，
+    //    直接进 snapshotFlow 只会变成“启动那一瞬的死值”，后面再也不更新；包一层
+    //    rememberUpdatedState 才是可追踪的 State。
+    // 2) 必须直接读 `messages`（SnapshotStateList），不能读外面拼好的 `conversation`：
+    //    翻过页后它是 `olderMessages + messages` 生成的普通 List，读它不会被快照追踪，
+    //    流式增量就永远触发不到这里。历史是 prepend 的，尾部仍是 `messages` 的尾部。
+    // 3) withFrameNanos 不能省：组合/收集比 measure 早，此刻 canScrollForward 还是上一帧
+    //    的旧值（旧值恰好是“已经贴底”），scrollToVeryBottom() 会立刻空转退出，一帧都不滚。
+    //    （首屏定位是唯一例外，见下面的注释：那条路径靠本帧 measure 的 clamp。）
+    val busyState = rememberUpdatedState(isAgentBusy)
+    val phaseState = rememberUpdatedState(agentPhaseLabel)
+    val imeVisibleState = rememberUpdatedState(isImeVisible)
+    LaunchedEffect(listState, sessionId) {
+        snapshotFlow {
+            val tail = messages.lastOrNull()
+            val tool = tail?.toolCall
+            val attached = followTail || imeVisibleState.value
+            FollowSignal(
+                rows = messages.size,
+                contentLength = tail?.content?.length ?: 0,
+                thinkingLength = tail?.thinking?.length ?: 0,
+                toolLength = (tool?.preview?.length ?: 0) + (tool?.command?.length ?: 0) +
+                    (tool?.output?.length ?: 0),
+                mediaCount = tail?.mediaList?.size ?: 0,
+                busy = busyState.value,
+                phase = phaseState.value,
+                attached = attached,
+                initialScrolled = hasInitialScrolled
+            )
+        }
+            .conflate()
+            .collect { signal ->
+                if (signal.rows == 0 || !signal.attached) return@collect
+                // 首屏定位先按老路径瞬时贴一次：那一刻 layoutInfo 可能还是空列表的旧值，
+                // 但滚动位置会在**本帧的 measure 里被 clamp 到真正的底部**，所以第一帧就是底部，
+                // 不会先画一遍顶部再跳（等帧反而会新造一次“闪”）。
+                if (!signal.initialScrolled) {
+                    scrollToVeryBottom()
+                    // 只有「已经量过一遍」才敢认账：totalItemsCount 为 0 说明本帧还没 layout，
+                    // 此时的 canScrollForward=false 是空列表的默认值，并不是“已经到底”。
+                    if (listState.layoutInfo.totalItemsCount > 0 && !listState.canScrollForward) {
+                        hasInitialScrolled = true
+                        followTail = true
+                        return@collect
+                    }
+                }
+                // 流式跟随必须等一帧：这时要读的是「新内容量完之后」的 canScrollForward，
+                // 而组合/收集比 measure 早 —— 此刻它还是上一帧的旧值（旧值恰好是“已经贴底”），
+                // scrollToVeryBottom() 会立刻空转退出，一帧都不滚。
+                withFrameNanos { }
+                if (!(followTail || imeVisibleState.value)) return@collect
                 scrollToVeryBottom()
-                if (!listState.canScrollForward) {
+                if (!hasInitialScrolled && !listState.canScrollForward) {
+                    // 内容还没量好时首屏定位可能落空，这里补最后一步：只有真的到底了才认账，
+                    // 否则一帧后新快照又下来一截，界面就停在半路再也回不去（以前就是这样）。
                     hasInitialScrolled = true
                     followTail = true
                 }
-            } else {
-                // 落差超过一屏就直接跳：逐屏 animateScrollBy 就是“自动刷屏往下翻”。
-                val viewport = listState.layoutInfo.viewportSize.height.toFloat()
-                if (ScrollFollowPolicy.needsInstantJump(distanceToBottom, viewport)) {
-                    scrollToVeryBottom()
-                } else {
-                    followToBottomSmoothly()
-                }
             }
-        }
     }
 
     // 用户自己滑回底部时恢复「跟随新消息」（pi-web 同款）：
@@ -2610,9 +2644,18 @@ fun ChatScreen(
             }
 
             // ── 回到底部悬浮按钮：下箭头加圆圈图标在正文框右下角 (对标行业标准与用户要求) ──
-            val canScrollDown by remember { derivedStateOf { listState.canScrollForward } }
+            // 显示条件对齐 pi-web 的 shouldShowScrollToLatest：用**距底距离 + 8px 容差**，
+            // 而且只在「已经不再跟随」时才出现。裸绑 listState.canScrollForward 会让它在
+            // 流式期间每一帧翻一次（内容一长高就 true、跟随一跳回就又 false），
+            // AnimatedVisibility 的 fadeIn/scaleIn 反复重开 → 右下角那颗按钮一直在闪。
+            val showScrollToBottom by remember(listState) {
+                derivedStateOf {
+                    userJumpedToHistory ||
+                        (!followTail && ScrollFollowPolicy.shouldShowScrollToLatest(distanceToBottom))
+                }
+            }
             AnimatedVisibility(
-                visible = userJumpedToHistory || canScrollDown,
+                visible = showScrollToBottom,
                 enter = fadeIn() + scaleIn(),
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier
@@ -4174,3 +4217,25 @@ private fun buildPromptEnhancementContext(history: List<ChatItem>): List<PromptE
         .filter { it.text.isNotBlank() }
     return PromptEnhancementRules.selectContext(candidates)
 }
+
+/**
+ * 「跟随底部」的触发信号：只打包**内容侧**的状态，绝不含滚动位置。
+ *
+ * 为什么单独抽一个数据类当 snapshotFlow 的发射值：snapshotFlow 只在发射值发生变化时
+ * 才继续下发，所以当成「去重 key」用。把 `listState.layoutInfo` 当触发源是最短写法，但
+ * 滚动本身就会让它每帧变一次 —— 收集端会自己触发自己；流式期间用户往下甩一把惯性滚动，
+ * 就会被自己的跟随协程抢走并瞬间吸到底。pi-web 的跟随也只挂在 delta 事件上，不挂 scroll 事件。
+ */
+private data class FollowSignal(
+    val rows: Int,
+    val contentLength: Int,
+    val thinkingLength: Int,
+    val toolLength: Int,
+    val mediaCount: Int,
+    val busy: Boolean,
+    val phase: String?,
+    /** 当前是否应当跟随（用户贴着底部 / 键盘弹起） */
+    val attached: Boolean,
+    /** 首屏「瞬时定位到底部」是否已完成 */
+    val initialScrolled: Boolean
+)
