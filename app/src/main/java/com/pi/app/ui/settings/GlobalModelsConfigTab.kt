@@ -588,7 +588,7 @@ fun GlobalModelsConfigTab(
                     }
                 }
 
-                // 2. 全局默认思考深度紧凑卡片（顶栏右侧展示当前档位及预算标签，下方 7 档单行完整展示）
+                // 2. 全局默认思考深度紧凑卡片（顶栏右侧展示生效范围，下方 7 档单行完整展示）
                 item(key = "thinking_level_card") {
                     SettingsGroup {
                         Column(
@@ -617,21 +617,11 @@ fun GlobalModelsConfigTab(
                                         color = theme.textPrimary
                                     )
                                 }
-                                Surface(
-                                    shape = RoundedCornerShape(5.dp),
-                                    color = theme.surfaceContainer
-                                ) {
-                                    Text(
-                                        text = ModelConfigUiFormatters.formatThinkingBudgetLabel(currentDefaultThinkingLevel),
-                                        fontSize = 10.5.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = theme.primary,
-                                        maxLines = 1,
-                                        softWrap = false,
-                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.5.dp)
-                                    )
-                                }
+                                Text(
+                                    text = "新会话生效",
+                                    fontSize = 10.sp,
+                                    color = theme.textMuted
+                                )
                             }
 
                             // 7 档选择器单行完整展示
