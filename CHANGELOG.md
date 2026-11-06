@@ -4,6 +4,14 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.31] - 2026-11-06
+
+### 🩹 修复「跟随底部偶尔彻底失效」与拖动被抢
+
+- **常驻跟随协程会被一次拖动终结**：贴底是一次 `MutatePriority.Default` 的滚动会话，用户一上手拖动（`UserInput` 优先级更高）就会抢占并取消它；`CancellationException` 逃出 `collect` 会让这个**常驻**收集器一起结束，此后本会话再也不跟随（且无任何报错）。旧实现每次增量都重启协程，所以从未暴露这个问题。现在显式区分「被用户抢占」与「自己真的被销毁」，只对后者向上抛。
+- **跟随不再抢用户的手势**：`scrollToVeryBottom(abortIfUserScrolling = true)` 在 `listState.isScrollInProgress` 时主动让位（显式的「回到底部」/「从此处编辑」仍必须滚到），避免用户刚甩出去又被拽回底部。
+- **压缩状态条出现/消失也会重新贴底**：`FollowSignal` 增加 `compacting`，否则压缩开始时尾部插入的一行会让视口停在半路，直到下一个 token 才补上。
+
 ## [2.0.30] - 2026-11-06
 
 ### 🩹 修复流式输出时底部闪烁（对齐 pi-web 的瞬时贴底）

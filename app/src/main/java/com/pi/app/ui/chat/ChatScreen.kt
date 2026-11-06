@@ -102,11 +102,14 @@ import com.pi.app.prompt.PromptEnhancementTicket
 import com.pi.app.prompt.PromptEnhancementUndoState
 import com.pi.app.ui.git.GitChangesFullScreen
 import com.pi.app.ui.theme.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -1047,9 +1050,14 @@ fun ChatScreen(
     // 这是**唯一**的贴底方式（1:1 对齐 pi-web 的 scrollToBottom("auto")）：每一跳都会被
     // 当前已测得的可用距离 clamp（不会越界），而列表是按需组合的，量到尽头后上限才会变大，
     // 所以这里循环几次直到 canScrollForward 为假 —— 也就是真的到底了。
-    suspend fun scrollToVeryBottom() {
+    //
+    // [abortIfUserScrolling]：跟随路径必须传 true。`scroll {}` 是 Default 优先级的滚动会话，
+    // 用户一上手拖动（UserInput）就会抢占它；不主动让位的话，拖动一结束我们仍会把视口
+    // 拽回底部。显式的「回到底部」/「从此处编辑」是一次性意图，保持 false（必须滚到）。
+    suspend fun scrollToVeryBottom(abortIfUserScrolling: Boolean = false) {
         var guard = 0
         while (listState.canScrollForward && guard < 400) {
+            if (abortIfUserScrolling && listState.isScrollInProgress) return
             guard++
             listState.scroll { scrollBy(6_000f) }
         }
@@ -1143,11 +1151,11 @@ fun ChatScreen(
     val busyState = rememberUpdatedState(isAgentBusy)
     val phaseState = rememberUpdatedState(agentPhaseLabel)
     val imeVisibleState = rememberUpdatedState(isImeVisible)
+    val compactingState = rememberUpdatedState(isCompacting)
     LaunchedEffect(listState, sessionId) {
         snapshotFlow {
             val tail = messages.lastOrNull()
             val tool = tail?.toolCall
-            val attached = followTail || imeVisibleState.value
             FollowSignal(
                 rows = messages.size,
                 contentLength = tail?.content?.length ?: 0,
@@ -1156,38 +1164,47 @@ fun ChatScreen(
                     (tool?.output?.length ?: 0),
                 mediaCount = tail?.mediaList?.size ?: 0,
                 busy = busyState.value,
+                compacting = compactingState.value,
                 phase = phaseState.value,
-                attached = attached,
+                attached = followTail || imeVisibleState.value,
                 initialScrolled = hasInitialScrolled
             )
         }
             .conflate()
             .collect { signal ->
                 if (signal.rows == 0 || !signal.attached) return@collect
-                // 首屏定位先按老路径瞬时贴一次：那一刻 layoutInfo 可能还是空列表的旧值，
-                // 但滚动位置会在**本帧的 measure 里被 clamp 到真正的底部**，所以第一帧就是底部，
-                // 不会先画一遍顶部再跳（等帧反而会新造一次“闪”）。
-                if (!signal.initialScrolled) {
-                    scrollToVeryBottom()
-                    // 只有「已经量过一遍」才敢认账：totalItemsCount 为 0 说明本帧还没 layout，
-                    // 此时的 canScrollForward=false 是空列表的默认值，并不是“已经到底”。
-                    if (listState.layoutInfo.totalItemsCount > 0 && !listState.canScrollForward) {
+                // 贴底是一次 scroll 会话（Default 优先级），用户拖动（UserInput）会抢占并
+                // 取消它。这个 CancellationException 若逃出去，会把这个**常驻**收集器一起
+                // 终结 —— 此后本会话再也不跟随，且没有任何报错。只有自己真的被销毁（切
+                // 会话/离屏）才向上抛，其余（被用户抢占）属正常让位。
+                try {
+                    // 首屏定位先按老路径瞬时贴一次：那一刻 layoutInfo 可能还是空列表的旧值，
+                    // 但滚动位置会在**本帧的 measure 里被 clamp 到真正的底部**，所以第一帧就是
+                    // 底部，不会先画一遍顶部再跳（等帧反而会新造一次“闪”）。
+                    if (!signal.initialScrolled) {
+                        scrollToVeryBottom(abortIfUserScrolling = true)
+                        // 只有「已经量过一遍」才敢认账：totalItemsCount 为 0 说明本帧还没 layout，
+                        // 此时的 canScrollForward=false 是空列表的默认值，并不是“已经到底”。
+                        if (listState.layoutInfo.totalItemsCount > 0 && !listState.canScrollForward) {
+                            hasInitialScrolled = true
+                            followTail = true
+                            return@collect
+                        }
+                    }
+                    // 流式跟随必须等一帧：这时要读的是「新内容量完之后」的 canScrollForward，
+                    // 而组合/收集比 measure 早 —— 此刻它还是上一帧的旧值（旧值恰好是“已经贴底”），
+                    // scrollToVeryBottom() 会立刻空转退出，一帧都不滚。
+                    withFrameNanos { }
+                    if (!(followTail || imeVisibleState.value)) return@collect
+                    scrollToVeryBottom(abortIfUserScrolling = true)
+                    if (!hasInitialScrolled && !listState.canScrollForward) {
+                        // 内容还没量好时首屏定位可能落空，这里补最后一步：只有真的到底了才认账，
+                        // 否则一帧后新快照又下来一截，界面就停在半路再也回不去（以前就是这样）。
                         hasInitialScrolled = true
                         followTail = true
-                        return@collect
                     }
-                }
-                // 流式跟随必须等一帧：这时要读的是「新内容量完之后」的 canScrollForward，
-                // 而组合/收集比 measure 早 —— 此刻它还是上一帧的旧值（旧值恰好是“已经贴底”），
-                // scrollToVeryBottom() 会立刻空转退出，一帧都不滚。
-                withFrameNanos { }
-                if (!(followTail || imeVisibleState.value)) return@collect
-                scrollToVeryBottom()
-                if (!hasInitialScrolled && !listState.canScrollForward) {
-                    // 内容还没量好时首屏定位可能落空，这里补最后一步：只有真的到底了才认账，
-                    // 否则一帧后新快照又下来一截，界面就停在半路再也回不去（以前就是这样）。
-                    hasInitialScrolled = true
-                    followTail = true
+                } catch (preempted: CancellationException) {
+                    if (!currentCoroutineContext().isActive) throw preempted
                 }
             }
     }
@@ -4233,6 +4250,8 @@ private data class FollowSignal(
     val toolLength: Int,
     val mediaCount: Int,
     val busy: Boolean,
+    /** 压缩中会在列表尾部插一行状态条，行高变了也得重新贴底 */
+    val compacting: Boolean,
     val phase: String?,
     /** 当前是否应当跟随（用户贴着底部 / 键盘弹起） */
     val attached: Boolean,
