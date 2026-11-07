@@ -926,6 +926,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     ?: return@withContext Result.failure(IOException("更早记录响应无法解析"))
                 val ctx = root.get("context")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
                 val arr = ctx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
+                val entryIds = ctx.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+                attachEntryIds(arr, entryIds)
                 val parsed = parseRawMessagesToChatItems(
                     sessionId = sessionId,
                     msgs = arr ?: JsonArray(),
@@ -1163,7 +1165,10 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
                 entryType == "compaction" -> {
                     val summary = entry.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val tokensBefore = entry.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    val tokensBefore = entry.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                        ?: entry.get("details")?.takeIf { it.isJsonObject }
+                            ?.asJsonObject?.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                        ?: 0L
                     val synthetic = JsonObject().apply {
                         addProperty("role", "compactionSummary")
                         addProperty("summary", summary)
@@ -1299,9 +1304,10 @@ class PiApiClient(private val prefs: AppPreferences) {
             } else rawObj
             val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
             val customType = msgObj.get("customType")?.takeIf { !it.isJsonNull }?.asString
+                ?: rawObj.get("customType")?.takeIf { !it.isJsonNull }?.asString
             // 哪些消息该渲染见 [SessionMessageVisibility]：pi-web 会丢掉 system 角色与
             // display 非真的 custom 消息，漏对齐就会把扩展注入的内部指令印成用户可见卡片。
-            val displayFlag = msgObj.get("display")
+            val displayFlag = (msgObj.get("display") ?: rawObj.get("display"))
                 ?.takeIf { !it.isJsonNull && it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
                 ?.asBoolean
             if (!SessionMessageVisibility.isVisible(roleStr, displayFlag)) continue

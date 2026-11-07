@@ -204,11 +204,11 @@ object SessionSnapshotMerge {
         val newestFirst = local.indices.reversed()
 
         for (diskItem in synced) {
-            // 优先按 entryId 精确匹配
+            // 优先按 entryId 精确匹配（同时校验角色一致，杜绝不同角色意外共用 entryId 导致错位覆写）
             var localMatchIdx = -1
             if (!diskItem.entryId.isNullOrBlank()) {
                 for (i in local.indices) {
-                    if (!matchedLocalIndices.contains(i) && local[i].entryId == diskItem.entryId) {
+                    if (!matchedLocalIndices.contains(i) && local[i].entryId == diskItem.entryId && local[i].role == diskItem.role) {
                         localMatchIdx = i
                         break
                     }
@@ -361,20 +361,24 @@ object SessionSnapshotMerge {
         if (items.size < 2) return items
         val result = ArrayList<ChatItem>(items.size)
         val seenCompactionContents = HashSet<String>()
+        val seenCompactionEntryIds = HashSet<String>()
         var prevCompactionHeader: String? = null
 
         for (item in items) {
             if (item.role == MessageRole.SYSTEM && item.content.trimStart().startsWith("📦")) {
                 val header = item.content.lineSequence().firstOrNull()?.trim() ?: item.content
-                // 1) 紧邻的两张压缩卡片且头部相同（含 tokensBefore 说明），直接去重
-                // 2) 具有完全相同的压缩内容，或者相同 entryId 的压缩卡片，直接去重
-                val isDuplicate = (header == prevCompactionHeader) ||
-                    (!item.entryId.isNullOrBlank() && result.any { it.entryId == item.entryId }) ||
-                    (!seenCompactionContents.add(item.content))
+                val hasEntryId = !item.entryId.isNullOrBlank()
+                // 1) 相同 entryId 的压缩卡片直接去重（O(1) HashSet）
+                // 2) 紧邻的两张压缩卡片且头部相同（含 tokensBefore 说明），直接去重
+                // 3) 无 entryId 时按完全相同的压缩内容进行兜底去重
+                val isDuplicate = (hasEntryId && !seenCompactionEntryIds.add(item.entryId!!)) ||
+                    (header == prevCompactionHeader) ||
+                    (!hasEntryId && !seenCompactionContents.add(item.content))
                 if (isDuplicate) {
                     continue
                 }
                 prevCompactionHeader = header
+                seenCompactionContents.add(item.content)
             } else {
                 prevCompactionHeader = null
             }

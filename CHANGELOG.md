@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.36] - 2026-11-07
+
+### 🩹 修复早期历史分页丢失 entryId 与对账跨角色防护
+
+- **补全分页历史 `attachEntryIds` 映射**：`PiApiClient.getOlderContextPage` 在解析早期记录时补齐 `attachEntryIds(arr, ctx.get("entryIds"))` 调用，根除上滑加载更早历史后消息 `entryId` 丢失、导致「从此处编辑」无法跳转的问题。
+- **对账 Step 1 增加角色强校验**：`SessionSnapshotMerge.reconcileList` 的 entryId 匹配增加 `local[i].role == diskItem.role` 判定，杜绝同一 entryId 下不同角色消息发生交叉配对与顶替。
+- **压缩去重算法提升为 O(1) 且区分 entryId**：`dedupCompactionCards` 引入 `seenCompactionEntryIds` HashSet，并仅在缺失 entryId 时进行跨条目同内容去重，保证具有不同 entryId 的合法历史压缩事件绝不误删。
+- **解析防御性回退**：`PiApiClient` 解析 `display` 与 `customType` 时同时兼容 `rawObj` 顶层字段，`tokensBefore` 兼容读取 `details.tokensBefore`。
+
 ## [2.0.35] - 2026-11-07
 
 ### 🩹 根除会话对账导致的压缩卡片重复（四道防线）

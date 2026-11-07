@@ -200,4 +200,32 @@ class SessionSnapshotMergeTest {
 
         assertEquals("不同轮次的历史压缩卡片必须全部保留", 3, deduped.size)
     }
+
+    @Test
+    fun `不同 entryId 即使内容相同的历史压缩卡片也被保留`() {
+        val compaction1 = item("c1", MessageRole.SYSTEM, "📦 上下文已归档压缩", entryId = "comp_1")
+        val normalMsg = item("u1", MessageRole.USER, "继续", entryId = "u_1")
+        val compaction2 = item("c2", MessageRole.SYSTEM, "📦 上下文已归档压缩", entryId = "comp_2")
+
+        val deduped = SessionSnapshotMerge.dedupCompactionCards(listOf(compaction1, normalMsg, compaction2))
+
+        assertEquals("不同 entryId 的合法历史压缩卡片绝不被全局内容误删", 3, deduped.size)
+    }
+
+    @Test
+    fun `跨角色相同的 entryId 不会被对账错误配对覆盖`() {
+        // 极端场景：若本地有个工具卡被误标相同 entryId，与快照中的助手消息不该跨角色认领
+        val local = listOf(
+            item("t1", MessageRole.TOOL, "", entryId = "shared_id", timestamp = 1_000L)
+        )
+        val synced = listOf(
+            item("s1", MessageRole.AGENT, "回复正文", entryId = "shared_id", timestamp = 1_000L)
+        )
+
+        val merged = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning = false)
+
+        assertEquals("不同角色不应互相跨角色顶替", 1, merged.size)
+        assertEquals(MessageRole.AGENT, merged[0].role)
+        assertEquals("s1", merged[0].id)
+    }
 }
