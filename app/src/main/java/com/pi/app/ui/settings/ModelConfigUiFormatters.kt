@@ -20,12 +20,12 @@ object ModelConfigUiFormatters {
         "1M" to 1_000_000L
     )
 
-    /** 最大输出快捷预设胶囊：4k / 8k / 16k / 64k */
+    /** 最大输出快捷预设胶囊：8k / 16k / 64k / 128k */
     val MAX_OUTPUT_PRESETS: List<Pair<String, Long>> = listOf(
-        "4k" to 4_096L,
         "8k" to 8_192L,
         "16k" to 16_384L,
-        "64k" to 65_536L
+        "64k" to 65_536L,
+        "128k" to 131_072L
     )
 
     private val BINARY_K_MULTIPLIERS = setOf(1L, 2L, 4L, 8L, 16L, 32L, 64L, 128L, 256L, 512L)

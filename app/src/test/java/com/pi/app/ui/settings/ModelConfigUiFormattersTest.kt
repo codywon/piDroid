@@ -51,10 +51,29 @@ class ModelConfigUiFormattersTest {
     fun `isPresetSelected matches both exact and equivalent k-M representations`() {
         assertTrue(ModelConfigUiFormatters.isPresetSelected(128_000L, 128_000L, "128k"))
         assertTrue(ModelConfigUiFormatters.isPresetSelected(131_072L, 128_000L, "128k"))
+        assertTrue(ModelConfigUiFormatters.isPresetSelected(128_192L, 131_072L, "128k"))
         assertTrue(ModelConfigUiFormatters.isPresetSelected(16_384L, 16_384L, "16k"))
         assertTrue(ModelConfigUiFormatters.isPresetSelected(16_000L, 16_384L, "16k"))
         assertFalse(ModelConfigUiFormatters.isPresetSelected(0L, 16_384L, "16k"))
         assertFalse(ModelConfigUiFormatters.isPresetSelected(32_000L, 128_000L, "128k"))
+    }
+
+    @Test
+    fun `preset capsules match modern model context and output token distributions`() {
+        assertEquals(listOf("32k", "128k", "200k", "1M"), ModelConfigUiFormatters.CONTEXT_WINDOW_PRESETS.map { it.first })
+        assertEquals(listOf(32_000L, 128_000L, 200_000L, 1_000_000L), ModelConfigUiFormatters.CONTEXT_WINDOW_PRESETS.map { it.second })
+
+        assertEquals(listOf("8k", "16k", "64k", "128k"), ModelConfigUiFormatters.MAX_OUTPUT_PRESETS.map { it.first })
+        assertEquals(listOf(8_192L, 16_384L, 65_536L, 131_072L), ModelConfigUiFormatters.MAX_OUTPUT_PRESETS.map { it.second })
+
+        ModelConfigUiFormatters.CONTEXT_WINDOW_PRESETS.forEach { (label, value) ->
+            assertEquals(label, ModelConfigUiFormatters.formatModelTokenSpec(value))
+            assertTrue(ModelConfigUiFormatters.isPresetSelected(value, value, label))
+        }
+        ModelConfigUiFormatters.MAX_OUTPUT_PRESETS.forEach { (label, value) ->
+            assertEquals(label, ModelConfigUiFormatters.formatModelTokenSpec(value))
+            assertTrue(ModelConfigUiFormatters.isPresetSelected(value, value, label))
+        }
     }
 
     @Test

@@ -2326,6 +2326,17 @@ fun ChatScreen(
             // 正文区整体套一层 Density：用户把「聊天正文字号」调大时，Markdown 正文 / 代码 / 标题
             // 全部按同一比例放大，而输入栏、标题栏、间距（dp）不受影响。
             val chatContentDensity = rememberChatContentDensity()
+            // 提问大纲安全避让宽度：平滑过渡右侧边距，避免数据到达后会话窗口突然缩窄 20dp 的突兀感
+            val contentEndPadding by animateDpAsState(
+                targetValue = if (allTurns.isNotEmpty()) 32.dp else 12.dp,
+                animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                label = "chatContentEndPadding"
+            )
+            val scrollToBottomEndPadding by animateDpAsState(
+                targetValue = if (allTurns.isNotEmpty()) 36.dp else 16.dp,
+                animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                label = "scrollToBottomEndPadding"
+            )
             CompositionLocalProvider(
                 LocalMediaViewport provides mediaViewport,
                 LocalDensity provides chatContentDensity
@@ -2335,7 +2346,7 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .onGloballyPositioned { mediaViewport.rect = it.boundsInWindow() }
-                        .padding(start = 12.dp, end = if (allTurns.isNotEmpty()) 32.dp else 12.dp),
+                        .padding(start = 12.dp, end = contentEndPadding),
                     contentPadding = PaddingValues(vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -2579,7 +2590,12 @@ fun ChatScreen(
             }
 
             // ── 1:1 对标 pi-web 右侧时间轴导轨与历次提问大纲抽屉 (ChatMinimap) ──
-            if (allTurns.isNotEmpty()) {
+            AnimatedVisibility(
+                visible = allTurns.isNotEmpty(),
+                enter = fadeIn(animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing)),
+                exit = fadeOut(animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)),
+                modifier = Modifier.matchParentSize()
+            ) {
                 // 时间轴当前高亮档位：直接读「首个可见行」的 key（turn_<n>_…）解析回合号。
                 // 旧实现用 firstVisibleItemIndex 减去顶部横幅再当回合下标猜，一旦回合被折叠成
                 // 「过程组 / 最终答复」多行（或上滑续批插入新行），索引与回合号就对不上，高亮乱跳。
@@ -2662,7 +2678,7 @@ fun ChatScreen(
                             }
                         }
                     },
-                    modifier = Modifier.matchParentSize()
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 
@@ -2683,7 +2699,7 @@ fun ChatScreen(
                 exit = fadeOut() + scaleOut(),
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
-                    .padding(end = if (allTurns.isNotEmpty()) 36.dp else 16.dp, bottom = 12.dp)
+                    .padding(end = scrollToBottomEndPadding, bottom = 12.dp)
             ) {
                 Surface(
                     shape = CircleShape,

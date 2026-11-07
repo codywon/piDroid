@@ -1544,6 +1544,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     "toolres_${tcId ?: toolName}",
                                     timestamp
                                 ),
+                                entryId = entryId,
                                 role = MessageRole.TOOL,
                                 content = "",
                                 toolCall = ToolCallInfo(
@@ -1574,6 +1575,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                     chatItems.add(ChatItem(
                         id = HistoryItemKeys.of(sessionId, entryId, "compaction", timestamp),
+                        entryId = entryId,
                         role = MessageRole.SYSTEM,
                         content = if (summary.isNotBlank()) "$header\n$summary" else header,
                         timestamp = timestamp
@@ -1585,6 +1587,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     if (sysText.isNotBlank()) {
                         chatItems.add(ChatItem(
                             id = HistoryItemKeys.of(sessionId, entryId, "sys", timestamp),
+                            entryId = entryId,
                             role = MessageRole.SYSTEM,
                             content = sysText,
                             timestamp = timestamp

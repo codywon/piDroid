@@ -280,6 +280,19 @@ object SessionSnapshotMerge {
                 }
             }
 
+            // 若 entryId 未匹配，针对系统消息（如压缩卡片）按内容匹配，杜绝因 entryId 缺失导致的重复卡片
+            if (localMatchIdx < 0 && diskItem.role == MessageRole.SYSTEM) {
+                for (i in newestFirst) {
+                    if (matchedLocalIndices.contains(i)) continue
+                    val item = local[i]
+                    if (item.role != MessageRole.SYSTEM) continue
+                    if (item.content == diskItem.content) {
+                        localMatchIdx = i
+                        break
+                    }
+                }
+            }
+
             if (localMatchIdx >= 0) {
                 matchedLocalIndices.add(localMatchIdx)
                 val localItem = local[localMatchIdx]
@@ -323,8 +336,8 @@ object SessionSnapshotMerge {
             when {
                 // 尚未落盘的乐观用户消息：无论是否 running 都绝不能丢
                 item.role == MessageRole.USER && item.entryId.isNullOrBlank() -> true
-                // 运行中时，尚未落盘的本地消息（提问、助手、工具）都是当前活跃回合在途产物，绝不丢弃
-                effectiveRunning && item.entryId.isNullOrBlank() -> true
+                // 运行中时，尚未落盘的本地消息（提问、助手、工具）都是当前活跃回合在途产物，绝不丢弃（系统消息绝非在途产物）
+                effectiveRunning && item.entryId.isNullOrBlank() && item.role != MessageRole.SYSTEM -> true
                 // 正在实时生成的助手消息：保留
                 item.role == MessageRole.AGENT && item.isStreaming -> true
                 // 正在执行的工具：保留
@@ -333,10 +346,40 @@ object SessionSnapshotMerge {
             }
         }
 
-        return if (inFlightItems.isNotEmpty()) {
+        val candidates = if (inFlightItems.isNotEmpty()) {
             reconciledCommitted + inFlightItems
         } else {
             reconciledCommitted
         }
+        return dedupCompactionCards(candidates)
+    }
+
+    /**
+     * 消除连续或重复的压缩卡片：同一轮压缩在 UI 上永远只应该有一张卡片。
+     */
+    fun dedupCompactionCards(items: List<ChatItem>): List<ChatItem> {
+        if (items.size < 2) return items
+        val result = ArrayList<ChatItem>(items.size)
+        val seenCompactionContents = HashSet<String>()
+        var prevCompactionHeader: String? = null
+
+        for (item in items) {
+            if (item.role == MessageRole.SYSTEM && item.content.trimStart().startsWith("📦")) {
+                val header = item.content.lineSequence().firstOrNull()?.trim() ?: item.content
+                // 1) 紧邻的两张压缩卡片且头部相同（含 tokensBefore 说明），直接去重
+                // 2) 具有完全相同的压缩内容，或者相同 entryId 的压缩卡片，直接去重
+                val isDuplicate = (header == prevCompactionHeader) ||
+                    (!item.entryId.isNullOrBlank() && result.any { it.entryId == item.entryId }) ||
+                    (!seenCompactionContents.add(item.content))
+                if (isDuplicate) {
+                    continue
+                }
+                prevCompactionHeader = header
+            } else {
+                prevCompactionHeader = null
+            }
+            result.add(item)
+        }
+        return result
     }
 }

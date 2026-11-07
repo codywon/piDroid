@@ -156,4 +156,48 @@ class SessionSnapshotMergeTest {
         assertEquals("兜底后必须唯一", guarded.size, guarded.map { it.id }.toSet().size)
         assertEquals(reconciled.size, guarded.size)
     }
+
+    // ── 压缩卡片去重与在途保护（dedupCompactionCards）───────────────────────
+
+    @Test
+    fun `压缩卡片在运行中对账不会因 entryId 缺失或在途推导产生重复`() {
+        val compactionContent = "📦 上下文已归档压缩 (压缩前 419K tokens)\n## Goal\n推进平台重构"
+        // 场景：本地已有压缩卡片（即使 entryId 缺失），快照再次返回同内容压缩卡片，且此时处于运行中
+        val local = listOf(
+            item("hist_S_compaction", MessageRole.SYSTEM, compactionContent, entryId = null, timestamp = 10_000L)
+        )
+        val synced = listOf(
+            item("hist_S_compaction", MessageRole.SYSTEM, compactionContent, entryId = null, timestamp = 10_000L)
+        )
+
+        val merged = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning = true)
+
+        assertEquals("压缩卡片绝不能被对账翻倍成 2 张", 1, merged.size)
+        assertEquals(compactionContent, merged[0].content)
+    }
+
+    @Test
+    fun `紧邻或完全相同的压缩卡片会被 dedupCompactionCards 自动去重`() {
+        val header = "📦 上下文已归档压缩 (压缩前 419K tokens)"
+        val summary = "## Goal\n推进架构优化"
+        val card1 = item("c1", MessageRole.SYSTEM, "$header\n$summary", entryId = "eid_1", timestamp = 1_000L)
+        val card2 = item("c2", MessageRole.SYSTEM, "$header\n$summary", entryId = "eid_1", timestamp = 1_000L)
+        val normalMsg = item("u1", MessageRole.USER, "继续", entryId = "eid_2", timestamp = 2_000L)
+
+        val deduped = SessionSnapshotMerge.dedupCompactionCards(listOf(card1, card2, normalMsg))
+
+        assertEquals("相同 entryId 或紧邻的重复压缩卡片必须去重", 2, deduped.size)
+        assertEquals(listOf("c1", "u1"), deduped.map { it.id })
+    }
+
+    @Test
+    fun `不同轮次的合法历史压缩卡片被完整保留`() {
+        val compaction1 = item("c1", MessageRole.SYSTEM, "📦 上下文已归档压缩 (压缩前 138K tokens)\n轮次1", entryId = "e1")
+        val normalMsg = item("u1", MessageRole.USER, "下一步", entryId = "e2")
+        val compaction2 = item("c2", MessageRole.SYSTEM, "📦 上下文已归档压缩 (压缩前 419K tokens)\n轮次2", entryId = "e3")
+
+        val deduped = SessionSnapshotMerge.dedupCompactionCards(listOf(compaction1, normalMsg, compaction2))
+
+        assertEquals("不同轮次的历史压缩卡片必须全部保留", 3, deduped.size)
+    }
 }

@@ -3094,7 +3094,7 @@ private fun ModelCapabilityCard(
 }
 
 /**
- * 容量规格快捷预设胶囊按钮（如 32k / 128k / 200k / 1M、4k / 8k / 16k / 64k）。
+ * 容量规格快捷预设胶囊按钮（如 32k / 128k / 200k / 1M、8k / 16k / 64k / 128k）。
  */
 @Composable
 private fun QuickTokenPresetChip(

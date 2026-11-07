@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.35] - 2026-11-07
+
+### 🩹 根除会话对账导致的压缩卡片重复（四道防线）
+
+- **修复 `ChatItem` 漏绑 `entryId`**：`PiApiClient.kt` 解析 `compactionSummary`、`custom` 与 `toolres` 时漏传了 `entryId = entryId`，导致生成的压缩卡片其 `entryId` 恒为 `null`；快照对账时因缺少 entryId 无法精确配对，在后续运行态轮询中不断被识别为未匹配项。
+- **系统消息剔除出「在途推导」范围**：`SessionSnapshotMerge.reconcileList` 中 `effectiveRunning && item.entryId.isNullOrBlank()` 原本旨在保护提问/助手流式正文/工具等活跃回合未落盘产物，却因未过滤 `item.role` 把 `SYSTEM`（压缩卡片）也当成在途项带入 `inFlightItems` 重新追加到尾部，与服务端快照叠加形成翻倍。现显式限定 `item.role != MessageRole.SYSTEM`。
+- **系统消息支持内容容错匹配**：若服务端条目由于历史数据或网关转换丢失 entryId，对账 Step 1 对 `MessageRole.SYSTEM` 增加同内容回退匹配，杜绝因 entryId 缺失导致的未命中。
+- **列表输出增加压缩卡片去重保障**：`dedupCompactionCards` 兜底消除紧邻或完全相同的重复压缩卡片，且安全保留历史上不同轮次的合法压缩卡片。补充纯 JVM 单元测试钉住该回归向量。
+
 ## [2.0.34] - 2026-11-07
 
 ### 🩹 修复会话里反复出现「Goal」与「Continue the current task…」卡片（对标 pi-web）
