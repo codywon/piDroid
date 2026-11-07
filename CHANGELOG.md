@@ -4,6 +4,15 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.34] - 2026-11-07
+
+### 🩹 修复会话里反复出现「Goal」与「Continue the current task…」卡片（对标 pi-web）
+
+- **压缩摘要被当成普通注入消息**：pi-web 服务端把 `compaction` 条目下发成 `{role:"custom", customType:"compaction", content:<摘要>, display:true, details:{tokensBefore}}`，而摘要正文恒以 Markdown 标题 `## Goal` 开头。App 只认 pi 内部的 `compactionSummary` 形态，于是这类消息掉进「通用注入消息卡片」，标题取正文首行 → 每一轮压缩后界面上就多一张只剩 “Goal” 的卡片。现在把它折回 `compactionSummary` 形态，交给既有的「📦 上下文已归档压缩（压缩前 N tokens）」卡片渲染，token 数从 `details.tokensBefore` 读取。
+- **扩展的内部续跑指令被渲染出来**：`auto-continue-after-compaction` 用 `display:false` 的 custom 消息排队续跑，pi-web 的 MessageView 判据是 `rz(e){return "custom"===e.role && !e.display}`（命中直接渲染 null），App 却是「没有显式为 false 就显示」。现已改为**显式为 true 才显示**（缺字段按隐藏，对齐 JS 里 undefined 为 falsy 的语义），这条 “Continue the current task from the co…” 卡片不再出现。
+- **`role:"system"` 消息整体不渲染**：pi-web 服务端构造 `context.messages` 时对 `role==="system"` 直接 `return null`，客户端也没有 system 分支。App 之前会把它当系统卡片显示，现按同一判据丢弃；`entries` 分支合成的可见 custom_message 也改折成 `role:"custom"`，两条数据源只剩一套可见性语义。
+- 判据抽成纯 JVM 的 `SessionMessageVisibility`（`isVisible` / `isCompactionView`）并补 `SessionMessageVisibilityTest`，由 CI 单测锁定这两条规则。
+
 ## [2.0.33] - 2026-11-06
 
 ### 🛡️ 完善 Settle 放弃分支的运行态保护

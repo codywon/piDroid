@@ -1186,16 +1186,23 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
                 entryType == "custom_message" -> {
-                    // pi-web 只在 display 为真时渲染 custom_message（如 auto-continue-after-compaction
-                    // 这条注入指令是 display:false），否则会把内部注入的 prompt 当系统消息展示出来。
-                    val explicitlyHidden = entry.get("display")
+                    // pi-web 只在 display 为**真**时才渲染 custom_message（`rz(e){return "custom"===e.role && !e.display}`）：
+                    // auto-continue-after-compaction 这类扩展的续跑指令是 display:false，
+                    // 渲染出来就是用户没说过的话。缺字段同样按隐藏处理（JS 里 undefined 是 falsy）。
+                    val visible = entry.get("display")
                         ?.takeIf { !it.isJsonNull && it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
-                        ?.asBoolean == false
+                        ?.asBoolean == true
                     val contentText = extractTextFromContent(entry.get("content"))
-                    if (!explicitlyHidden && contentText.isNotBlank()) {
+                    if (visible && contentText.isNotBlank()) {
+                        // 折成 pi-web 服务端下发的同一形态（`{role:"custom", customType, content, display:true}`），
+                        // 下游只认这一种形状，避免「entries 分支能显示、messages 分支被隐藏」两套语义。
                         val synthetic = JsonObject().apply {
-                            addProperty("role", "system")
+                            addProperty("role", "custom")
                             addProperty("content", contentText)
+                            addProperty("display", true)
+                            entry.get("customType")?.takeIf { !it.isJsonNull }?.asString?.let {
+                                addProperty("customType", it)
+                            }
                             if (entryTs > 0L) addProperty("timestamp", entryTs)
                             if (!eId.isNullOrBlank()) addProperty("entryId", eId)
                         }
@@ -1291,6 +1298,21 @@ class PiApiClient(private val prefs: AppPreferences) {
                 rawObj.getAsJsonObject("message")
             } else rawObj
             val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val customType = msgObj.get("customType")?.takeIf { !it.isJsonNull }?.asString
+            // 哪些消息该渲染见 [SessionMessageVisibility]：pi-web 会丢掉 system 角色与
+            // display 非真的 custom 消息，漏对齐就会把扩展注入的内部指令印成用户可见卡片。
+            val displayFlag = msgObj.get("display")
+                ?.takeIf { !it.isJsonNull && it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }
+                ?.asBoolean
+            if (!SessionMessageVisibility.isVisible(roleStr, displayFlag)) continue
+            // 压缩摘要在 >0.13 的快照里是 `custom/customType="compaction"`（正文即 Markdown 摘要，首行恒为
+            // "## Goal"）。折回 compactionSummary 形态，交给同一条「📦 上下文已归档压缩」卡片渲染，
+            // 否则它会掉进通用注入消息卡片，标题取首行 → 界面上满屏 "Goal"。
+            val effectiveRole = if (SessionMessageVisibility.isCompactionView(roleStr, customType)) {
+                "compactionSummary"
+            } else {
+                roleStr
+            }
             val timestamp = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
             // pi 会话条目的真实 ID（entry.id）：从历史快照过来的消息都要带上，
             // 「从此处编辑」才能调 navigate_tree 把会话树切到这个节点。
@@ -1320,7 +1342,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             val msgModelName = msgObj.get("model")?.takeIf { !it.isJsonNull }?.asString
                 ?: defaultModelId
 
-            when (roleStr) {
+            when (effectiveRole) {
                 "user" -> {
                     val contentElem = msgObj.get("content") ?: msgObj.get("text")
                     // 剥掉 pi 为缩放后的图片追加的尺寸提示行（`[Image: original 1220x2656, …]`）：
@@ -1540,7 +1562,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                 "compactionSummary", "branchSummary" -> {
                     val summary = msgObj.get("summary")?.takeIf { !it.isJsonNull }?.asString
                         ?: extractTextFromContent(msgObj.get("content"))
-                    val tokensBefore = msgObj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                    // pi-web 把 token 数放在 details（`details:{tokensBefore}`），旧形态是顶层字段，两者都认。
+                    val tokensBefore = msgObj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                        ?: msgObj.get("details")?.takeIf { it.isJsonObject }
+                            ?.asJsonObject?.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                        ?: 0L
                     val header = if (tokensBefore > 0) {
                         "📦 上下文已归档压缩 (压缩前 ${TokenStats.formatTokenCompact(tokensBefore)} tokens)"
                     } else {
@@ -1553,7 +1579,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                         timestamp = timestamp
                     ))
                 }
-                "custom", "system" -> {
+                // 走到这里的 custom 消息一定是 display:true（其余已在上面按 [SessionMessageVisibility] 丢掉）。
+                "custom" -> {
                     val sysText = extractTextFromContent(msgObj.get("content") ?: msgObj.get("text"))
                     if (sysText.isNotBlank()) {
                         chatItems.add(ChatItem(
