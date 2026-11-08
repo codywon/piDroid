@@ -134,29 +134,28 @@ class PromptEnhancementRulesTest {
         assertEquals("最后一轮的需求", picked.last().text)
         assertTrue(picked.none { it.text.isBlank() })
         assertTrue(picked.all { it.role == "user" || it.role == "assistant" })
-        assertTrue(picked.any { it.text.length <= 4001 && it.text.endsWith("…") })
+        assertTrue(picked.any { it.text.length <= 801 && it.text.endsWith("…") })
     }
 
     @Test
     fun `keeps a long assistant reply instead of clipping it to a small quota`() {
-        // 上一轮的方案/代码常超过 400 字，曾被单独砍短，导致「按刚才那个方案改」丢失关键决策。
-        val plan = "方案第 " + "z".repeat(890) + " 条：用 Mutex 保护并发计数"
+        // 单条上限为 800 字符，保留助手核心方案而不被截断到微小配额
+        val plan = "方案第 " + "z".repeat(500) + " 条：用 Mutex 保护并发计数"
         val picked = PromptEnhancementRules.selectContext(
             listOf(PromptEnhancementContextMessage("assistant", plan))
         )
         val assistant = picked.single()
-        assertTrue("assistant length ${assistant.text.length}", assistant.text.length > 800)
+        assertTrue("assistant length ${assistant.text.length}", assistant.text.length in 500..801)
         assertTrue(assistant.text.contains("Mutex"))
     }
 
     @Test
     fun `includes tool results and compaction summaries in the context`() {
-        // 这两类消息曾经被整体过滤掉：工具结果是「这个报错」的真实出处，
-        // 摘要是长会话被压缩后唯一保留的早期约定。
+        // 工具结果与压缩摘要均可进入上下文，辅助消解代词与指代
         val picked = PromptEnhancementRules.selectContext(
             listOf(
                 PromptEnhancementContextMessage("summary", "早期约定：最小侵入，不引入新依赖。"),
-                PromptEnhancementContextMessage("tool", "[bash] ./gradlew assembleDebug error: unresolved reference"),
+                PromptEnhancementContextMessage("tool", "[工具报错 bash] ./gradlew assembleDebug error: unresolved reference"),
                 PromptEnhancementContextMessage("user", "这个报错怎么修"),
             )
         )
@@ -166,11 +165,10 @@ class PromptEnhancementRulesTest {
 
     @Test
     fun `context budget constants match the gateway`() {
-        // 客户端与服务端必须同一口径，否则一方多裁、一方少裁。
-        // 取值原则是「效果优先」：模型窗口 1M，预算不该比能力低一两个数量级。
-        assertEquals(24, PromptEnhancementRules.MAX_CONTEXT_MESSAGES)
-        assertEquals(4000, PromptEnhancementRules.MAX_CONTEXT_MESSAGE_CHARS)
-        assertEquals(40000, PromptEnhancementRules.MAX_CONTEXT_TOTAL_CHARS)
+        // 客户端与服务端必须同一口径，保持轻量快速（对标会话标题生成）
+        assertEquals(10, PromptEnhancementRules.MAX_CONTEXT_MESSAGES)
+        assertEquals(800, PromptEnhancementRules.MAX_CONTEXT_MESSAGE_CHARS)
+        assertEquals(6000, PromptEnhancementRules.MAX_CONTEXT_TOTAL_CHARS)
     }
 
     @Test

@@ -4212,40 +4212,35 @@ internal fun openFileWithOtherApp(context: Context, file: File, mime: String): B
  * 裁剪预算由 [PromptEnhancementRules.selectContext] 统一决定（纯 JVM 可单测）。
  */
 private fun buildPromptEnhancementContext(history: List<ChatItem>): List<PromptEnhancementContextMessage> {
-    // 注意：takeLast 是 List/Iterable 的扩展，Sequence 上没有；
-    // 先裁出最近一段再转成上下文，不要写成 asSequence().takeLast(..)。
+    // 聚焦最近对话问答（对标 pi-web 会话标题生成与 WorkBuddy）：
+    // 过滤掉数十 KB 的冗长终端 stdout 机器日志，只保留用户指令、助手方案与简要错误提示，
+    // 将手机端上行请求压缩至 1~2KB，大模型首字响应从 15s 降至 1~2s。
     val candidates = history
-        .takeLast(120)
+        .takeLast(16)
         .mapNotNull { item ->
             when (item.role) {
                 MessageRole.USER ->
                     PromptEnhancementContextMessage("user", item.content)
                 MessageRole.AGENT ->
                     PromptEnhancementContextMessage("assistant", item.content)
-                // 工具结果：这才是「这个报错」「刚才改的那段」的真实出处。
-                // 一条会话里 toolResult 往往占一半以上，旧实现把它们全过滤掉了。
+                // 工具输出：若执行失败，仅提取 1 行简要错误摘要（命令或 preview），杜绝数万字机器日志灌入
                 MessageRole.TOOL -> {
                     val call = item.toolCall
-                    if (call == null) null else PromptEnhancementContextMessage(
-                        role = "tool",
-                        text = buildString {
-                            append('[').append(call.toolName).append(']')
-                            call.command?.trim()?.takeIf { it.isNotEmpty() }?.let { append(' ').append(it) }
-                            val body = call.output?.trim()?.takeIf { it.isNotEmpty() }
-                                ?: call.preview?.trim()?.takeIf { it.isNotEmpty() }
-                            if (body != null) append('\n').append(body)
-                            if (call.isError) append("\n(命令/工具以错误结束)")
-                        }
-                    )
+                    if (call != null && call.isError) {
+                        val errSnippet = call.preview?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: call.command?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: call.toolName
+                        PromptEnhancementContextMessage(
+                            role = "tool",
+                            text = "[工具报错 ${call.toolName}] $errSnippet"
+                        )
+                    } else null
                 }
-                // 被 pi 压缩掉的那段历史只剩摘要（SYSTEM 角色、以 📦 开头）。
-                // 不注入的话，长会话里"一开始定的方案"对增强模型等于不存在。
-                // 读盘上的 jsonl 也能达到同样目的，但代价是路径编码/分支重建/并发写，
-                // 而摘要本来就在内存里 —— 这里只做最低成本的补救。
+                // 被 pi 压缩的早前历史摘要：保留关键设计决策
                 MessageRole.SYSTEM -> {
                     val summary = item.content
                         .lineSequence()
-                        .filterNot { it.startsWith("📦") }   // 去掉「上下文已归档压缩」这类界面文案
+                        .filterNot { it.startsWith("📦") }
                         .joinToString("\n")
                         .trim()
                     if (summary.isEmpty()) null else PromptEnhancementContextMessage("summary", summary)

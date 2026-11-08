@@ -111,20 +111,17 @@ object PromptEnhancementCapabilityParser {
 }
 
 object PromptEnhancementRules {
-    // ── 预算原则：效果优先 ──
-    // 模型窗口是 1M，曾经只给 6000 字上下文 / 1600 token 输出，比模型能力低一两个数量级，
-    // 模型只能在信息真空里扩写。这些值按「够用且安全」定，不按「省 token」定。
-    const val MAX_DRAFT_CHARS = 12000
+    const val MAX_DRAFT_CHARS = 6000
     /**
-     * 参考上下文的规模。
+     * 参考上下文的规模（对标 pi-web 会话标题生成与 WorkBuddy）。
      *
-     * 必须覆盖到**工具结果**：实测一个 230 条的会话里 toolResult 占 119 条，
-     * 用户说的「这个报错」「刚才改的那段」几乎都在里面；单条 4000 字可容纳
-     * 一段完整堆栈或一个函数的实现。
+     * 提示词增强只用来消解「它 / 那个接口 / 刚才那个方案」这类指代，
+     * 只需保留最近的问答意图与结论。剔除冗长的机器终端日志，
+     * 保持轻量上传（1~3KB），并将模型响应压缩至 2~4 秒。
      */
-    const val MAX_CONTEXT_MESSAGES = 24
-    const val MAX_CONTEXT_MESSAGE_CHARS = 4000
-    const val MAX_CONTEXT_TOTAL_CHARS = 40000
+    const val MAX_CONTEXT_MESSAGES = 10
+    const val MAX_CONTEXT_MESSAGE_CHARS = 800
+    const val MAX_CONTEXT_TOTAL_CHARS = 6000
 
     fun modelKey(provider: String, modelId: String): String = "${provider.trim()}:${modelId.trim()}"
 

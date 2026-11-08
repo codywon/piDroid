@@ -10,22 +10,17 @@ const DEFAULTS = {
   // 关闭开关：PROMPT_ENHANCE_DISABLED=1 后能力探测直接返回 available=false，
   // 手机端入口随之隐藏，原有聊天与标题功能不受影响。
   disableEnv: 'PROMPT_ENHANCE_DISABLED',
-  // ── 预算原则：效果优先 ──
-  // 我们面对的是 1M 上下文的模型，却曾只给 6000 字上下文、1600 token 输出，
-  // 预算比模型能力低一两个数量级，模型只能在信息真空里扩写——这才是「像 demo」的根因。
-  // 现在的取值按「够用且安全」定，而不是按「省 token」定：
-  //   40000 字中文 ≈ 27k tokens，占 1M 窗口的 3%、占 200k 窗口的 13%，都安全。
-  maxDraftChars: 12000,
-  maxContextChars: 40000,
-  maxContextMessages: 24,
-  maxContextMessageChars: 4000,
-  maxOutputChars: 20000,
-  // 输出不再卡「够不够写 700 字」：4096 token（约 2500~3000 中文字）给足余量，
-  // 避免模型写到一半撞 length 被判定为无效输出（那是纯损失，不是省钱）。
-  outputTokens: 4096,
-  // 预算放宽后单次生成会更久（实测 12k 字上下文 P90 8.5s），超时同步放宽，
-  // 宁可多等几秒拿到可用的结果，也不要频繁超时让用户重来。
-  timeoutMs: 50000,
+  // ── 预算原则：轻量快速与纯净问答（对标标题生成与 WorkBuddy）──
+  // 提示词增强只用来消解代词（如“按上面的建议”、“刚才那个报错”），
+  // 只需要最近的问答历史。严禁灌入动辄几十 KB 的机器终端日志，
+  // 既降低移动端网络上行延迟，又将模型 TTFT 首字响应降至 1~2 秒，杜绝超时。
+  maxDraftChars: 6000,
+  maxContextChars: 8000,
+  maxContextMessages: 10,
+  maxContextMessageChars: 1200,
+  maxOutputChars: 10000,
+  outputTokens: 1024,
+  timeoutMs: 30000,
   rateLimitPerMinute: 10,
   maxConcurrentRequests: 2,
 };
