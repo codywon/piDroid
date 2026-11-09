@@ -4,7 +4,7 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
-## [2.0.38] - 2026-11-09
+## [2.0.39] - 2026-11-09
 
 ### 🔀 侧边栏工作区拖拽排序平滑自动滚动与边缘防弹回
 

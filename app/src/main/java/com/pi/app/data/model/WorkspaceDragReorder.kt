@@ -145,19 +145,24 @@ object WorkspaceDragReorder {
         canScrollDown: Boolean
     ): Float {
         if (viewportHeight <= 0f || edgeZonePx <= 0f) return 0f
-        // 保证感应区不超过视口的一半，防止小屏幕/分屏下上下感应区重叠
-        val effectiveZone = minOf(edgeZonePx, viewportHeight / 2f)
+        val halfViewport = viewportHeight / 2f
+        val isConstrained = edgeZonePx >= halfViewport
+        val effectiveZone = if (isConstrained) halfViewport else edgeZonePx
 
-        // 顶部边缘感应区：[0, effectiveZone]，越接近顶部（或超出顶部）滚动越快
-        if (canScrollUp && fingerY < effectiveZone) {
+        // 顶部边缘感应区：
+        // 正常视口下为 [0, effectiveZone] 闭区间；受限视口下严格小于中线（防止中心点双重触发）
+        val inTopZone = if (isConstrained) fingerY < effectiveZone else fingerY <= effectiveZone
+        if (canScrollUp && inTopZone) {
             val ratio = ((effectiveZone - fingerY) / effectiveZone).coerceIn(0f, 1f)
             val speed = minSpeedPxPerSec + (maxSpeedPxPerSec - minSpeedPxPerSec) * ratio
             return -speed
         }
 
-        // 底部边缘感应区：[viewportHeight - effectiveZone, viewportHeight]，越接近底部（或超出底部）滚动越快
+        // 底部边缘感应区：
+        // 正常视口下为 [bottomTrigger, viewportHeight] 闭区间；受限视口下严格大于中线
         val bottomTrigger = viewportHeight - effectiveZone
-        if (canScrollDown && fingerY > bottomTrigger) {
+        val inBottomZone = if (isConstrained) fingerY > bottomTrigger else fingerY >= bottomTrigger
+        if (canScrollDown && inBottomZone) {
             val ratio = ((fingerY - bottomTrigger) / effectiveZone).coerceIn(0f, 1f)
             val speed = minSpeedPxPerSec + (maxSpeedPxPerSec - minSpeedPxPerSec) * ratio
             return speed
