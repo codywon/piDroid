@@ -95,4 +95,94 @@ object WorkspaceDragReorder {
             Anchor(rest[index - 1], ProjectMovePlan.AFTER)
         }
     }
+
+    /**
+     * 判断当前被拖动的行是否还可以继续向上（往列表头部）换位。
+     * 只有当它上方存在相邻行且属于同一分组时，才可以向上换位。
+     */
+    fun canSwapUp(
+        order: List<String>,
+        draggedPath: String,
+        sameBand: (String) -> Boolean
+    ): Boolean {
+        val index = order.indexOf(draggedPath)
+        if (index <= 0) return false
+        return sameBand(order[index - 1])
+    }
+
+    /**
+     * 判断当前被拖动的行是否还可以继续向下（往列表尾部）换位。
+     * 只有当它下方存在相邻行且属于同一分组时，才可以向下换位。
+     */
+    fun canSwapDown(
+        order: List<String>,
+        draggedPath: String,
+        sameBand: (String) -> Boolean
+    ): Boolean {
+        val index = order.indexOf(draggedPath)
+        if (index < 0 || index >= order.size - 1) return false
+        return sameBand(order[index + 1])
+    }
+
+    /**
+     * 计算拖拽至列表顶部/底部边缘时的自动滚动速度（像素/秒，向上滚动为负，向下滚动为正；不在边缘或无法滚动时返回 0f）。
+     *
+     * @param fingerY 当前手指/拖拽焦点在视口内的绝对 Y 坐标（像素）
+     * @param viewportHeight 视口总高度（像素）
+     * @param edgeZonePx 边缘感应区厚度（像素）
+     * @param maxSpeedPxPerSec 靠近边缘时的最大滚动速度（像素/秒）
+     * @param minSpeedPxPerSec 刚进入边缘感应区时的起步滚动速度（像素/秒）
+     * @param canScrollUp 是否允许向上滚动（列表还有前面内容且能向上换位）
+     * @param canScrollDown 是否允许向下滚动（列表还有后面内容且能向下换位）
+     */
+    fun calculateScrollSpeed(
+        fingerY: Float,
+        viewportHeight: Float,
+        edgeZonePx: Float,
+        maxSpeedPxPerSec: Float,
+        minSpeedPxPerSec: Float = maxSpeedPxPerSec * 0.25f,
+        canScrollUp: Boolean,
+        canScrollDown: Boolean
+    ): Float {
+        if (viewportHeight <= 0f || edgeZonePx <= 0f) return 0f
+        // 保证感应区不超过视口的一半，防止小屏幕/分屏下上下感应区重叠
+        val effectiveZone = minOf(edgeZonePx, viewportHeight / 2f)
+
+        // 顶部边缘感应区：[0, effectiveZone]，越接近顶部（或超出顶部）滚动越快
+        if (canScrollUp && fingerY < effectiveZone) {
+            val ratio = ((effectiveZone - fingerY) / effectiveZone).coerceIn(0f, 1f)
+            val speed = minSpeedPxPerSec + (maxSpeedPxPerSec - minSpeedPxPerSec) * ratio
+            return -speed
+        }
+
+        // 底部边缘感应区：[viewportHeight - effectiveZone, viewportHeight]，越接近底部（或超出底部）滚动越快
+        val bottomTrigger = viewportHeight - effectiveZone
+        if (canScrollDown && fingerY > bottomTrigger) {
+            val ratio = ((fingerY - bottomTrigger) / effectiveZone).coerceIn(0f, 1f)
+            val speed = minSpeedPxPerSec + (maxSpeedPxPerSec - minSpeedPxPerSec) * ratio
+            return speed
+        }
+
+        return 0f
+    }
+
+    /**
+     * 当被拖动行已到达分组边界无法继续换位时，对多余的拖拽位移施加阻尼限制，
+     * 避免卡片飞出列表过远导致松手时产生大幅度猛弹回。
+     */
+    fun clampResidualOffset(
+        offset: Float,
+        canSwapUp: Boolean,
+        canSwapDown: Boolean,
+        maxOvershootPx: Float
+    ): Float {
+        val limit = kotlin.math.abs(maxOvershootPx)
+        if (offset < 0f && !canSwapUp) {
+            return (-limit).coerceAtLeast(offset)
+        }
+        if (offset > 0f && !canSwapDown) {
+            return offset.coerceAtMost(limit)
+        }
+        return offset
+    }
 }

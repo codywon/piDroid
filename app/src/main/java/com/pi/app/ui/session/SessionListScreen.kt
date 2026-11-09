@@ -9,10 +9,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -63,8 +65,10 @@ import com.pi.app.data.model.WorkspacePaths
 import com.pi.app.data.model.groupWorkspaces
 import com.pi.app.ui.settings.ServerConfigDialog
 import com.pi.app.ui.theme.*
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -213,11 +217,14 @@ fun SessionListScreen(
     // 交换相邻行时把位移读数减去一行的高度，行的视觉位置保持不变，因此不会一顿一跳。
     var dragWsPath by remember { mutableStateOf<String?>(null) }
     var dragWsOffset by remember { mutableStateOf(0f) }
+    var dragFingerY by remember { mutableStateOf(0f) }
+    var isFingerDown by remember { mutableStateOf(false) }
     var dragWsMoved by remember { mutableStateOf(false) }
     var wsOrderOverride by remember { mutableStateOf<List<String>?>(null) }
     var wsCommitTick by remember { mutableStateOf(0) }
     // 普通 HashMap 而非 mutableStateMapOf：行高只给手势回调读，写成 State 会在拖动中反复触发重组
     val wsRowHeights = remember { HashMap<String, Float>() }
+    val drawerListState = rememberLazyListState()
     var searchQuery by remember { mutableStateOf("") }
     var statusFilter by remember { mutableStateOf(SessionStatusFilter.ALL) }
     var renamingSession by remember { mutableStateOf<Session?>(null) }
@@ -238,6 +245,12 @@ fun SessionListScreen(
     LaunchedEffect(drawerState.isClosed) {
         if (drawerState.isClosed) {
             isArchiveViewOpen = false
+            dragWsPath = null
+            dragWsOffset = 0f
+            dragFingerY = 0f
+            isFingerDown = false
+            dragWsMoved = false
+            wsOrderOverride = null
         }
     }
 
@@ -732,6 +745,11 @@ fun SessionListScreen(
                     }
                     // 相邻行之间有 spacedBy(6.dp) 的间隙，换位补偿要一起算上，否则每换一行残留 6dp 偏位
                     val wsRowGapPx = with(LocalDensity.current) { 6.dp.toPx() }
+                    val wsEdgeZonePx = with(LocalDensity.current) { 72.dp.toPx() }
+                    val wsMaxScrollSpeedPxPerSec = with(LocalDensity.current) { 700.dp.toPx() }
+                    val wsMinScrollSpeedPxPerSec = with(LocalDensity.current) { 180.dp.toPx() }
+                    val wsMaxOvershootPx = with(LocalDensity.current) { 28.dp.toPx() }
+                    val defaultRowHeightPx = with(LocalDensity.current) { 56.dp.toPx() }
 
                     // 松手时一次性提交：本地镜像 + 一条 move-project（锚点取「落位之后」紧邻的同分组邻居）
                     // 返回是否真的换了顺序，用于决定本地顺序覆盖要不要保留。
@@ -773,6 +791,84 @@ fun SessionListScreen(
                     val latestPinnedKeys by rememberUpdatedState(pinnedKeys)
                     val latestDisplayPaths by rememberUpdatedState(displayWorkspaces.map { it.path })
 
+                    // 拖拽至列表顶部/底部边缘时的平滑自动滚动协程
+                    LaunchedEffect(dragWsPath) {
+                        val activePath = dragWsPath ?: return@LaunchedEffect
+                        var lastTimeNanos = 0L
+                        while (isActive && isFingerDown) {
+                            val currentOrder = wsOrderOverride ?: latestDisplayPaths
+                            val selfPinned = latestPinnedKeys.contains(wsKey(activePath))
+                            val layoutInfo = drawerListState.layoutInfo
+                            val viewportHeight = (layoutInfo.viewportEndOffset - layoutInfo.viewportStartOffset).toFloat()
+
+                            if (viewportHeight > 0f) {
+                                val canUp = drawerListState.canScrollBackward && WorkspaceDragReorder.canSwapUp(currentOrder, activePath) {
+                                    latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                }
+                                val canDown = drawerListState.canScrollForward && WorkspaceDragReorder.canSwapDown(currentOrder, activePath) {
+                                    latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                }
+
+                                val speedPxPerSec = WorkspaceDragReorder.calculateScrollSpeed(
+                                    fingerY = dragFingerY,
+                                    viewportHeight = viewportHeight,
+                                    edgeZonePx = wsEdgeZonePx,
+                                    maxSpeedPxPerSec = wsMaxScrollSpeedPxPerSec,
+                                    minSpeedPxPerSec = wsMinScrollSpeedPxPerSec,
+                                    canScrollUp = canUp,
+                                    canScrollDown = canDown
+                                )
+
+                                val now = System.nanoTime()
+                                val dt = if (lastTimeNanos == 0L) 0.016f else ((now - lastTimeNanos) / 1_000_000_000f).coerceIn(0.004f, 0.05f)
+                                lastTimeNanos = now
+
+                                if (speedPxPerSec != 0f) {
+                                    val scrollDelta = speedPxPerSec * dt
+                                    val consumed = drawerListState.scrollBy(scrollDelta)
+                                    if (consumed != 0f) {
+                                        dragWsOffset += consumed
+                                        val step = WorkspaceDragReorder.settle(
+                                            order = currentOrder,
+                                            draggedPath = activePath,
+                                            offset = dragWsOffset,
+                                            rowGap = wsRowGapPx,
+                                            heightOf = { path -> wsRowHeights[path] ?: defaultRowHeightPx },
+                                            sameBand = { path ->
+                                                latestPinnedKeys.contains(wsKey(path)) == selfPinned
+                                            }
+                                        )
+                                        if (step.order != currentOrder) {
+                                            wsOrderOverride = step.order
+                                            if (prefs.hapticsEnabled) {
+                                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                            }
+                                        }
+                                        val nowCanUp = WorkspaceDragReorder.canSwapUp(step.order, activePath) {
+                                            latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                        }
+                                        val nowCanDown = WorkspaceDragReorder.canSwapDown(step.order, activePath) {
+                                            latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                        }
+                                        dragWsOffset = WorkspaceDragReorder.clampResidualOffset(
+                                            offset = step.offset,
+                                            canSwapUp = nowCanUp,
+                                            canSwapDown = nowCanDown,
+                                            maxOvershootPx = wsMaxOvershootPx
+                                        )
+                                    }
+                                    delay(16)
+                                } else {
+                                    lastTimeNanos = 0L
+                                    delay(20)
+                                }
+                            } else {
+                                lastTimeNanos = 0L
+                                delay(20)
+                            }
+                        }
+                    }
+
                     Text(
                         text = "项目工作区 (${workspaces.size})",
                         style = MaterialTheme.typography.labelSmall,
@@ -783,6 +879,7 @@ fun SessionListScreen(
                     Spacer(modifier = Modifier.height(4.dp))
 
                     LazyColumn(
+                        state = drawerListState,
                         modifier = Modifier.fillMaxSize(),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
@@ -888,7 +985,7 @@ fun SessionListScreen(
                                     // 长按拖动排序；松手时若没真正拖动过，则仍按旧行为弹出项目菜单
                                     .pointerInput(ws.path) {
                                         detectDragGesturesAfterLongPress(
-                                            onDragStart = {
+                                            onDragStart = { offset ->
                                                 // 和全局「触感反馈」开关保持一致
                                                 if (prefs.hapticsEnabled) {
                                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -896,12 +993,18 @@ fun SessionListScreen(
                                                 dragWsPath = ws.path
                                                 dragWsOffset = 0f
                                                 dragWsMoved = false
+                                                isFingerDown = true
                                                 // 拖动起点固定在「当前展示顺序」上，拖动期间不再接受服务端回包改顺序
                                                 wsOrderOverride = latestDisplayPaths
+                                                val itemInfo = drawerListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == ws.path }
+                                                val fallbackTop = (drawerListState.layoutInfo.viewportEndOffset / 2f) - ((wsRowHeights[ws.path] ?: defaultRowHeightPx) / 2f)
+                                                val itemTop = itemInfo?.offset?.toFloat() ?: fallbackTop
+                                                dragFingerY = itemTop + offset.y
                                             },
                                             onDrag = { change, amount ->
                                                 change.consume()
                                                 dragWsOffset += amount.y
+                                                dragFingerY += amount.y
                                                 if (!dragWsMoved && abs(dragWsOffset) > 8f) dragWsMoved = true
                                                 val selfPinned = latestPinnedKeys.contains(wsKey(ws.path))
                                                 val order = wsOrderOverride
@@ -913,16 +1016,34 @@ fun SessionListScreen(
                                                         draggedPath = ws.path,
                                                         offset = dragWsOffset,
                                                         rowGap = wsRowGapPx,
-                                                        heightOf = { path -> wsRowHeights[path] ?: 56f },
+                                                        heightOf = { path -> wsRowHeights[path] ?: defaultRowHeightPx },
                                                         sameBand = { path ->
                                                             latestPinnedKeys.contains(wsKey(path)) == selfPinned
                                                         }
                                                     )
-                                                    if (step.order != order) wsOrderOverride = step.order
-                                                    dragWsOffset = step.offset
+                                                    if (step.order != order) {
+                                                        wsOrderOverride = step.order
+                                                        if (prefs.hapticsEnabled) {
+                                                            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                                        }
+                                                    }
+                                                    val canUp = WorkspaceDragReorder.canSwapUp(step.order, ws.path) {
+                                                        latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                                    }
+                                                    val canDown = WorkspaceDragReorder.canSwapDown(step.order, ws.path) {
+                                                        latestPinnedKeys.contains(wsKey(it)) == selfPinned
+                                                    }
+                                                    dragWsOffset = WorkspaceDragReorder.clampResidualOffset(
+                                                        offset = step.offset,
+                                                        canSwapUp = canUp,
+                                                        canSwapDown = canDown,
+                                                        maxOvershootPx = wsMaxOvershootPx
+                                                    )
                                                 }
                                             },
                                             onDragEnd = {
+                                                isFingerDown = false
+                                                dragFingerY = 0f
                                                 val finalPaths = wsOrderOverride
                                                 if (!dragWsMoved) selectedMenuWorkspace = ws
                                                 if (finalPaths != null && latestCommitWsDragOrder(ws.path, finalPaths)) {
@@ -950,6 +1071,8 @@ fun SessionListScreen(
                                             onDragCancel = {
                                                 dragWsPath = null
                                                 dragWsOffset = 0f
+                                                dragFingerY = 0f
+                                                isFingerDown = false
                                                 dragWsMoved = false
                                                 wsOrderOverride = null
                                             }
