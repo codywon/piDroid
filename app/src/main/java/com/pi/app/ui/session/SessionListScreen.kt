@@ -307,14 +307,16 @@ fun SessionListScreen(
     // 置顶与排序以 pi-web 的 ui-state 为准；取不到时才回退到本地偏好
     fun wsKey(path: String) = path.replace('\\', '/').trimEnd('/').lowercase()
     val pinnedKeys = remember(serverPinnedWorkspaceKeys, pinnedWorkspaces, workspaces) {
-        if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
+        val raw = if (serverPinnedWorkspaceKeys.isNotEmpty() || serverWorkspaceOrder.isNotEmpty()) {
             serverPinnedWorkspaceKeys
         } else {
             pinnedWorkspaces.map { wsKey(it) }.toSet()
         }
+        raw.map { wsKey(it) }.toSet()
     }
     val orderList = remember(serverWorkspaceOrder, wsOrder, workspaces) {
-        if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder.map { wsKey(it) }
+        val raw = if (serverWorkspaceOrder.isNotEmpty()) serverWorkspaceOrder else wsOrder
+        raw.map { wsKey(it) }
     }
     val sortedWorkspaces = remember(workspaces, pinnedKeys, orderList) {
         workspaces.sortedWith(
@@ -1004,7 +1006,12 @@ fun SessionListScreen(
                                             onDrag = { change, amount ->
                                                 change.consume()
                                                 dragWsOffset += amount.y
-                                                dragFingerY += amount.y
+                                                val itemInfo = drawerListState.layoutInfo.visibleItemsInfo.firstOrNull { it.key == ws.path }
+                                                if (itemInfo != null) {
+                                                    dragFingerY = itemInfo.offset.toFloat() + dragWsOffset + change.position.y
+                                                } else {
+                                                    dragFingerY += amount.y
+                                                }
                                                 if (!dragWsMoved && abs(dragWsOffset) > 8f) dragWsMoved = true
                                                 val selfPinned = latestPinnedKeys.contains(wsKey(ws.path))
                                                 val order = wsOrderOverride
@@ -1044,9 +1051,21 @@ fun SessionListScreen(
                                             onDragEnd = {
                                                 isFingerDown = false
                                                 dragFingerY = 0f
-                                                val finalPaths = wsOrderOverride
+                                                val currentOrder = wsOrderOverride ?: latestDisplayPaths
+                                                val selfPinned = latestPinnedKeys.contains(wsKey(ws.path))
+                                                val settled = WorkspaceDragReorder.settle(
+                                                    order = currentOrder,
+                                                    draggedPath = ws.path,
+                                                    offset = dragWsOffset,
+                                                    rowGap = wsRowGapPx,
+                                                    heightOf = { path -> wsRowHeights[path] ?: defaultRowHeightPx },
+                                                    sameBand = { path -> latestPinnedKeys.contains(wsKey(path)) == selfPinned }
+                                                )
+                                                val finalPaths = settled.order
+                                                dragWsOffset = settled.offset
                                                 if (!dragWsMoved) selectedMenuWorkspace = ws
-                                                if (finalPaths != null && latestCommitWsDragOrder(ws.path, finalPaths)) {
+                                                val baselinePaths = sortedWorkspaces.map { it.path }
+                                                if (finalPaths != baselinePaths && latestCommitWsDragOrder(ws.path, finalPaths)) {
                                                     // 顺序已提交：本地覆盖保留到服务端回读到新顺序为止
                                                     wsCommitTick++
                                                 } else {
@@ -1069,12 +1088,29 @@ fun SessionListScreen(
                                                 dragWsMoved = false
                                             },
                                             onDragCancel = {
+                                                isFingerDown = false
+                                                dragFingerY = 0f
+                                                val currentOrder = wsOrderOverride ?: latestDisplayPaths
+                                                val selfPinned = latestPinnedKeys.contains(wsKey(ws.path))
+                                                val settled = WorkspaceDragReorder.settle(
+                                                    order = currentOrder,
+                                                    draggedPath = ws.path,
+                                                    offset = dragWsOffset,
+                                                    rowGap = wsRowGapPx,
+                                                    heightOf = { path -> wsRowHeights[path] ?: defaultRowHeightPx },
+                                                    sameBand = { path -> latestPinnedKeys.contains(wsKey(path)) == selfPinned }
+                                                )
+                                                val finalPaths = settled.order
+                                                dragWsOffset = settled.offset
+                                                val baselinePaths = sortedWorkspaces.map { it.path }
+                                                if (dragWsMoved && finalPaths != baselinePaths && latestCommitWsDragOrder(ws.path, finalPaths)) {
+                                                    wsCommitTick++
+                                                } else {
+                                                    wsOrderOverride = null
+                                                }
                                                 dragWsPath = null
                                                 dragWsOffset = 0f
-                                                dragFingerY = 0f
-                                                isFingerDown = false
                                                 dragWsMoved = false
-                                                wsOrderOverride = null
                                             }
                                         )
                                     }

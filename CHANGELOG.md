@@ -4,6 +4,21 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.40] - 2026-11-09
+
+### 🔀 修复拖拽翻页回弹与排序路径跨平台斜杠归一化
+
+- **服务端 Windows 路径反斜杠兼容**：
+  - `serverWorkspaceOrder` 与 `serverPinnedWorkspaceKeys` 读入时统一调用 `wsKey` 规整化为正斜杠与小写；
+  - 彻底解决由于服务端 Windows 路径含有反斜杠导致 `orderList.indexOf` 判定为 -1、在回读或松手后整列被重置回弹的重大隐患。
+- **拖拽取消防丢失与松手最终换位保护**：
+  - `onDragCancel` 增加移动态保护：当手势因边缘触碰或系统中断时，若已发生有效位移（`dragWsMoved`），不再粗暴清空排序，而是像 `onDragEnd` 一样固化并提交当前位置；
+  - `onDragEnd` 与 `onDragCancel` 入口使用当前残余位移补齐执行一次 `WorkspaceDragReorder.settle`，确保边缘微差位移也能准确换位落定。
+- **手势焦点视口绝对坐标实时校准**：
+  - `onDrag` 中手势视口绝对 Y 坐标改用 `itemOffset + dragWsOffset + position.y` 实时计算，消除手势连续累加产生的坐标漂移。
+
+---
+
 ## [2.0.39] - 2026-11-09
 
 ### 🔀 侧边栏工作区拖拽排序平滑自动滚动与边缘防弹回
