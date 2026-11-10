@@ -1,6 +1,7 @@
 package com.pi.app.ui.components
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -51,6 +52,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import com.pi.app.ui.chat.widgetTokens
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -62,6 +64,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
 import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaKind
 import com.pi.app.data.model.MediaLoadPolicy
@@ -1573,6 +1577,7 @@ fun FullscreenMediaLightboxDialog(
 ) {
     val context = LocalContext.current
     val gateway = LocalMediaGatewayConfig.current
+    val theme = LocalAppTheme.current
 
     // 全屏预览也必须降采样。卡片早已换成 decodeSampledImage，但查看器这里仍是全尺寸
     // decodeByteArray：一张 4000×3000 的 CAD 出图要≈48MB 堆，正是本仓库赔过的那次
@@ -1655,151 +1660,173 @@ fun FullscreenMediaLightboxDialog(
             decorFitsSystemWindows = false
         )
     ) {
+        val view = LocalView.current
+        if (!view.isInEditMode) {
+            SideEffect {
+                val window = ((view.parent as? DialogWindowProvider)?.window)
+                    ?: (view.context as? Activity)?.window
+                if (window != null) {
+                    val insetsController = WindowCompat.getInsetsController(window, view)
+                    insetsController.isAppearanceLightStatusBars = !theme.isDark
+                    insetsController.isAppearanceLightNavigationBars = !theme.isDark
+                }
+            }
+        }
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(ThemePalette.ScrimLightbox))
         ) {
             // 顶部导航栏：独立一行物理约束，带状态栏边距，绝不遮盖主体内容
-            Row(
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = 0.65f))
-                    .statusBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .background(theme.surfaceContainerLow)
             ) {
-                Column(
+                Row(
                     modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 12.dp)
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = attachment.title.ifBlank { "全屏预览" },
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (!attachment.filePath.isNullOrBlank()) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 12.dp)
+                    ) {
                         Text(
-                            text = attachment.filePath,
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
+                            text = attachment.title.ifBlank { "全屏预览" },
+                            color = theme.textPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.SemiBold,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 缩放控制胶囊：统一 34dp 高度与 17dp 胶囊圆角，与关闭按钮高度及基线完全对齐
-                    Surface(
-                        shape = RoundedCornerShape(17.dp),
-                        color = Color.White.copy(alpha = 0.15f),
-                        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f)),
-                        modifier = Modifier.height(34.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(width = 30.dp, height = 34.dp)
-                                    .clickable {
-                                        if (attachment.kind == MediaKind.SVG) {
-                                            svgWebView?.evaluateJavascript("window.zoomOut && window.zoomOut()", null)
-                                        } else {
-                                            scale = (scale / 1.25f).coerceAtLeast(0.75f)
-                                            if (scale <= 1f) offset = Offset.Zero
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Remove,
-                                    contentDescription = "缩小",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .defaultMinSize(minWidth = 44.dp)
-                                    .height(34.dp)
-                                    .clickable {
-                                        if (attachment.kind == MediaKind.SVG) {
-                                            svgWebView?.evaluateJavascript("window.resetZoom && window.resetZoom()", null)
-                                        } else {
-                                            scale = 1f
-                                            offset = Offset.Zero
-                                        }
-                                    }
-                                    .padding(horizontal = 4.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = String.format(Locale.US, "%.0f%%", scale * 100f),
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    fontFamily = FontFamily.Monospace,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-
-                            Box(
-                                modifier = Modifier
-                                    .size(width = 30.dp, height = 34.dp)
-                                    .clickable {
-                                        if (attachment.kind == MediaKind.SVG) {
-                                            svgWebView?.evaluateJavascript("window.zoomIn && window.zoomIn()", null)
-                                        } else {
-                                            scale = (scale * 1.25f).coerceAtMost(6f)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Add,
-                                    contentDescription = "放大",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    // 关闭按钮：统一 34dp 高度与圆形胶囊匹配
-                    Surface(
-                        shape = CircleShape,
-                        color = Color.White.copy(alpha = 0.15f),
-                        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f)),
-                        modifier = Modifier.size(34.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clickable(onClick = onDismiss),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Close,
-                                contentDescription = "关闭全屏预览",
-                                tint = Color.White,
-                                modifier = Modifier.size(18.dp)
+                        if (!attachment.filePath.isNullOrBlank()) {
+                            Text(
+                                text = attachment.filePath,
+                                color = theme.textMuted,
+                                fontSize = 10.5.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 缩放控制胶囊：统一 34dp 高度与 17dp 胶囊圆角，与关闭按钮高度及基线完全对齐
+                        Surface(
+                            shape = RoundedCornerShape(17.dp),
+                            color = theme.surfaceContainerHigh,
+                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.25f)),
+                            modifier = Modifier.height(34.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 30.dp, height = 34.dp)
+                                        .clickable {
+                                            if (attachment.kind == MediaKind.SVG) {
+                                                svgWebView?.evaluateJavascript("window.zoomOut && window.zoomOut()", null)
+                                            } else {
+                                                scale = (scale / 1.25f).coerceAtLeast(0.75f)
+                                                if (scale <= 1f) offset = Offset.Zero
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Remove,
+                                        contentDescription = "缩小",
+                                        tint = theme.textPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .defaultMinSize(minWidth = 44.dp)
+                                        .height(34.dp)
+                                        .clickable {
+                                            if (attachment.kind == MediaKind.SVG) {
+                                                svgWebView?.evaluateJavascript("window.resetZoom && window.resetZoom()", null)
+                                            } else {
+                                                scale = 1f
+                                                offset = Offset.Zero
+                                            }
+                                        }
+                                        .padding(horizontal = 4.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = String.format(Locale.US, "%.0f%%", scale * 100f),
+                                        color = theme.textPrimary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        fontFamily = FontFamily.Monospace,
+                                        textAlign = TextAlign.Center
+                                    )
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(width = 30.dp, height = 34.dp)
+                                        .clickable {
+                                            if (attachment.kind == MediaKind.SVG) {
+                                                svgWebView?.evaluateJavascript("window.zoomIn && window.zoomIn()", null)
+                                            } else {
+                                                scale = (scale * 1.25f).coerceAtMost(6f)
+                                            }
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Add,
+                                        contentDescription = "放大",
+                                        tint = theme.textPrimary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        // 关闭按钮：统一 34dp 高度与圆形胶囊匹配
+                        Surface(
+                            shape = CircleShape,
+                            color = theme.surfaceContainerHigh,
+                            border = BorderStroke(0.6.dp, theme.outline.copy(alpha = 0.25f)),
+                            modifier = Modifier.size(34.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clickable(onClick = onDismiss),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Close,
+                                    contentDescription = "关闭全屏预览",
+                                    tint = theme.textPrimary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
                 }
+                HorizontalDivider(
+                    thickness = 0.6.dp,
+                    color = theme.outline.copy(alpha = 0.2f)
+                )
             }
 
             // 主体可缩放画布区域：占据顶部导航栏下方所有剩余视口，底部带系统导航手势条避让

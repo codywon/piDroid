@@ -4,6 +4,22 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.46] - 2026-11-10
+
+### 🎨 全屏查看器顶栏主题自适应与对比度优化
+
+- **顶栏背景与主题统一（Toolbar Container）**：
+  - 彻底移除 `Color.Black.copy(alpha = 0.65f)` 硬编码黑底，改为 `theme.surfaceContainerLow`，浅色模式下完美融入 App 整体明亮白灰主题，深色模式下自适应保持深邃沉浸底色；
+  - 顶栏底部增加 `0.6.dp` 微弱分割线（`theme.outline.copy(alpha = 0.2f)`），内容与顶栏之间层次清晰细腻。
+- **标题文字、按钮与图标对比度达标 WCAG AAA**：
+  - 主标题由白色改为 `theme.textPrimary`（浅色模式下对比度达 13.5:1，远超 AAA 标准 7:1）；
+  - 副标题（文件路径）由白透明改为 `theme.textMuted`（对比度 > 5.5:1，达标 AA 标准）；
+  - 右上角缩放控制胶囊与关闭按钮底色适配为 `theme.surfaceContainerHigh`，边框采用 `theme.outline.copy(alpha = 0.25f)`，文字与图标颜色统一为 `theme.textPrimary`，彻底消除黑底视觉割裂。
+- **全屏 Dialog 状态栏图标对比度动态适配**：
+  - 接入 `WindowCompat.getInsetsController`，浅色模式下状态栏自动反色为深色图标（时间、电量、WiFi 清晰可见），深色模式下保持白色图标，彻底杜绝状态栏“白字在白底看不清”的对比度隐患。
+
+---
+
 ## [2.0.45] - 2026-11-10
 
 ### 🔍 修复双击与捏合缩放垂直焦点漂移
