@@ -875,7 +875,9 @@ internal fun buildSvgHtml(
             pointer-events: none;
           }
           #zoom-badge {
-            position: fixed; bottom: 14px; right: 14px;
+            position: fixed;
+            bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+            right: calc(16px + env(safe-area-inset-right, 0px));
             background: $badgeBg;
             border: 1px solid $badgeBorder;
             color: $badgeFg; border-radius: 14px;
@@ -929,6 +931,17 @@ internal fun buildSvgHtml(
           var scale = 1.0;
           var lastReportedScale = 1.0;
 
+          function getContainerSize() {
+            var rect = container.getBoundingClientRect();
+            var w = rect.width || window.innerWidth || 360;
+            var h = rect.height || window.innerHeight || 640;
+            return { w: w, h: h };
+          }
+
+          function getBaseScale(cSize) {
+            return Math.min(cSize.w / initW, cSize.h / initH);
+          }
+
           function notifyScale() {
             var rounded = Math.round(scale * 100);
             if (badge) {
@@ -948,75 +961,75 @@ internal fun buildSvgHtml(
           }
 
           function clampViewBox() {
-            if (!isFinite(curX) || isNaN(curX)) curX = initX;
-            if (!isFinite(curY) || isNaN(curY)) curY = initY;
-            if (!isFinite(curW) || isNaN(curW) || curW <= 0) curW = initW;
-            if (!isFinite(curH) || isNaN(curH) || curH <= 0) curH = initH;
+            var cSize = getContainerSize();
+            var totalScale = getBaseScale(cSize) * scale;
+            var marginSvgX = 24 / totalScale;
+            var marginSvgY = 24 / totalScale;
 
-            // 允许向四方平移漫游，边缘保留 35% 舒适边界，确保整张图的任何角落都能自由拖至中央视区
-            var marginX = Math.max(curW * 0.35, 40);
-            var marginY = Math.max(curH * 0.35, 40);
-            var minX = initX - marginX;
-            var maxX = initX + initW - curW + marginX;
-            var minY = initY - marginY;
-            var maxY = initY + initH - curH + marginY;
-
-            if (maxX >= minX) {
+            if (curW <= initW) {
+              var minX = initX - marginSvgX;
+              var maxX = initX + initW - curW + marginSvgX;
               curX = Math.min(Math.max(curX, minX), maxX);
             } else {
-              curX = initX + (initW - curW) / 2;
+              curX = initX - (curW - initW) / 2;
             }
-            if (maxY >= minY) {
+
+            if (curH <= initH) {
+              var minY = initY - marginSvgY;
+              var maxY = initY + initH - curH + marginSvgY;
               curY = Math.min(Math.max(curY, minY), maxY);
             } else {
-              curY = initY + (initH - curH) / 2;
+              curY = initY - (curH - initH) / 2;
             }
           }
 
+          function updateViewBox(targetScale, nextCurX, nextCurY) {
+            if (typeof targetScale === 'number' && !isNaN(targetScale) && isFinite(targetScale)) {
+              scale = Math.min(Math.max(targetScale, 0.5), 20.0);
+            }
+            var cSize = getContainerSize();
+            var baseScale = getBaseScale(cSize);
+            var totalScale = baseScale * scale;
+
+            // 视口在 SVG 坐标系下的宽高动态对齐屏幕物理容器的真实宽高比，彻底消除 letterbox 黑边！
+            curW = cSize.w / totalScale;
+            curH = cSize.h / totalScale;
+
+            if (typeof nextCurX === 'number' && !isNaN(nextCurX) && isFinite(nextCurX)) curX = nextCurX;
+            if (typeof nextCurY === 'number' && !isNaN(nextCurY) && isFinite(nextCurY)) curY = nextCurY;
+
+            clampViewBox();
+            applyViewBox();
+          }
+
           svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-          applyViewBox();
+          updateViewBox(1.0, initX, initY);
 
           function resetZoom() {
-            scale = 1.0;
-            curX = initX; curY = initY; curW = initW; curH = initH;
-            applyViewBox();
+            updateViewBox(1.0, initX, initY);
           }
 
           function zoomAt(targetScale, oldFocalX, oldFocalY, newFocalX, newFocalY) {
             if (typeof targetScale !== 'number' || isNaN(targetScale) || !isFinite(targetScale)) return;
             targetScale = Math.min(Math.max(targetScale, 0.5), 20.0);
-            var rect = container.getBoundingClientRect();
-            if (rect.width <= 0 || rect.height <= 0) return;
 
-            if (typeof oldFocalX !== 'number') oldFocalX = rect.width / 2;
-            if (typeof oldFocalY !== 'number') oldFocalY = rect.height / 2;
+            var cSize = getContainerSize();
+            if (typeof oldFocalX !== 'number') oldFocalX = cSize.w / 2;
+            if (typeof oldFocalY !== 'number') oldFocalY = cSize.h / 2;
             if (typeof newFocalX !== 'number') newFocalX = oldFocalX;
             if (typeof newFocalY !== 'number') newFocalY = oldFocalY;
 
-            var curS = Math.min(rect.width / curW, rect.height / curH);
-            if (curS <= 0 || !isFinite(curS)) curS = 1;
-            var curOffsetX = (rect.width - curW * curS) / 2;
-            var curOffsetY = (rect.height - curH * curS) / 2;
+            var baseScale = getBaseScale(cSize);
+            var curTotalScale = baseScale * scale;
+            var newTotalScale = baseScale * targetScale;
 
-            var svgFocalX = curX + (oldFocalX - curOffsetX) / curS;
-            var svgFocalY = curY + (oldFocalY - curOffsetY) / curS;
+            var svgFocalX = curX + oldFocalX / curTotalScale;
+            var svgFocalY = curY + oldFocalY / curTotalScale;
 
-            scale = targetScale;
-            var newCurW = initW / scale;
-            var newCurH = initH / scale;
+            var nextCurX = svgFocalX - newFocalX / newTotalScale;
+            var nextCurY = svgFocalY - newFocalY / newTotalScale;
 
-            var newS = Math.min(rect.width / newCurW, rect.height / newCurH);
-            if (newS <= 0 || !isFinite(newS)) newS = 1;
-            var newOffsetX = (rect.width - newCurW * newS) / 2;
-            var newOffsetY = (rect.height - newCurH * newS) / 2;
-
-            curX = svgFocalX - (newFocalX - newOffsetX) / newS;
-            curY = svgFocalY - (newFocalY - newOffsetY) / newS;
-            curW = newCurW;
-            curH = newCurH;
-
-            clampViewBox();
-            applyViewBox();
+            updateViewBox(targetScale, nextCurX, nextCurY);
           }
 
           function zoomAndPan(targetScale, focalX, focalY) {
@@ -1026,14 +1039,9 @@ internal fun buildSvgHtml(
           function panBy(dx, dy) {
             if (typeof dx !== 'number' || isNaN(dx) || !isFinite(dx)) dx = 0;
             if (typeof dy !== 'number' || isNaN(dy) || !isFinite(dy)) dy = 0;
-            var rect = container.getBoundingClientRect();
-            // 在 xMidYMid meet 下缩放比例是各向同性的，必须使用统一的物理子像素比率，彻底消除 X/Y 轴不同步漂移
-            var s = Math.min(rect.width / curW, rect.height / curH);
-            if (s <= 0 || !isFinite(s)) return;
-            curX -= dx / s;
-            curY -= dy / s;
-            clampViewBox();
-            applyViewBox();
+            var cSize = getContainerSize();
+            var totalScale = getBaseScale(cSize) * scale;
+            updateViewBox(scale, curX - dx / totalScale, curY - dy / totalScale);
           }
 
           function zoomIn() {
@@ -1047,6 +1055,10 @@ internal fun buildSvgHtml(
           window.resetZoom = resetZoom;
           window.zoomIn = zoomIn;
           window.zoomOut = zoomOut;
+
+          window.addEventListener('resize', function() {
+            updateViewBox();
+          });
 
           var lastDist = 0;
           var lastCenter = null;
@@ -1176,8 +1188,14 @@ internal fun SvgWebViewCanvas(
         buildSvgHtml(cleanSvg, isDark, enableZoom, scriptNonce)
     }
 
+    val canvasModifier = if (enableZoom) {
+        modifier
+    } else {
+        modifier.clip(RoundedCornerShape(6.dp))
+    }
+
     AndroidView(
-        modifier = modifier.clip(RoundedCornerShape(6.dp)),
+        modifier = canvasModifier,
         factory = { ctx ->
             WebView(ctx).apply {
                 layoutParams = ViewGroup.LayoutParams(
@@ -1685,9 +1703,7 @@ fun FullscreenMediaLightboxDialog(
 
                     attachment.kind == MediaKind.SVG -> {
                         Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 12.dp, vertical = 72.dp),
+                            modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
                             SvgWebViewCanvas(

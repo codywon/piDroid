@@ -4,6 +4,20 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.43] - 2026-11-10
+
+### 📐 彻底根除 SVG 全屏大黑边：物理满屏与动态物理视口对齐
+
+- **消除 Compose 物理边框拘束与圆角裁切**：
+  - 根因排查：此前全屏 Lightbox 在装载 SVG 时外层挂载了 `padding(horizontal = 12.dp, vertical = 72.dp)`，底层 WebView 还被强制注入 `clip(RoundedCornerShape(6.dp))`，导致整个 WebView 画布在物理上被锁死在内缩矩形中，四周永远留出 12dp/72dp 的硬编码黑色沟壑；
+  - 优化：全屏查看下 SVG 彻底解绑内外 padding，让 WebView 真正顶格满屏（`Modifier.fillMaxSize()`），顶栏采用半透明毛玻璃浮层轻量覆盖，同时仅在普通内联卡片保留 6dp 圆角裁切，全屏模式彻底取消圆角。
+- **重构物理动态视口矩阵：消灭 Letterbox 宽屏黑边**：
+  - 根因排查：SVG 原本通过固定图形宽高比计算 `curW = initW / scale, curH = initH / scale`，在配合 `preserveAspectRatio="xMidYMid meet"` 时，图形的高或宽会被等比锁定在中间的一条窄带内，导致上下或左右留出大量永久无法消去的 `meet` 留白黑条，放大到 406% 亦无法利用空闲屏幕高度；
+  - 优化：视口宽高计算彻底与手机物理容器的实时长宽比动态对齐（`curW = cSize.w / totalScale, curH = cSize.h / totalScale`）。在 100% 初始态完整居中显示全图；一旦放大，图形立即在宽、高两个维度同时真正撑开铺满整个屏幕，彻底消灭一切 letterbox 黑边；
+  - 漫游边界从原本宽松的 35% 缩减为 24px 微弹性边距，杜绝手指滑入大面积黑色虚无区域；底部比例徽标增加底部安全区边距（`env(safe-area-inset-bottom)`）自适应适配手势小横条。
+
+---
+
 ## [2.0.42] - 2026-11-10
 
 ### 🔍 彻底修复 SVG 全屏放大后无法拖拽平移与手势死锁
