@@ -4,7 +4,7 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
-## [2.0.40] - 2026-11-09
+## [2.0.41] - 2026-11-10
 
 ### 🔀 修复拖拽翻页回弹与排序路径跨平台斜杠归一化
 
