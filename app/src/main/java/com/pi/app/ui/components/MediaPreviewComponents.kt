@@ -1014,7 +1014,7 @@ internal fun buildSvgHtml(
 
             var cSize = getContainerSize();
             if (typeof focalX !== 'number') focalX = cSize.w / 2;
-            if (typeof oldFocalY !== 'number') focalY = cSize.h / 2;
+            if (typeof focalY !== 'number') focalY = cSize.h / 2;
 
             var oldW = fitW * scale;
             var oldH = fitH * scale;
