@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Base64
 import android.util.LruCache
 import android.view.ViewGroup
+import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -802,14 +803,358 @@ fun SvgPreviewCard(
     }
 }
 
+/**
+ * 构建 SVG 在 WebView 中的渲染 HTML。
+ *
+ * 抽为独立函数以便纯 JVM 单元测试覆盖手势逻辑与安全沙箱约束（CSP nonce、脚本标签防护）。
+ */
+internal fun buildSvgHtml(
+    cleanSvg: String,
+    isDark: Boolean,
+    enableZoom: Boolean,
+    scriptNonce: String
+): String {
+    val cspMeta =
+        """<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-$scriptNonce'">"""
+    val bgHex = if (isDark) "#14161F" else "#F8FAFC"
+    val fgHex = if (isDark) "#E2E8F0" else "#1E293B"
+    val tokens = widgetTokens(isDark)
+
+    return if (!enableZoom) {
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+        $cspMeta
+        <style>
+          $tokens
+          html, body {
+            margin: 0; padding: 8px;
+            background: $bgHex; color: $fgHex;
+            display: flex; align-items: center; justify-content: center;
+            min-height: calc(100vh - 16px);
+            box-sizing: border-box;
+          }
+          svg { display: block; width: 100%; height: auto; max-height: 92vh; }
+        </style>
+        </head>
+        <body>$cleanSvg</body>
+        </html>
+        """.trimIndent()
+    } else {
+        val badgeBg = if (isDark) "rgba(30, 41, 59, 0.85)" else "rgba(241, 245, 249, 0.85)"
+        val badgeBorder = if (isDark) "rgba(148, 163, 184, 0.3)" else "rgba(148, 163, 184, 0.4)"
+        val badgeFg = if (isDark) "#94A3B8" else "#64748B"
+        """
+        <!DOCTYPE html>
+        <html>
+        <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+        $cspMeta
+        <style>
+          $tokens
+          * { box-sizing: border-box; }
+          html, body {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            overflow: hidden; background: $bgHex; color: $fgHex;
+            touch-action: none; -webkit-touch-callout: none;
+            -webkit-user-select: none; user-select: none;
+          }
+          #container {
+            width: 100%; height: 100%;
+            display: flex; align-items: center; justify-content: center;
+            position: relative; overflow: hidden;
+          }
+          svg {
+            display: block;
+            width: 100% !important;
+            height: 100% !important;
+            max-width: 100% !important;
+            max-height: 100% !important;
+            pointer-events: none;
+          }
+          #zoom-badge {
+            position: fixed; bottom: 14px; right: 14px;
+            background: $badgeBg;
+            border: 1px solid $badgeBorder;
+            color: $badgeFg; border-radius: 14px;
+            padding: 4px 10px; font-size: 11px;
+            font-family: monospace; z-index: 100;
+            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+            pointer-events: auto; cursor: pointer;
+          }
+        </style>
+        </head>
+        <body>
+        <div id="container">
+          $cleanSvg
+        </div>
+        <div id="zoom-badge">100%</div>
+        <script nonce="$scriptNonce">
+        (function() {
+          var svg = document.querySelector('svg');
+          if (!svg) return;
+
+          var container = document.getElementById('container');
+          var badge = document.getElementById('zoom-badge');
+
+          if (badge) badge.addEventListener('click', function() { window.resetZoom(); });
+
+          // 1. 初始化并保证 viewBox 存在。
+          // 关键：通过直接操作 SVG 的 viewBox 进行缩放与平移，由浏览器矢量渲染管线
+          // 实时按屏幕物理像素重新光栅化路径，彻底杜绝 CSS scale(...) 导致的位图拉伸模糊！
+          var initX = 0, initY = 0, initW = 0, initH = 0;
+          var vb = svg.viewBox && svg.viewBox.baseVal;
+          if (vb && vb.width > 0 && vb.height > 0) {
+            initX = vb.x; initY = vb.y; initW = vb.width; initH = vb.height;
+          } else {
+            var rawW = parseFloat(svg.getAttribute('width'));
+            var rawH = parseFloat(svg.getAttribute('height'));
+            var bbox = null;
+            try { bbox = svg.getBBox(); } catch(e) {}
+            if (bbox && bbox.width > 0 && bbox.height > 0) {
+              initX = bbox.x; initY = bbox.y; initW = bbox.width; initH = bbox.height;
+            } else if (rawW > 0 && rawH > 0) {
+              initX = 0; initY = 0; initW = rawW; initH = rawH;
+            } else {
+              var rect = svg.getBoundingClientRect();
+              initX = 0; initY = 0;
+              initW = rect.width || 300;
+              initH = rect.height || 150;
+            }
+          }
+
+          var curX = initX, curY = initY, curW = initW, curH = initH;
+          var scale = 1.0;
+          var lastReportedScale = 1.0;
+
+          function notifyScale() {
+            var rounded = Math.round(scale * 100);
+            if (badge) {
+              badge.innerText = rounded + '%';
+            }
+            if (Math.abs(scale - lastReportedScale) >= 0.005) {
+              lastReportedScale = scale;
+              if (window.Android && window.Android.onZoomChange) {
+                try { window.Android.onZoomChange(scale); } catch(e) {}
+              }
+            }
+          }
+
+          function applyViewBox() {
+            svg.setAttribute('viewBox', curX + ' ' + curY + ' ' + curW + ' ' + curH);
+            notifyScale();
+          }
+
+          function clampViewBox() {
+            if (!isFinite(curX) || isNaN(curX)) curX = initX;
+            if (!isFinite(curY) || isNaN(curY)) curY = initY;
+            if (!isFinite(curW) || isNaN(curW) || curW <= 0) curW = initW;
+            if (!isFinite(curH) || isNaN(curH) || curH <= 0) curH = initH;
+
+            // 允许向四方平移漫游，边缘保留 35% 舒适边界，确保整张图的任何角落都能自由拖至中央视区
+            var marginX = Math.max(curW * 0.35, 40);
+            var marginY = Math.max(curH * 0.35, 40);
+            var minX = initX - marginX;
+            var maxX = initX + initW - curW + marginX;
+            var minY = initY - marginY;
+            var maxY = initY + initH - curH + marginY;
+
+            if (maxX >= minX) {
+              curX = Math.min(Math.max(curX, minX), maxX);
+            } else {
+              curX = initX + (initW - curW) / 2;
+            }
+            if (maxY >= minY) {
+              curY = Math.min(Math.max(curY, minY), maxY);
+            } else {
+              curY = initY + (initH - curH) / 2;
+            }
+          }
+
+          svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+          applyViewBox();
+
+          function resetZoom() {
+            scale = 1.0;
+            curX = initX; curY = initY; curW = initW; curH = initH;
+            applyViewBox();
+          }
+
+          function zoomAt(targetScale, oldFocalX, oldFocalY, newFocalX, newFocalY) {
+            if (typeof targetScale !== 'number' || isNaN(targetScale) || !isFinite(targetScale)) return;
+            targetScale = Math.min(Math.max(targetScale, 0.5), 20.0);
+            var rect = container.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return;
+
+            if (typeof oldFocalX !== 'number') oldFocalX = rect.width / 2;
+            if (typeof oldFocalY !== 'number') oldFocalY = rect.height / 2;
+            if (typeof newFocalX !== 'number') newFocalX = oldFocalX;
+            if (typeof newFocalY !== 'number') newFocalY = oldFocalY;
+
+            var curS = Math.min(rect.width / curW, rect.height / curH);
+            if (curS <= 0 || !isFinite(curS)) curS = 1;
+            var curOffsetX = (rect.width - curW * curS) / 2;
+            var curOffsetY = (rect.height - curH * curS) / 2;
+
+            var svgFocalX = curX + (oldFocalX - curOffsetX) / curS;
+            var svgFocalY = curY + (oldFocalY - curOffsetY) / curS;
+
+            scale = targetScale;
+            var newCurW = initW / scale;
+            var newCurH = initH / scale;
+
+            var newS = Math.min(rect.width / newCurW, rect.height / newCurH);
+            if (newS <= 0 || !isFinite(newS)) newS = 1;
+            var newOffsetX = (rect.width - newCurW * newS) / 2;
+            var newOffsetY = (rect.height - newCurH * newS) / 2;
+
+            curX = svgFocalX - (newFocalX - newOffsetX) / newS;
+            curY = svgFocalY - (newFocalY - newOffsetY) / newS;
+            curW = newCurW;
+            curH = newCurH;
+
+            clampViewBox();
+            applyViewBox();
+          }
+
+          function zoomAndPan(targetScale, focalX, focalY) {
+            zoomAt(targetScale, focalX, focalY, focalX, focalY);
+          }
+
+          function panBy(dx, dy) {
+            if (typeof dx !== 'number' || isNaN(dx) || !isFinite(dx)) dx = 0;
+            if (typeof dy !== 'number' || isNaN(dy) || !isFinite(dy)) dy = 0;
+            var rect = container.getBoundingClientRect();
+            // 在 xMidYMid meet 下缩放比例是各向同性的，必须使用统一的物理子像素比率，彻底消除 X/Y 轴不同步漂移
+            var s = Math.min(rect.width / curW, rect.height / curH);
+            if (s <= 0 || !isFinite(s)) return;
+            curX -= dx / s;
+            curY -= dy / s;
+            clampViewBox();
+            applyViewBox();
+          }
+
+          function zoomIn() {
+            zoomAt(scale * 1.25, null, null, null, null);
+          }
+
+          function zoomOut() {
+            zoomAt(scale / 1.25, null, null, null, null);
+          }
+
+          window.resetZoom = resetZoom;
+          window.zoomIn = zoomIn;
+          window.zoomOut = zoomOut;
+
+          var lastDist = 0;
+          var lastCenter = null;
+          var lastPan = null;
+          var lastTap = 0;
+
+          function dist(t1, t2) {
+            var dx = t1.clientX - t2.clientX;
+            var dy = t1.clientY - t2.clientY;
+            return Math.sqrt(dx * dx + dy * dy);
+          }
+
+          function getCenter(t1, t2) {
+            return {
+              x: (t1.clientX + t2.clientX) / 2,
+              y: (t1.clientY + t2.clientY) / 2
+            };
+          }
+
+          container.addEventListener('touchstart', function(e) {
+            e.preventDefault();
+            if (e.touches.length === 2) {
+              lastDist = dist(e.touches[0], e.touches[1]);
+              lastCenter = getCenter(e.touches[0], e.touches[1]);
+              lastPan = null;
+            } else if (e.touches.length === 1) {
+              lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+              lastDist = 0;
+              lastCenter = null;
+
+              var now = Date.now();
+              if (now - lastTap < 300) {
+                var rect = container.getBoundingClientRect();
+                var tapX = e.touches[0].clientX - rect.left;
+                var tapY = e.touches[0].clientY - rect.top;
+                if (scale > 1.2) {
+                  resetZoom();
+                } else {
+                  zoomAt(2.5, tapX, tapY, tapX, tapY);
+                }
+                lastTap = 0;
+              } else {
+                lastTap = now;
+              }
+            }
+          }, { passive: false });
+
+          container.addEventListener('touchmove', function(e) {
+            e.preventDefault();
+            var rect = container.getBoundingClientRect();
+
+            if (e.touches.length === 2 && lastDist > 5 && lastCenter) {
+              var newDist = dist(e.touches[0], e.touches[1]);
+              var newCenter = getCenter(e.touches[0], e.touches[1]);
+              if (newDist > 5) {
+                var factor = newDist / lastDist;
+                lastDist = newDist;
+                if (isFinite(factor) && factor > 0) {
+                  zoomAt(scale * factor, lastCenter.x - rect.left, lastCenter.y - rect.top, newCenter.x - rect.left, newCenter.y - rect.top);
+                }
+                lastCenter = newCenter;
+              }
+            } else if (e.touches.length === 1 && lastPan) {
+              var dx = e.touches[0].clientX - lastPan.x;
+              var dy = e.touches[0].clientY - lastPan.y;
+              lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+              panBy(dx, dy);
+            }
+          }, { passive: false });
+
+          container.addEventListener('touchend', function(e) {
+            if (e.touches.length === 1) {
+              lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+              lastDist = 0;
+              lastCenter = null;
+            } else if (e.touches.length === 0) {
+              lastPan = null;
+              lastDist = 0;
+              lastCenter = null;
+            }
+          }, { passive: false });
+
+          container.addEventListener('touchcancel', function(e) {
+            lastPan = null;
+            lastDist = 0;
+            lastCenter = null;
+          }, { passive: false });
+        })();
+        </script>
+        </body>
+        </html>
+        """.trimIndent()
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 internal fun SvgWebViewCanvas(
     svgContent: String,
     enableZoom: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onScaleChanged: ((Float) -> Unit)? = null,
+    onWebViewReady: ((WebView?) -> Unit)? = null
 ) {
     val isDark = LocalAppTheme.current.isDark
+    val currentOnScaleChanged by rememberUpdatedState(onScaleChanged)
+    val currentOnWebViewReady by rememberUpdatedState(onWebViewReady)
+
     val cleanSvg = remember(svgContent) {
         // 安全防护：彻底剥除 SVG 中可能夹带的 <script> 标签（含自闭合）与 on* 事件处理器
         svgContent
@@ -827,232 +1172,8 @@ internal fun SvgWebViewCanvas(
      */
     val scriptNonce = remember(svgContent) { UUID.randomUUID().toString().replace("-", "") }
 
-    // 只放行“我们自己的”内联样式与本页脚本；其余（外部图片、字体、帧、表单）全部禁止。
-    // `img-src data: blob:` 是为了让 SVG 里内联的 base64 图能显示。
-    val cspMeta =
-        """<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-$scriptNonce'">"""
-
     val html = remember(cleanSvg, isDark, enableZoom, scriptNonce) {
-        val bgHex = if (isDark) "#14161F" else "#F8FAFC"
-        val fgHex = if (isDark) "#E2E8F0" else "#1E293B"
-        val tokens = widgetTokens(isDark)
-
-        if (!enableZoom) {
-            """
-            <!DOCTYPE html>
-            <html>
-            <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-            $cspMeta
-            <style>
-              $tokens
-              html, body {
-                margin: 0; padding: 8px;
-                background: $bgHex; color: $fgHex;
-                display: flex; align-items: center; justify-content: center;
-                min-height: calc(100vh - 16px);
-                box-sizing: border-box;
-              }
-              svg { display: block; width: 100%; height: auto; max-height: 92vh; }
-            </style>
-            </head>
-            <body>$cleanSvg</body>
-            </html>
-            """.trimIndent()
-        } else {
-            val badgeBg = if (isDark) "rgba(30, 41, 59, 0.85)" else "rgba(241, 245, 249, 0.85)"
-            val badgeBorder = if (isDark) "rgba(148, 163, 184, 0.3)" else "rgba(148, 163, 184, 0.4)"
-            val badgeFg = if (isDark) "#94A3B8" else "#64748B"
-            """
-            <!DOCTYPE html>
-            <html>
-            <head>
-            <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-            $cspMeta
-            <style>
-              $tokens
-              * { box-sizing: border-box; }
-              html, body {
-                margin: 0; padding: 0; width: 100%; height: 100%;
-                overflow: hidden; background: $bgHex; color: $fgHex;
-                touch-action: none; -webkit-touch-callout: none;
-                -webkit-user-select: none; user-select: none;
-              }
-              #container {
-                width: 100%; height: 100%;
-                display: flex; align-items: center; justify-content: center;
-                position: relative; overflow: hidden;
-              }
-              svg {
-                display: block;
-                width: 100% !important;
-                height: 100% !important;
-                max-width: 100% !important;
-                max-height: 100% !important;
-                pointer-events: none;
-              }
-              #zoom-badge {
-                position: fixed; bottom: 14px; right: 14px;
-                background: $badgeBg;
-                border: 1px solid $badgeBorder;
-                color: $badgeFg; border-radius: 14px;
-                padding: 4px 10px; font-size: 11px;
-                font-family: monospace; z-index: 100;
-                backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-                pointer-events: auto; cursor: pointer;
-              }
-            </style>
-            </head>
-            <body>
-            <div id="container">
-              $cleanSvg
-            </div>
-            <div id="zoom-badge">100%</div>
-            <script nonce="$scriptNonce">
-            (function() {
-              var svg = document.querySelector('svg');
-              if (!svg) return;
-
-              var container = document.getElementById('container');
-              var badge = document.getElementById('zoom-badge');
-
-              // CSP 禁掉了内联事件处理器（script-src 只有 nonce，没有 unsafe-inline），
-              // 所以“点徽标复位”必须在这里用 addEventListener 绑定。
-              if (badge) badge.addEventListener('click', function() { window.resetZoom(); });
-
-              // 1. 初始化并保证 viewBox 存在。
-              // 关键：通过直接操作 SVG 的 viewBox 进行缩放与平移，由浏览器矢量渲染管线
-              // 实时按屏幕物理像素重新光栅化路径，彻底杜绝 CSS scale(...) 导致的位图拉伸模糊！
-              var initX = 0, initY = 0, initW = 0, initH = 0;
-              var vb = svg.viewBox && svg.viewBox.baseVal;
-              if (vb && vb.width > 0 && vb.height > 0) {
-                initX = vb.x; initY = vb.y; initW = vb.width; initH = vb.height;
-              } else {
-                var rawW = parseFloat(svg.getAttribute('width'));
-                var rawH = parseFloat(svg.getAttribute('height'));
-                var bbox = null;
-                try { bbox = svg.getBBox(); } catch(e) {}
-                if (bbox && bbox.width > 0 && bbox.height > 0) {
-                  initX = bbox.x; initY = bbox.y; initW = bbox.width; initH = bbox.height;
-                } else if (rawW > 0 && rawH > 0) {
-                  initX = 0; initY = 0; initW = rawW; initH = rawH;
-                } else {
-                  var rect = svg.getBoundingClientRect();
-                  initX = 0; initY = 0;
-                  initW = rect.width || 300;
-                  initH = rect.height || 150;
-                }
-              }
-
-              var curX = initX, curY = initY, curW = initW, curH = initH;
-              var scale = 1.0;
-
-              function applyViewBox() {
-                svg.setAttribute('viewBox', curX + ' ' + curY + ' ' + curW + ' ' + curH);
-                if (badge) {
-                  badge.innerText = Math.round(scale * 100) + '%';
-                }
-              }
-
-              svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-              applyViewBox();
-
-              window.resetZoom = function() {
-                scale = 1.0;
-                curX = initX; curY = initY; curW = initW; curH = initH;
-                applyViewBox();
-              };
-
-              function zoomTo(targetScale, focalX, focalY, viewW, viewH) {
-                targetScale = Math.min(Math.max(targetScale, 0.5), 20.0);
-                var normX = focalX / viewW;
-                var normY = focalY / viewH;
-                var svgFocalX = curX + normX * curW;
-                var svgFocalY = curY + normY * curH;
-
-                scale = targetScale;
-                curW = initW / scale;
-                curH = initH / scale;
-                curX = svgFocalX - normX * curW;
-                curY = svgFocalY - normY * curH;
-                applyViewBox();
-              }
-
-              var lastDist = 0;
-              var lastPan = null;
-              var lastTap = 0;
-
-              function dist(t1, t2) {
-                var dx = t1.clientX - t2.clientX;
-                var dy = t1.clientY - t2.clientY;
-                return Math.sqrt(dx * dx + dy * dy);
-              }
-
-              container.addEventListener('touchstart', function(e) {
-                if (e.touches.length === 2) {
-                  lastDist = dist(e.touches[0], e.touches[1]);
-                  lastPan = null;
-                } else if (e.touches.length === 1) {
-                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-                  lastDist = 0;
-
-                  var now = Date.now();
-                  if (now - lastTap < 300) {
-                    var rect = container.getBoundingClientRect();
-                    var tapX = e.touches[0].clientX - rect.left;
-                    var tapY = e.touches[0].clientY - rect.top;
-                    if (scale > 1.2) {
-                      resetZoom();
-                    } else {
-                      zoomTo(2.5, tapX, tapY, rect.width, rect.height);
-                    }
-                    lastTap = 0;
-                  } else {
-                    lastTap = now;
-                  }
-                }
-              }, { passive: false });
-
-              container.addEventListener('touchmove', function(e) {
-                e.preventDefault();
-                var rect = container.getBoundingClientRect();
-
-                if (e.touches.length === 2 && lastDist > 0) {
-                  var newDist = dist(e.touches[0], e.touches[1]);
-                  var factor = newDist / lastDist;
-                  lastDist = newDist;
-
-                  var cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - rect.left;
-                  var cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - rect.top;
-                  zoomTo(scale * factor, cx, cy, rect.width, rect.height);
-                } else if (e.touches.length === 1 && lastPan) {
-                  var dx = e.touches[0].clientX - lastPan.x;
-                  var dy = e.touches[0].clientY - lastPan.y;
-                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-
-                  var svgDx = dx * (curW / rect.width);
-                  var svgDy = dy * (curH / rect.height);
-                  curX -= svgDx;
-                  curY -= svgDy;
-                  applyViewBox();
-                }
-              }, { passive: false });
-
-              container.addEventListener('touchend', function(e) {
-                if (e.touches.length === 1) {
-                  lastPan = { x: e.touches[0].clientX, y: e.touches[0].clientY };
-                  lastDist = 0;
-                } else if (e.touches.length === 0) {
-                  lastPan = null;
-                  lastDist = 0;
-                }
-              }, { passive: false });
-            })();
-            </script>
-            </body>
-            </html>
-            """.trimIndent()
-        }
+        buildSvgHtml(cleanSvg, isDark, enableZoom, scriptNonce)
     }
 
     AndroidView(
@@ -1068,8 +1189,9 @@ internal fun SvgWebViewCanvas(
                     domStorageEnabled = false
                     allowFileAccess = false
                     allowContentAccess = false
-                    setSupportZoom(enableZoom)
-                    builtInZoomControls = enableZoom
+                    // 禁用 WebView 原生位图缩放，全权交给 JS 矢量 viewBox 管线，保证 100% 锐利
+                    setSupportZoom(false)
+                    builtInZoomControls = false
                     displayZoomControls = false
                     cacheMode = WebSettings.LOAD_NO_CACHE
                 }
@@ -1083,10 +1205,28 @@ internal fun SvgWebViewCanvas(
                         request: WebResourceRequest?
                     ): Boolean = true
                 }
+                if (enableZoom) {
+                    // 关键：触摸时阻止父级 ViewGroup / Compose 拦截手势，保证拖拽平移和双指缩放畅通无阻
+                    setOnTouchListener { v, _ ->
+                        v.parent?.requestDisallowInterceptTouchEvent(true)
+                        false
+                    }
+                    addJavascriptInterface(
+                        object {
+                            @JavascriptInterface
+                            fun onZoomChange(newScale: Float) {
+                                post { currentOnScaleChanged?.invoke(newScale) }
+                            }
+                        },
+                        "Android"
+                    )
+                }
                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                onWebViewReady?.invoke(this)
             }
         },
         update = { webView ->
+            currentOnWebViewReady?.invoke(webView)
             // 关键：仅在 html 实际发生变化时才重新加载，防止父级重组（如沉浸模式点击切顶栏）重置用户的缩放与平移！
             if (webView.tag != html) {
                 webView.tag = html
@@ -1094,6 +1234,7 @@ internal fun SvgWebViewCanvas(
             }
         },
         onRelease = { webView ->
+            currentOnWebViewReady?.invoke(null)
             runCatching {
                 webView.stopLoading()
                 webView.destroy()
@@ -1411,6 +1552,12 @@ fun FullscreenMediaLightboxDialog(
 
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
+    var svgWebView by remember { mutableStateOf<WebView?>(null) }
+
+    LaunchedEffect(attachment) {
+        scale = 1f
+        offset = Offset.Zero
+    }
 
     // PDF 翻页状态
     var pdfPageCount by remember { mutableIntStateOf(0) }
@@ -1480,9 +1627,11 @@ fun FullscreenMediaLightboxDialog(
                 .fillMaxSize()
                 .background(Color(ThemePalette.ScrimLightbox))
         ) {
-            // 主体可缩放画布区域
-            Box(
-                modifier = Modifier
+            // 主体可缩放画布区域（SVG 自身在 WebView 内通过 viewBox 实现无损矢量缩放与平移，不能叠加父级手势拦截）
+            val gestureModifier = if (attachment.kind == MediaKind.SVG) {
+                Modifier.fillMaxSize()
+            } else {
+                Modifier
                     .fillMaxSize()
                     .pointerInput(Unit) {
                         detectTapGestures(
@@ -1509,7 +1658,11 @@ fun FullscreenMediaLightboxDialog(
                                 Offset.Zero
                             }
                         }
-                    },
+                    }
+            }
+
+            Box(
+                modifier = gestureModifier,
                 contentAlignment = Alignment.Center
             ) {
                 when {
@@ -1534,19 +1687,15 @@ fun FullscreenMediaLightboxDialog(
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 12.dp, vertical = 72.dp)
-                                .graphicsLayer(
-                                    scaleX = scale,
-                                    scaleY = scale,
-                                    translationX = offset.x,
-                                    translationY = offset.y
-                                ),
+                                .padding(horizontal = 12.dp, vertical = 72.dp),
                             contentAlignment = Alignment.Center
                         ) {
                             SvgWebViewCanvas(
                                 svgContent = attachment.rawContent ?: "",
                                 enableZoom = true,
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier.fillMaxSize(),
+                                onScaleChanged = { newScale -> scale = newScale },
+                                onWebViewReady = { wv -> svgWebView = wv }
                             )
                         }
                     }
@@ -1641,8 +1790,12 @@ fun FullscreenMediaLightboxDialog(
                                 modifier = Modifier
                                     .size(16.dp)
                                     .clickable {
-                                        scale = (scale / 1.25f).coerceAtLeast(0.75f)
-                                        if (scale <= 1f) offset = Offset.Zero
+                                        if (attachment.kind == MediaKind.SVG) {
+                                            svgWebView?.evaluateJavascript("window.zoomOut && window.zoomOut()", null)
+                                        } else {
+                                            scale = (scale / 1.25f).coerceAtLeast(0.75f)
+                                            if (scale <= 1f) offset = Offset.Zero
+                                        }
                                     }
                             )
                             Text(
@@ -1651,8 +1804,12 @@ fun FullscreenMediaLightboxDialog(
                                 fontSize = 11.sp,
                                 fontFamily = FontFamily.Monospace,
                                 modifier = Modifier.clickable {
-                                    scale = 1f
-                                    offset = Offset.Zero
+                                    if (attachment.kind == MediaKind.SVG) {
+                                        svgWebView?.evaluateJavascript("window.resetZoom && window.resetZoom()", null)
+                                    } else {
+                                        scale = 1f
+                                        offset = Offset.Zero
+                                    }
                                 }
                             )
                             Icon(
@@ -1662,7 +1819,11 @@ fun FullscreenMediaLightboxDialog(
                                 modifier = Modifier
                                     .size(16.dp)
                                     .clickable {
-                                        scale = (scale * 1.25f).coerceAtMost(6f)
+                                        if (attachment.kind == MediaKind.SVG) {
+                                            svgWebView?.evaluateJavascript("window.zoomIn && window.zoomIn()", null)
+                                        } else {
+                                            scale = (scale * 1.25f).coerceAtMost(6f)
+                                        }
                                     }
                             )
                         }

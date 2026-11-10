@@ -4,6 +4,26 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
+## [2.0.42] - 2026-11-10
+
+### 🔍 彻底修复 SVG 全屏放大后无法拖拽平移与手势死锁
+
+- **解绑 Compose 外层手势拦截与手势死锁消除**：
+  - 根因分析：此前全屏灯箱对所有媒体统一挂载 Compose 的 `detectTransformGestures`。在查看 SVG 时，单指滑动位移刚达到阈值即被 Compose 消费并向 WebView 派发 `ACTION_CANCEL`，而 Compose 层自身的 `scale` 此时仍为 1.0f 强行将 `offset` 置零，导致画面被彻底焊死无法移动；
+  - 针对 `MediaKind.SVG` 彻底剥离外层 Compose 变换修饰符与 `graphicsLayer`，将手势控制权完整交由 WebView 内部高精度矢量管线；
+  - WebView 配置 `requestDisallowInterceptTouchEvent(true)` 阻止任何父级容器对拖拽手势的窃取。
+- **构建物理像素各向同性平移与全向边界漫游算法**：
+  - 在 `preserveAspectRatio="xMidYMid meet"` 下统一采用各向同性物理像素光栅化比率（`s = Math.min(width/curW, height/curH)`），消除 X/Y 轴不同步漂移，实现 1:1 精确跟手；
+  - 增加全向安全漫游边界（`clampViewBox`），在保障整张图边缘保留 35% 舒适视区的同时，允许用户将任意角落（如复杂系统架构图的各个微服务卡片与流程分支）自由拖拽至中央视区；
+  - 两指捏合手势升级为物理中心投影（`zoomAt`），实现“边缩放边平移”平滑无抖动，并增加针对 `NaN` 与零距离除零的数值防投毒保护。
+- **顶栏状态与 WebView 矢量重绘双向互通**：
+  - 通过 `@JavascriptInterface` 原生桥接与 `rememberUpdatedState`，实时将 WebView 内的缩放比例（如 `267%`）双向同步至顶部操作栏；
+  - 点击顶栏放大、缩小及重置按钮直接驱动 WebView 矢量引擎，杜绝位图拉皮模糊。
+- **纯 JVM 单元测试守护**：
+  - 新增 `SvgCanvasHtmlTest`，全面覆盖静态预览隔离、全屏手势注入、CSP Nonce 沙箱与双向桥接方法。
+
+---
+
 ## [2.0.41] - 2026-11-10
 
 ### 🔀 修复拖拽翻页回弹与排序路径跨平台斜杠归一化
