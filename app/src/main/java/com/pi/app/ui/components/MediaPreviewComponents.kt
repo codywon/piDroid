@@ -55,6 +55,7 @@ import com.pi.app.ui.chat.widgetTokens
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -863,28 +864,17 @@ internal fun buildSvgHtml(
           }
           #container {
             width: 100%; height: 100%;
-            display: flex; align-items: center; justify-content: center;
-            position: relative; overflow: hidden;
+            display: block; position: relative; overflow: hidden;
           }
           svg {
             display: block;
-            width: 100% !important;
-            height: 100% !important;
-            max-width: 100% !important;
-            max-height: 100% !important;
+            position: absolute;
+            top: 0; left: 0;
             pointer-events: none;
+            transform-origin: 0 0;
           }
           #zoom-badge {
-            position: fixed;
-            bottom: calc(20px + env(safe-area-inset-bottom, 0px));
-            right: calc(16px + env(safe-area-inset-right, 0px));
-            background: $badgeBg;
-            border: 1px solid $badgeBorder;
-            color: $badgeFg; border-radius: 14px;
-            padding: 4px 10px; font-size: 11px;
-            font-family: monospace; z-index: 100;
-            backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-            pointer-events: auto; cursor: pointer;
+            display: none;
           }
         </style>
         </head>
@@ -903,9 +893,6 @@ internal fun buildSvgHtml(
 
           if (badge) badge.addEventListener('click', function() { window.resetZoom(); });
 
-          // 1. 初始化并保证 viewBox 存在。
-          // 关键：通过直接操作 SVG 的 viewBox 进行缩放与平移，由浏览器矢量渲染管线
-          // 实时按屏幕物理像素重新光栅化路径，彻底杜绝 CSS scale(...) 导致的位图拉伸模糊！
           var initX = 0, initY = 0, initW = 0, initH = 0;
           var vb = svg.viewBox && svg.viewBox.baseVal;
           if (vb && vb.width > 0 && vb.height > 0) {
@@ -927,8 +914,13 @@ internal fun buildSvgHtml(
             }
           }
 
-          var curX = initX, curY = initY, curW = initW, curH = initH;
+          // 保持原始 intrinsic viewBox 恒定不变，彻底杜绝任何百分比子元素与文本的相对坐标畸变
+          svg.setAttribute('viewBox', initX + ' ' + initY + ' ' + initW + ' ' + initH);
+          svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+
           var scale = 1.0;
+          var panX = 0, panY = 0;
+          var fitW = initW, fitH = initH;
           var lastReportedScale = 1.0;
 
           function getContainerSize() {
@@ -939,6 +931,7 @@ internal fun buildSvgHtml(
           }
 
           function getBaseScale(cSize) {
+            if (!cSize) cSize = getContainerSize();
             return Math.min(cSize.w / initW, cSize.h / initH);
           }
 
@@ -955,106 +948,119 @@ internal fun buildSvgHtml(
             }
           }
 
-          function applyViewBox() {
-            svg.setAttribute('viewBox', curX + ' ' + curY + ' ' + curW + ' ' + curH);
+          function clampViewBox() {
+            var cSize = getContainerSize();
+            var curW = fitW * scale;
+            var curH = fitH * scale;
+            var margin = 28;
+
+            if (curW > cSize.w) {
+              var minX = cSize.w - curW - margin;
+              var maxX = margin;
+              panX = Math.min(Math.max(panX, minX), maxX);
+            } else {
+              panX = (cSize.w - curW) / 2;
+            }
+
+            if (curH > cSize.h) {
+              var minY = cSize.h - curH - margin;
+              var maxY = margin;
+              panY = Math.min(Math.max(panY, minY), maxY);
+            } else {
+              panY = (cSize.h - curH) / 2;
+            }
+          }
+
+          function applyTransform() {
+            var curW = fitW * scale;
+            var curH = fitH * scale;
+            svg.style.width = curW + 'px';
+            svg.style.height = curH + 'px';
+            svg.style.transform = 'translate3d(' + panX + 'px, ' + panY + 'px, 0)';
             notifyScale();
           }
 
-          function clampViewBox() {
-            var cSize = getContainerSize();
-            var totalScale = getBaseScale(cSize) * scale;
-            var marginSvgX = 24 / totalScale;
-            var marginSvgY = 24 / totalScale;
-
-            if (curW <= initW) {
-              var minX = initX - marginSvgX;
-              var maxX = initX + initW - curW + marginSvgX;
-              curX = Math.min(Math.max(curX, minX), maxX);
-            } else {
-              curX = initX - (curW - initW) / 2;
-            }
-
-            if (curH <= initH) {
-              var minY = initY - marginSvgY;
-              var maxY = initY + initH - curH + marginSvgY;
-              curY = Math.min(Math.max(curY, minY), maxY);
-            } else {
-              curY = initY - (curH - initH) / 2;
-            }
-          }
-
-          function updateViewBox(targetScale, nextCurX, nextCurY) {
+          function updateViewBox(targetScale, nextPanX, nextPanY) {
             if (typeof targetScale === 'number' && !isNaN(targetScale) && isFinite(targetScale)) {
               scale = Math.min(Math.max(targetScale, 0.5), 20.0);
             }
             var cSize = getContainerSize();
             var baseScale = getBaseScale(cSize);
-            var totalScale = baseScale * scale;
+            fitW = initW * baseScale;
+            fitH = initH * baseScale;
 
-            // 视口在 SVG 坐标系下的宽高动态对齐屏幕物理容器的真实宽高比，彻底消除 letterbox 黑边！
-            curW = cSize.w / totalScale;
-            curH = cSize.h / totalScale;
-
-            if (typeof nextCurX === 'number' && !isNaN(nextCurX) && isFinite(nextCurX)) curX = nextCurX;
-            if (typeof nextCurY === 'number' && !isNaN(nextCurY) && isFinite(nextCurY)) curY = nextCurY;
+            if (typeof nextPanX === 'number' && !isNaN(nextPanX) && isFinite(nextPanX)) panX = nextPanX;
+            if (typeof nextPanY === 'number' && !isNaN(nextPanY) && isFinite(nextPanY)) panY = nextPanY;
 
             clampViewBox();
-            applyViewBox();
+            applyTransform();
           }
-
-          svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-          updateViewBox(1.0, initX, initY);
 
           function resetZoom() {
-            updateViewBox(1.0, initX, initY);
+            scale = 1.0;
+            var cSize = getContainerSize();
+            var baseScale = getBaseScale(cSize);
+            fitW = initW * baseScale;
+            fitH = initH * baseScale;
+            panX = (cSize.w - fitW) / 2;
+            panY = (cSize.h - fitH) / 2;
+            clampViewBox();
+            applyTransform();
           }
 
-          function zoomAt(targetScale, oldFocalX, oldFocalY, newFocalX, newFocalY) {
+          function zoomAt(targetScale, focalX, focalY) {
             if (typeof targetScale !== 'number' || isNaN(targetScale) || !isFinite(targetScale)) return;
             targetScale = Math.min(Math.max(targetScale, 0.5), 20.0);
 
             var cSize = getContainerSize();
-            if (typeof oldFocalX !== 'number') oldFocalX = cSize.w / 2;
-            if (typeof oldFocalY !== 'number') oldFocalY = cSize.h / 2;
-            if (typeof newFocalX !== 'number') newFocalX = oldFocalX;
-            if (typeof newFocalY !== 'number') newFocalY = oldFocalY;
+            if (typeof focalX !== 'number') focalX = cSize.w / 2;
+            if (typeof oldFocalY !== 'number') focalY = cSize.h / 2;
 
-            var baseScale = getBaseScale(cSize);
-            var curTotalScale = baseScale * scale;
-            var newTotalScale = baseScale * targetScale;
+            var oldW = fitW * scale;
+            var oldH = fitH * scale;
 
-            var svgFocalX = curX + oldFocalX / curTotalScale;
-            var svgFocalY = curY + oldFocalY / curTotalScale;
+            var normX = (focalX - panX) / oldW;
+            var normY = (focalY - panY) / oldH;
 
-            var nextCurX = svgFocalX - newFocalX / newTotalScale;
-            var nextCurY = svgFocalY - newFocalY / newTotalScale;
+            scale = targetScale;
+            var newW = fitW * scale;
+            var newH = fitH * scale;
 
-            updateViewBox(targetScale, nextCurX, nextCurY);
+            panX = focalX - normX * newW;
+            panY = focalY - normY * newH;
+
+            clampViewBox();
+            applyTransform();
           }
 
           function zoomAndPan(targetScale, focalX, focalY) {
-            zoomAt(targetScale, focalX, focalY, focalX, focalY);
+            zoomAt(targetScale, focalX, focalY);
           }
 
           function panBy(dx, dy) {
             if (typeof dx !== 'number' || isNaN(dx) || !isFinite(dx)) dx = 0;
             if (typeof dy !== 'number' || isNaN(dy) || !isFinite(dy)) dy = 0;
-            var cSize = getContainerSize();
-            var totalScale = getBaseScale(cSize) * scale;
-            updateViewBox(scale, curX - dx / totalScale, curY - dy / totalScale);
+            panX += dx;
+            panY += dy;
+            clampViewBox();
+            applyTransform();
           }
 
           function zoomIn() {
-            zoomAt(scale * 1.25, null, null, null, null);
+            var cSize = getContainerSize();
+            zoomAt(scale * 1.25, cSize.w / 2, cSize.h / 2);
           }
 
           function zoomOut() {
-            zoomAt(scale / 1.25, null, null, null, null);
+            var cSize = getContainerSize();
+            zoomAt(scale / 1.25, cSize.w / 2, cSize.h / 2);
           }
 
           window.resetZoom = resetZoom;
           window.zoomIn = zoomIn;
           window.zoomOut = zoomOut;
+
+          resetZoom();
 
           window.addEventListener('resize', function() {
             updateViewBox();
@@ -1097,7 +1103,7 @@ internal fun buildSvgHtml(
                 if (scale > 1.2) {
                   resetZoom();
                 } else {
-                  zoomAt(2.5, tapX, tapY, tapX, tapY);
+                  zoomAt(2.5, tapX, tapY);
                 }
                 lastTap = 0;
               } else {
@@ -1116,10 +1122,19 @@ internal fun buildSvgHtml(
               if (newDist > 5) {
                 var factor = newDist / lastDist;
                 lastDist = newDist;
-                if (isFinite(factor) && factor > 0) {
-                  zoomAt(scale * factor, lastCenter.x - rect.left, lastCenter.y - rect.top, newCenter.x - rect.left, newCenter.y - rect.top);
-                }
+
+                var centerDx = newCenter.x - lastCenter.x;
+                var centerDy = newCenter.y - lastCenter.y;
                 lastCenter = newCenter;
+
+                panX += centerDx;
+                panY += centerDy;
+                if (isFinite(factor) && factor > 0) {
+                  zoomAt(scale * factor, newCenter.x - rect.left, newCenter.y - rect.top);
+                } else {
+                  clampViewBox();
+                  applyTransform();
+                }
               }
             } else if (e.touches.length === 1 && lastPan) {
               var dx = e.touches[0].clientX - lastPan.x;
@@ -1640,17 +1655,164 @@ fun FullscreenMediaLightboxDialog(
             decorFitsSystemWindows = false
         )
     ) {
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color(ThemePalette.ScrimLightbox))
         ) {
-            // 主体可缩放画布区域（SVG 自身在 WebView 内通过 viewBox 实现无损矢量缩放与平移，不能叠加父级手势拦截）
+            // 顶部导航栏：独立一行物理约束，带状态栏边距，绝不遮盖主体内容
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = 0.65f))
+                    .statusBarsPadding()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 12.dp)
+                ) {
+                    Text(
+                        text = attachment.title.ifBlank { "全屏预览" },
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!attachment.filePath.isNullOrBlank()) {
+                        Text(
+                            text = attachment.filePath,
+                            color = Color.White.copy(alpha = 0.6f),
+                            fontSize = 10.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    // 缩放控制胶囊：统一 34dp 高度与 17dp 胶囊圆角，与关闭按钮高度及基线完全对齐
+                    Surface(
+                        shape = RoundedCornerShape(17.dp),
+                        color = Color.White.copy(alpha = 0.15f),
+                        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f)),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 30.dp, height = 34.dp)
+                                    .clickable {
+                                        if (attachment.kind == MediaKind.SVG) {
+                                            svgWebView?.evaluateJavascript("window.zoomOut && window.zoomOut()", null)
+                                        } else {
+                                            scale = (scale / 1.25f).coerceAtLeast(0.75f)
+                                            if (scale <= 1f) offset = Offset.Zero
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Remove,
+                                    contentDescription = "缩小",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .defaultMinSize(minWidth = 44.dp)
+                                    .height(34.dp)
+                                    .clickable {
+                                        if (attachment.kind == MediaKind.SVG) {
+                                            svgWebView?.evaluateJavascript("window.resetZoom && window.resetZoom()", null)
+                                        } else {
+                                            scale = 1f
+                                            offset = Offset.Zero
+                                        }
+                                    }
+                                    .padding(horizontal = 4.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = String.format(Locale.US, "%.0f%%", scale * 100f),
+                                    color = Color.White,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    fontFamily = FontFamily.Monospace,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 30.dp, height = 34.dp)
+                                    .clickable {
+                                        if (attachment.kind == MediaKind.SVG) {
+                                            svgWebView?.evaluateJavascript("window.zoomIn && window.zoomIn()", null)
+                                        } else {
+                                            scale = (scale * 1.25f).coerceAtMost(6f)
+                                        }
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "放大",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    // 关闭按钮：统一 34dp 高度与圆形胶囊匹配
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.White.copy(alpha = 0.15f),
+                        border = BorderStroke(0.6.dp, Color.White.copy(alpha = 0.18f)),
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clickable(onClick = onDismiss),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "关闭全屏预览",
+                                tint = Color.White,
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 主体可缩放画布区域：占据顶部导航栏下方所有剩余视口，底部带系统导航手势条避让
             val gestureModifier = if (attachment.kind == MediaKind.SVG) {
-                Modifier.fillMaxSize()
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
             } else {
                 Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
                     .pointerInput(Unit) {
                         detectTapGestures(
                             onDoubleTap = {
@@ -1687,8 +1849,7 @@ fun FullscreenMediaLightboxDialog(
                     customDiagramComposable != null -> {
                         Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 16.dp, vertical = 72.dp)
+                                .fillMaxSize()
                                 .graphicsLayer(
                                     scaleX = scale,
                                     scaleY = scale,
@@ -1723,7 +1884,6 @@ fun FullscreenMediaLightboxDialog(
                             contentScale = ContentScale.Fit,
                             modifier = Modifier
                                 .fillMaxSize()
-                                .padding(horizontal = 8.dp, vertical = 64.dp)
                                 .graphicsLayer(
                                     scaleX = scale,
                                     scaleY = scale,
@@ -1751,130 +1911,16 @@ fun FullscreenMediaLightboxDialog(
                         )
                     }
                 }
-            }
 
-            // 顶部悬浮导航栏：标题 + 缩放比例复位 + 关闭按钮
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .align(Alignment.TopCenter)
-                    .background(Color.Black.copy(alpha = 0.55f))
-                    .statusBarsPadding()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = attachment.title.ifBlank { "全屏预览" },
-                        color = Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (!attachment.filePath.isNullOrBlank()) {
-                        Text(
-                            text = attachment.filePath,
-                            color = Color.White.copy(alpha = 0.6f),
-                            fontSize = 10.5.sp,
-                            fontFamily = FontFamily.Monospace,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 缩放控制按钮组
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color.White.copy(alpha = 0.14f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Remove,
-                                contentDescription = "缩小",
-                                tint = Color.White,
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable {
-                                        if (attachment.kind == MediaKind.SVG) {
-                                            svgWebView?.evaluateJavascript("window.zoomOut && window.zoomOut()", null)
-                                        } else {
-                                            scale = (scale / 1.25f).coerceAtLeast(0.75f)
-                                            if (scale <= 1f) offset = Offset.Zero
-                                        }
-                                    }
-                            )
-                            Text(
-                                text = String.format(Locale.US, "%.0f%%", scale * 100f),
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.clickable {
-                                    if (attachment.kind == MediaKind.SVG) {
-                                        svgWebView?.evaluateJavascript("window.resetZoom && window.resetZoom()", null)
-                                    } else {
-                                        scale = 1f
-                                        offset = Offset.Zero
-                                    }
-                                }
-                            )
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = "放大",
-                                tint = Color.White,
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clickable {
-                                        if (attachment.kind == MediaKind.SVG) {
-                                            svgWebView?.evaluateJavascript("window.zoomIn && window.zoomIn()", null)
-                                        } else {
-                                            scale = (scale * 1.25f).coerceAtMost(6f)
-                                        }
-                                    }
-                            )
-                        }
-                    }
-
-                    IconButton(
-                        onClick = onDismiss,
-                        modifier = Modifier
-                            .size(34.dp)
-                            .background(Color.White.copy(alpha = 0.16f), CircleShape)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "关闭全屏预览",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-
-            // 底部控制栏：PDF 分页切换或操作提示
-            Row(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
-                    .padding(bottom = 16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+                // 底部控制栏：PDF 分页切换
                 if (attachment.kind == MediaKind.PDF && pdfPageCount > 1) {
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = Color.Black.copy(alpha = 0.75f),
-                        border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.2f))
+                        border = BorderStroke(0.8.dp, Color.White.copy(alpha = 0.2f)),
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 16.dp)
                     ) {
                         Row(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
@@ -1922,18 +1968,6 @@ fun FullscreenMediaLightboxDialog(
                                 )
                             }
                         }
-                    }
-                } else {
-                    Surface(
-                        shape = RoundedCornerShape(16.dp),
-                        color = Color.Black.copy(alpha = 0.55f)
-                    ) {
-                        Text(
-                            text = "双指捏合缩放 · 双击快速放大/复位 · 拖拽平移",
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 11.sp,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp)
-                        )
                     }
                 }
             }

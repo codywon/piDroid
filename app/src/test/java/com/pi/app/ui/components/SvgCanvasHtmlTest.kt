@@ -67,10 +67,11 @@ class SvgCanvasHtmlTest {
         assertTrue("必须监听 touchend", html.contains("container.addEventListener('touchend'"))
         assertTrue("必须监听 touchcancel", html.contains("container.addEventListener('touchcancel'"))
 
-        // 7. 消除 letterbox 宽屏黑边的动态物理视口对齐
+        // 7. 消除 letterbox 宽屏黑边的动态物理尺寸缩放与自适应
+        assertTrue("必须保持原始 viewBox 恒定防止相对畸变", html.contains("svg.setAttribute('viewBox', initX"))
         assertTrue("必须包含动态物理容器尺寸获取函数", html.contains("function getContainerSize()"))
         assertTrue("必须包含基准缩放比函数", html.contains("function getBaseScale("))
-        assertTrue("必须包含动态 viewBox 视口计算函数", html.contains("function updateViewBox("))
+        assertTrue("必须包含动态更新计算函数", html.contains("function updateViewBox("))
         assertTrue("必须监听窗口尺寸变动自适应", html.contains("window.addEventListener('resize'"))
     }
 }
