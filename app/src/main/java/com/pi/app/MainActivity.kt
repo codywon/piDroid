@@ -217,21 +217,20 @@ class MainActivity : ComponentActivity() {
 
         if (prefs.persistentNotifyEnabled || effectiveRunning) {
             val liveSession = cachedSessions.firstOrNull { it.isLive }
-            val liveTitle = liveSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
-            val currentTitle = if (isBusy) currentSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } } else null
+            val liveTitle = liveSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name?.ifBlank { null } }
             val devName = prefs.deviceName.ifBlank { prefs.serverUrl.substringAfter("://").substringBefore(":") }.ifBlank { "Remote PC" }
 
             val data = PiNotificationPolicy.resolveForegroundNotification(
                 isBusy = isBusy,
                 activeSessionsCount = activeSessionsCount,
                 totalSessions = totalSessions,
-                sessionTitle = sessionTitle ?: currentTitle,
+                sessionTitle = sessionTitle,
                 liveSessionTitle = liveTitle,
                 lastFinishedTaskTitle = lastFinishedTaskTitle,
                 phase = phase,
                 project = project,
                 devName = devName,
-                sessionId = sessionId ?: (if (isBusy) currentSession?.id else null),
+                sessionId = sessionId,
                 liveSessionId = liveSession?.id
             )
 
@@ -807,7 +806,7 @@ class MainActivity : ComponentActivity() {
             if (runningChanged) {
                 val justFinishedId = finishedSessionIds.firstOrNull()
                 val justFinishedTitle = if (activeIds.isEmpty() && justFinishedId != null) {
-                    sessions.find { it.id == justFinishedId }?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
+                    sessions.find { it.id == justFinishedId }?.let { prefs.getSessionCustomTitle(it.id) ?: it.name?.ifBlank { null } }
                 } else null
                 syncPersistentForegroundService(
                     isBusy = isAgentBusy,
@@ -1002,7 +1001,7 @@ class MainActivity : ComponentActivity() {
                 agentPhaseLabel = null
             }
             val cur = currentSession
-            val title = cur?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
+            val title = cur?.let { prefs.getSessionCustomTitle(it.id) ?: it.name?.ifBlank { null } }
             syncPersistentForegroundService(
                 isBusy = true,
                 project = currentProject,
@@ -1046,7 +1045,7 @@ class MainActivity : ComponentActivity() {
                 if (prefs.completionSoundEnabled) {
                     hapticsAndNotify.playTaskCompletedSound()
                 }
-                val finishedTitle = currentSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } } ?: "当前任务"
+                val finishedTitle = currentSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name?.ifBlank { null } } ?: "当前任务"
                 lastFinishedTaskTitle = finishedTitle
                 // 仅在用户显式开启任务完成独立通知时发送，默认关闭避免堆叠打扰
                 if (prefs.taskCompletedNotifyEnabled) {
@@ -2266,7 +2265,7 @@ class MainActivity : ComponentActivity() {
                     isBusy = true,
                     project = currentProject,
                     phase = agentPhaseLabel,
-                    sessionTitle = prefs.getSessionCustomTitle(session.id) ?: session.name,
+                    sessionTitle = prefs.getSessionCustomTitle(session.id) ?: session.name?.ifBlank { null },
                     sessionId = session.id
                 )
             }

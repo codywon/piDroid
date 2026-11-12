@@ -4,7 +4,7 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 
-## [2.0.47] - 2026-11-12
+## [2.0.48] - 2026-11-12
 
 ### 🔔 修复常驻通知栏任务状态错位与运行态对账 (Foreground Notification & Running State)
 
