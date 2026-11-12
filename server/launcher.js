@@ -253,6 +253,9 @@ process.on('exit', () => shutdown(0));
 //   * 传 --no-open / PI_WEB_NO_OPEN=1 —— pi-web 默认会在就绪后打开浏览器，
 //     后台常驻服务不该在桌面上自己弹标签页。
 const PI_WEB_RESTART_DELAY_MS = 5000;
+// `where pi-web` 是 PATH 查找，Windows 上 PATH 很长 / 杀软扫一遍时能卡到分钟级。
+// 实测 2026-11-11 那次自动重启：stack 起来后 139s 才走到 spawn pi-web，全程卡在这一句上。
+const PI_WEB_WHERE_TIMEOUT_MS = 5000;
 let piWebRestartTimer = null;
 
 // 崩溃取证：只保留最后 N 行输出 + 每 20s 采一次 RSS。
@@ -332,6 +335,7 @@ function spawnPiWeb(cmd, cmdArgs, useShell) {
 
 function launchPiWeb() {
   const isWindows = process.platform === 'win32';
+  const checkCmd = isWindows ? 'where pi-web' : 'which pi-web';
 
   // 智能寻找可执行命令
   let cmd = 'pi-web';
@@ -340,15 +344,22 @@ function launchPiWeb() {
 
   // 检查是否全局有 pi-web 命令
   try {
-    const checkCmd = isWindows ? 'where pi-web' : 'which pi-web';
-    execSync(checkCmd, { stdio: 'ignore' });
+    execSync(checkCmd, { stdio: 'ignore', timeout: PI_WEB_WHERE_TIMEOUT_MS });
     cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
     useShell = isWindows;
   } catch (e) {
-    // 若未全局安装，使用 npx 实时拉起最新版
-    cmd = isWindows ? 'npx.cmd' : 'npx';
-    cmdArgs = ['@agegr/pi-web@latest', '--no-open'];
-    useShell = isWindows;
+    // status === null 是「被超时打断」，不是「没装」。这时候退到 npx 会去下载一份
+    // latest（断网直接起不来，且有网也要几十秒），所以仍按已安装处理。
+    if (e && e.status === null) {
+      console.warn(`[warn] ${checkCmd} 超过 ${PI_WEB_WHERE_TIMEOUT_MS / 1000}s 未返回，仍按已安装处理`);
+      cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
+      useShell = isWindows;
+    } else {
+      // 若未全局安装，使用 npx 实时拉起最新版
+      cmd = isWindows ? 'npx.cmd' : 'npx';
+      cmdArgs = ['@agegr/pi-web@latest', '--no-open'];
+      useShell = isWindows;
+    }
   }
 
   console.log(`[1/3] 正在启动官方原生 pi-web 服务 (${cmd} ${cmdArgs.join(' ')})...`);

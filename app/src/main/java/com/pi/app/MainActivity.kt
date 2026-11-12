@@ -32,6 +32,7 @@ import com.pi.app.network.PromptRecoveryPolicy
 import com.pi.app.network.RecalledPrompts
 import com.pi.app.network.SessionHistoryData
 import com.pi.app.notification.PiHapticsAndNotify
+import com.pi.app.notification.PiNotificationPolicy
 import com.pi.app.ui.ErrorToastGate
 import com.pi.app.ui.chat.ChatScreen
 import com.pi.app.ui.chat.ModelAndThinkingSheet
@@ -200,65 +201,47 @@ class MainActivity : ComponentActivity() {
             PiForegroundService.stop(this)
             return
         }
-        if (prefs.persistentNotifyEnabled || isBusy) {
-            if (!lastFinishedTask.isNullOrBlank()) {
-                lastFinishedTaskTitle = lastFinishedTask
-            }
-            val totalSessions = cachedSessions.size
-            // 运行态以 isLive 为准（runningSessionIds → isRunning 与本地 active 取或），
-            // 只读 active 会让通知栏长期显示「0 运行 / 全部完成」。
-            val activeSessionsCount = cachedSessions.count { it.isLive }
-            val runningCount = if (isBusy) maxOf(1, activeSessionsCount) else activeSessionsCount
-            val completedCount = maxOf(0, totalSessions - runningCount)
+        val totalSessions = cachedSessions.size
+        // 运行态以 isLive 为准（runningSessionIds → isRunning 与本地 active 取或），
+        // 只读 active 会让通知栏长期显示「0 运行 / 全部完成」。
+        val activeSessionsCount = cachedSessions.count { it.isLive }
+        val runningCount = if (isBusy) maxOf(1, activeSessionsCount) else activeSessionsCount
+        val effectiveRunning = isBusy || runningCount > 0
+
+        if (effectiveRunning) {
+            // 只要有任何任务在执行，立即清空历史已完成任务标记，杜绝串扰
+            lastFinishedTaskTitle = null
+        } else if (!lastFinishedTask.isNullOrBlank()) {
+            lastFinishedTaskTitle = lastFinishedTask
+        }
+
+        if (prefs.persistentNotifyEnabled || effectiveRunning) {
+            val liveSession = cachedSessions.firstOrNull { it.isLive }
+            val liveTitle = liveSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
+            val currentTitle = if (isBusy) currentSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } } else null
             val devName = prefs.deviceName.ifBlank { prefs.serverUrl.substringAfter("://").substringBefore(":") }.ifBlank { "Remote PC" }
-            val activeTitle = sessionTitle ?: lastFinishedTaskTitle ?: "智能任务"
 
-            val title: String
-            val content: String
-            val subText: String
-            val bigText: String
-
-            if (isBusy) {
-                title = "⚡ 智能任务执行中 · $activeTitle"
-                content = phase ?: "正在流式执行推理与工具调用..."
-                subText = "$runningCount 项运行 / $completedCount 项完成"
-                bigText = buildString {
-                    appendLine("● 当前任务: $activeTitle")
-                    appendLine("● 工作空间: $project")
-                    appendLine("● 实时进度: ${phase ?: "正在执行流式推理与工具调用..."}")
-                    appendLine("● 任务统计: $runningCount 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
-                    append("● 远程主机: $devName (网关长连接正常)")
-                }
-            } else if (!lastFinishedTaskTitle.isNullOrBlank()) {
-                title = "✓ 任务已完成 · $lastFinishedTaskTitle"
-                content = "主机: $devName | 所有步骤执行完毕，长连接就绪"
-                subText = "0 运行 / $completedCount 完成"
-                bigText = buildString {
-                    appendLine("✓ 最近完成: $lastFinishedTaskTitle")
-                    appendLine("● 工作空间: $project")
-                    appendLine("● 当前状态: 空闲待命中，随时响应远程指令")
-                    appendLine("● 任务统计: 0 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
-                    append("● 远程主机: $devName")
-                }
-            } else {
-                title = if (totalSessions > 0) "πDroid 常驻守护中 · $completedCount 项任务就绪" else "πDroid · 网关常驻守护中"
-                content = "主机: $devName | 保持长连接与后台实时对账"
-                subText = if (totalSessions > 0) "$completedCount 项就绪" else "守护中"
-                bigText = buildString {
-                    appendLine("● 网关状态: 实时长连接正常，数据增量同步中")
-                    appendLine("● 当前工作空间: $project")
-                    appendLine("● 任务统计: 0 个运行中 · $completedCount 个已就绪 (共 $totalSessions 个)")
-                    append("● 远程主机: $devName")
-                }
-            }
+            val data = PiNotificationPolicy.resolveForegroundNotification(
+                isBusy = isBusy,
+                activeSessionsCount = activeSessionsCount,
+                totalSessions = totalSessions,
+                sessionTitle = sessionTitle ?: currentTitle,
+                liveSessionTitle = liveTitle,
+                lastFinishedTaskTitle = lastFinishedTaskTitle,
+                phase = phase,
+                project = project,
+                devName = devName,
+                sessionId = sessionId ?: (if (isBusy) currentSession?.id else null),
+                liveSessionId = liveSession?.id
+            )
 
             PiForegroundService.start(
                 context = this,
-                title = title,
-                content = content,
-                subText = subText,
-                bigText = bigText,
-                targetSessionId = sessionId
+                title = data.title,
+                content = data.content,
+                subText = data.subText,
+                bigText = data.bigText,
+                targetSessionId = data.targetSessionId
             )
         } else {
             PiForegroundService.stop(this)
@@ -801,6 +784,8 @@ class MainActivity : ComponentActivity() {
                 unreadSessionIds = nextUnread
                 prefs.setUnreadSessionIds(nextUnread)
             }
+            val runningChanged = previousRunningSessionIds != activeIds
+            val finishedSessionIds = previousRunningSessionIds - activeIds
             previousRunningSessionIds = activeIds
 
             fun merge(list: List<Session>): List<Session> = list.map { s ->
@@ -817,6 +802,20 @@ class MainActivity : ComponentActivity() {
                 if (cur.isRunning != running || cur.awaitingInput != awaiting) {
                     currentSession = cur.copy(isRunning = running, awaitingInput = awaiting)
                 }
+            }
+
+            if (runningChanged) {
+                val justFinishedId = finishedSessionIds.firstOrNull()
+                val justFinishedTitle = if (activeIds.isEmpty() && justFinishedId != null) {
+                    sessions.find { it.id == justFinishedId }?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
+                } else null
+                syncPersistentForegroundService(
+                    isBusy = isAgentBusy,
+                    project = currentProject,
+                    phase = agentPhaseLabel,
+                    lastFinishedTask = justFinishedTitle,
+                    sessionId = justFinishedId
+                )
             }
         }
 
@@ -1002,7 +1001,15 @@ class MainActivity : ComponentActivity() {
             } else if (clearPhaseIfNull) {
                 agentPhaseLabel = null
             }
-            syncPersistentForegroundService(isBusy = true, project = currentProject, phase = agentPhaseLabel)
+            val cur = currentSession
+            val title = cur?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } }
+            syncPersistentForegroundService(
+                isBusy = true,
+                project = currentProject,
+                phase = agentPhaseLabel,
+                sessionTitle = title,
+                sessionId = cur?.id
+            )
         }
 
         fun completeAgentSessionRun(sessionId: String, syncSnapshot: Boolean = true) {
@@ -1018,7 +1025,9 @@ class MainActivity : ComponentActivity() {
                 agentPhaseLabel = null
                 consecutiveIdlePolls = 0
                 keepAliveManager.releaseWakeLock()
-                syncPersistentForegroundService(isBusy = false, project = currentProject)
+                if (!shouldNotify) {
+                    syncPersistentForegroundService(isBusy = false, project = currentProject)
+                }
             } else {
                 // 后台会话在此刻完成：自动标记为未读（对标 pi-web completedWithNotifications）
                 val nextUnread = SessionUnreadState.markUnread(unreadSessionIds, sessionId)
@@ -1037,7 +1046,7 @@ class MainActivity : ComponentActivity() {
                 if (prefs.completionSoundEnabled) {
                     hapticsAndNotify.playTaskCompletedSound()
                 }
-                val finishedTitle = currentSession?.name?.ifBlank { null } ?: "当前任务"
+                val finishedTitle = currentSession?.let { prefs.getSessionCustomTitle(it.id) ?: it.name.ifBlank { null } } ?: "当前任务"
                 lastFinishedTaskTitle = finishedTitle
                 // 仅在用户显式开启任务完成独立通知时发送，默认关闭避免堆叠打扰
                 if (prefs.taskCompletedNotifyEnabled) {
@@ -2252,6 +2261,15 @@ class MainActivity : ComponentActivity() {
             // 工具在跑时不要盖成「正在等待模型」（pi-web #1348，runStatePhase 规则）：
             // 否则工具明明在执行，顶部却先闪一下等待模型。
             agentPhaseLabel = if (session.isRunning && !isToolExecuting) "正在等待模型..." else null
+            if (session.isRunning) {
+                syncPersistentForegroundService(
+                    isBusy = true,
+                    project = currentProject,
+                    phase = agentPhaseLabel,
+                    sessionTitle = prefs.getSessionCustomTitle(session.id) ?: session.name,
+                    sessionId = session.id
+                )
+            }
 
             // 优先秒开展示内存缓存中的会话历史与配置，彻底杜绝切入会话时的白屏
             val cached = apiClient.getCachedSessionDetail(session.id)
@@ -3010,6 +3028,7 @@ class MainActivity : ComponentActivity() {
                         isLoadingSessionHistory = false
                         resetSessionScopedState()
                         keepAliveManager.releaseWakeLock()
+                        lastFinishedTaskTitle = null
                         syncPersistentForegroundService(isBusy = false, project = currentProject)
                         hapticsAndNotify.clearNotification()
                         // 列表已经在内存里（巡检一直维护着它），返回列表只静默对账一次：
