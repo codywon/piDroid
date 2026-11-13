@@ -65,10 +65,9 @@ class KeepAliveManager(private val context: Context) {
                 setReferenceCounted(false)
             }
         }
-        if (wakeLock?.isHeld != true) {
-            wakeLock?.acquire(timeoutMs)
-            Log.d("KeepAliveManager", "WakeLock acquired for long-running task")
-        }
+        // 每次触发都调用 acquire(timeoutMs) 续期，避免长任务超过单次 15 分钟上限后被提前释放
+        wakeLock?.acquire(timeoutMs)
+        Log.d("KeepAliveManager", "WakeLock acquired/renewed for long-running task (${timeoutMs}ms)")
 
         if (wifiLock == null) {
             @Suppress("DEPRECATION")

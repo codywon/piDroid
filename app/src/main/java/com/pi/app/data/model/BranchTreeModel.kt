@@ -37,18 +37,43 @@ data class BranchTreeRow(
 object BranchTreeTopology {
 
     /**
-     * 从服务端 JSON 中解析多叉树数组。
+     * 从服务端 JSON 中解析多叉树数组（迭代实现，避免超深分支导致栈溢出）。
      */
     fun parseTreeJson(jsonArr: JsonArray?): List<BranchTreeNode> {
         if (jsonArr == null || jsonArr.size() == 0) return emptyList()
         val list = mutableListOf<BranchTreeNode>()
         for (el in jsonArr) {
-            parseNode(el)?.let { list.add(it) }
+            parseNodeIterative(el)?.let { list.add(it) }
         }
         return list
     }
 
-    private fun parseNode(el: JsonElement?): BranchTreeNode? {
+    private class MutableParseFrame(
+        val id: String,
+        val parentId: String?,
+        val type: String,
+        val timestamp: String,
+        val compressedEntryIds: List<String>,
+        val role: String?,
+        val previewText: String,
+        val rawChildren: JsonArray?,
+        var nextChildIdx: Int = 0,
+        val parsedChildren: MutableList<BranchTreeNode> = mutableListOf()
+    ) {
+        fun toNode(): BranchTreeNode = BranchTreeNode(
+            id = id,
+            parentId = parentId,
+            type = type,
+            timestamp = timestamp,
+            compressedCount = compressedEntryIds.size,
+            compressedEntryIds = compressedEntryIds,
+            role = role,
+            previewText = previewText,
+            children = parsedChildren
+        )
+    }
+
+    private fun startFrame(el: JsonElement?): MutableParseFrame? {
         val obj = el?.takeIf { it.isJsonObject }?.asJsonObject ?: return null
         val entry = obj.getAsJsonObject("entry") ?: return null
         val id = entry.get("id")?.takeIf { !it.isJsonNull }?.asString ?: return null
@@ -68,56 +93,76 @@ object BranchTreeTopology {
             role = previewObj.get("role")?.takeIf { !it.isJsonNull }?.asString
             previewText = previewObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
         }
-
-        val childrenList = mutableListOf<BranchTreeNode>()
-        obj.get("children")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach {
-            parseNode(it)?.let { child -> childrenList.add(child) }
-        }
-
-        return BranchTreeNode(
+        val rawChildren = obj.get("children")?.takeIf { it.isJsonArray }?.asJsonArray
+        return MutableParseFrame(
             id = id,
             parentId = parentId,
             type = type,
             timestamp = timestamp,
-            compressedCount = compressedList.size,
             compressedEntryIds = compressedList,
             role = role,
             previewText = previewText,
-            children = childrenList
+            rawChildren = rawChildren
         )
     }
 
-    /**
-     * 计算当前活跃路径的节点 ID 集合（对标 pi-web markActive）。
-     */
-    fun buildActivePathIds(roots: List<BranchTreeNode>, activeLeafId: String?): Set<String> {
-        if (activeLeafId.isNullOrBlank()) return emptySet()
-        val activeIds = mutableSetOf<String>()
-
-        fun findPath(node: BranchTreeNode, targetId: String, currentPath: List<String>): Boolean {
-            val pathWithCurrent = currentPath + node.id
-            if (node.id == targetId || node.compressedEntryIds.contains(targetId)) {
-                activeIds.addAll(pathWithCurrent)
-                return true
-            }
-            for (child in node.children) {
-                if (findPath(child, targetId, pathWithCurrent)) {
-                    return true
+    private fun parseNodeIterative(el: JsonElement?): BranchTreeNode? {
+        val rootFrame = startFrame(el) ?: return null
+        val stack = ArrayDeque<MutableParseFrame>()
+        stack.addLast(rootFrame)
+        while (stack.isNotEmpty()) {
+            val top = stack.last()
+            val rawChildren = top.rawChildren
+            if (rawChildren != null && top.nextChildIdx < rawChildren.size()) {
+                val childEl = rawChildren[top.nextChildIdx++]
+                val childFrame = startFrame(childEl)
+                if (childFrame != null) {
+                    stack.addLast(childFrame)
                 }
+            } else {
+                stack.removeLast()
+                val built = top.toNode()
+                if (stack.isEmpty()) {
+                    return built
+                }
+                stack.last().parsedChildren.add(built)
             }
-            return false
         }
-
-        for (root in roots) {
-            if (findPath(root, activeLeafId, emptyList())) {
-                break
-            }
-        }
-        return activeIds
+        return null
     }
 
     /**
-     * 将树状拓扑拍平成带有连线布尔信息的线性行列表（对标 pi-web vt 组件）。
+     * 计算当前活跃路径的节点 ID 集合（对标 pi-web markActive，迭代 DFS 防栈溢出）。
+     */
+    fun buildActivePathIds(roots: List<BranchTreeNode>, activeLeafId: String?): Set<String> {
+        if (activeLeafId.isNullOrBlank()) return emptySet()
+        val stack = ArrayDeque<Pair<BranchTreeNode, Int>>()
+        val currentPath = ArrayList<String>()
+
+        for (root in roots) {
+            stack.addLast(root to 0)
+            currentPath.add(root.id)
+            while (stack.isNotEmpty()) {
+                val (node, nextIdx) = stack.last()
+                if (nextIdx == 0 && (node.id == activeLeafId || node.compressedEntryIds.contains(activeLeafId))) {
+                    return currentPath.toSet()
+                }
+                if (nextIdx < node.children.size) {
+                    stack[stack.lastIndex] = node to (nextIdx + 1)
+                    val child = node.children[nextIdx]
+                    stack.addLast(child to 0)
+                    currentPath.add(child.id)
+                } else {
+                    stack.removeLast()
+                    currentPath.removeAt(currentPath.lastIndex)
+                }
+            }
+        }
+        return emptySet()
+    }
+
+    /**
+     * 将树状拓扑拍平成带有连线布尔信息的线性行列表（对标 pi-web vt 组件，迭代 DFS）。
      */
     fun flattenTree(
         roots: List<BranchTreeNode>,
@@ -125,40 +170,49 @@ object BranchTreeTopology {
     ): List<BranchTreeRow> {
         val activePathIds = buildActivePathIds(roots, activeLeafId)
         val rows = mutableListOf<BranchTreeRow>()
+        val stack = ArrayDeque<BranchTreeRow>()
 
-        fun walk(
-            node: BranchTreeNode,
-            depth: Int,
-            isLast: Boolean,
-            parentLines: List<Boolean>
-        ) {
-            val isActive = activePathIds.contains(node.id)
-            val isCurrentLeaf = node.id == activeLeafId || node.compressedEntryIds.lastOrNull() == activeLeafId
-            rows.add(
+        for (idx in roots.indices.reversed()) {
+            val root = roots[idx]
+            val isActive = activePathIds.contains(root.id)
+            val isCurrentLeaf = root.id == activeLeafId || root.compressedEntryIds.lastOrNull() == activeLeafId
+            stack.addLast(
                 BranchTreeRow(
-                    node = node,
-                    depth = depth,
-                    isLastChild = isLast,
-                    parentLines = parentLines,
+                    node = root,
+                    depth = 0,
+                    isLastChild = idx == roots.size - 1,
+                    parentLines = emptyList(),
                     isActivePath = isActive,
                     isCurrentLeaf = isCurrentLeaf
                 )
             )
-
-            val childCount = node.children.size
-            node.children.forEachIndexed { idx, child ->
-                val nextParentLines = if (depth > 0) parentLines + (!isLast) else emptyList()
-                walk(
-                    node = child,
-                    depth = depth + 1,
-                    isLast = idx == childCount - 1,
-                    parentLines = nextParentLines
-                )
-            }
         }
 
-        roots.forEachIndexed { idx, root ->
-            walk(root, depth = 0, isLast = idx == roots.size - 1, parentLines = emptyList())
+        while (stack.isNotEmpty()) {
+            val current = stack.removeLast()
+            rows.add(current)
+            val children = current.node.children
+            val childCount = children.size
+            val nextParentLines = if (current.depth > 0) {
+                current.parentLines + (!current.isLastChild)
+            } else {
+                emptyList()
+            }
+            for (idx in children.indices.reversed()) {
+                val child = children[idx]
+                val isActive = activePathIds.contains(child.id)
+                val isCurrentLeaf = child.id == activeLeafId || child.compressedEntryIds.lastOrNull() == activeLeafId
+                stack.addLast(
+                    BranchTreeRow(
+                        node = child,
+                        depth = current.depth + 1,
+                        isLastChild = idx == childCount - 1,
+                        parentLines = nextParentLines,
+                        isActivePath = isActive,
+                        isCurrentLeaf = isCurrentLeaf
+                    )
+                )
+            }
         }
         return rows
     }

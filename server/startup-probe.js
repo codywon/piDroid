@@ -28,10 +28,12 @@ function checkUrlAlive(targetUrl, timeoutMs = 800) {
   return new Promise((resolve) => {
     try {
       const parsed = new URL(targetUrl);
-      const req = http.request(
+      const client = parsed.protocol === 'https:' ? require('https') : http;
+      const defaultPort = parsed.protocol === 'https:' ? 443 : 80;
+      const req = client.request(
         {
           hostname: parsed.hostname,
-          port: parsed.port,
+          port: parsed.port || defaultPort,
           path: '/',
           method: 'GET',
           timeout: timeoutMs,
@@ -76,6 +78,25 @@ function isPortListening(port, host = '127.0.0.1', timeoutMs = 600) {
     socket.once('timeout', () => done(false));
     socket.once('error', () => done(false));
   });
+}
+
+/**
+ * 端口上 LISTENING 的进程 PID（netstat 比 Process API 便宜，且这台机器上没有 lsof）。
+ * 卡顿取证要靠它拿到「真正的 next 服务」那个 pid：spawn 拿到的是 cmd.exe，
+ * 内存和 CPU 都在它孙子那层。
+ */
+function portOwnerPid(port) {
+  const { spawnSync } = require('child_process');
+  const result = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true });
+  if (!result.stdout) return null;
+  const needle = `:${port} `;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!line.includes(needle) || !line.includes('LISTENING')) continue;
+    const parts = line.trim().split(/\s+/);
+    const pid = Number(parts[parts.length - 1]);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  }
+  return null;
 }
 
 /**
@@ -127,6 +148,9 @@ async function waitForReadyOrExit(url, child, options = {}) {
   if (!child || typeof child.once !== 'function') {
     return { ready: await waitForReady(url, maxWaitMs, rest), exited: false };
   }
+  if (child.exitCode != null || child.signalCode != null) {
+    return { ready: false, exited: true, code: child.exitCode, signal: child.signalCode };
+  }
 
   let settled = false;
   let cancelled = false;
@@ -157,6 +181,7 @@ async function waitForReadyOrExit(url, child, options = {}) {
 module.exports = {
   checkUrlAlive,
   isPortListening,
+  portOwnerPid,
   probeWithRetry,
   waitForReady,
   waitForReadyOrExit,

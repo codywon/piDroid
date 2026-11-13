@@ -113,9 +113,10 @@ class PiHapticsAndNotify(private val context: Context) {
                     putExtra("target_session_id", sessionId)
                 }
             }
+            val requestCode = NOTIFICATION_ID xor (sessionId?.hashCode() ?: 0)
             val pendingIntent = PendingIntent.getActivity(
                 context,
-                0,
+                requestCode,
                 clickIntent,
                 PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
             )

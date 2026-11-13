@@ -12,7 +12,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const SDK_PACKAGE = '@earendil-works/pi-coding-agent';
@@ -55,29 +55,39 @@ export function pickThinkingLevel(model) {
   return usable[0] ?? null;
 }
 
+function redactSensitiveText(text) {
+  return String(text || '')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, '$1***')
+    .replace(/([?&](?:api_?key|key|token|secret)=)[^&\s]+/gi, '$1***')
+    .replace(/(sk-[A-Za-z0-9_-]{8,})/g, 'sk-***');
+}
+
 /** 把 SDK 抛出的错误翻译成对客户端稳定的错误码，绝不回显上游密钥/URL。 */
 export function mapModelError(error) {
   if (error instanceof EnhancementFailure) return error;
   const message = String(error?.message ?? error ?? '');
   const lower = message.toLowerCase();
 
-  if (lowestMatch(lower, ['provider is not configured', 'no api key', 'authentication', 'unauthorized', 'invalid api key', '401'])) {
+  if (
+    lowestMatch(lower, ['provider is not configured', 'no api key', 'authentication', 'unauthorized', 'invalid api key']) ||
+    /\b401\b/.test(lower)
+  ) {
     return new EnhancementFailure('MODEL_AUTH_FAILED', '当前模型的凭据不可用，请在 PC 端检查该 Provider 的登录/密钥');
   }
   if (lowestMatch(lower, ['unknown provider', 'model not found', 'unsupported model'])) {
     return new EnhancementFailure('UNSUPPORTED_MODEL', '该模型无法通过伴侣网关独立调用');
   }
-  if (lowestMatch(lower, ['abort', 'timeout', 'timed out', 'etimedout'])) {
+  if (lowestMatch(lower, ['timeout', 'timed out', 'etimedout']) || /\babort(?:ed)?\b/.test(lower)) {
     return new EnhancementFailure('TIMEOUT', '模型请求超时');
   }
-  if (lowestMatch(lower, ['rate limit', '429', 'too many requests', 'quota'])) {
+  if (lowestMatch(lower, ['rate limit', 'too many requests', 'quota']) || /\b429\b/.test(lower)) {
     return new EnhancementFailure('RATE_LIMITED', '模型服务限流，请稍后重试');
   }
   // 上游明确拒绝了请求（4xx / invalid_request_error 等）：不能吞成「请稍后重试」，
   // 否则遇到 developer role、think 参数这类配置型错误时，永远查不出原因。
-  // 只截取一小段，避免把上游长正文或可能的密钥带出去。
+  // 只截取一小段并脱敏，避免把上游长正文或可能的密钥带出去。
   if (/(^|\s)4\d\d\s*:|invalid_request_error|failed to deserialize|unknown variant|not supported/i.test(message)) {
-    const brief = message.replace(/\s+/g, ' ').trim().slice(0, 160);
+    const brief = redactSensitiveText(message).replace(/\s+/g, ' ').trim().slice(0, 160);
     return new EnhancementFailure('MODEL_REQUEST_FAILED', `上游拒绝该请求：${brief}`);
   }
   return new EnhancementFailure('MODEL_REQUEST_FAILED', '模型请求失败，请稍后重试');
@@ -143,8 +153,12 @@ export function synthesizeModel({ provider, modelId, declaration }) {
     api,
     baseUrl,
     input: ['text'],
-    contextWindow: Number(override.contextWindow) > 0 ? Number(override.contextWindow) : 200000,
-    maxTokens: Number(override.maxTokens) > 0 ? Number(override.maxTokens) : 8192,
+    contextWindow: Number(override.contextWindow) > 0
+      ? Number(override.contextWindow)
+      : (Number(fromArray?.contextWindow) > 0 ? Number(fromArray.contextWindow) : 200000),
+    maxTokens: Number(override.maxTokens) > 0
+      ? Number(override.maxTokens)
+      : (Number(fromArray?.maxTokens) > 0 ? Number(fromArray.maxTokens) : 8192),
     reasoning: false,
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     compat: CUSTOM_PROVIDER_COMPAT,
@@ -191,10 +205,40 @@ export function createSdkModelClient(options = {}) {
   const sdkPackage = options.sdkPackage ?? SDK_PACKAGE;
   const importModule = options.importModule ?? ((specifier) => import(specifier));
 
-  /** @type {Promise<{runtime: any}> | null} */
+  /** @type {Promise<{runtime: any, resolveAgentDir: any, configSig: string}> | null} */
   let runtimePromise = null;
 
-  function loadRuntime() {
+  function computeConfigSig(resolveAgentDir) {
+    if (!resolveAgentDir) return '';
+    try {
+      const dir = resolveAgentDir('.');
+      if (!dir) return '';
+      const files = ['models.json', 'auth.json', 'models-store.json'];
+      return files.map((f) => {
+        try {
+          return `${f}:${statSync(join(dir, f)).mtimeMs}`;
+        } catch {
+          return `${f}:missing`;
+        }
+      }).join('|');
+    } catch {
+      return '';
+    }
+  }
+
+  async function loadRuntime() {
+    if (runtimePromise) {
+      try {
+        const cached = await runtimePromise;
+        const latestSig = computeConfigSig(cached.resolveAgentDir);
+        if (!latestSig || latestSig === cached.configSig) {
+          return cached;
+        }
+        runtimePromise = null;
+      } catch {
+        runtimePromise = null;
+      }
+    }
     if (!runtimePromise) {
       runtimePromise = (async () => {
         let sdk;
@@ -221,7 +265,7 @@ export function createSdkModelClient(options = {}) {
           throw new EnhancementFailure('ENHANCEMENT_UNAVAILABLE', `模型配置加载失败: ${loadError}`);
         }
         const resolveAgentDir = typeof sdk.getAgentDir === 'function' ? sdk.getAgentDir : null;
-        return { runtime, resolveAgentDir };
+        return { runtime, resolveAgentDir, configSig: computeConfigSig(resolveAgentDir) };
       })().catch((error) => {
         // 失败不缓存：用户装好依赖 / 修好配置后无需重启网关
         runtimePromise = null;

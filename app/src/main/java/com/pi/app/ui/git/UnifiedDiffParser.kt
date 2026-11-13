@@ -191,11 +191,48 @@ object UnifiedDiffParser {
     }
 
     private fun cleanPath(raw: String): String {
-        val path = raw.split('\t')[0].trim()
+        var path = raw.split('\t')[0].trim()
+        if (path.length >= 2 && path.startsWith("\"") && path.endsWith("\"")) {
+            path = unescapeQuotedGitPath(path.substring(1, path.length - 1))
+        }
         return when {
             path.startsWith("a/") || path.startsWith("b/") -> path.substring(2)
             else -> path
         }
+    }
+
+    /** 解析 git diff 引号路径中的常见 C 转义和 UTF-8 八进制字节序列（如 \344\270\255） */
+    private fun unescapeQuotedGitPath(inner: String): String {
+        val out = java.io.ByteArrayOutputStream()
+        var i = 0
+        while (i < inner.length) {
+            val ch = inner[i]
+            if (ch == '\\' && i + 1 < inner.length) {
+                val next = inner[i + 1]
+                when (next) {
+                    '\\' -> { out.write('\\'.code); i += 2 }
+                    '"' -> { out.write('"'.code); i += 2 }
+                    't' -> { out.write('\t'.code); i += 2 }
+                    'n' -> { out.write('\n'.code); i += 2 }
+                    'r' -> { out.write('\r'.code); i += 2 }
+                    in '0'..'3' -> {
+                        if (i + 3 < inner.length && inner[i + 2] in '0'..'7' && inner[i + 3] in '0'..'7') {
+                            val oct = ((next - '0') shl 6) or ((inner[i + 2] - '0') shl 3) or (inner[i + 3] - '0')
+                            out.write(oct)
+                            i += 4
+                        } else {
+                            out.write(next.code); i += 2
+                        }
+                    }
+                    else -> { out.write(next.code); i += 2 }
+                }
+            } else {
+                val utf8 = ch.toString().toByteArray(Charsets.UTF_8)
+                out.write(utf8)
+                i++
+            }
+        }
+        return out.toString(Charsets.UTF_8.name())
     }
 
     /**
@@ -257,14 +294,18 @@ object UnifiedDiffParser {
             suffix++
         }
 
-        // 防御 Unicode 代理对（Surrogate Pairs，如 emoji 或生僻字）被截断
-        if (prefix > 0 && prefix < oldText.length &&
-            oldText[prefix - 1].isHighSurrogate() && oldText[prefix].isLowSurrogate()
+        // 防御 Unicode 代理对（Surrogate Pairs，如 emoji 或生僻字）在 oldText 或 newText 中被截断
+        if (prefix > 0 && (
+                (prefix < oldText.length && oldText[prefix - 1].isHighSurrogate() && oldText[prefix].isLowSurrogate()) ||
+                (prefix < newText.length && newText[prefix - 1].isHighSurrogate() && newText[prefix].isLowSurrogate())
+            )
         ) {
             prefix--
         }
-        if (suffix > 0 && suffix < oldText.length &&
-            oldText[oldText.length - suffix - 1].isHighSurrogate() && oldText[oldText.length - suffix].isLowSurrogate()
+        if (suffix > 0 && (
+                (oldText.length - suffix > 0 && oldText[oldText.length - suffix - 1].isHighSurrogate() && oldText[oldText.length - suffix].isLowSurrogate()) ||
+                (newText.length - suffix > 0 && newText[newText.length - suffix - 1].isHighSurrogate() && newText[newText.length - suffix].isLowSurrogate())
+            )
         ) {
             suffix--
         }

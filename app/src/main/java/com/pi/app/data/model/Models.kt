@@ -767,7 +767,15 @@ data class SkillInfo(
         get() = alias?.takeIf { it.isNotBlank() } ?: name
 
     val isProjectScope: Boolean
-        get() = scope.equals("project", true) || category?.contains("项目") == true || category?.contains("工作区") == true
+        get() {
+            val normalizedScope = scope?.trim()?.lowercase()
+            return when (normalizedScope) {
+                "project", "workspace", "local" -> true
+                "global", "user" -> false
+                null, "" -> category?.contains("项目") == true || category?.contains("工作区") == true
+                else -> category?.contains("项目") == true || category?.contains("工作区") == true
+            }
+        }
 
     val isGlobalScope: Boolean
         get() = !isProjectScope
@@ -823,7 +831,7 @@ data class McpServerInfo(
     @SerializedName("scope") val scope: String? = "global"
 ) {
     val isConnected: Boolean
-        get() = statusObj?.state == "connected" || enabled
+        get() = if (statusObj != null) statusObj.state == "connected" else enabled
 }
 
 data class McpTestToolResult(
@@ -1169,32 +1177,27 @@ data class HeaderEntry(
 private val STANDARD_LEVELS = listOf("off", "minimal", "low", "medium", "high", "xhigh", "max")
 
 private fun JsonElement?.asSafeString(fallback: String = ""): String {
-    if (this == null || isJsonNull) return fallback
-    if (!isJsonPrimitive) throw IllegalArgumentException("Expected string primitive but found: $this")
-    return asString
+    if (this == null || isJsonNull || !isJsonPrimitive) return fallback
+    return runCatching { asString }.getOrDefault(fallback)
 }
 
 private fun JsonElement?.asSafeBoolean(fallback: Boolean = false): Boolean {
-    if (this == null || isJsonNull) return fallback
-    if (!isJsonPrimitive) throw IllegalArgumentException("Expected boolean primitive but found: $this")
+    if (this == null || isJsonNull || !isJsonPrimitive) return fallback
     return runCatching { asBoolean }.getOrDefault(fallback)
 }
 
 private fun JsonElement?.asSafeLong(fallback: Long = 0L): Long {
-    if (this == null || isJsonNull) return fallback
-    if (!isJsonPrimitive) throw IllegalArgumentException("Expected long primitive but found: $this")
+    if (this == null || isJsonNull || !isJsonPrimitive) return fallback
     return runCatching { asLong }.getOrDefault(fallback)
 }
 
 private fun JsonElement?.asSafeInt(fallback: Int = 0): Int {
-    if (this == null || isJsonNull) return fallback
-    if (!isJsonPrimitive) throw IllegalArgumentException("Expected int primitive but found: $this")
+    if (this == null || isJsonNull || !isJsonPrimitive) return fallback
     return runCatching { asInt }.getOrDefault(fallback)
 }
 
 private fun JsonElement?.asSafeDouble(fallback: Double = 0.0): Double {
-    if (this == null || isJsonNull) return fallback
-    if (!isJsonPrimitive) throw IllegalArgumentException("Expected double primitive but found: $this")
+    if (this == null || isJsonNull || !isJsonPrimitive) return fallback
     return runCatching { asDouble }.getOrDefault(fallback)
 }
 

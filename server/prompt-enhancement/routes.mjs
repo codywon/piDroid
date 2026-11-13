@@ -67,6 +67,7 @@ export function createPromptEnhancementHandler({ service }) {
         message: result.message,
       });
     } catch (error) {
+      console.error('[prompt-enhance] 内部异常:', error?.message || error);
       if (!res.writableEnded) {
         res.status(500).json({ requestId: null, code: 'INTERNAL_ERROR', message: '增强服务内部错误' });
       }

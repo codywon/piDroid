@@ -210,11 +210,6 @@ export function createEnhancementService({ modelClient, config = readEnhancement
       return failure('ENHANCEMENT_UNAVAILABLE', '当前网关未启用提示词增强');
     }
 
-    const subject = options.subject || 'anonymous';
-    if (!checkRateLimit(subject)) {
-      return failure('RATE_LIMITED', '增强请求过于频繁，请稍后再试');
-    }
-
     const checked = validate(body);
     if (!checked.ok) return checked;
     const request = checked.value;
@@ -224,6 +219,11 @@ export function createEnhancementService({ modelClient, config = readEnhancement
     }
     if (inFlight >= config.maxConcurrentRequests) {
       return failure('RATE_LIMITED', '增强服务繁忙，请稍后重试');
+    }
+
+    const subject = options.subject || 'anonymous';
+    if (!checkRateLimit(subject)) {
+      return failure('RATE_LIMITED', '增强请求过于频繁，请稍后再试');
     }
 
     busySessions.add(request.sessionId);
@@ -248,14 +248,16 @@ export function createEnhancementService({ modelClient, config = readEnhancement
       timedOut = true;
       controller.abort();
     }, config.timeoutMs);
+    let deadlineTimer = null;
     const deadline = new Promise((_, reject) => {
-      setTimeout(() => {
+      deadlineTimer = setTimeout(() => {
         timedOut = true;
         controller.abort();
         const error = new Error('enhancement deadline exceeded');
         error.code = 'TIMEOUT';
         reject(error);
-      }, config.timeoutMs + 500).unref?.();
+      }, config.timeoutMs + 500);
+      deadlineTimer.unref?.();
     });
 
     try {
@@ -338,6 +340,7 @@ export function createEnhancementService({ modelClient, config = readEnhancement
       };
     } finally {
       clearTimeout(timer);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
       options.signal?.removeEventListener?.('abort', onExternalAbort);
       busySessions.delete(request.sessionId);
       inFlight -= 1;

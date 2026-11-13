@@ -138,7 +138,14 @@ function sumProcessTreeMb(rows, rootPid) {
 function sampleProcessTreeMemoryMb(rootPid, { exec = childProcessExec, timeout = 5000 } = {}) {
   return new Promise((resolve) => {
     if (!rootPid) return resolve(null);
-    if (process.platform !== 'win32') return resolve(sampleProcessMemoryMb(rootPid));
+    if (process.platform !== 'win32') {
+      require('fs').readFile(`/proc/${Number(rootPid)}/status`, 'utf8', (err, status) => {
+        if (err || !status) return resolve(null);
+        const m = status.match(/VmRSS:\s+(\d+)\s+kB/);
+        resolve(m ? Math.round(Number(m[1]) / 1024) : null);
+      });
+      return;
+    }
 
     const script = path.join(__dirname, 'scripts', 'process-tree.ps1');
     const command =
@@ -148,9 +155,12 @@ function sampleProcessTreeMemoryMb(rootPid, { exec = childProcessExec, timeout =
     exec(command, { timeout, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
       if (err && !stdout) return resolve(null);
       const rows = parseProcessRows(stdout);
-      // 树里没有 node.exe/cmd.exe（比如刚启动还未 fork）时退回单进程采样
+      // 树里没有 node.exe/cmd.exe 时改为异步 tasklist 兜底，绝不阻塞事件循环
       const total = sumProcessTreeMb(rows, Number(rootPid));
-      resolve(total === null ? sampleProcessMemoryMb(rootPid) : total);
+      if (total !== null) return resolve(total);
+      exec(`tasklist /FI "PID eq ${Number(rootPid)}" /FO CSV /NH`, { timeout: 4000, windowsHide: true }, (err2, csvOut) => {
+        resolve(err2 || !csvOut ? null : parseWindowsTasklistCsv(csvOut));
+      });
     });
   });
 }

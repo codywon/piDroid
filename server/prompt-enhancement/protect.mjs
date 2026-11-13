@@ -49,12 +49,12 @@ const RULES = [
   { name: 'fence', re: /```[\s\S]*?```/g },
   // 内联代码
   { name: 'inline_code', re: /`[^`\n]+`/g },
-  // URL
-  { name: 'url', re: /https?:\/\/[^\s<>"'`，。；：、！？（）【】“”]+/g, trim: true },
-  // @ 引用：@ 开头直到空白或中文/句读分隔符（pi 的引用记号不会含这些）
-  { name: 'reference', re: /@[^\s@，。；：、,;:!?！？()（）\[\]【】<>"'“”‘’]+/g, trim: true },
-  // Windows 绝对路径（C:\... / \\server\share）
-  { name: 'win_path', re: /[A-Za-z]:\\[^\s"'`]+/g, trim: true },
+  // URL（排除 '['，避免紧邻占位符 [[PE_...]] 时吞进前一条的占位符）
+  { name: 'url', re: /https?:\/\/[^\s<>"'`[\]，。；：、！？（）【】“”]+/g, trim: true },
+  // @ 引用：避免误切邮箱（如 user@example.com）
+  { name: 'reference', re: /(?<![\w.])@[^\s@，。；：、,;:!?！？()（）\[\]【】<>"'“”‘’]+/g, trim: true },
+  // Windows 绝对路径（排除 '['，避免紧邻占位符时吞掉 [[PE_...]]）
+  { name: 'win_path', re: /[A-Za-z]:\\[^\s"'`\[]+/g, trim: true },
   // POSIX 路径：/a/b、./a、../a（单段 "a/b" 不算路径，避免误伤普通文本）
   { name: 'posix_path', re: /\B(?:\/|\.\.?\/)[\w.@-]+(?:\/[\w.@-]+)*/g, trim: true },
   // 模板变量：{{var}} / ${var} / {{ var }}

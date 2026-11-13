@@ -21,6 +21,11 @@ object PiSoundSynthesizer {
 
     private const val SAMPLE_RATE = 44100
     private const val DURATION_SEC = 0.65
+    private const val MIN_PLAY_INTERVAL_MS = 350L
+
+    private val playLock = Any()
+    @Volatile
+    private var lastPlayAtMs = 0L
 
     private val pcmBuffer: ShortArray by lazy {
         val numSamples = (SAMPLE_RATE * DURATION_SEC).toInt()
@@ -52,16 +57,22 @@ object PiSoundSynthesizer {
     }
 
     fun play(context: Context) {
+        val appContext = context.applicationContext
+        val now = android.os.SystemClock.elapsedRealtime()
+        synchronized(playLock) {
+            if (now - lastPlayAtMs < MIN_PLAY_INTERVAL_MS) return
+            lastPlayAtMs = now
+        }
         Thread {
             try {
-                val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
                 val streamType = AudioManager.STREAM_MUSIC
                 val currentVol = audioManager?.getStreamVolume(streamType) ?: 1
 
                 if (currentVol == 0) {
                     // 若媒体通道被用户完全静音，尝试使用系统默认通知音兜底
                     val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                    RingtoneManager.getRingtone(context, uri)?.play()
+                    RingtoneManager.getRingtone(appContext, uri)?.play()
                     return@Thread
                 }
 
@@ -115,7 +126,7 @@ object PiSoundSynthesizer {
             } catch (_: Exception) {
                 try {
                     val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
-                    RingtoneManager.getRingtone(context, uri)?.play()
+                    RingtoneManager.getRingtone(appContext, uri)?.play()
                 } catch (_: Exception) {}
             }
         }.start()

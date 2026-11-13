@@ -38,6 +38,8 @@ internal object OfficeXmlPreview {
     const val MAX_SLIDES = 60
     /** 解包后单条目上限（防止 zip 炸弹把内存吃穿） */
     private const val MAX_ENTRY_BYTES = 24 * 1024 * 1024
+    /** 单次解析总解压字符上限 */
+    private const val MAX_TOTAL_BYTES = 48 * 1024 * 1024
     /** 解包条目数量上限 */
     private const val MAX_ZIP_ENTRIES = 1000
 
@@ -66,17 +68,24 @@ internal object OfficeXmlPreview {
     private fun readZipEntries(bytes: ByteArray): Map<String, String> {
         val result = HashMap<String, String>()
         var entryCount = 0
+        var totalBytes = 0
         ZipInputStream(ByteArrayInputStream(bytes)).use { zip ->
             while (true) {
                 val entry = zip.nextEntry ?: break
                 if (++entryCount > MAX_ZIP_ENTRIES) break
                 if (entry.isDirectory) continue
                 val name = entry.name
-                val interesting = name.startsWith("xl/") || name.startsWith("ppt/")
-                if (!interesting) continue
-                if (!(name.endsWith(".xml") || name.endsWith(".rels"))) continue
+                val needed = name == "xl/workbook.xml" ||
+                    name == "xl/sharedStrings.xml" ||
+                    (name.startsWith("xl/worksheets/") && name.endsWith(".xml")) ||
+                    (name.startsWith("ppt/slides/slide") && name.endsWith(".xml"))
+                if (!needed) continue
                 val text = readEntryText(zip)
-                if (text != null) result[name] = text
+                if (text != null) {
+                    totalBytes += text.length
+                    if (totalBytes > MAX_TOTAL_BYTES) break
+                    result[name] = text
+                }
             }
         }
         return result
@@ -131,8 +140,8 @@ internal object OfficeXmlPreview {
                         val idx = innerText(cellBlock.inner, "v").toIntOrNull() ?: -1
                         sharedStrings.getOrNull(idx).orEmpty()
                     }
-                    // inlineStr 的文本在 <is><t>…</t></is> 里；其它一律取 <v>
-                    "inlineStr" -> innerText(cellBlock.inner, "t")
+                    // inlineStr 的文本在 <is><t>…</t></is> 或多个 <r><t>…</t></r> 里；其它一律取 <v>
+                    "inlineStr" -> xmlTexts(cellBlock.inner, "t").joinToString("")
                     else -> innerText(cellBlock.inner, "v")
                 }
                 while (cells.size <= colIndex) cells.add("")
@@ -230,7 +239,23 @@ internal object OfficeXmlPreview {
                 cursor = afterName
                 continue
             }
-            val tagEnd = xml.indexOf('>', start)
+            var tagEnd = -1
+            var quoteChar = '\u0000'
+            var scan = afterName
+            while (scan < xml.length) {
+                val ch = xml[scan]
+                if (quoteChar != '\u0000') {
+                    if (ch == quoteChar) quoteChar = '\u0000'
+                } else {
+                    if (ch == '"' || ch == '\'') {
+                        quoteChar = ch
+                    } else if (ch == '>') {
+                        tagEnd = scan
+                        break
+                    }
+                }
+                scan++
+            }
             if (tagEnd < 0) break
             val openTag = xml.substring(start, tagEnd + 1)
             if (xml.getOrNull(tagEnd - 1) == '/') {
@@ -239,7 +264,7 @@ internal object OfficeXmlPreview {
                 cursor = tagEnd + 1
                 continue
             }
-            val end = xml.indexOf(close, tagEnd)
+            val end = xml.indexOf(close, tagEnd + 1)
             if (end < 0) break
             blocks.add(XmlBlock(openTag, xml.substring(tagEnd + 1, end)))
             cursor = end + close.length

@@ -25,13 +25,22 @@ const DEFAULT_PUBLIC_PATH = "/pi";
 /** 断线重连退避上限：frpc 自己也会重试，这里只兜住「进程直接挂了」的情况。 */
 const RESTART_MAX_DELAY_MS = 30000;
 
-/** 去掉行尾 TOML 注释（`key = "v" # 说明`），否则带注释的配置会被误判。 */
+/** 去掉行尾 TOML 注释（`key = "v" # 说明`），同时兼容单引号与双引号反斜杠转义。 */
 function stripTomlComment(line) {
-  let inString = false;
+  let quote = null;
   for (let i = 0; i < line.length; i += 1) {
     const ch = line[i];
-    if (ch === '"' && line[i - 1] !== "\\") inString = !inString;
-    else if (ch === "#" && !inString) return line.slice(0, i);
+    if (quote) {
+      if (quote === '"' && ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+    } else if (ch === '"' || ch === "'") {
+      quote = ch;
+    } else if (ch === '#') {
+      return line.slice(0, i);
+    }
   }
   return line;
 }
@@ -46,20 +55,36 @@ function parseFrpcConfig(text) {
   if (typeof text !== "string" || !text.trim()) return null;
   const config = { serverAddr: "", serverPort: 0, transportProtocol: "tcp", proxies: [] };
   let current = null;
+  let currentSection = "";
   let sawKeyValue = false;
+  let pendingArrayKey = null;
+  let pendingArrayBuf = "";
 
   for (const raw of text.split(/\r?\n/)) {
     const line = stripTomlComment(raw).trim();
     if (!line) continue;
 
+    if (pendingArrayKey) {
+      pendingArrayBuf += " " + line;
+      if (line.includes("]")) {
+        if (current && pendingArrayKey === "customDomains") {
+          current.customDomains = parseStringArray(pendingArrayBuf);
+        }
+        pendingArrayKey = null;
+        pendingArrayBuf = "";
+      }
+      continue;
+    }
+
     if (/^\[\[proxies\]\]$/.test(line)) {
       current = { type: "", name: "", localPort: 0, customDomains: [] };
+      currentSection = "proxies";
       config.proxies.push(current);
       continue;
     }
     if (line.startsWith("[")) {
-      // 其它 section（[auth]、[transport]、[log] …）：本模块不关心
       current = null;
+      currentSection = line.replace(/^\[+|\]+$/g, "").trim();
       continue;
     }
 
@@ -72,14 +97,23 @@ function parseFrpcConfig(text) {
     if (!current) {
       if (key === "serverAddr") config.serverAddr = unquote(value);
       else if (key === "serverPort") config.serverPort = toPort(value);
-      else if (key === "transport.protocol") config.transportProtocol = unquote(value).toLowerCase();
+      else if (key === "transport.protocol" || (currentSection === "transport" && key === "protocol")) {
+        config.transportProtocol = unquote(value).toLowerCase();
+      }
       continue;
     }
 
     if (key === "type") current.type = unquote(value).toLowerCase();
     else if (key === "name") current.name = unquote(value);
     else if (key === "localPort") current.localPort = toPort(value);
-    else if (key === "customDomains") current.customDomains = parseStringArray(value);
+    else if (key === "customDomains") {
+      if (value.startsWith("[") && !value.includes("]")) {
+        pendingArrayKey = "customDomains";
+        pendingArrayBuf = value;
+      } else {
+        current.customDomains = parseStringArray(value);
+      }
+    }
   }
 
   // 一个键都没解析出来（空文件 / 全是注释 / 根本不是 TOML）时返回 null，
@@ -184,8 +218,11 @@ function maskSecrets(line) {
   return String(line || "")
     // URL 查询串 ?token=...（& 之后是别的参数，不能被吃掉）
     .replace(/([?&]token=)[^&\s]+/gi, "$1***")
-    // token = "..." / auth.token = "..."：保留引号形状，只换值
+    // Bearer 令牌
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/-]+=*/gi, "$1***")
+    // token = "..." / token = '...' / auth.token = "..."：保留引号形状，只换值
     .replace(/((?:auth\.)?token\s*=\s*)"[^"]*"/gi, '$1"***"')
+    .replace(/((?:auth\.)?token\s*=\s*)'[^']*'/gi, "$1'***'")
     // token = ... 未加引号的形式
     .replace(/((?:auth\.)?token\s*=\s*)[^\s,"}&]+/gi, "$1***");
 }
@@ -283,6 +320,7 @@ function launch() {
   const binary = info.binary || (process.platform === "win32" ? "frpc.exe" : "frpc");
 
   // env 必须显式传：默认继承会让 frpc 走系统代理（见 stripProxyEnv 注释）。
+  const startedAt = Date.now();
   const child = spawn(binary, ["-c", info.configPath], {
     stdio: ["ignore", "pipe", "pipe"],
     env: stripProxyEnv(process.env)
@@ -297,15 +335,17 @@ function launch() {
   });
 
   child.on("exit", (code) => {
-    frpState.child = null;
+    if (frpState.child === child) frpState.child = null;
     const verdict = classifyFrpcExit(code, frpState.stopping);
     if (!verdict.restart) {
       if (frpState.stopping) console.log("[frp] 已停止");
       return;
     }
+    if (Date.now() - startedAt > 60_000) frpState.attempt = 0;
     const delay = restartDelayMs(frpState.attempt);
     frpState.attempt += 1;
     console.warn(`[frp] frpc 退出 (code=${code})，${Math.round(delay / 1000)}s 后重连（第 ${frpState.attempt} 次）`);
+    if (frpState.timer) clearTimeout(frpState.timer);
     frpState.timer = setTimeout(() => {
       frpState.timer = null;
       if (frpState.stopping) return;
@@ -338,6 +378,8 @@ function startFrp(options = {}) {
     notes.push("frpc 用的是 kcp(UDP)：国内直连易被限速/丢包，建议改 transport.protocol = \"tcp\"");
   }
 
+  // 先清理旧进程与待执行重连定时器，避免重复启动泄漏子进程。
+  stopFrp();
   frpState.stopping = false;
   frpState.attempt = 0;
   const ok = launch();

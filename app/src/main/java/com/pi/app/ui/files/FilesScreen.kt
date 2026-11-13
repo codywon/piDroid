@@ -135,6 +135,7 @@ internal fun FilesScreen(
     var directoryEntries by remember { mutableStateOf<List<FileEntry>>(emptyList()) }
     var isTruncated by remember { mutableStateOf(false) }
     var gitStatus by remember { mutableStateOf<GitStatusResult?>(null) }
+    var dirRequestSeq by remember { mutableIntStateOf(0) }
 
     // 驱动器盘符菜单状态
     var showDrivesMenu by remember { mutableStateOf(false) }
@@ -157,6 +158,20 @@ internal fun FilesScreen(
     var previewTruncated by remember { mutableStateOf(false) }
     var previewNextOffset by remember { mutableStateOf(0L) }
     var previewSizeBytes by remember { mutableStateOf(0L) }
+    var previewRequestSeq by remember { mutableIntStateOf(0) }
+
+    fun closePreview() {
+        previewRequestSeq += 1
+        previewPath = null
+        previewText = null
+        previewImage = null
+        previewPdfFile = null
+        previewDocxHtml = null
+        previewOffice = null
+        previewMessage = null
+        isPreviewLoading = false
+        isPreviewLoadingMore = false
+    }
 
     // 判断当前是否还能向上退回父级目录。
     // 工作区浏览（allowRoam=false）不得越过工作区；电脑文件浏览（allowRoam=true）
@@ -169,7 +184,7 @@ internal fun FilesScreen(
     // 统一处理返回操作（预览 -> 搜索 -> 上一级 -> 退出页面）
     fun handleBack() {
         if (previewPath != null) {
-            previewPath = null
+            closePreview()
         } else if (searchOpen) {
             searchOpen = false
             searchQuery = ""
@@ -190,13 +205,16 @@ internal fun FilesScreen(
 
     // 载入当前目录内容
     fun loadCurrentDirectory() {
+        val reqSeq = ++dirRequestSeq
         isDirectoryLoading = true
         directoryErrorMessage = null
         coroutineScope.launch {
             val gitRes = onLoadGitStatus(currentPath)
+            if (reqSeq != dirRequestSeq) return@launch
             gitStatus = gitRes.getOrNull()
 
             val dirRes = onLoadDirectory(currentPath, showHidden)
+            if (reqSeq != dirRequestSeq) return@launch
             dirRes.onSuccess { listing ->
                 val (capped, truncated) = FileTreeState.filterAndCapEntries(listing.entries, showHidden)
                 directoryEntries = capped
@@ -233,6 +251,7 @@ internal fun FilesScreen(
     }
 
     fun openFilePreview(absPath: String) {
+        val reqSeq = ++previewRequestSeq
         previewPath = absPath
         previewTitle = FileListParsing.displayName(absPath)
         previewText = null
@@ -257,6 +276,7 @@ internal fun FilesScreen(
                 override suspend fun downloadFileToCache(path: String) = onDownloadFileToCache(path)
             }
             val data = RemoteFilePreviewLoader.load(absPath, dataSource)
+            if (reqSeq != previewRequestSeq) return@launch
             previewTitle = data.title
             previewKind = data.kind
             previewMeta = data.metaLabel
@@ -271,6 +291,7 @@ internal fun FilesScreen(
 
             data.imageBytes?.let { bytes ->
                 val (decodedImg, dims) = com.pi.app.ui.components.decodeFullImagePreview(bytes)
+                if (reqSeq != previewRequestSeq) return@launch
                 previewImage = decodedImg
                 if (decodedImg != null && dims.isNotBlank()) {
                     previewMeta = if (previewMeta.isNullOrBlank()) dims else "$previewMeta · $dims"
@@ -286,9 +307,12 @@ internal fun FilesScreen(
     fun loadMorePreviewText() {
         val path = previewPath ?: return
         if (isPreviewLoadingMore || !previewTruncated) return
+        val reqSeq = previewRequestSeq
         isPreviewLoadingMore = true
         coroutineScope.launch {
-            onLoadFileTextChunk(path, previewNextOffset)
+            val res = onLoadFileTextChunk(path, previewNextOffset)
+            if (reqSeq != previewRequestSeq || previewPath != path) return@launch
+            res
                 .onSuccess { chunk ->
                     previewText = (previewText ?: "") + chunk.content
                     previewNextOffset = chunk.nextOffset
@@ -649,7 +673,8 @@ internal fun FilesScreen(
                             } else {
                                 items(
                                     items = directoryEntries,
-                                    key = { it.name }
+                                    key = { it.name },
+                                    contentType = { if (it.isDir) "dir" else "file" }
                                 ) { entry ->
                                     val fullPath = FileListParsing.joinPath(currentPath, entry.name)
                                     FileRow(
@@ -720,7 +745,7 @@ internal fun FilesScreen(
                 isOpeningExternally = false,
                 sessionCwd = currentPath,
                 onResolveMediaSource = { p -> onResolveFileSource(p) },
-                onBack = { previewPath = null },
+                onBack = { closePreview() },
                 onToggleRawMode = { raw -> previewRawMode = raw },
                 onLoadMore = { loadMorePreviewText() },
                 onOpenExternal = { onOpenExternal(activePreviewPath) },

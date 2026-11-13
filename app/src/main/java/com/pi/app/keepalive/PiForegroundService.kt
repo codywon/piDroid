@@ -83,9 +83,10 @@ class PiForegroundService : Service() {
                 putExtra("target_session_id", targetSessionId)
             }
         }
+        val requestCode = NOTIFICATION_ID xor (targetSessionId?.hashCode() ?: 0)
         val pendingIntent = PendingIntent.getActivity(
             this,
-            0,
+            requestCode,
             clickIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
         )
@@ -191,9 +192,10 @@ class PiForegroundService : Service() {
                                 putExtra("target_session_id", targetSessionId)
                             }
                         }
+                        val requestCode = NOTIFICATION_ID xor (targetSessionId?.hashCode() ?: 0)
                         val pendingIntent = PendingIntent.getActivity(
                             context,
-                            0,
+                            requestCode,
                             clickIntent,
                             PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) PendingIntent.FLAG_IMMUTABLE else 0)
                         )
@@ -243,10 +245,10 @@ class PiForegroundService : Service() {
 
         fun stop(context: Context) {
             try {
-                val intent = Intent(context, PiForegroundService::class.java).apply {
-                    action = ACTION_STOP
-                }
-                context.startService(intent)
+                // 直接使用 stopService 停止服务：
+                // 1. 避免后台场景下调用 startService(ACTION_STOP) 触发 IllegalStateException；
+                // 2. 避免 ACTION_STOP 与随后紧接的 ACTION_START 排队并发导致新服务启动后被误杀。
+                context.stopService(Intent(context, PiForegroundService::class.java))
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to stop the foreground keep-alive service", e)
             }

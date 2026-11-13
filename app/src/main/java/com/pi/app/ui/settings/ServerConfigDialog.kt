@@ -2,10 +2,17 @@ package com.pi.app.ui.settings
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import com.pi.app.ui.theme.*
 
@@ -20,6 +27,7 @@ fun ServerConfigDialog(
     val theme = LocalAppTheme.current
     var url by remember { mutableStateOf(initialUrl) }
     var token by remember { mutableStateOf(initialToken) }
+    var tokenVisible by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf(initialName) }
 
     AlertDialog(
@@ -54,6 +62,17 @@ fun ServerConfigDialog(
                     label = { Text("安全 Token", color = theme.textSecondary) },
                     placeholder = { Text("pi_xxxx 密钥", color = theme.textMuted) },
                     singleLine = true,
+                    visualTransformation = if (tokenVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(onClick = { tokenVisible = !tokenVisible }) {
+                            Icon(
+                                imageVector = if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (tokenVisible) "隐藏密钥" else "显示密钥",
+                                tint = theme.textSecondary
+                            )
+                        }
+                    },
                     shape = RoundedCornerShape(8.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = theme.primary,

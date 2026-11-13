@@ -2100,19 +2100,19 @@ fun SessionListScreen(
                     sessions.filter {
                         WorkspacePaths.samePath(it.workspacePath, targetWs.path) ||
                             WorkspacePaths.samePath(it.cwd, targetWs.path) ||
-                            it.project == targetWs.displayName
+                            (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == targetWs.displayName)
                     }
                 }
                 val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
-                val olderSessions = remember(projectSessions, weekAgo) {
+                val olderSessions = remember(projectSessions, weekAgo, archivedSessionIds) {
                     projectSessions.filter { s ->
-                        if (s.isLive || prefs.isSessionArchived(s.id)) return@filter false
+                        if (s.isLive || archivedSessionIds.contains(s.id)) return@filter false
                         val t = SessionTimeFormatting.parseMillis(s.modified ?: s.created)
                         t in 1..<weekAgo
                     }
                 }
-                val archivedCount = remember(projectSessions) {
-                    projectSessions.count { prefs.isSessionArchived(it.id) }
+                val archivedCount = remember(projectSessions, archivedSessionIds) {
+                    projectSessions.count { archivedSessionIds.contains(it.id) }
                 }
 
                 // 4. 归档 7 天前的会话 · N
@@ -2234,7 +2234,7 @@ fun SessionListScreen(
             sessions.filter {
                 WorkspacePaths.samePath(it.workspacePath, target.path) ||
                     WorkspacePaths.samePath(it.cwd, target.path) ||
-                    it.project == target.displayName
+                    (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == target.displayName)
             }
         }
         val runningSessions = remember(projectSessions) { projectSessions.filter { it.isLive } }
@@ -2310,13 +2310,13 @@ fun SessionListScreen(
     val archiveTarget = showArchivedSessionsDialog
     if (archiveTarget != null) {
         val target = archiveTarget
-        val archivedList = remember(sessions, target) {
+        val archivedList = remember(sessions, target, archivedSessionIds) {
             sessions.filter {
                 (
                     WorkspacePaths.samePath(it.workspacePath, target.path) ||
                         WorkspacePaths.samePath(it.cwd, target.path) ||
-                        it.project == target.displayName
-                ) && prefs.isSessionArchived(it.id)
+                        (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == target.displayName)
+                ) && archivedSessionIds.contains(it.id)
             }
         }
 
@@ -2380,7 +2380,7 @@ fun SessionListScreen(
                                     Spacer(modifier = Modifier.width(6.dp))
                                     OutlinedButton(
                                         onClick = {
-                                            prefs.toggleArchiveSession(s.id)
+                                            onToggleArchiveSession(s.id)
                                             Toast.makeText(context, "已恢复会话「${s.name ?: s.id.take(6)}」", Toast.LENGTH_SHORT).show()
                                         },
                                         shape = RoundedCornerShape(6.dp),
@@ -2413,13 +2413,22 @@ fun SessionListScreen(
             onConfirm = { targetPath, newFolderName, createIfMissing, startSessionNow ->
                 coroutineScope.launch {
                     val result = onAddWorkspace(targetPath, newFolderName, createIfMissing)
-                    val finalPath = result.getOrDefault(targetPath)
-                    selectWorkspace(finalPath)
-                    showAddWorkspaceDialog = false
-                    drawerState.close()
-                    if (startSessionNow) {
-                        onNewSessionClick(finalPath)
-                    }
+                    result
+                        .onSuccess { finalPath ->
+                            selectWorkspace(finalPath)
+                            showAddWorkspaceDialog = false
+                            drawerState.close()
+                            if (startSessionNow) {
+                                onNewSessionClick(finalPath)
+                            }
+                        }
+                        .onFailure { err ->
+                            Toast.makeText(
+                                context,
+                                err.message ?: "添加工作区失败，请检查路径是否存在",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                 }
             }
         )

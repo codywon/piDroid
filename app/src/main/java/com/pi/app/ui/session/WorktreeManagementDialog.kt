@@ -40,8 +40,18 @@ fun WorktreeManagementDialog(
 ) {
     val theme = LocalAppTheme.current
     var newBranchName by remember { mutableStateOf("") }
+    var submittedBranchCount by remember { mutableIntStateOf(-1) }
     var pendingDeleteTarget by remember { mutableStateOf<WorktreeItem?>(null) }
     var dirtyWarningTarget by remember { mutableStateOf<WorktreeItem?>(null) }
+
+    LaunchedEffect(worktreesResult.worktrees.size, isOperating) {
+        if (submittedBranchCount >= 0 && !isOperating) {
+            if (worktreesResult.worktrees.size > submittedBranchCount) {
+                newBranchName = ""
+            }
+            submittedBranchCount = -1
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -67,7 +77,7 @@ fun WorktreeManagementDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                     Text(
                         text = "Git Worktrees 检出管理",
                         style = MaterialTheme.typography.titleSmall,
@@ -148,8 +158,8 @@ fun WorktreeManagementDialog(
                     onClick = {
                         val b = newBranchName.trim()
                         if (b.isNotBlank()) {
+                            submittedBranchCount = worktreesResult.worktrees.size
                             onCreateWorktree(b)
-                            newBranchName = ""
                         }
                     },
                     enabled = newBranchName.isNotBlank() && !isOperating,

@@ -74,6 +74,7 @@ fun GitChangesFullScreen(
     var statusResult by remember { mutableStateOf<GitStatusResult?>(null) }
     var statusError by remember { mutableStateOf<String?>(null) }
     var isLoadingStatus by remember { mutableStateOf(false) }
+    var statusRequestSeq by remember { mutableIntStateOf(0) }
 
     // 当前选中的文件（为 null 表示在变更文件列表）
     var selectedFile by remember { mutableStateOf<GitFileChange?>(null) }
@@ -81,10 +82,13 @@ fun GitChangesFullScreen(
 
     // 刷新 Git 状态
     fun refreshStatus() {
+        val reqSeq = ++statusRequestSeq
         isLoadingStatus = true
         statusError = null
         coroutineScope.launch {
-            onLoadGitStatus()
+            val res = onLoadGitStatus()
+            if (reqSeq != statusRequestSeq) return@launch
+            res
                 .onSuccess {
                     statusResult = it
                     statusError = null
@@ -499,10 +503,13 @@ private fun GitFileDetailView(
     // 加载完整源码
     fun loadSource() {
         if (sourceText != null) return
+        val targetPath = file.filePath
         isLoadingSource = true
         sourceError = null
         coroutineScope.launch {
-            onLoadFileText(file.filePath)
+            val res = onLoadFileText(targetPath)
+            if (targetPath != file.filePath) return@launch
+            res
                 .onSuccess {
                     sourceText = it
                     sourceError = null
@@ -790,6 +797,23 @@ private fun GitFileDetailView(
                                                 }
                                             )
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        else -> {
+                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = sourceError ?: "暂无可预览内容",
+                                        fontSize = 12.sp,
+                                        color = theme.textMuted
+                                    )
+                                    TextButton(onClick = { loadSource() }) {
+                                        Text("重试", color = theme.primary, fontSize = 12.sp)
                                     }
                                 }
                             }

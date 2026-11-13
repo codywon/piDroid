@@ -8,6 +8,8 @@ const os = require('os');
 const http = require('http');
 const { spawn } = require('child_process');
 const frpClient = require('./frp-client');
+const { summarize } = require('./latency-stats');
+const { UpstreamCache } = require('./upstream-cache');
 
 const PORT = parseInt(process.env.GATEWAY_PORT || '4100', 10);
 // pi-web 官方默认端口为 30141 (取自 π ≈ 3.141)
@@ -40,6 +42,23 @@ function isSafeTunnelName(value) {
  */
 const tunnelState = { child: null, timer: null, attempt: 0, stopping: false };
 
+function killChildTree(child) {
+  if (!child || !child.pid) return;
+  if (process.platform === 'win32') {
+    try {
+      require('child_process').execSync(`taskkill /PID ${child.pid} /T /F >nul 2>&1`, { windowsHide: true });
+      return;
+    } catch {
+      /* 进程可能已退出，继续兜底 */
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    /* 已经退出 */
+  }
+}
+
 /** 主动停止命名隧道（重连不再发生），供 launcher 退出时调用。 */
 function stopTunnel() {
   tunnelState.stopping = true;
@@ -50,13 +69,7 @@ function stopTunnel() {
   }
   const child = tunnelState.child;
   tunnelState.child = null;
-  if (child && child.pid) {
-    try {
-      child.kill();
-    } catch {
-      /* 已经退出 */
-    }
-  }
+  killChildTree(child);
 }
 
 function isSafeHostname(value) {
@@ -994,6 +1007,99 @@ function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS, 
   if (typeof poller.unref === 'function') poller.unref();
 }
 
+// 上游延迟观测：手机端「点了没反应」到底是 3ms 还是 3s，只有分位数能回答。
+// 只采集不改变行为；每分钟落一行到 logs/upstream-latency.log，便于和 supervisor
+// 的 probe-latency.csv 按时间对齐。平均值在这里没有意义：一次 3.8s 的阻塞会被
+// 上百次 3ms 的请求抹平（这正是我们绕了半天的地方）。
+const UPSTREAM_LATENCY_LOG = path.join(LOG_DIR, 'upstream-latency.log');
+const UPSTREAM_SLOW_MS = 2000;
+// 上游迟迟不给响应头就主动放弃。pi-web 卡死实测持续 3~60s，而手机端只会一直转圈；
+// 5s 内给一个明确的 503 + Retry-After，客户端能立刻重试，而不是挂着等超时。
+const UPSTREAM_TTFB_DEADLINE_MS = 5000;
+const UPSTREAM_SAMPLE_LIMIT = 5000;
+let upstreamSamples = [];
+
+function recordUpstreamLatency(ms) {
+  if (upstreamSamples.length >= UPSTREAM_SAMPLE_LIMIT) return;
+  upstreamSamples.push(ms);
+}
+
+/**
+ * 单次慢请求连 URL 一起落盘。分位数能告诉你「多慢」，但只有 URL 能告诉你「谁慢」：
+ * 慢的全是同一个接口 → 客户端轮询触发；URL 每次都不同却总在整分钟附近 → 后台定时任务。
+ * 两种因修法完全不同，所以这一行比另外十个统计量都值钱。
+ */
+function recordSlowUpstream(ms, req) {
+  const url = String((req && req.url) || '').slice(0, 120);
+  const line = `[${new Date().toISOString()}] slow ${ms}ms ${req && req.method} ${url}`;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(UPSTREAM_LATENCY_LOG, line + '\n');
+  } catch {
+    /* 日志写不进去不该拖垮网关 */
+  }
+}
+
+function flushUpstreamLatency() {
+  if (upstreamSamples.length === 0) return;
+  const summary = summarize(upstreamSamples, UPSTREAM_SLOW_MS);
+  upstreamSamples = [];
+  const line = `[${new Date().toISOString()}] count=${summary.count} p50=${summary.p50} p95=${summary.p95} p99=${summary.p99} max=${summary.max} slow=${summary.slow}`;
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.appendFileSync(UPSTREAM_LATENCY_LOG, line + '\n');
+  } catch {
+    /* 日志写不进去不该拖垮网关 */
+  }
+}
+
+const upstreamLatencyTimer = setInterval(flushUpstreamLatency, 60_000);
+if (typeof upstreamLatencyTimer.unref === 'function') upstreamLatencyTimer.unref();
+
+function clearUpstreamDeadline(req) {
+  if (req && req.__upstreamDeadlineTimer) {
+    clearTimeout(req.__upstreamDeadlineTimer);
+    req.__upstreamDeadlineTimer = null;
+  }
+}
+
+/**
+ * 给一个上游请求挂上「响应头截止时间」定时器。
+ * 抽成独立函数是为了能拿假 req/res/proxyReq 单测（同 guardEventStreamIdle 的做法）。
+ */
+function armUpstreamDeadline(proxyReq, req, res, deadlineMs = UPSTREAM_TTFB_DEADLINE_MS) {
+  return setTimeout(() => {
+    if (res.headersSent || res.writableEnded) return;
+    console.warn(`[Gateway] 上游 ${deadlineMs / 1000}s 未返回响应头，主动放弃 ${req.method} ${req.url}`);
+    try {
+      proxyReq.destroy();
+    } catch {
+      /* 已经断了 */
+    }
+    res.status(503).set('Retry-After', '5').json({
+      error: 'Service Unavailable',
+      message: `pi-web 在 ${deadlineMs / 1000} 秒内没有响应，请稍后重试`
+    });
+  }, deadlineMs);
+}
+
+// 耗时操作路由（上下文压缩、HTML 导出、文件上传、预览转码）需要更宽裕的 TTFB 窗口，
+// 避免 5s 默认截止线误杀客户端的长超时请求。
+const LONG_UPSTREAM_TTFB_DEADLINE_MS = 120000;
+function resolveUpstreamDeadlineMs(req) {
+  const url = String((req && req.url) || '').toLowerCase();
+  if (
+    url.includes('/compact') ||
+    url.includes('/export') ||
+    url.includes('/upload') ||
+    url.includes('type=preview') ||
+    url.includes('/files/raw')
+  ) {
+    return LONG_UPSTREAM_TTFB_DEADLINE_MS;
+  }
+  return UPSTREAM_TTFB_DEADLINE_MS;
+}
+
 const proxy = createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
@@ -1001,7 +1107,14 @@ const proxy = createProxyMiddleware({
   agent: proxyAgent,
   router: () => TARGET, // 动态支持更新后的目标端口
   on: {
+    proxyReq: (proxyReq, req, res) => {
+      // WebSocket 升级由 proxyReqWs 处理，这里挂超时会杀掉健康的终端连接。
+      if (String(req.headers.upgrade || '').toLowerCase() === 'websocket') return;
+      req.__upstreamStartedAt = Date.now();
+      req.__upstreamDeadlineTimer = armUpstreamDeadline(proxyReq, req, res, resolveUpstreamDeadlineMs(req));
+    },
     error: (err, req, res) => {
+      clearUpstreamDeadline(req);
       console.error(`[Gateway Error] 无法连接到本地 pi-web (${TARGET}):`, err.message);
       if (!res.headersSent) {
         res.status(502).json({
@@ -1011,12 +1124,73 @@ const proxy = createProxyMiddleware({
       }
     },
     proxyRes: (proxyRes, req, res) => {
+      clearUpstreamDeadline(req);
+      if (req.__upstreamStartedAt) {
+        const elapsed = Date.now() - req.__upstreamStartedAt;
+        recordUpstreamLatency(elapsed);
+        if (elapsed > UPSTREAM_SLOW_MS) recordSlowUpstream(elapsed, req);
+      }
       if (isEventStreamResponse(proxyRes.headers)) {
         guardEventStreamIdle(proxyRes, req, res);
       }
     }
   }
 });
+
+// 实测（2026-11-12/13）：这两条路由在 pi-web 里是同步遍历文件系统，
+//   /api/git/status  cwd=D:\myscript        → 4.8s
+//   /api/file-index  cwd=D:\myscript        → **29s**（返回 272KB），直接把探针打到判死
+// 期间 pi-web 整个不应答（CPU 却只有 0~6%，时间花在 lstat/open/read 的元数据等待上）。
+// 网关按 cwd 缓存 + 过期先返旧值、后台单飞刷新，把阻塞从「每次轮询」降到「每 TTL 最多一次」。
+function fetchUpstreamJson(routePath, cwd) {
+  return new Promise((resolve, reject) => {
+    const target = new URL(`${routePath}?cwd=${encodeURIComponent(cwd)}`, TARGET);
+    // file-index 单次要 29s，给 60s 才够；git/status 最长 4.8s，同用一个上限不碍事。
+    const req = http.get(target, { timeout: 60000 }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode,
+          contentType: res.headers['content-type'],
+          body: Buffer.concat(chunks)
+        })
+      );
+    });
+    req.on('timeout', () => {
+      req.destroy(new Error('upstream timeout'));
+    });
+    req.on('error', reject);
+  });
+}
+
+// 缓存策略按「重建一次多贵」定 TTL：git 状态 2 分钟，文件索引 5 分钟（它变的只是文件列表）。
+const CACHED_ROUTES = [
+  { path: '/api/git/status', ttlMs: 120_000 },
+  { path: '/api/file-index', ttlMs: 300_000 }
+];
+
+for (const route of CACHED_ROUTES) {
+  const cache = new UpstreamCache({
+    ttlMs: route.ttlMs,
+    fetchStatus: (cwd) => fetchUpstreamJson(route.path, cwd)
+  });
+  app.get(route.path, authMiddleware, async (req, res, next) => {
+    const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    if (!cwd) return next();
+    try {
+      const { source, response } = await cache.get(cwd);
+      if (!response) return next();
+      res.status(response.status);
+      if (response.contentType) res.set('content-type', response.contentType);
+      res.set('x-gateway-cache', source);
+      res.send(response.body);
+    } catch (error) {
+      // 缓存层自己出问题不能把请求吞了：交给代理原样走一遍，拿到真实错误。
+      next();
+    }
+  });
+}
 
 app.use('/', authMiddleware, proxy);
 
@@ -1189,21 +1363,31 @@ async function start(options = {}) {
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
         const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
-          shell: true
+          shell: process.platform === 'win32'
         });
+        tunnelState.child = tunnelProcess;
 
-        let detectedUrl = false;
+        let resolvedOnce = false;
         const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
+        let fallbackTimer = null;
+
+        function finishQuickTunnel(publicUrl, proc) {
+          if (resolvedOnce) return;
+          resolvedOnce = true;
+          if (fallbackTimer) {
+            clearTimeout(fallbackTimer);
+            fallbackTimer = null;
+          }
+          printBannerAndQr(publicUrl, isAlive, listenPort);
+          resolve({ server, tunnelProcess: proc, publicUrl, token: AUTH_TOKEN, target: TARGET });
+        }
 
         function handleOutput(data) {
-          if (detectedUrl) return;
+          if (resolvedOnce) return;
           const text = data.toString();
           const match = text.match(regex);
           if (match) {
-            detectedUrl = true;
-            const publicUrl = match[0];
-            printBannerAndQr(publicUrl, isAlive, listenPort);
-            resolve({ server, tunnelProcess, publicUrl, token: AUTH_TOKEN, target: TARGET });
+            finishQuickTunnel(match[0], tunnelProcess);
           }
         }
 
@@ -1211,15 +1395,11 @@ async function start(options = {}) {
         tunnelProcess.stderr.on('data', handleOutput);
 
         tunnelProcess.on('error', () => {
-          printBannerAndQr(defaultHost, isAlive, listenPort);
-          resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
+          finishQuickTunnel(defaultHost, null);
         });
 
-        setTimeout(() => {
-          if (!detectedUrl) {
-            printBannerAndQr(defaultHost, isAlive, listenPort);
-            resolve({ server, tunnelProcess, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
-          }
+        fallbackTimer = setTimeout(() => {
+          finishQuickTunnel(defaultHost, tunnelProcess);
         }, 10000);
 
       } else if (tunnelMode === 'frp') {
@@ -1318,5 +1498,9 @@ module.exports = {
   SSE_BACKPRESSURE_BYTES,
   SSE_BACKPRESSURE_MS,
   isEventStreamResponse,
-  guardEventStreamIdle
+  guardEventStreamIdle,
+  // 上游超时截止 + 延迟采样阈值（单测直接喂假 req/res，不启服务）
+  UPSTREAM_TTFB_DEADLINE_MS,
+  UPSTREAM_SLOW_MS,
+  armUpstreamDeadline
 };

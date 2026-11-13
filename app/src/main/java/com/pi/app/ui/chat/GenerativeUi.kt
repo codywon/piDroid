@@ -1234,26 +1234,28 @@ private fun WidgetCanvas(
         java.util.concurrent.atomic.AtomicBoolean(false)
     }
 
-    AndroidView(
-        modifier = modifier,
-        factory = { ctx ->
-            createWidgetWebView(
-                context = ctx,
-                allowVerticalScroll = true,
-                isDisposed = { disposed.get() },
-                onFail = { failed = true }
-            ).also {
-                holder.set(it)
-                onWebViewCreated?.invoke(it)
+    key(payload.code, retry) {
+        AndroidView(
+            modifier = modifier,
+            factory = { ctx ->
+                createWidgetWebView(
+                    context = ctx,
+                    allowVerticalScroll = true,
+                    isDisposed = { disposed.get() },
+                    onFail = { failed = true }
+                ).also {
+                    holder.set(it)
+                    onWebViewCreated?.invoke(it)
+                }
+            },
+            update = { webView ->
+                val key = html.hashCode().toString() + "#" + retry
+                if (loadedKey.getAndSet(key) != key) {
+                    webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
             }
-        },
-        update = { webView ->
-            val key = html.hashCode().toString() + "#" + retry
-            if (loadedKey.getAndSet(key) != key) {
-                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
-            }
-        }
-    )
+        )
+    }
 
     DisposableEffect(payload.code, retry) {
         onDispose {
@@ -1349,26 +1351,36 @@ private fun WidgetThumbnail(
         )
     }
 
-    AndroidView(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(heightDp.dp),
-        factory = { ctx ->
-            createWidgetWebView(
-                context = ctx,
-                allowVerticalScroll = false,
-                isDisposed = { disposed.get() },
-                onFail = { failed = true },
-                onContentHeightCss = { h -> if (measuredCss <= 0f) measuredCss = h }
-            ).also { webRef.set(it) }
-        },
-        update = { webView ->
-            val key = html.hashCode().toString() + "#" + retry
-            if (loadedKey.getAndSet(key) != key) {
-                webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+    key(thumbKey, retry) {
+        AndroidView(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(heightDp.dp),
+            factory = { ctx ->
+                createWidgetWebView(
+                    context = ctx,
+                    allowVerticalScroll = false,
+                    isDisposed = { disposed.get() },
+                    onFail = { failed = true },
+                    onContentHeightCss = { h -> if (measuredCss <= 0f) measuredCss = h }
+                ).also { webRef.set(it) }
+            },
+            update = { webView ->
+                val key = html.hashCode().toString() + "#" + retry
+                if (loadedKey.getAndSet(key) != key) {
+                    webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                }
             }
+        )
+    }
+
+    // 超时兜底：若 3.5 秒内未完成首帧高度测量，降级释放 WebView 避免长期驻留内存
+    LaunchedEffect(thumbKey, retry) {
+        delay(3500L)
+        if (measuredCss <= 0f && bitmap == null) {
+            failed = true
         }
-    )
+    }
 
     // 抓图：必须先拿到实测高度，否则抓下来的是「按估计高度裁剪」的残缺版，
     // 缓存住就再也不会纠正。实测高度到达会让 heightDp 变化 → 本 effect 重启 → 重新抓。
@@ -1383,6 +1395,10 @@ private fun WidgetThumbnail(
                 bitmap = shot
                 return@LaunchedEffect
             }
+        }
+        // 连续抓图失败时及时降级并回收 WebView
+        if (bitmap == null) {
+            failed = true
         }
     }
 

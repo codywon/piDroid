@@ -215,8 +215,13 @@ fun PiWebChatMinimap(
         }
 
         // ── 2. 右侧全高贴边抽屉大盘 (带背景暗色遮罩，右滑与点击空白平滑收起) ──
-        if (isDrawerOpen) {
-            // 背景半透明暗色遮罩
+        // 外层不再用 if (isDrawerOpen) 短路，保证关闭时 AnimatedVisibility 退出动画可以完整播放
+        AnimatedVisibility(
+            visible = isDrawerOpen,
+            enter = fadeIn(animationSpec = tween(180)),
+            exit = fadeOut(animationSpec = tween(180)),
+            modifier = Modifier.fillMaxSize()
+        ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -228,14 +233,15 @@ fun PiWebChatMinimap(
                         isDrawerOpen = false
                     }
             )
+        }
 
-            // 右侧抽屉卡片面板 (从右向左滑出，占屏幕 82% 宽度，贴紧右边缘)
-            AnimatedVisibility(
-                visible = isDrawerOpen,
-                enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(220)) + fadeIn(),
-                exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(180)) + fadeOut(),
-                modifier = Modifier.align(Alignment.CenterEnd)
-            ) {
+        // 右侧抽屉卡片面板 (从右向左滑出，占屏幕 82% 宽度，贴紧右边缘)
+        AnimatedVisibility(
+            visible = isDrawerOpen,
+            enter = slideInHorizontally(initialOffsetX = { it }, animationSpec = tween(220)) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }, animationSpec = tween(180)) + fadeOut(),
+            modifier = Modifier.align(Alignment.CenterEnd)
+        ) {
                 Surface(
                     modifier = Modifier
                         .fillMaxHeight()
@@ -460,4 +466,3 @@ fun PiWebChatMinimap(
             }
         }
     }
-}

@@ -143,15 +143,101 @@ object CodeSyntaxHighlighter {
     }
 
     private fun tokenizeJson(line: String, result: MutableList<CodeToken>) {
-        val colonIdx = line.indexOf(':')
-        if (colonIdx > 0 && line.startsWith("\"")) {
-            val key = line.substring(0, colonIdx)
-            result.add(CodeToken(key, CodeTokenType.PROPERTY_KEY))
-            result.add(CodeToken(":", CodeTokenType.PUNCTUATION))
-            val rest = line.substring(colonIdx + 1)
-            result.add(CodeToken(rest, CodeTokenType.STRING))
-        } else {
-            result.add(CodeToken(line, CodeTokenType.PLAIN_TEXT))
+        var idx = 0
+        val len = line.length
+        while (idx < len && line[idx].isWhitespace()) idx++
+        if (idx > 0) {
+            result.add(CodeToken(line.substring(0, idx), CodeTokenType.PLAIN_TEXT))
+        }
+        if (idx >= len) return
+
+        // JSON key-value 行：以双引号开头且闭合引号后面是 ':'
+        if (line[idx] == '"') {
+            var keyEnd = idx + 1
+            while (keyEnd < len) {
+                val ch = line[keyEnd]
+                if (ch == '\\' && keyEnd + 1 < len) {
+                    keyEnd += 2
+                    continue
+                }
+                if (ch == '"') {
+                    keyEnd++
+                    break
+                }
+                keyEnd++
+            }
+            var colonSearch = keyEnd
+            while (colonSearch < len && line[colonSearch].isWhitespace()) colonSearch++
+            if (colonSearch < len && line[colonSearch] == ':') {
+                result.add(CodeToken(line.substring(idx, keyEnd), CodeTokenType.PROPERTY_KEY))
+                if (colonSearch > keyEnd) {
+                    result.add(CodeToken(line.substring(keyEnd, colonSearch), CodeTokenType.PLAIN_TEXT))
+                }
+                result.add(CodeToken(":", CodeTokenType.PUNCTUATION))
+                tokenizeJsonValueTail(line.substring(colonSearch + 1), result)
+                return
+            }
+        }
+        tokenizeJsonValueTail(line.substring(idx), result)
+    }
+
+    private fun tokenizeJsonValueTail(tail: String, result: MutableList<CodeToken>) {
+        if (tail.isEmpty()) return
+        var i = 0
+        val len = tail.length
+        while (i < len) {
+            val c = tail[i]
+            when {
+                c.isWhitespace() -> {
+                    val start = i
+                    while (i < len && tail[i].isWhitespace()) i++
+                    result.add(CodeToken(tail.substring(start, i), CodeTokenType.PLAIN_TEXT))
+                }
+                c == '"' -> {
+                    val start = i
+                    i++
+                    while (i < len) {
+                        val ch = tail[i]
+                        if (ch == '\\' && i + 1 < len) {
+                            i += 2
+                            continue
+                        }
+                        if (ch == '"') {
+                            i++
+                            break
+                        }
+                        i++
+                    }
+                    result.add(CodeToken(tail.substring(start, i), CodeTokenType.STRING))
+                }
+                c == '-' || c.isDigit() -> {
+                    val start = i
+                    if (tail[i] == '-') i++
+                    while (i < len && (tail[i].isDigit() || tail[i] == '.' || tail[i] == 'e' || tail[i] == 'E' || tail[i] == '+' || tail[i] == '-')) {
+                        i++
+                    }
+                    result.add(CodeToken(tail.substring(start, i), CodeTokenType.NUMBER))
+                }
+                c.isLetter() -> {
+                    val start = i
+                    while (i < len && tail[i].isLetterOrDigit()) i++
+                    val word = tail.substring(start, i)
+                    val type = if (word == "true" || word == "false" || word == "null") {
+                        CodeTokenType.KEYWORD
+                    } else {
+                        CodeTokenType.PLAIN_TEXT
+                    }
+                    result.add(CodeToken(word, type))
+                }
+                c in "{}[]," -> {
+                    result.add(CodeToken(c.toString(), CodeTokenType.PUNCTUATION))
+                    i++
+                }
+                else -> {
+                    result.add(CodeToken(c.toString(), CodeTokenType.PLAIN_TEXT))
+                    i++
+                }
+            }
         }
     }
 
@@ -176,8 +262,20 @@ object CodeSyntaxHighlighter {
                 i += chunk.length
                 continue
             } else if (c == '"' || c == '\'') {
-                val endIdx = line.indexOf(c, i + 1)
-                val chunk = if (endIdx >= 0) line.substring(i, endIdx + 1) else line.substring(i)
+                var end = i + 1
+                while (end < len) {
+                    val ch = line[end]
+                    if (ch == '\\' && end + 1 < len) {
+                        end += 2
+                        continue
+                    }
+                    if (ch == c) {
+                        end++
+                        break
+                    }
+                    end++
+                }
+                val chunk = line.substring(i, end)
                 result.add(CodeToken(chunk, CodeTokenType.STRING))
                 i += chunk.length
                 continue

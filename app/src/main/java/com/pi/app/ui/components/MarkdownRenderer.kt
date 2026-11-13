@@ -265,7 +265,14 @@ object CjkMarkdownNormalizer {
         if (s.contains("*") || s.contains("_")) {
             s = INNER_BOLD_WHITESPACE_ASTERISK.replace(s) { "**${it.groupValues[1]}**" }
             s = INNER_BOLD_WHITESPACE_UNDERSCORE.replace(s) { "__${it.groupValues[1]}__" }
-            val count = s.windowed(2).count { it == "**" }
+            var count = 0
+            var searchFrom = 0
+            while (true) {
+                val idx = s.indexOf("**", searchFrom)
+                if (idx < 0) break
+                count++
+                searchFrom = idx + 1
+            }
             if (count % 2 != 0) {
                 val lastIdx = s.lastIndexOf("**")
                 if (lastIdx >= 0) {
@@ -397,8 +404,10 @@ fun MarkdownRenderer(
             modifier = modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            blocks.forEach { block ->
-                MarkdownBlock(block, isUser, onOpenLink)
+            blocks.forEachIndexed { idx, block ->
+                key(idx, block) {
+                    MarkdownBlock(block, isUser, onOpenLink)
+                }
             }
         }
     }
@@ -436,7 +445,9 @@ private fun RenderAstBlockNode(
                 3 -> 14.sp
                 else -> 13.sp
             }
-            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            val annotated = remember(node, isUser, theme.primary) {
+                buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -466,7 +477,9 @@ private fun RenderAstBlockNode(
             val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
             // 音频/视频不归相册管：交给已有的全屏查看器（那里有真正的播放器）
             val playbackLinks = remember(node) { extractPlaybackLinksFromNode(node) }
-            val annotated = buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            val annotated = remember(node, isUser, theme.primary) {
+                buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            }
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
                 MathFormulaBlockCard(formula = rawTrimmed.removeSurrounding("$$").trim())
@@ -621,14 +634,45 @@ private fun RenderAstBlockNode(
                                 color = accentColor
                             )
                         }
-                        val bodyCleaned = firstParaText.replaceFirst(CALLOUT_HEADER_REGEX, "").trim()
-                        if (bodyCleaned.isNotBlank()) {
-                            Text(
-                                text = bodyCleaned,
-                                fontSize = 13.sp,
-                                color = theme.textPrimary,
-                                lineHeight = 19.sp
-                            )
+                        val firstPara = node.firstChild as? Paragraph
+                        if (firstPara != null) {
+                            val firstAnnotated = remember(firstPara, isUser, theme.primary) {
+                                buildInlineAnnotatedString(firstPara, isUser, onOpenLink, theme.primary)
+                            }
+                            val firstMatch = CALLOUT_HEADER_REGEX.find(firstAnnotated.text)
+                            if (firstMatch != null) {
+                                var startIdx = firstMatch.range.last + 1
+                                while (startIdx < firstAnnotated.length && firstAnnotated[startIdx].isWhitespace()) {
+                                    startIdx++
+                                }
+                                var endIdx = firstAnnotated.length
+                                while (endIdx > startIdx && firstAnnotated[endIdx - 1].isWhitespace()) {
+                                    endIdx--
+                                }
+                                if (endIdx > startIdx) {
+                                    Text(
+                                        text = firstAnnotated.subSequence(startIdx, endIdx),
+                                        fontSize = 13.sp,
+                                        color = theme.textPrimary,
+                                        lineHeight = 19.sp
+                                    )
+                                }
+                            }
+                            var extraChild = firstPara.next
+                            while (extraChild != null) {
+                                RenderAstBlockNode(node = extraChild, isUser = isUser, onOpenLink = onOpenLink)
+                                extraChild = extraChild.next
+                            }
+                        } else {
+                            val bodyCleaned = firstParaText.replaceFirst(CALLOUT_HEADER_REGEX, "").trim()
+                            if (bodyCleaned.isNotBlank()) {
+                                Text(
+                                    text = bodyCleaned,
+                                    fontSize = 13.sp,
+                                    color = theme.textPrimary,
+                                    lineHeight = 19.sp
+                                )
+                            }
                         }
                     }
                 }
@@ -1901,58 +1945,65 @@ private fun AstTableCard(
 ) {
     val theme = LocalAppTheme.current
 
-    val headerCells = mutableListOf<AnnotatedString>()
-    val bodyRows = mutableListOf<List<AnnotatedString>>()
+    val tableData = remember(tableNode, theme.primary) {
+        val headers = mutableListOf<AnnotatedString>()
+        val rows = mutableListOf<List<AnnotatedString>>()
 
-    var tablePart = tableNode.firstChild
-    while (tablePart != null) {
-        when (tablePart) {
-            is TableHead -> {
-                var rowNode = tablePart.firstChild
-                while (rowNode != null) {
-                    if (rowNode is TableRow) {
-                        var cellNode = rowNode.firstChild
-                        while (cellNode != null) {
-                            if (cellNode is TableCell) {
-                                headerCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
+        var tablePart = tableNode.firstChild
+        while (tablePart != null) {
+            when (tablePart) {
+                is TableHead -> {
+                    var rowNode = tablePart.firstChild
+                    while (rowNode != null) {
+                        if (rowNode is TableRow) {
+                            var cellNode = rowNode.firstChild
+                            while (cellNode != null) {
+                                if (cellNode is TableCell) {
+                                    headers.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
+                                }
+                                cellNode = cellNode.next
                             }
-                            cellNode = cellNode.next
                         }
+                        rowNode = rowNode.next
                     }
-                    rowNode = rowNode.next
+                }
+
+                is TableBody -> {
+                    var rowNode = tablePart.firstChild
+                    while (rowNode != null) {
+                        if (rowNode is TableRow) {
+                            val rowCells = mutableListOf<AnnotatedString>()
+                            var cellNode = rowNode.firstChild
+                            while (cellNode != null) {
+                                if (cellNode is TableCell) {
+                                    rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
+                                }
+                                cellNode = cellNode.next
+                            }
+                            rows.add(rowCells)
+                        }
+                        rowNode = rowNode.next
+                    }
                 }
             }
-
-            is TableBody -> {
-                var rowNode = tablePart.firstChild
-                while (rowNode != null) {
-                    if (rowNode is TableRow) {
-                        val rowCells = mutableListOf<AnnotatedString>()
-                        var cellNode = rowNode.firstChild
-                        while (cellNode != null) {
-                            if (cellNode is TableCell) {
-                                rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
-                            }
-                            cellNode = cellNode.next
-                        }
-                        bodyRows.add(rowCells)
-                    }
-                    rowNode = rowNode.next
-                }
-            }
+            tablePart = tablePart.next
         }
-        tablePart = tablePart.next
+
+        val cols = kotlin.math.max(headers.size, rows.maxOfOrNull { it.size } ?: 0)
+        val widths = (0 until cols).map { colIdx ->
+            val headerLen = headers.getOrNull(colIdx)?.text?.length ?: 0
+            val maxBodyLen = rows.maxOfOrNull { it.getOrNull(colIdx)?.text?.length ?: 0 } ?: 0
+            val maxLen = kotlin.math.max(headerLen, maxBodyLen)
+            ((maxLen * 9.5f) + 24f).coerceIn(85f, 220f).dp
+        }
+        Triple(headers, rows, widths)
     }
 
-    val totalCols = kotlin.math.max(headerCells.size, bodyRows.maxOfOrNull { it.size } ?: 0)
+    val headerCells = tableData.first
+    val bodyRows = tableData.second
+    val colWidths = tableData.third
+    val totalCols = colWidths.size
     if (totalCols == 0) return
-
-    val colWidths = (0 until totalCols).map { colIdx ->
-        val headerLen = headerCells.getOrNull(colIdx)?.text?.length ?: 0
-        val maxBodyLen = bodyRows.maxOfOrNull { it.getOrNull(colIdx)?.text?.length ?: 0 } ?: 0
-        val maxLen = kotlin.math.max(headerLen, maxBodyLen)
-        ((maxLen * 9.5f) + 24f).coerceIn(85f, 220f).dp
-    }
 
     Card(
         shape = RoundedCornerShape(8.dp),

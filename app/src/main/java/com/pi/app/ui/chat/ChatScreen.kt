@@ -426,6 +426,7 @@ fun ChatScreen(
     var artifactPdfFile by remember { mutableStateOf<java.io.File?>(null) }
     var artifactMeta by remember { mutableStateOf<String?>(null) }
     var isLoadingArtifact by remember { mutableStateOf(false) }
+    var artifactRequestSeq by remember { mutableIntStateOf(0) }
     /** 当前预览的文件绝对路径（Markdown 文档里的相对链接以它所在目录为基准） */
     var artifactPath by remember { mutableStateOf<String?>(null) }
     /** 当前预览的文件类型（对标 pi-web FileViewer 的按类型分派：图片 / 文档 / PDF / 媒体 / 文本） */
@@ -763,9 +764,11 @@ fun ChatScreen(
 
     /** 打开「bash 完整输出」查看器 */
     fun openBashOutput(outputPath: String, titleLabel: String) {
+        val reqSeq = ++artifactRequestSeq
         artifactTitle = titleLabel
         artifactText = null
         artifactImage = null
+        artifactPdfFile = null
         artifactMeta = null
         artifactPath = null
         artifactKind = ArtifactKind.TEXT
@@ -780,7 +783,9 @@ fun ChatScreen(
         isLoadingMoreArtifact = false
         isLoadingArtifact = true
         coroutineScope.launch {
-            onLoadBashOutput(outputPath)
+            val res = onLoadBashOutput(outputPath)
+            if (reqSeq != artifactRequestSeq) return@launch
+            res
                 .onSuccess { artifactText = it.ifBlank { "（输出为空）" } }
                 .onFailure { err ->
                     artifactText = "读取完整输出失败：${err.message}"
@@ -796,9 +801,12 @@ fun ChatScreen(
     fun loadMoreArtifact() {
         val path = artifactPath ?: return
         if (isLoadingMoreArtifact || !artifactTruncated) return
+        val reqSeq = artifactRequestSeq
         isLoadingMoreArtifact = true
         coroutineScope.launch {
-            onLoadFileTextChunk(path, artifactNextOffset)
+            val res = onLoadFileTextChunk(path, artifactNextOffset)
+            if (reqSeq != artifactRequestSeq || artifactPath != path) return@launch
+            res
                 .onSuccess { chunk ->
                     artifactText = (artifactText ?: "") + chunk.content
                     artifactNextOffset = chunk.nextOffset
@@ -825,6 +833,7 @@ fun ChatScreen(
      * 会把它当成不存在于任何会话工作目录内，返回 403 Access denied。
      */
     fun openFilePreview(rawAbsPath: String) {
+        val reqSeq = ++artifactRequestSeq
         val absPath = FileLinks.normalizeMsysDrivePath(rawAbsPath, sessionCwd)
         val name = absPath.replace('\\', '/').substringAfterLast('/')
         artifactTitle = name
@@ -853,6 +862,7 @@ fun ChatScreen(
                 override suspend fun downloadFileToCache(path: String) = onDownloadFileToCache(path)
             }
             val preview = RemoteFilePreviewLoader.load(absPath, dataSource)
+            if (reqSeq != artifactRequestSeq) return@launch
             artifactTitle = preview.title
             artifactKind = preview.kind
             artifactMime = preview.mime
@@ -866,6 +876,7 @@ fun ChatScreen(
             artifactText = preview.text
             if (preview.imageBytes != null) {
                 val (decodedImg, dims) = com.pi.app.ui.components.decodeFullImagePreview(preview.imageBytes)
+                if (reqSeq != artifactRequestSeq) return@launch
                 artifactImage = decodedImg
                 if (decodedImg != null && dims.isNotBlank()) {
                     artifactMeta = if (artifactMeta.isNullOrBlank()) dims else "$artifactMeta · $dims"
@@ -2437,7 +2448,10 @@ fun ChatScreen(
                     // 「按条数切窗口 / 行数补偿锚定」正是各种空白与停半路的来源。
                     allTurns.forEach { turn ->
                         // 1. 用户提问
-                        item(key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}") {
+                        item(
+                            key = "turn_${turn.turnNumber}_user_${turn.userMessage.id}",
+                            contentType = "chat_user"
+                        ) {
                             ChatMessageItem(
                                 item = turn.userMessage,
                                 showModelHeader = false,
@@ -2458,7 +2472,10 @@ fun ChatScreen(
 
                         // 2. 过程折叠组 (ProcessDetailsGroup: > 4 条消息 · 4 次工具调用 · 耗时 2m 13s)
                         if (turn.processItems.isNotEmpty()) {
-                            item(key = "turn_${turn.turnNumber}_process") {
+                            item(
+                                key = "turn_${turn.turnNumber}_process_${turn.userMessage.id}",
+                                contentType = "chat_process"
+                            ) {
                                 ProcessDetailsGroup(
                                     messageCount = turn.processItems.size,
                                     toolCallCount = turn.toolCount,
@@ -2473,7 +2490,7 @@ fun ChatScreen(
                                     // initialLimit(total)，它冻在首次组合（那时往往只有 1~2 条）上，
                                     // 界面就变成「12 条消息 · 只显示最新 1 条 + 显示更早的 11 条」。
                                     val processTotal = turn.processItems.size
-                                    var extraProcessSteps by remember(turn.turnNumber) { mutableIntStateOf(0) }
+                                    var extraProcessSteps by remember(turn.userMessage.id) { mutableIntStateOf(0) }
                                     val processLimit =
                                         ProcessWindowPolicy.limitFor(processTotal, extraProcessSteps)
                                     val hiddenProcessCount =
@@ -2484,18 +2501,20 @@ fun ChatScreen(
                                         }
                                     }
                                     turn.processItems.takeLast(processLimit).forEach { procItem ->
-                                        ChatMessageItem(
-                                            item = procItem,
-                                            showModelHeader = false,
-                                            defaultModelName = selectedModel.displayName,
-                                            onEditFromHere = editFromMessage,
-                                            onForkFromHere = onForkFromMessage,
-                                            onOpenBashOutput = { p, t -> openBashOutput(p, t) },
-                                            onOpenFilePreview = { p -> openFilePreview(p) },
-                                            onOpenWidget = { w -> widgetOverlay = w },
-                                            onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
-                                            isLiveStreamingTail = procItem.id == liveStreamingItemId
-                                        )
+                                        key(procItem.id) {
+                                            ChatMessageItem(
+                                                item = procItem,
+                                                showModelHeader = false,
+                                                defaultModelName = selectedModel.displayName,
+                                                onEditFromHere = editFromMessage,
+                                                onForkFromHere = onForkFromMessage,
+                                                onOpenBashOutput = { p, t -> openBashOutput(p, t) },
+                                                onOpenFilePreview = { p -> openFilePreview(p) },
+                                                onOpenWidget = { w -> widgetOverlay = w },
+                                                onOpenLink = { href -> openLinkTarget(href, sessionCwd) },
+                                                isLiveStreamingTail = procItem.id == liveStreamingItemId
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -2506,7 +2525,10 @@ fun ChatScreen(
                         // 刻意放在过程组**之外**、最终答复之前：它是本回合的内容产出，
                         // 跟着过程组收起就变成「要先展开才看得到」。
                         turn.widgetItems.forEach { widgetItem ->
-                            item(key = "turn_${turn.turnNumber}_widget_${widgetItem.id}") {
+                            item(
+                                key = "turn_${turn.turnNumber}_widget_${widgetItem.id}",
+                                contentType = "chat_widget"
+                            ) {
                                 ChatMessageItem(
                                     item = widgetItem,
                                     showModelHeader = false,
@@ -2526,7 +2548,10 @@ fun ChatScreen(
                         if (turn.finalAnswerItem != null) {
                             val ans = turn.finalAnswerItem
                             val showModelHeader = !ans.modelName.isNullOrBlank()
-                            item(key = "turn_${turn.turnNumber}_ans_${ans.id}") {
+                            item(
+                                key = "turn_${turn.turnNumber}_ans_${ans.id}",
+                                contentType = "chat_answer"
+                            ) {
                                 ChatMessageItem(
                                     item = ans,
                                     showModelHeader = showModelHeader,
@@ -2605,7 +2630,7 @@ fun ChatScreen(
                 // 表现就是「点 N ，深蓝色却亮在 N-1」。
                 var activeTurnLockUntil by remember { mutableStateOf(0L) }
 
-                LaunchedEffect(allTurns) {
+                LaunchedEffect(Unit) {
                     snapshotFlow {
                         val info = listState.layoutInfo
                         val viewport = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
@@ -2782,7 +2807,16 @@ fun ChatScreen(
             isOpeningExternally = isOpeningExternally,
             sessionCwd = sessionCwd,
             onResolveMediaSource = { p -> onResolveFileSource(p) },
-            onBack = { artifactTitle = null },
+            onBack = {
+                artifactRequestSeq += 1
+                artifactTitle = null
+                artifactText = null
+                artifactImage = null
+                artifactPdfFile = null
+                artifactDocxHtml = null
+                isLoadingArtifact = false
+                isLoadingMoreArtifact = false
+            },
             onToggleRawMode = { raw -> artifactRawMode = raw },
             onLoadMore = { loadMoreArtifact() },
             onOpenExternal = { openArtifactExternally() },
@@ -2795,13 +2829,21 @@ fun ChatScreen(
             },
             onAtMention = { relPath ->
                 val mentionText = if (relPath.contains(' ')) "@\"$relPath\" " else "@$relPath "
-                inputText = if (inputText.isBlank() || inputText.endsWith(' ')) {
+                val nextDraft = if (inputText.isBlank() || inputText.endsWith(' ')) {
                     inputText + mentionText
                 } else {
                     "$inputText $mentionText"
                 }
-                draftPrefs.saveSessionDraftWithUndo(sessionId, inputText, null)
+                updateDraft(nextDraft)
+                draftPrefs.saveSessionDraftWithUndo(sessionId, nextDraft, null)
+                artifactRequestSeq += 1
                 artifactTitle = null
+                artifactText = null
+                artifactImage = null
+                artifactPdfFile = null
+                artifactDocxHtml = null
+                isLoadingArtifact = false
+                isLoadingMoreArtifact = false
                 android.widget.Toast.makeText(context, "已引用到输入框: $mentionText", android.widget.Toast.LENGTH_SHORT).show()
             },
             onDownloadFile = { path ->
@@ -4041,11 +4083,11 @@ internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) 
         }
     }
 
-    // 进度轮询（MediaPlayer 没有进度回调）
-    LaunchedEffect(source.url) {
-        while (true) {
+    // 进度轮询（MediaPlayer 没有进度回调），仅在播放时运行
+    LaunchedEffect(source.url, isPlaying) {
+        while (isPlaying) {
             val player = playerHolder.value
-            if (player != null && isPlaying) {
+            if (player != null) {
                 positionMs = runCatching { player.currentPosition }.getOrDefault(positionMs)
             }
             delay(400)
@@ -4130,23 +4172,25 @@ internal fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) 
         ArtifactHintCard(errorText ?: "无法获取视频地址（请检查网关配置）")
         return
     }
-    AndroidView(
-        factory = { ctx ->
-            VideoView(ctx).apply {
-                val controller = MediaController(ctx)
-                controller.setAnchorView(this)
-                setMediaController(controller)
-                setOnPreparedListener { mp -> runCatching { mp.start() } }
-                setOnErrorListener { _, _, _ -> true }
-                runCatching { setVideoURI(Uri.parse(source.url), source.headers) }
-            }
-        },
-        // VideoView 靠 onDetachedFromWindow 不一定释放 MediaPlayer，显式停掉避免浮在后台放
-        onRelease = { view -> runCatching { view.stopPlayback() } },
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(220.dp)
-    )
+    key(source.url, source.headers) {
+        AndroidView(
+            factory = { ctx ->
+                VideoView(ctx).apply {
+                    val controller = MediaController(ctx)
+                    controller.setAnchorView(this)
+                    setMediaController(controller)
+                    setOnPreparedListener { mp -> runCatching { mp.start() } }
+                    setOnErrorListener { _, _, _ -> true }
+                    runCatching { setVideoURI(Uri.parse(source.url), source.headers) }
+                }
+            },
+            // VideoView 靠 onDetachedFromWindow 不一定释放 MediaPlayer，显式停掉避免浮在后台放
+            onRelease = { view -> runCatching { view.stopPlayback() } },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+        )
+    }
 }
 
 /**
@@ -4164,19 +4208,21 @@ internal fun DocxArtifactCard(
         ArtifactHintCard(message ?: "Word 预览暂不可用")
         return
     }
-    AndroidView(
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = false
-                settings.allowFileAccess = false
-                settings.allowContentAccess = false
-                setWebViewClient(WebViewClient())
-                loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
-            }
-        },
-        onRelease = { view -> runCatching { view.destroy() } },
-        modifier = modifier
-    )
+    key(html) {
+        AndroidView(
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    settings.javaScriptEnabled = false
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    setWebViewClient(WebViewClient())
+                    loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                }
+            },
+            onRelease = { view -> runCatching { view.destroy() } },
+            modifier = modifier
+        )
+    }
 }
 
 /** 毫秒 → m:ss */
@@ -4189,7 +4235,7 @@ private fun formatClock(ms: Int): String {
  * 把缓存文件交给系统/第三方应用打开（WPS、系统 PDF 阅读器、相册…）。
  *
  * 复用 Manifest 里已有的 FileProvider（`${applicationId}.fileprovider`，
- * 其 `internal_cache` 路径已在 res/xml/file_paths.xml 声明），
+ * 其 `opened/` 目录已在 res/xml/file_paths.xml 声明，正是 downloadFileToCache 的落盘位置），
  * 与 AppUpdateManager 拉起安装器是同一套做法。
  */
 internal fun openFileWithOtherApp(context: Context, file: File, mime: String): Boolean = try {

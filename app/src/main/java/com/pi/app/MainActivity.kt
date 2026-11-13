@@ -50,11 +50,13 @@ import com.pi.app.ui.updater.AppUpdateDialog
 import com.pi.app.ui.updater.UpdateUiState
 import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateCheckResult
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -114,7 +116,7 @@ class MainActivity : ComponentActivity() {
 
     private var sseJob: Job? = null
     private var cachedSessions: List<Session> = emptyList()
-    private var pendingTargetSessionId: String? = null
+    private var pendingTargetSessionId by mutableStateOf<String?>(null)
     private var lastFinishedTaskTitle: String? = null
 
     /**
@@ -142,16 +144,25 @@ class MainActivity : ComponentActivity() {
      */
     private fun reportPreviousCrashIfAny() {
         lifecycleScope.launch {
-            val file = java.io.File(filesDir, com.pi.app.PiApp.CRASH_FILE)
-            if (!file.exists()) return@launch
-            val text = runCatching { file.readText() }.getOrNull()
-            if (text.isNullOrBlank()) {
-                runCatching { file.delete() }
-                return@launch
-            }
+            val text = withContext(Dispatchers.IO) {
+                val file = java.io.File(filesDir, com.pi.app.PiApp.CRASH_FILE)
+                if (!file.exists()) return@withContext null
+                val content = runCatching { file.readText() }.getOrNull()
+                if (content.isNullOrBlank()) {
+                    runCatching { file.delete() }
+                    return@withContext null
+                }
+                content
+            } ?: return@launch
             android.util.Log.e("PiCrash", text)
             apiClient.reportCrash(text)
-                .onSuccess { uploaded -> if (uploaded) runCatching { file.delete() } }
+                .onSuccess { uploaded ->
+                    if (uploaded) {
+                        withContext(Dispatchers.IO) {
+                            runCatching { java.io.File(filesDir, com.pi.app.PiApp.CRASH_FILE).delete() }
+                        }
+                    }
+                }
         }
     }
 
@@ -298,9 +309,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkAndRequestPermissions() {
-        val permissions = mutableListOf(
-            Manifest.permission.CAMERA
-        )
+        // 相机权限延后至打开扫码页时按需申请，启动仅检查通知权限
+        val permissions = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
@@ -616,19 +626,17 @@ class MainActivity : ComponentActivity() {
             if (sid.isBlank()) return
             lifecycleScope.launch {
                 Toast.makeText(this@MainActivity, "正在生成独立 HTML 会话文件…", Toast.LENGTH_SHORT).show()
-                val fileName = SessionExporter.exportFileName(sid, title)
-                val exportDir = java.io.File(cacheDir, "exports").apply { mkdirs() }
-                val targetFile = java.io.File(exportDir, fileName)
-                apiClient.downloadSessionExportHtml(sid, targetFile).onSuccess { htmlFile ->
-                    try {
-                        val shareIntent = SessionExporter.buildShareIntent(this@MainActivity, htmlFile)
-                        startActivity(Intent.createChooser(shareIntent, "导出会话网页"))
-                    } catch (e: Exception) {
-                        Toast.makeText(this@MainActivity, "拉起分享失败：${e.message}", Toast.LENGTH_LONG).show()
+                SessionExporter.exportSessionHtml(this@MainActivity, apiClient, sid, title)
+                    .onSuccess { result ->
+                        try {
+                            startActivity(Intent.createChooser(result.shareIntent, "导出会话网页"))
+                        } catch (e: Exception) {
+                            Toast.makeText(this@MainActivity, "拉起分享失败：${e.message}", Toast.LENGTH_LONG).show()
+                        }
                     }
-                }.onFailure { err ->
-                    Toast.makeText(this@MainActivity, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
-                }
+                    .onFailure { err ->
+                        Toast.makeText(this@MainActivity, "导出失败：${err.message}", Toast.LENGTH_LONG).show()
+                    }
             }
         }
 
@@ -1834,13 +1842,20 @@ class MainActivity : ComponentActivity() {
                             if (thinkChunk.isNotEmpty()) {
                                 isAutoRetrying = false
                                 markAgentRunActive(phase = null, clearPhaseIfNull = true)
-                                val last = messages.lastOrNull()
-                                if (last != null && last.role == MessageRole.AGENT && last.content.isEmpty()) {
-                                    val updated = last.copy(
-                                        thinking = (last.thinking ?: "") + thinkChunk,
-                                        isStreaming = true
+                                val target = StreamingMessageMerge.resolveDeltaIndex(messages, streamingMessageId)
+                                val candidate = if (target >= 0) messages[target] else null
+                                if (candidate != null && candidate.content.isEmpty()) {
+                                    messages[target] = candidate.copy(
+                                        thinking = (candidate.thinking ?: "") + thinkChunk,
+                                        isStreaming = true,
+                                        streamMessageId = candidate.streamMessageId ?: streamingMessageId
                                     )
-                                    messages[messages.size - 1] = updated
+                                } else if (candidate != null && candidate.thinking != null) {
+                                    messages[target] = candidate.copy(
+                                        thinking = candidate.thinking + thinkChunk,
+                                        isStreaming = true,
+                                        streamMessageId = candidate.streamMessageId ?: streamingMessageId
+                                    )
                                 } else {
                                     settleStaleStreamingAgents()
                                     messages.add(
@@ -1849,7 +1864,8 @@ class MainActivity : ComponentActivity() {
                                             content = "",
                                             thinking = thinkChunk,
                                             modelName = selectedModel.displayName,
-                                            isStreaming = true
+                                            isStreaming = true,
+                                            streamMessageId = streamingMessageId
                                         )
                                     )
                                 }
@@ -2113,6 +2129,21 @@ class MainActivity : ComponentActivity() {
                             } else if (!isAutoRetrying) {
                                 scheduleAgentCompletionSettle(sessionId)
                             }
+                        }
+                        "session_ended" -> {
+                            // pi-web 0.16.0：会话结束时服务端推这条后主动关流（之后不会再有心跳）。
+                            // 它和断线在 OkHttp 那一侧形状一样，但语义相反：不是网断了，是会话没了。
+                            // 这里只把执行态收尾；PiSseClient 随后会补一条 DISCONNECTED，且不再重挂。
+                            isAgentBusy = false
+                            isToolExecuting = false
+                            agentPhaseLabel = null
+                        }
+                        "editor_paste" -> {
+                            // pi-web 0.16.0：扩展往页面输入框塞文本（hooks/useAgentSession.ts 里
+                            // `pasteText(stripAnsi(event.text))`）。App 没有这条「扩展→输入框」通道，
+                            // 但必须显式拦住：PiSseClient 的 fallback 会把任何不带已知类型的载荷里的
+                            // `text` 当成 delta，万一将来某个分支统一消费 delta，这段文本就会被
+                            // 当成模型正文写进气泡。
                         }
                     }
                 }
@@ -2401,11 +2432,15 @@ class MainActivity : ComponentActivity() {
                         // 而不是一个孤立秒数 —— 心跳周期由 pi-web 的 events 路由决定。
                         val nowMs = System.currentTimeMillis()
                         if (serverSaysRunning) {
-                            val streamDown = sseConnectionState != SseConnectionState.CONNECTED
+                            // 仅在彻底断开 (DISCONNECTED) 或流静默超时时触发重挂；
+                            // 正在 RECONNECTING 时保留 PiSseClient 自身的指数退避节奏，避免每 15s 被重置回第 0 步。
+                            val streamDown = sseConnectionState == SseConnectionState.DISCONNECTED
                             val streamSilent = sseConnectionState == SseConnectionState.CONNECTED &&
                                 lastSseActivityAt > 0L &&
                                 nowMs - lastSseActivityAt > (PiSseClient.EVENT_HEARTBEAT_MS * 2.5).toLong()
-                            if ((streamDown || streamSilent) && nowMs - lastSseReattachAt > 15_000L) {
+                            val stuckReconnecting = sseConnectionState == SseConnectionState.RECONNECTING &&
+                                nowMs - lastSseReattachAt > 60_000L
+                            if ((streamDown || streamSilent || stuckReconnecting) && nowMs - lastSseReattachAt > 15_000L) {
                                 lastSseReattachAt = nowMs
                                 lastSseActivityAt = nowMs
                                 reattachSseCallback?.invoke(activeSession.id, true)

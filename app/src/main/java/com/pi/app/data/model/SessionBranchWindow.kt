@@ -71,29 +71,31 @@ object SessionBranchWindow {
         obj.get("entries")?.takeIf { it.isJsonArray }?.let { return it.asJsonArray }
         obj.get("roots")?.takeIf { it.isJsonArray }?.let { return flattenRoots(it.asJsonArray) }
         if (!obj.has("entry") && !obj.has("children")) return null
-        val out = JsonArray()
-        collectNode(obj, out)
-        return out.takeIf { it.size() > 0 }
+        return flattenRoots(JsonArray().apply { add(obj) })
     }
 
     private fun flattenRoots(roots: JsonArray): JsonArray? {
         val out = JsonArray()
-        for (el in roots) collectNode(el, out)
+        val stack = ArrayDeque<JsonElement>(roots.size())
+        for (i in roots.size() - 1 downTo 0) {
+            stack.addLast(roots[i])
+        }
+        while (stack.isNotEmpty()) {
+            val node = stack.removeLast()
+            if (!node.isJsonObject) continue
+            val obj = node.asJsonObject
+            val entry = obj.get("entry")?.takeIf { it.isJsonObject }?.asJsonObject
+            if (entry != null) {
+                out.add(entry)
+            } else if (obj.has("type") && obj.has("id")) {
+                // 裸 entry 节点（部分调用方会把树拍平成 entry 列表再嵌套 children）
+                out.add(obj)
+            }
+            val children = obj.get("children")?.takeIf { it.isJsonArray }?.asJsonArray ?: continue
+            for (i in children.size() - 1 downTo 0) {
+                stack.addLast(children[i])
+            }
+        }
         return out.takeIf { it.size() > 0 }
-    }
-
-    private fun collectNode(node: JsonElement?, out: JsonArray) {
-        if (node == null || !node.isJsonObject) return
-        val obj = node.asJsonObject
-        val entry = obj.get("entry")?.takeIf { it.isJsonObject }?.asJsonObject
-        if (entry != null) {
-            out.add(entry)
-        } else if (obj.has("type") && obj.has("id")) {
-            // 裸 entry 节点（部分调用方会把树拍平成 entry 列表再嵌套 children）
-            out.add(obj)
-        }
-        obj.get("children")?.takeIf { it.isJsonArray }?.asJsonArray?.forEach { child ->
-            collectNode(child, out)
-        }
     }
 }

@@ -10,7 +10,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -46,6 +50,43 @@ private const val MAX_GUTTER_DIGITS = 6
  * 4. 行内词级高亮（Intra-line Word Diff）：对 1:1 删改行进行公共前后缀剔除，精确高亮变化词汇；
  * 5. 满宽底色保证：保证短行在横向滚动时的绿/红底色依然撑满整个视口。
  */
+private data class PreparedDiffLines(
+    val lines: List<UnifiedPatchLine>,
+    val gutterNumWidth: Dp,
+    val ready: Boolean = true
+)
+
+private fun buildPreparedDiffLines(patchText: String): PreparedDiffLines {
+    val parsedFiles = UnifiedDiffParser.parse(patchText)
+    if (parsedFiles.isEmpty() || parsedFiles.all { it.lines.isEmpty() }) {
+        return PreparedDiffLines(emptyList(), 24.dp, ready = true)
+    }
+    val list = mutableListOf<UnifiedPatchLine>()
+    parsedFiles.forEach { file ->
+        val displayPath = file.newPath?.takeIf { it != "/dev/null" } ?: file.oldPath ?: "未知文件"
+        if (parsedFiles.size > 1) {
+            list.add(
+                UnifiedPatchLine(
+                    type = PatchLineType.HUNK,
+                    text = "--- 文件: $displayPath ---"
+                )
+            )
+        }
+        list.addAll(file.lines)
+    }
+    var maxLineNo = 0
+    list.forEach { line ->
+        line.oldLineNo?.let { if (it > maxLineNo) maxLineNo = it }
+        line.newLineNo?.let { if (it > maxLineNo) maxLineNo = it }
+    }
+    val digits = maxLineNo.toString().length.coerceIn(1, MAX_GUTTER_DIGITS)
+    return PreparedDiffLines(
+        lines = list,
+        gutterNumWidth = (digits * 7 + 8).dp,
+        ready = true
+    )
+}
+
 @Composable
 fun StructuredDiffView(
     patchText: String,
@@ -53,11 +94,40 @@ fun StructuredDiffView(
     softWrap: Boolean = true
 ) {
     val theme = LocalAppTheme.current
-    val parsedFiles = remember(patchText) {
-        UnifiedDiffParser.parse(patchText)
+    // 小型补丁同步构建避免闪烁；大型补丁（>=32KB）转入 Default 线程异步解析，防止主线程掉帧
+    val syncPrepared = remember(patchText) {
+        if (patchText.length < 32_768) buildPreparedDiffLines(patchText) else null
+    }
+    val asyncPrepared by produceState(
+        initialValue = syncPrepared ?: PreparedDiffLines(emptyList(), 24.dp, ready = false),
+        key1 = patchText
+    ) {
+        if (syncPrepared != null) {
+            value = syncPrepared
+        } else {
+            value = withContext(Dispatchers.Default) { buildPreparedDiffLines(patchText) }
+        }
+    }
+    val prepared = syncPrepared ?: asyncPrepared
+
+    if (!prepared.ready) {
+        Box(
+            modifier = modifier.fillMaxWidth().padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 1.8.dp,
+                color = theme.primary
+            )
+        }
+        return
     }
 
-    if (parsedFiles.isEmpty() || parsedFiles.all { it.lines.isEmpty() }) {
+    val allLines = prepared.lines
+    val gutterNumWidth = prepared.gutterNumWidth
+
+    if (allLines.isEmpty()) {
         Box(
             modifier = modifier.fillMaxWidth().padding(24.dp),
             contentAlignment = Alignment.Center
@@ -69,35 +139,6 @@ fun StructuredDiffView(
             )
         }
         return
-    }
-
-    // 扁平化展示所有文件与段落
-    val allLines = remember(parsedFiles) {
-        val list = mutableListOf<UnifiedPatchLine>()
-        parsedFiles.forEach { file ->
-            val displayPath = file.newPath?.takeIf { it != "/dev/null" } ?: file.oldPath ?: "未知文件"
-            if (parsedFiles.size > 1) {
-                list.add(
-                    UnifiedPatchLine(
-                        type = PatchLineType.HUNK,
-                        text = "--- 文件: $displayPath ---"
-                    )
-                )
-            }
-            list.addAll(file.lines)
-        }
-        list
-    }
-
-    // 行号列宽度按实际最大行号位数自适应，保留足够内边距避免大字号或辅助功能缩放时裁切
-    val gutterNumWidth = remember(allLines) {
-        var maxLineNo = 0
-        allLines.forEach { line ->
-            line.oldLineNo?.let { if (it > maxLineNo) maxLineNo = it }
-            line.newLineNo?.let { if (it > maxLineNo) maxLineNo = it }
-        }
-        val digits = maxLineNo.toString().length.coerceIn(1, MAX_GUTTER_DIGITS)
-        (digits * 7 + 8).dp
     }
 
     val scrollState = rememberScrollState()

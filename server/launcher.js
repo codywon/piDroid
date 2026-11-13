@@ -9,16 +9,19 @@
  * 4. 联合守护 (Lifecycle Management)：主进程 Ctrl+C 时统一安全回收所有子进程，防止端口占用。
  */
 
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, exec } = require('child_process');
+const fs = require('fs');
 const http = require('http');
 const https = require('https');
 const path = require('path');
 const gateway = require('./gateway');
 const frpClient = require('./frp-client');
 const { CrashForensics, sampleProcessTreeMemoryMb } = require('./crash-forensics');
+const { StallRecorder } = require('./stall-recorder');
 const {
   checkUrlAlive,
   isPortListening,
+  portOwnerPid,
   probeWithRetry,
   waitForReady,
   waitForReadyOrExit,
@@ -47,7 +50,10 @@ if (publicUrlIndex !== -1 && args[publicUrlIndex + 1]) {
 let gatewayPort = parseInt(process.env.GATEWAY_PORT || '4100', 10);
 const portIndex = args.indexOf('--port');
 if (portIndex !== -1 && args[portIndex + 1]) {
-  gatewayPort = parseInt(args[portIndex + 1], 10);
+  const parsedPort = parseInt(args[portIndex + 1], 10);
+  if (Number.isInteger(parsedPort) && parsedPort > 0 && parsedPort <= 65535) {
+    gatewayPort = parsedPort;
+  }
 }
 
 let piWebUrl = process.env.PI_WEB_URL || 'http://127.0.0.1:30141';
@@ -55,6 +61,16 @@ const piUrlIndex = args.indexOf('--pi-url');
 if (piUrlIndex !== -1 && args[piUrlIndex + 1]) {
   piWebUrl = args[piUrlIndex + 1];
 }
+
+// 卡顿取证靠端口去找真正的 next 服务进程（spawn 拿到的是 cmd.exe）。
+const PI_WEB_PORT = (() => {
+  try {
+    const parsed = new URL(piWebUrl);
+    return Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+  } catch {
+    return 30141;
+  }
+})();
 
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`
@@ -202,20 +218,13 @@ function killProcessTree(pid) {
 
 // 优雅退出管理
 let isShuttingDown = false;
-function shutdown(exitCode = 0) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-
-  const hasChildren = Boolean(piWebProcess || tunnelProcess || gatewayServer);
-  if (hasChildren) {
-    console.log('\n🛑 正在停止 piDroid 服务并清理后台进程...');
-  }
-
+function cleanupChildren() {
   if (piWebRestartTimer) {
     clearTimeout(piWebRestartTimer);
     piWebRestartTimer = null;
   }
   stopPiWebMemorySampling();
+  stopStallWatch();
 
   if (piWebProcess && piWebProcess.pid) {
     killProcessTree(piWebProcess.pid);
@@ -235,6 +244,18 @@ function shutdown(exitCode = 0) {
     try { gatewayServer.close(); } catch (e) {}
     gatewayServer = null;
   }
+}
+
+function shutdown(exitCode = 0) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+
+  const hasChildren = Boolean(piWebProcess || tunnelProcess || gatewayServer);
+  if (hasChildren) {
+    console.log('\n🛑 正在停止 piDroid 服务并清理后台进程...');
+  }
+
+  cleanupChildren();
 
   setTimeout(() => {
     process.exit(exitCode);
@@ -243,7 +264,12 @@ function shutdown(exitCode = 0) {
 
 process.on('SIGINT', () => shutdown(0));
 process.on('SIGTERM', () => shutdown(0));
-process.on('exit', () => shutdown(0));
+process.on('exit', () => {
+  if (!isShuttingDown) {
+    isShuttingDown = true;
+    cleanupChildren();
+  }
+});
 
 // 3. 启动本地官方 pi-web 子进程
 //
@@ -256,6 +282,11 @@ const PI_WEB_RESTART_DELAY_MS = 5000;
 // `where pi-web` 是 PATH 查找，Windows 上 PATH 很长 / 杀软扫一遍时能卡到分钟级。
 // 实测 2026-11-11 那次自动重启：stack 起来后 139s 才走到 spawn pi-web，全程卡在这一句上。
 const PI_WEB_WHERE_TIMEOUT_MS = 5000;
+// 栈采样诊断：pi-web 的 wrapper 不转发 execArgv，NODE_OPTIONS 又不接受 --inspect，
+// 所以只有这个开关打开时，launcher 才自己用 node --inspect 直起 next，
+// 卡顿时能连上去 Debugger.pause 拿 JS 调用栈。默认关闭，行为与以前完全一致。
+const PIWEB_DEBUG_STACK = process.env.PIWEB_DEBUG_STACK === '1';
+const PIWEB_INSPECT_PORT = Number(process.env.PIWEB_INSPECT_PORT || 9229);
 let piWebRestartTimer = null;
 
 // 崩溃取证：只保留最后 N 行输出 + 每 20s 采一次 RSS。
@@ -283,11 +314,10 @@ function startPiWebMemorySampling(proc) {
     // 真正的内存大户是它孙子那层 `next start`。
     sampleProcessTreeMemoryMb(proc.pid)
       .then((mb) => {
-        if (!piWebForensics) return;
-        // recordMemory 只在「首次 / 明显变化」时返回 true，稳态不刷屏
-        if (piWebForensics.recordMemory(mb)) {
-          console.log(`[pi-web] RSS ${mb} MB`);
-        }
+        // recordMemory 只在「首次 / 明显变化」时返回 true。以前这里会打一行 RSS，
+        // 但 GC 摆动会让它每次采样都「明显变化」，两小时就刷了几百行噪音；
+        // 现在只喂给崩溃取证，稳态不输出（卡顿现场另有 [stall] 记录）。
+        if (piWebForensics && mb) piWebForensics.recordMemory(mb);
       })
       .catch(() => {})
       .then(() => {
@@ -297,11 +327,135 @@ function startPiWebMemorySampling(proc) {
   if (typeof piWebMemoryTimer.unref === 'function') piWebMemoryTimer.unref();
 }
 
-function spawnPiWeb(cmd, cmdArgs, useShell) {
+// 卡顿现场：每 5s 量一次 pi-web 的响应时间，超过 1s 就把现场写进日志。
+// 不追单次请求（那是网关的 upstream-latency.log 的活），这里要的是
+// 「卡住那一刻它在干什么」：RSS / CPU / 线程数 / 最后几行输出。
+const STALL_PROBE_INTERVAL_MS = 5000;
+const STALL_PROBE_TIMEOUT_MS = 8000;
+let stallWatchTimer = null;
+
+const stallRecorder = new StallRecorder({
+  log: (line) => console.log(line),
+  diagnostics: () => piWebDiagnostics(PI_WEB_PORT),
+});
+
+function measurePiWebLatency() {
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const req = http.get(`${piWebUrl}/api/models`, { timeout: STALL_PROBE_TIMEOUT_MS }, (res) => {
+      res.resume();
+      resolve({ ok: res.statusCode < 500, ms: Date.now() - startedAt });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, ms: Date.now() - startedAt });
+    });
+    req.on('error', () => resolve({ ok: false, ms: Date.now() - startedAt }));
+  });
+}
+
+/**
+ * 现场快照：CPU 打满 = JS/GC 侧阻塞；CPU 空转 = 在等 I/O 或锁。这条判定决定下一步往哪查。
+ * 用 exec（异步）而不是 execSync：网关和 pi-web 的托管都跑在这个进程里，
+ * 取证时把 launcher 卡住 1s 会让手机端多等 1s。
+ */
+function piWebDiagnostics(port) {
+  const pid = portOwnerPid(port);
+  if (!pid) return 'pi-web 端口无人监听（进程已退出）';
+  const script =
+    `$p=Get-Process -Id ${pid}; $c1=$p.CPU; $t=Get-Date; Start-Sleep -Milliseconds 800; ` +
+    `$p2=Get-Process -Id ${pid}; $dt=((Get-Date)-$t).TotalSeconds; ` +
+    `'pid=${pid} rss={0}MB cpu={1}% threads={2}' -f [int]($p2.WorkingSet64/1MB), [math]::Round(($p2.CPU-$c1)/$dt*100,0), $p2.Threads.Count`;
+  return new Promise((resolve) => {
+    exec(
+      `powershell -NoProfile -Command "${script}"`,
+      { timeout: 5000, windowsHide: true },
+      (error, stdout) => resolve(error ? `pid=${pid}（快照失败: ${error.message}）` : String(stdout).trim())
+    );
+  });
+}
+
+function startStallWatch() {
+  stopStallWatch();
+  let inFlight = false;
+  stallWatchTimer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = true;
+    measurePiWebLatency()
+      .then((sample) => stallRecorder.observe(sample))
+      .catch(() => {})
+      .then(() => {
+        inFlight = false;
+      });
+  }, STALL_PROBE_INTERVAL_MS);
+  if (typeof stallWatchTimer.unref === 'function') stallWatchTimer.unref();
+}
+
+function stopStallWatch() {
+  if (stallWatchTimer) {
+    clearInterval(stallWatchTimer);
+    stallWatchTimer = null;
+  }
+}
+
+/**
+ * 找到已安装的 pi-web 包目录（全局 npm 的 shim 旁边就是 node_modules）。
+ * 只为诊断路径服务：普通启动仍然走 pi-web.cmd，不碰包装器。
+ */
+function resolvePiWebPackageDir() {
+  try {
+    const out = execSync(process.platform === 'win32' ? 'where pi-web' : 'which pi-web', {
+      encoding: 'utf8',
+      timeout: PI_WEB_WHERE_TIMEOUT_MS,
+      windowsHide: true
+    });
+    const shim = String(out).split(/\r?\n/).map((line) => line.trim()).filter(Boolean)[0];
+    if (!shim) return null;
+    const pkgDir = path.join(path.dirname(shim), 'node_modules', '@agegr', 'pi-web');
+    return fs.existsSync(path.join(pkgDir, 'package.json')) ? pkgDir : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 诊断启动规格：以 node --inspect 直接起 next，跳过 wrapper（wrapper 不转发 execArgv）。
+ * 保留 wrapper 干的两件事：preview secret 轮换、next start 的端口/主机参数。
+ */
+function piWebInspectSpec() {
+  const pkgDir = resolvePiWebPackageDir();
+  if (!pkgDir) return null;
+  const nextBin = path.join(pkgDir, 'node_modules', 'next', 'dist', 'bin', 'next');
+  if (!fs.existsSync(nextBin)) return null;
+  try {
+    const rotation = require(path.join(pkgDir, 'bin', 'rotate-preview-secrets.js'));
+    rotation.rotatePreviewSecrets(path.join(pkgDir, '.next'));
+  } catch (e) {
+    console.warn('[warn] preview secret 轮换跳过:', e.message);
+  }
+  const port = new URL(piWebUrl).port || '30141';
+  console.log(`[debug] inspector 模式：next 直起，调试端口 127.0.0.1:${PIWEB_INSPECT_PORT}`);
+  return {
+    cmd: process.execPath,
+    args: [`--inspect=127.0.0.1:${PIWEB_INSPECT_PORT}`, nextBin, 'start', '-p', port, '-H', '127.0.0.1'],
+    env: { PI_WEB_HOSTNAME: '127.0.0.1' },
+    cwd: pkgDir
+  };
+}
+
+function spawnPiWeb(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
   const proc = spawn(cmd, cmdArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: useShell,
-    env: { ...process.env, PORT: '30141', PI_WEB_NO_OPEN: '1' }
+    // next start 靠 cwd 找 `.next`：inspector 诊断路径必须把 cwd 设到包目录，
+    // 否则会以 “Could not find a production build” 秒退。普通路径继续用 launcher 自己的 cwd。
+    cwd: cwd || undefined,
+    env: {
+      ...process.env,
+      PORT: String(PI_WEB_PORT),
+      PI_WEB_NO_OPEN: '1',
+      ...extraEnv,
+    }
   });
 
   piWebForensics = new CrashForensics();
@@ -315,6 +469,7 @@ function spawnPiWeb(cmd, cmdArgs, useShell) {
     const text = chunk.toString();
     // 全部输出进环形缓冲（崩溃时用），只有就绪类日志才实时回显
     piWebForensics.recordLine(text);
+    stallRecorder.noteLine(text);
     if (text.includes('Ready') || text.includes('ready') || text.includes('http://')) {
       process.stdout.write(`    [pi-web] ${text.trim()}\n`);
     }
@@ -325,10 +480,12 @@ function spawnPiWeb(cmd, cmdArgs, useShell) {
   proc.stderr.on('data', (chunk) => {
     const text = chunk.toString();
     piWebForensics.recordLine(text);
+    stallRecorder.noteLine(text);
     process.stderr.write(text);
   });
 
   startPiWebMemorySampling(proc);
+  startStallWatch();
 
   return proc;
 }
@@ -341,6 +498,19 @@ function launchPiWeb() {
   let cmd = 'pi-web';
   let cmdArgs = ['--no-open'];
   let useShell = false;
+  let extraEnv = {};
+
+  // 诊断模式：直接把 inspector 挂到真正的 next 服务上（见 piWebInspectSpec）。
+  const inspectSpec = PIWEB_DEBUG_STACK ? piWebInspectSpec() : null;
+  if (inspectSpec) {
+    cmd = inspectSpec.cmd;
+    cmdArgs = inspectSpec.args;
+    useShell = false;
+    extraEnv = inspectSpec.env;
+    return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv, inspectSpec.cwd);
+  } else if (PIWEB_DEBUG_STACK) {
+    console.warn('[warn] PIWEB_DEBUG_STACK=1 但定位不到 pi-web 包目录，回退到普通启动');
+  }
 
   // 检查是否全局有 pi-web 命令
   try {
@@ -364,10 +534,18 @@ function launchPiWeb() {
 
   console.log(`[1/3] 正在启动官方原生 pi-web 服务 (${cmd} ${cmdArgs.join(' ')})...`);
 
-  const proc = spawnPiWeb(cmd, cmdArgs, useShell);
+  return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv);
+}
+
+/**
+ * 起 pi-web 子进程并挂上取证/卡顿监测：两条启动路径（普通 / inspector 诊断）共用。
+ */
+function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
+  const proc = spawnPiWeb(cmd, cmdArgs, useShell, extraEnv, cwd);
 
   proc.on('exit', (code, signal) => {
     stopPiWebMemorySampling();
+    stopStallWatch();
     // 先出证据再重启：谁在什么时候、凭什么退出的
     const forensics = piWebForensics;
     piWebForensics = null;
@@ -425,7 +603,12 @@ async function main() {
       piWebReady = true;
       console.log(' ✓ 服务已就绪！');
     } else if (outcome.exited && (await isPortListening(piWebPort))) {
-      // 端口另有实例（自启 + 手动启动各一份、或刚被别人拉起）：直接接入现有实例。
+      // 端口另有实例：接管现有实例，并清除当前 piWebProcess 引用避免旧 exit 钩子 5s 后无限重拉撞端口。
+      piWebProcess = null;
+      if (piWebRestartTimer) {
+        clearTimeout(piWebRestartTimer);
+        piWebRestartTimer = null;
+      }
       piWebReady = await waitForReady(piWebUrl, 8000);
       console.log(` ✓ 端口 ${piWebPort} 上已有其它 pi-web 实例，直接接入。`);
     } else if (outcome.exited) {

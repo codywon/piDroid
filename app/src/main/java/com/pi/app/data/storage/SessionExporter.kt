@@ -129,7 +129,16 @@ object SessionExporter {
             android.util.Log.w("SessionExporter", "Failed to save to public Downloads", e)
         }
 
-        // 3. 构建分享面板
+        // 3. 限制缓存导出文件数量（保留最近 16 个），避免长期导出占满缓存目录
+        runCatching {
+            exportDir.listFiles()
+                ?.filter { it.isFile && it != tempFile }
+                ?.sortedByDescending { it.lastModified() }
+                ?.drop(15)
+                ?.forEach { it.delete() }
+        }
+
+        // 4. 构建分享面板
         val shareIntent = buildShareIntent(context, tempFile)
         Result.success(SessionExportResult(displayPath, shareIntent))
     }

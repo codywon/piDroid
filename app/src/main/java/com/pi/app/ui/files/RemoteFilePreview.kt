@@ -176,7 +176,11 @@ internal object RemoteFilePreviewLoader {
                 // xlsx / pptx 本质是 zip + XML：本机解包就能给出真预览，不必退回外部应用
                 if (OfficeXmlPreview.isSupportedExtension(ext) && sizeBytes in 0..OFFICE_INLINE_MAX_BYTES) {
                     val bytesRes = dataSource.getFileBytesLimited(absPath, OFFICE_INLINE_MAX_BYTES)
-                    val parsed = bytesRes.getOrNull()?.let { OfficeXmlPreview.extract(it, title) }
+                    val parsed = bytesRes.getOrNull()?.let { bytes ->
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            OfficeXmlPreview.extract(bytes, title)
+                        }
+                    }
                     if (parsed != null) {
                         officePreview = parsed
                         isBinary = false

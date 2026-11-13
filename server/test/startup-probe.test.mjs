@@ -5,7 +5,7 @@ import net from "node:net";
 import { EventEmitter } from "node:events";
 
 const probe = (await import("../startup-probe.js")).default;
-const { checkUrlAlive, isPortListening, probeWithRetry, waitForReady, waitForReadyOrExit } = probe;
+const { checkUrlAlive, isPortListening, portOwnerPid, probeWithRetry, waitForReady, waitForReadyOrExit } = probe;
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -16,6 +16,17 @@ function listen(server) {
 function close(server) {
   return new Promise((resolve) => server.close(() => resolve()));
 }
+
+test("portOwnerPid points at the process actually listening, so stall snapshots sample the right pid", async () => {
+  const server = net.createServer();
+  const port = await listen(server);
+  try {
+    assert.equal(portOwnerPid(port), process.pid);
+  } finally {
+    await close(server);
+  }
+  assert.equal(portOwnerPid(port), null);
+});
 
 test("isPortListening distinguishes a listening port from a closed one", async () => {
   const server = net.createServer();

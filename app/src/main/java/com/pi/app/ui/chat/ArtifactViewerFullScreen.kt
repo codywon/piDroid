@@ -149,14 +149,15 @@ internal fun ArtifactViewerFullScreen(
     val theme = LocalAppTheme.current
 
     // 自动刷新：对标 pi-web GET /api/files/[...path]?type=watch
-    val watchFlow = remember(path) {
+    val currentOnReload by rememberUpdatedState(onReload)
+    val watchFlow = remember(path, onWatchFileChanges) {
         path?.takeIf { it.isNotBlank() }?.let { onWatchFileChanges?.invoke(it) }
     }
     LaunchedEffect(watchFlow) {
         watchFlow?.catch { android.util.Log.d("ArtifactViewer", "watch flow closed: ${it.message}") }
             ?.collect {
                 kotlinx.coroutines.delay(200L)
-                onReload()
+                currentOnReload()
             }
     }
 
@@ -579,7 +580,11 @@ internal fun ArtifactViewerFullScreen(
 
                                 if (wrapLines) {
                                     LazyColumn(modifier = Modifier.fillMaxSize().padding(vertical = 6.dp)) {
-                                        itemsIndexed(lines) { idx, line ->
+                                        itemsIndexed(
+                                            items = lines,
+                                            key = { idx, _ -> idx },
+                                            contentType = { _, _ -> "code_line" }
+                                        ) { idx, line ->
                                             Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
@@ -605,8 +610,11 @@ internal fun ArtifactViewerFullScreen(
                                                     )
                                                 } else {
                                                     val tokens = remember(line, lang) { CodeSyntaxHighlighter.tokenizeLine(line, lang) }
+                                                    val highlighted = remember(tokens, theme) {
+                                                        CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme)
+                                                    }
                                                     Text(
-                                                        text = CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme),
+                                                        text = highlighted,
                                                         fontFamily = FontFamily.Monospace,
                                                         fontSize = 11.sp,
                                                         lineHeight = 16.sp,
@@ -680,7 +688,11 @@ internal fun ArtifactViewerFullScreen(
                                             .padding(vertical = 6.dp)
                                             .horizontalScroll(horizontalScrollState)
                                     ) {
-                                        itemsIndexed(lines) { idx, line ->
+                                        itemsIndexed(
+                                            items = lines,
+                                            key = { idx, _ -> idx },
+                                            contentType = { _, _ -> "code_line" }
+                                        ) { idx, line ->
                                             Row(
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 0.5.dp)
                                             ) {
@@ -703,8 +715,11 @@ internal fun ArtifactViewerFullScreen(
                                                     )
                                                 } else {
                                                     val tokens = remember(line, lang) { CodeSyntaxHighlighter.tokenizeLine(line, lang) }
+                                                    val highlighted = remember(tokens, theme) {
+                                                        CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme)
+                                                    }
                                                     Text(
-                                                        text = CodeSyntaxHighlighter.buildLineAnnotatedString(tokens, theme),
+                                                        text = highlighted,
                                                         fontFamily = FontFamily.Monospace,
                                                         fontSize = 11.sp,
                                                         lineHeight = 16.sp

@@ -182,86 +182,85 @@ object AppUpdateManager {
                 .header("User-Agent", "piDroid-Mobile-App")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                val code = response.code
-                response.close()
-                return@withContext UpdateCheckResult.Error("获取更新失败 (HTTP $code)")
-            }
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext UpdateCheckResult.Error("获取更新失败 (HTTP ${response.code})")
+                }
 
-            val bodyStr = response.body?.string() ?: return@withContext UpdateCheckResult.Error("服务器响应为空")
-            val json = JSONObject(bodyStr)
-            val tagName = json.optString("tag_name", "").trim()
-            val releaseTitle = json.optString("name", tagName).trim()
-            val rawNotes = json.optString("body", "• 优化智能体交互与稳定性").trim()
-            val releaseNotes = cleanChangelogMarkdown(rawNotes)
-            val publishedAt = json.optString("published_at", "").take(10)
+                val bodyStr = response.body?.string() ?: return@withContext UpdateCheckResult.Error("服务器响应为空")
+                val json = JSONObject(bodyStr)
+                val tagName = json.optString("tag_name", "").trim()
+                val releaseTitle = json.optString("name", tagName).trim()
+                val rawNotes = json.optString("body", "• 优化智能体交互与稳定性").trim()
+                val releaseNotes = cleanChangelogMarkdown(rawNotes)
+                val publishedAt = json.optString("published_at", "").take(10)
 
-            val currentVersion = getCurrentVersionName(context)
-            if (!isNewerVersion(currentVersion, tagName)) {
-                return@withContext UpdateCheckResult.NoUpdate(currentVersion)
-            }
+                val currentVersion = getCurrentVersionName(context)
+                if (!isNewerVersion(currentVersion, tagName)) {
+                    return@withContext UpdateCheckResult.NoUpdate(currentVersion)
+                }
 
-            if (!isManual && isVersionIgnored(context, tagName)) {
-                return@withContext UpdateCheckResult.Ignored(tagName)
-            }
+                if (!isManual && isVersionIgnored(context, tagName)) {
+                    return@withContext UpdateCheckResult.Ignored(tagName)
+                }
 
-            val assets = json.optJSONArray("assets")
-            var targetDownloadUrl = ""
-            var targetFileSize = 0L
-            var checksumsUrl: String? = null
-            var expectedSha256: String? = null
+                val assets = json.optJSONArray("assets")
+                var targetDownloadUrl = ""
+                var targetFileSize = 0L
+                var checksumsUrl: String? = null
+                var expectedSha256: String? = null
 
-            if (assets != null) {
-                for (i in 0 until assets.length()) {
-                    val asset = assets.optJSONObject(i) ?: continue
-                    val assetName = asset.optString("name", "")
+                if (assets != null) {
+                    for (i in 0 until assets.length()) {
+                        val asset = assets.optJSONObject(i) ?: continue
+                        val assetName = asset.optString("name", "")
 
-                    // CI 随包发布的 sha256sum 清单
-                    if (assetName.equals(CHECKSUMS_ASSET_NAME, ignoreCase = true)) {
-                        checksumsUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() }
-                        continue
-                    }
-                    if (!assetName.endsWith(".apk", ignoreCase = true)) continue
+                        // CI 随包发布的 sha256sum 清单
+                        if (assetName.equals(CHECKSUMS_ASSET_NAME, ignoreCase = true)) {
+                            checksumsUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() }
+                            continue
+                        }
+                        if (!assetName.endsWith(".apk", ignoreCase = true)) continue
 
-                    if (assetName.contains("release", ignoreCase = true) || targetDownloadUrl.isEmpty()) {
-                        targetDownloadUrl = asset.optString("browser_download_url", "")
-                        targetFileSize = asset.optLong("size", 0L)
-                        // GitHub 对较新上传的 asset 提供 "sha256:<hex>" 形式的 digest
-                        expectedSha256 = asset.optString("digest", "")
-                            .takeIf { it.startsWith("sha256:", ignoreCase = true) }
-                            ?.substringAfter(':')
-                            ?.trim()
-                            ?.lowercase(Locale.US)
-                            ?.takeIf { it.length == 64 && it.all { c -> c in "0123456789abcdef" } }
-                        if (assetName.contains("release", ignoreCase = true)) {
-                            break
+                        if (assetName.contains("release", ignoreCase = true) || targetDownloadUrl.isEmpty()) {
+                            targetDownloadUrl = asset.optString("browser_download_url", "")
+                            targetFileSize = asset.optLong("size", 0L)
+                            // GitHub 对较新上传的 asset 提供 "sha256:<hex>" 形式的 digest
+                            expectedSha256 = asset.optString("digest", "")
+                                .takeIf { it.startsWith("sha256:", ignoreCase = true) }
+                                ?.substringAfter(':')
+                                ?.trim()
+                                ?.lowercase(Locale.US)
+                                ?.takeIf { it.length == 64 && it.all { c -> c in "0123456789abcdef" } }
+                            if (assetName.contains("release", ignoreCase = true)) {
+                                break
+                            }
                         }
                     }
                 }
+
+                if (targetDownloadUrl.isBlank()) {
+                    return@withContext UpdateCheckResult.Error("未在 Release 中找到适用的 APK 安装包")
+                }
+
+                val mirrorUrls = MIRROR_SOURCES.map { it.prefix + targetDownloadUrl }
+                val updateInfo = UpdateInfo(
+                    tagName = tagName,
+                    versionName = tagName.removePrefix("v").removePrefix("V"),
+                    releaseTitle = if (releaseTitle.isNotBlank()) releaseTitle else "πDroid $tagName",
+                    releaseNotes = releaseNotes,
+                    downloadUrl = targetDownloadUrl,
+                    mirrorUrls = mirrorUrls,
+                    fileSize = targetFileSize,
+                    publishedAt = publishedAt,
+                    isManual = isManual,
+                    checksumsUrl = checksumsUrl,
+                    expectedSha256 = expectedSha256
+                )
+
+                setLastCheckTimestamp(context, System.currentTimeMillis())
+                UpdateCheckResult.HasUpdate(updateInfo)
             }
-
-            if (targetDownloadUrl.isBlank()) {
-                return@withContext UpdateCheckResult.Error("未在 Release 中找到适用的 APK 安装包")
-            }
-
-            val mirrorUrls = MIRROR_SOURCES.map { it.prefix + targetDownloadUrl }
-            val updateInfo = UpdateInfo(
-                tagName = tagName,
-                versionName = tagName.removePrefix("v").removePrefix("V"),
-                releaseTitle = if (releaseTitle.isNotBlank()) releaseTitle else "πDroid $tagName",
-                releaseNotes = releaseNotes,
-                downloadUrl = targetDownloadUrl,
-                mirrorUrls = mirrorUrls,
-                fileSize = targetFileSize,
-                publishedAt = publishedAt,
-                isManual = isManual,
-                checksumsUrl = checksumsUrl,
-                expectedSha256 = expectedSha256
-            )
-
-            setLastCheckTimestamp(context, System.currentTimeMillis())
-            UpdateCheckResult.HasUpdate(updateInfo)
         } catch (e: Exception) {
             Log.e(TAG, "checkUpdate error", e)
             UpdateCheckResult.Error(e.localizedMessage ?: "检查更新异常，请检查网络连接")
@@ -317,8 +316,14 @@ object AppUpdateManager {
         onProgress: (progress: Float, downloadedBytes: Long, totalBytes: Long, speedText: String, channelName: String) -> Unit
     ): Result<File> = withContext(Dispatchers.IO) {
         val updateDir = File(context.cacheDir, "updates").apply { mkdirs() }
+        val safeTag = info.tagName.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "latest" }
         val targetFile = File(updateDir, "piDroid-update.apk")
-        val tempFile = File(updateDir, "piDroid-update.apk.tmp")
+        val tempFile = File(updateDir, "piDroid-update-$safeTag.apk.tmp")
+
+        // 清理旧版本残片（含历史无 tag 命名的 .apk.tmp），防止跨版本断点拼接破坏校验
+        updateDir.listFiles()
+            ?.filter { it.isFile && it != tempFile && (it.name == "piDroid-update.apk.tmp" || it.name.endsWith(".apk.tmp")) }
+            ?.forEach { runCatching { it.delete() } }
 
         if (targetFile.exists()) {
             targetFile.delete()
@@ -348,83 +353,94 @@ object AppUpdateManager {
                     Log.d(TAG, "Resuming download from $existingBytes bytes on ${channel.name}")
                 }
 
-                val response = httpClient.newCall(reqBuilder.build()).execute()
-                if (!response.isSuccessful) {
-                    response.close()
-                    continue
-                }
+                // 本次通道是否真的拿到了可用的响应体。没拿到时不能进入后面的完整性校验：
+                // tempFile 可能是上一个通道留下的断点残片，拿去算哈希只会误删进度。
+                var receivedBody = false
+                httpClient.newCall(reqBuilder.build()).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        return@use
+                    }
 
-                val code = response.code
-                val isPartial = isResume && code == 206
-                val append = isPartial
-                val actualExistingBytes = if (append) existingBytes else 0L
-                if (!append && tempFile.exists()) {
-                    tempFile.delete()
-                }
+                    val code = response.code
+                    val isPartial = isResume && code == 206
+                    val append = isPartial
+                    val actualExistingBytes = if (append) existingBytes else 0L
+                    if (!append && tempFile.exists()) {
+                        tempFile.delete()
+                    }
 
-                val body = response.body ?: continue
-                val totalBytes = if (append) {
-                    actualExistingBytes + body.contentLength()
-                } else {
-                    if (body.contentLength() > 0) body.contentLength() else info.fileSize
-                }
-
-                body.byteStream().use { input ->
-                    FileOutputStream(tempFile, append).use { output ->
-                        val buffer = ByteArray(IO_BUFFER_BYTES)
-                        var bytesRead: Int
-                        var totalRead = actualExistingBytes
-                        var lastProgressUiTime = 0L
-                        var speedSampleStartTime = System.currentTimeMillis()
-                        var speedSampleBytes = 0L
-                        var currentSpeedText = "-- KB/s"
-                        val connectionStartTime = System.currentTimeMillis()
-
-                        while (input.read(buffer).also { bytesRead = it } != -1) {
-                            output.write(buffer, 0, bytesRead)
-                            totalRead += bytesRead
-                            speedSampleBytes += bytesRead
-
-                            val now = System.currentTimeMillis()
-
-                            // 低速熔断看门狗：前 4 秒如果平均速度低于 100 KB/s，主动断开当前通道换下一个（断点续传不丢进度）
-                            val elapsedSec = (now - connectionStartTime) / 1000.0
-                            if (elapsedSec >= WATCHDOG_WINDOW_SECONDS &&
-                                totalRead < totalBytes * WATCHDOG_PROGRESS_GUARD
-                            ) {
-                                val currentChannelDownloaded = totalRead - actualExistingBytes
-                                val avgSpeedKb = (currentChannelDownloaded / 1024.0) / elapsedSec
-                                if (avgSpeedKb < WATCHDOG_MIN_SPEED_KBPS) {
-                                    Log.w(TAG, "Watchdog triggered: avg speed ${avgSpeedKb.toInt()} KB/s < 100 KB/s on ${channel.name}")
-                                    throw IOException("当前通道连接速率过低 (${avgSpeedKb.toInt()} KB/s)，平滑断点切换下一通道...")
-                                }
-                            }
-
-                            // 采样计算瞬时下载速度（每 400ms 刷新一次速度值）
-                            val sampleElapsedSec = (now - speedSampleStartTime) / 1000.0
-                            if (sampleElapsedSec >= SPEED_SAMPLE_INTERVAL_SECONDS) {
-                                val bytesPerSec = (speedSampleBytes / sampleElapsedSec).toLong()
-                                currentSpeedText = formatSpeed(bytesPerSec)
-                                speedSampleBytes = 0L
-                                speedSampleStartTime = now
-                            }
-
-                            // 刷新 UI 进度（约 120ms 一次）
-                            if (now - lastProgressUiTime >= PROGRESS_UI_INTERVAL_MS || totalRead == totalBytes) {
-                                lastProgressUiTime = now
-                                val progress = if (totalBytes > 0) {
-                                    (totalRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
-                                } else {
-                                    0f
-                                }
-                                withContext(Dispatchers.Main) {
-                                    onProgress(progress, totalRead, totalBytes, currentSpeedText, channel.name)
-                                }
-                            }
+                    val body = response.body ?: return@use
+                    receivedBody = true
+                    val contentLength = body.contentLength()
+                    val totalBytes = if (append) {
+                        if (contentLength > 0) actualExistingBytes + contentLength else info.fileSize.coerceAtLeast(0L)
+                    } else {
+                        when {
+                            contentLength > 0 -> contentLength
+                            info.fileSize > 0 -> info.fileSize
+                            else -> 0L
                         }
-                        output.flush()
+                    }
+
+                    body.byteStream().use { input ->
+                        FileOutputStream(tempFile, append).use { output ->
+                            val buffer = ByteArray(IO_BUFFER_BYTES)
+                            var bytesRead: Int
+                            var totalRead = actualExistingBytes
+                            var lastProgressUiTime = 0L
+                            var speedSampleStartTime = System.currentTimeMillis()
+                            var speedSampleBytes = 0L
+                            var currentSpeedText = "-- KB/s"
+                            val connectionStartTime = System.currentTimeMillis()
+
+                            while (input.read(buffer).also { bytesRead = it } != -1) {
+                                output.write(buffer, 0, bytesRead)
+                                totalRead += bytesRead
+                                speedSampleBytes += bytesRead
+
+                                val now = System.currentTimeMillis()
+
+                                // 低速熔断看门狗：前 4 秒如果平均速度低于 100 KB/s，主动断开当前通道换下一个（断点续传不丢进度）
+                                val elapsedSec = (now - connectionStartTime) / 1000.0
+                                if (elapsedSec >= WATCHDOG_WINDOW_SECONDS &&
+                                    (totalBytes <= 0L || totalRead < totalBytes * WATCHDOG_PROGRESS_GUARD)
+                                ) {
+                                    val currentChannelDownloaded = totalRead - actualExistingBytes
+                                    val avgSpeedKb = (currentChannelDownloaded / 1024.0) / elapsedSec
+                                    if (avgSpeedKb < WATCHDOG_MIN_SPEED_KBPS) {
+                                        Log.w(TAG, "Watchdog triggered: avg speed ${avgSpeedKb.toInt()} KB/s < 100 KB/s on ${channel.name}")
+                                        throw IOException("当前通道连接速率过低 (${avgSpeedKb.toInt()} KB/s)，平滑断点切换下一通道...")
+                                    }
+                                }
+
+                                // 采样计算瞬时下载速度（每 400ms 刷新一次速度值）
+                                val sampleElapsedSec = (now - speedSampleStartTime) / 1000.0
+                                if (sampleElapsedSec >= SPEED_SAMPLE_INTERVAL_SECONDS) {
+                                    val bytesPerSec = (speedSampleBytes / sampleElapsedSec).toLong()
+                                    currentSpeedText = formatSpeed(bytesPerSec)
+                                    speedSampleBytes = 0L
+                                    speedSampleStartTime = now
+                                }
+
+                                // 刷新 UI 进度（约 120ms 一次）
+                                if (now - lastProgressUiTime >= PROGRESS_UI_INTERVAL_MS || (totalBytes > 0L && totalRead == totalBytes)) {
+                                    lastProgressUiTime = now
+                                    val progress = if (totalBytes > 0L) {
+                                        (totalRead.toFloat() / totalBytes.toFloat()).coerceIn(0f, 1f)
+                                    } else {
+                                        0f
+                                    }
+                                    withContext(Dispatchers.Main) {
+                                        onProgress(progress, totalRead, totalBytes, currentSpeedText, channel.name)
+                                    }
+                                }
+                            }
+                            output.flush()
+                        }
                     }
                 }
+
+                if (!receivedBody) continue
 
                 // 完整性校验 0/3：体积下限过滤（防止把 HTML 404 错误页当成 APK 保存）
                 if (!tempFile.exists() || tempFile.length() <= MIN_APK_BYTES) {
@@ -456,6 +472,8 @@ object AppUpdateManager {
                     Log.d(TAG, "Download completed from ${channel.name}, size=${targetFile.length()}")
                     return@withContext Result.success(targetFile)
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Download channel [${channel.name}] encounter issue: ${e.message}")
                 lastException = e
@@ -661,18 +679,17 @@ object AppUpdateManager {
                             .connectTimeout(RANK_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                             .readTimeout(RANK_PROBE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
                             .build()
-                        val resp = client.newCall(req).execute()
-                        val code = resp.code
-                        val success = resp.isSuccessful && (code == 200 || code == 206)
-                        if (success) {
-                            resp.body?.byteStream()?.use { stream ->
-                                val buf = ByteArray(RANK_PROBE_CHUNK_BYTES)
-                                stream.read(buf) // 真实读取接收数据流
+                        client.newCall(req).execute().use { resp ->
+                            val code = resp.code
+                            val success = resp.isSuccessful && (code == 200 || code == 206)
+                            if (success) {
+                                resp.body?.byteStream()?.use { stream ->
+                                    val buf = ByteArray(RANK_PROBE_CHUNK_BYTES)
+                                    stream.read(buf) // 真实读取接收数据流
+                                }
                             }
-                        } else {
-                            resp.close()
+                            success
                         }
-                        success
                     } catch (_: Exception) {
                         false
                     }

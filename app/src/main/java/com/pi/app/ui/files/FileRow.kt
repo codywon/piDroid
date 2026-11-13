@@ -254,6 +254,7 @@ internal fun ErrorDirectoryRow(
         modifier = modifier
             .fillMaxWidth()
             .height(36.dp)
+            .clickable(onClick = onRetry)
             .padding(start = 36.dp + indentDp, end = 12.dp)
     ) {
         Text(

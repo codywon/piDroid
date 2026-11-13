@@ -13,6 +13,7 @@ class AppPreferences(context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("pidroid_prefs", Context.MODE_PRIVATE)
+    private val stateLock = Any()
 
     /**
      * 网关地址。
@@ -218,8 +219,8 @@ class AppPreferences(context: Context) {
     }
 
     // 会话置顶管理
-    fun getPinnedSessionIds(): Set<String> {
-        return prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()
+    fun getPinnedSessionIds(): Set<String> = synchronized(stateLock) {
+        return (prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()).toSet()
     }
 
     fun isSessionPinned(sessionId: String): Boolean {
@@ -227,12 +228,12 @@ class AppPreferences(context: Context) {
     }
 
     /** 用服务端 ui-state 覆盖本地镜像（置顶） */
-    fun setPinnedSessionIds(ids: Set<String>) {
-        prefs.edit().putStringSet(KEY_PINNED_SESSIONS, ids).apply()
+    fun setPinnedSessionIds(ids: Set<String>) = synchronized(stateLock) {
+        prefs.edit().putStringSet(KEY_PINNED_SESSIONS, ids.toSet()).apply()
     }
 
-    fun togglePinSession(sessionId: String): Boolean {
-        val current = getPinnedSessionIds().toMutableSet()
+    fun togglePinSession(sessionId: String): Boolean = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         val willPin = !current.contains(sessionId)
         if (willPin) {
             current.add(sessionId)
@@ -244,31 +245,31 @@ class AppPreferences(context: Context) {
     }
 
     // 未读标记（与 pi-web 一致：存在设备本地，不跨端同步）
-    fun getUnreadSessionIds(): Set<String> {
-        return prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()
+    fun getUnreadSessionIds(): Set<String> = synchronized(stateLock) {
+        return (prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()).toSet()
     }
 
-    fun setUnreadSessionIds(ids: Set<String>) {
-        prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, ids).apply()
+    fun setUnreadSessionIds(ids: Set<String>) = synchronized(stateLock) {
+        prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, ids.toSet()).apply()
     }
 
-    fun markSessionRead(sessionId: String) {
-        val current = getUnreadSessionIds().toMutableSet()
+    fun markSessionRead(sessionId: String) = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         if (current.remove(sessionId)) {
             prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, current).apply()
         }
     }
 
-    fun markSessionUnread(sessionId: String) {
-        val current = getUnreadSessionIds().toMutableSet()
+    fun markSessionUnread(sessionId: String) = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         if (current.add(sessionId)) {
             prefs.edit().putStringSet(KEY_UNREAD_SESSIONS, current).apply()
         }
     }
 
     // 会话归档管理 (对标 pi-web 侧边栏底部已归档体系)
-    fun getArchivedSessionIds(): Set<String> {
-        return prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()
+    fun getArchivedSessionIds(): Set<String> = synchronized(stateLock) {
+        return (prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()).toSet()
     }
 
     fun isSessionArchived(sessionId: String): Boolean {
@@ -276,24 +277,24 @@ class AppPreferences(context: Context) {
     }
 
     /** 用服务端 ui-state 覆盖本地镜像（归档） */
-    fun setArchivedSessionIds(ids: Set<String>) {
-        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, ids).apply()
+    fun setArchivedSessionIds(ids: Set<String>) = synchronized(stateLock) {
+        prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, ids.toSet()).apply()
     }
 
-    fun addArchivedSessionIds(ids: Collection<String>) {
-        val current = getArchivedSessionIds().toMutableSet()
+    fun addArchivedSessionIds(ids: Collection<String>) = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         current.addAll(ids)
         prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, current).apply()
     }
 
-    fun removeArchivedSessionIds(ids: Collection<String>) {
-        val current = getArchivedSessionIds().toMutableSet()
+    fun removeArchivedSessionIds(ids: Collection<String>) = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         current.removeAll(ids.toSet())
         prefs.edit().putStringSet(KEY_ARCHIVED_SESSIONS, current).apply()
     }
 
-    fun toggleArchiveSession(sessionId: String): Boolean {
-        val current = getArchivedSessionIds().toMutableSet()
+    fun toggleArchiveSession(sessionId: String): Boolean = synchronized(stateLock) {
+        val current = (prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         val willArchive = !current.contains(sessionId)
         if (willArchive) {
             current.add(sessionId)
@@ -304,12 +305,12 @@ class AppPreferences(context: Context) {
         return willArchive
     }
 
-    fun removeSessionLocalData(sessionId: String) {
-        val currentPinned = getPinnedSessionIds().toMutableSet()
+    fun removeSessionLocalData(sessionId: String) = synchronized(stateLock) {
+        val currentPinned = (prefs.getStringSet(KEY_PINNED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         currentPinned.remove(sessionId)
-        val currentArchived = getArchivedSessionIds().toMutableSet()
+        val currentArchived = (prefs.getStringSet(KEY_ARCHIVED_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         currentArchived.remove(sessionId)
-        val currentUnread = getUnreadSessionIds().toMutableSet()
+        val currentUnread = (prefs.getStringSet(KEY_UNREAD_SESSIONS, emptySet()) ?: emptySet()).toMutableSet()
         currentUnread.remove(sessionId)
         prefs.edit()
             .putStringSet(KEY_PINNED_SESSIONS, currentPinned)
@@ -335,25 +336,29 @@ class AppPreferences(context: Context) {
     // 否则同一个目录会以「D:\x」（App 自己拼的）与「D:/x」（会话 projectRoot / pi-web 回的）
     // 两种写法各占一行、会话只算到其中一行（回归见 WorkspaceGrouping）。
     // 读取也过同一层：旧版本存下的反斜杠写法仍能显示、能与新写法合并，数据不会被改坏。
-    fun getCustomWorkspaces(): Set<String> {
+    fun getCustomWorkspaces(): Set<String> = synchronized(stateLock) {
         val raw = prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
         return raw.mapNotNull { path -> WorkspacePaths.displayPath(path).takeIf { it.isNotBlank() } }.toSet()
     }
 
-    fun addCustomWorkspace(path: String) {
+    fun addCustomWorkspace(path: String) = synchronized(stateLock) {
         val clean = WorkspacePaths.displayPath(path)
         if (clean.isBlank()) return
-        val current = getCustomWorkspaces().toMutableSet()
+        val raw = prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
+        val current = raw.mapNotNull { p -> WorkspacePaths.displayPath(p).takeIf { it.isNotBlank() } }.toMutableSet()
         // 同一目录的旧写法（反斜杠 / 大小写不同）不再重复占位
         current.removeAll { WorkspacePaths.samePath(it, clean) }
         current.add(clean)
         prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
     }
 
-    fun removeCustomWorkspace(path: String) {
+    fun removeCustomWorkspace(path: String) = synchronized(stateLock) {
         val target = WorkspacePaths.displayPath(path)
         if (target.isBlank()) return
-        val current = getCustomWorkspaces().filterNot { WorkspacePaths.samePath(it, target) }.toSet()
+        val raw = prefs.getStringSet(KEY_CUSTOM_WORKSPACES, emptySet()) ?: emptySet()
+        val current = raw.mapNotNull { p -> WorkspacePaths.displayPath(p).takeIf { it.isNotBlank() } }
+            .filterNot { WorkspacePaths.samePath(it, target) }
+            .toSet()
         prefs.edit().putStringSet(KEY_CUSTOM_WORKSPACES, current).apply()
     }
 
@@ -370,7 +375,7 @@ class AppPreferences(context: Context) {
         val supportsVision: Boolean
     )
 
-    fun saveModelOverride(override: StoredModelOverride) {
+    fun saveModelOverride(override: StoredModelOverride) = synchronized(stateLock) {
         val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
             ?: com.google.gson.JsonObject()
@@ -390,7 +395,7 @@ class AppPreferences(context: Context) {
         prefs.edit().putString(KEY_MODEL_OVERRIDES, root.toString()).apply()
     }
 
-    fun removeModelOverride(provider: String, modelId: String) {
+    fun removeModelOverride(provider: String, modelId: String) = synchronized(stateLock) {
         val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return
         root.remove("${provider.trim()}:${modelId.trim()}")
@@ -400,7 +405,7 @@ class AppPreferences(context: Context) {
     // ── 每个会话最后确认的模型身份 (provider/modelId) ──
     // 「回到会话」时先用它还原模型，否则只能拿到全局默认或切换之前的旧快照，
     // 会把 provider 显示回上一家（例如 deepseek 又变回 codywon）。
-    fun getSessionModelIdentity(sessionId: String): Pair<String, String>? {
+    fun getSessionModelIdentity(sessionId: String): Pair<String, String>? = synchronized(stateLock) {
         if (sessionId.isBlank()) return null
         val raw = prefs.getString(KEY_SESSION_MODEL_IDENTITIES, "{}") ?: return null
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: return null
@@ -408,7 +413,7 @@ class AppPreferences(context: Context) {
         return SessionModelIdentityCodec.decode(value)
     }
 
-    fun saveSessionModelIdentity(sessionId: String, provider: String, modelId: String) {
+    fun saveSessionModelIdentity(sessionId: String, provider: String, modelId: String) = synchronized(stateLock) {
         if (sessionId.isBlank() || provider.isBlank() || modelId.isBlank()) return
         val raw = prefs.getString(KEY_SESSION_MODEL_IDENTITIES, "{}") ?: "{}"
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
@@ -422,7 +427,7 @@ class AppPreferences(context: Context) {
         prefs.edit().putString(KEY_SESSION_MODEL_IDENTITIES, obj.toString()).apply()
     }
 
-    fun getModelOverrides(): Map<String, StoredModelOverride> {
+    fun getModelOverrides(): Map<String, StoredModelOverride> = synchronized(stateLock) {
         val raw = prefs.getString(KEY_MODEL_OVERRIDES, "{}") ?: "{}"
         val root = runCatching { com.google.gson.JsonParser.parseString(raw).asJsonObject }.getOrNull()
             ?: return emptyMap()
@@ -467,8 +472,8 @@ class AppPreferences(context: Context) {
 
 
     // 工作区项目置顶管理 (对标 pi-web 项目置顶)
-    fun getPinnedWorkspaces(): Set<String> {
-        return prefs.getStringSet(KEY_PINNED_WORKSPACES, emptySet()) ?: emptySet()
+    fun getPinnedWorkspaces(): Set<String> = synchronized(stateLock) {
+        return (prefs.getStringSet(KEY_PINNED_WORKSPACES, emptySet()) ?: emptySet()).toSet()
     }
 
     fun isWorkspacePinned(path: String): Boolean {
@@ -476,10 +481,10 @@ class AppPreferences(context: Context) {
         return getPinnedWorkspaces().any { WorkspacePaths.samePath(it, path) }
     }
 
-    fun togglePinWorkspace(path: String): Boolean {
+    fun togglePinWorkspace(path: String): Boolean = synchronized(stateLock) {
         val clean = WorkspacePaths.displayPath(path)
         if (clean.isBlank()) return false
-        val current = getPinnedWorkspaces().toMutableSet()
+        val current = (prefs.getStringSet(KEY_PINNED_WORKSPACES, emptySet()) ?: emptySet()).toMutableSet()
         val willPin = !current.any { WorkspacePaths.samePath(it, clean) }
         // 清掉同一目录的旧写法，避免置顶表里两种写法各留一条
         current.removeAll { WorkspacePaths.samePath(it, clean) }
@@ -503,7 +508,7 @@ class AppPreferences(context: Context) {
         return keys.distinct()
     }
 
-    fun getWorkspaceCustomName(path: String): String? {
+    fun getWorkspaceCustomName(path: String): String? = synchronized(stateLock) {
         for (key in workspaceNameKeys(path)) {
             val value = prefs.getString(key, null)
             if (!value.isNullOrBlank()) return value
@@ -511,7 +516,7 @@ class AppPreferences(context: Context) {
         return null
     }
 
-    fun saveWorkspaceCustomName(path: String, name: String?) {
+    fun saveWorkspaceCustomName(path: String, name: String?) = synchronized(stateLock) {
         val keys = workspaceNameKeys(path)
         if (keys.isEmpty()) return
         val editor = prefs.edit()
@@ -526,13 +531,13 @@ class AppPreferences(context: Context) {
     }
 
     // 工作区自定义排序 (对标 pi-web move-up / move-down)
-    fun getWorkspaceOrder(): List<String> {
+    fun getWorkspaceOrder(): List<String> = synchronized(stateLock) {
         val raw = prefs.getString(KEY_WORKSPACE_ORDER, "") ?: ""
         if (raw.isBlank()) return emptyList()
         return raw.split(";").filter { it.isNotBlank() }
     }
 
-    fun saveWorkspaceOrder(order: List<String>) {
+    fun saveWorkspaceOrder(order: List<String>) = synchronized(stateLock) {
         val raw = order.joinToString(";")
         prefs.edit().putString(KEY_WORKSPACE_ORDER, raw).apply()
     }

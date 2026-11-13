@@ -379,16 +379,17 @@ fun GlobalModelsConfigTab(
         modelPingResults = modelPingResults + (pingKey to ModelPingResult(isTesting = true))
         coroutineScope.launch {
             val provObj = JsonObject().apply {
-                if (prov.baseUrl.isNotBlank()) addProperty("baseUrl", prov.baseUrl)
-                if (prov.apiKey.isNotBlank()) addProperty("apiKey", prov.apiKey)
-                if (prov.api.isNotBlank()) addProperty("api", prov.api)
+                if (prov.baseUrl.isNotBlank()) addProperty("baseUrl", prov.baseUrl.trim())
+                if (prov.apiKey.isNotBlank()) addProperty("apiKey", prov.apiKey.trim())
+                if (prov.api.isNotBlank()) addProperty("api", prov.api.trim())
             }
             val modelObj = JsonObject().apply {
-                addProperty("id", model.id)
-                addProperty("name", model.name)
+                addProperty("id", model.id.trim())
+                addProperty("name", model.name.trim())
                 addProperty("contextWindow", model.contextWindow)
                 addProperty("maxTokens", model.maxTokens)
-                if (model.apiOverride.isNotBlank()) addProperty("api", model.apiOverride)
+                val trimmedApiOverride = model.apiOverride.trim()
+                if (trimmedApiOverride.isNotBlank()) addProperty("api", trimmedApiOverride)
             }
             val testRes = apiClient.testModelConfig(prov.name, provObj, modelObj)
             testRes.onSuccess { r ->
@@ -1976,7 +1977,7 @@ fun GlobalModelsConfigTab(
 
                         ModelInputField(
                             value = currentModel.apiOverride,
-                            onValueChange = { str -> updateCurrentModel { it.copy(apiOverride = str.trim()) } },
+                            onValueChange = { str -> updateCurrentModel { it.copy(apiOverride = str) } },
                             label = "自定义 API 协议覆盖",
                             placeholder = "留空则继承 Provider API",
                             isMonospace = true,
@@ -2063,7 +2064,7 @@ fun GlobalModelsConfigTab(
                         )
                         OutlinedTextField(
                             value = builtInApiKeyInput,
-                            onValueChange = { builtInApiKeyInput = it.trim() },
+                            onValueChange = { builtInApiKeyInput = it },
                             label = { Text("API Key") },
                             placeholder = { Text("sk-…") },
                             singleLine = true,
@@ -2114,19 +2115,20 @@ fun GlobalModelsConfigTab(
                         if (addMode == 0) {
                             OutlinedTextField(
                                 value = builtInSearch,
-                                onValueChange = { builtInSearch = it.trim() },
+                                onValueChange = { builtInSearch = it },
                                 placeholder = { Text("搜索内置提供商，如 anthropic / openai...") },
                                 singleLine = true,
                                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, modifier = Modifier.size(16.dp)) },
                                 modifier = Modifier.fillMaxWidth()
                             )
 
+                            val trimmedSearch = builtInSearch.trim()
                             val unconfiguredList = authStates.values
                                 .filter { !it.configured && !providers.any { p -> p.name.equals(it.providerId, ignoreCase = true) } }
                                 .filter {
-                                    builtInSearch.isBlank() ||
-                                        it.displayName.contains(builtInSearch, ignoreCase = true) ||
-                                        it.providerId.contains(builtInSearch, ignoreCase = true)
+                                    trimmedSearch.isBlank() ||
+                                        it.displayName.contains(trimmedSearch, ignoreCase = true) ||
+                                        it.providerId.contains(trimmedSearch, ignoreCase = true)
                                 }
                                 .sortedBy { it.displayName }
 
@@ -2139,7 +2141,7 @@ fun GlobalModelsConfigTab(
                             ) {
                                 if (unconfiguredList.isEmpty()) {
                                     Text(
-                                        text = if (builtInSearch.isBlank()) "无更多未接入的内置提供商" else "未匹配到任何提供商",
+                                        text = if (trimmedSearch.isBlank()) "无更多未接入的内置提供商" else "未匹配到任何提供商",
                                         fontSize = 11.sp,
                                         color = theme.textMuted,
                                         modifier = Modifier.padding(vertical = 12.dp)
@@ -2196,7 +2198,7 @@ fun GlobalModelsConfigTab(
                         } else {
                             OutlinedTextField(
                                 value = newProvName,
-                                onValueChange = { newProvName = it.trim() },
+                                onValueChange = { newProvName = it },
                                 label = { Text("Provider 标识 *") },
                                 placeholder = { Text("如 my-endpoint") },
                                 singleLine = true,
@@ -2204,7 +2206,7 @@ fun GlobalModelsConfigTab(
                             )
                             OutlinedTextField(
                                 value = newProvBaseUrl,
-                                onValueChange = { newProvBaseUrl = it.trim() },
+                                onValueChange = { newProvBaseUrl = it },
                                 label = { Text("Base URL") },
                                 placeholder = { Text("https://api.example.com/v1") },
                                 singleLine = true,
@@ -2212,14 +2214,14 @@ fun GlobalModelsConfigTab(
                             )
                             OutlinedTextField(
                                 value = newProvApiKey,
-                                onValueChange = { newProvApiKey = it.trim() },
+                                onValueChange = { newProvApiKey = it },
                                 label = { Text("API Key") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
                             OutlinedTextField(
                                 value = newProvApi,
-                                onValueChange = { newProvApi = it.trim() },
+                                onValueChange = { newProvApi = it },
                                 label = { Text("API 协议") },
                                 placeholder = { Text("openai-completions / anthropic-messages") },
                                 singleLine = true,
@@ -2261,21 +2263,25 @@ fun GlobalModelsConfigTab(
                 } else if (addMode == 1) {
                     Button(
                         onClick = {
-                            if (newProvName.isBlank()) {
+                            val trimmedName = newProvName.trim()
+                            val trimmedBaseUrl = newProvBaseUrl.trim()
+                            val trimmedApiKey = newProvApiKey.trim()
+                            val trimmedApi = newProvApi.trim().ifBlank { "openai-completions" }
+                            if (trimmedName.isBlank()) {
                                 Toast.makeText(context, "Provider 标识不能为空", Toast.LENGTH_SHORT).show()
                                 return@Button
                             }
-                            if (providers.any { it.name.equals(newProvName, ignoreCase = true) }) {
+                            if (providers.any { it.name.equals(trimmedName, ignoreCase = true) }) {
                                 Toast.makeText(context, "已存在同名 Provider", Toast.LENGTH_SHORT).show()
                                 return@Button
                             }
                             val created = ProviderConfigItem(
-                                name = newProvName,
-                                displayName = newProvName,
-                                baseUrl = newProvBaseUrl,
-                                apiKey = newProvApiKey,
-                                api = newProvApi,
-                                models = listOf(ModelConfigItem(id = "$newProvName-default", name = "$newProvName-default", reasoning = true)),
+                                name = trimmedName,
+                                displayName = trimmedName,
+                                baseUrl = trimmedBaseUrl,
+                                apiKey = trimmedApiKey,
+                                api = trimmedApi,
+                                models = listOf(ModelConfigItem(id = "$trimmedName-default", name = "$trimmedName-default", reasoning = true)),
                                 isBuiltIn = false
                             )
                             providers = providers + created
@@ -2318,7 +2324,7 @@ fun GlobalModelsConfigTab(
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = editBaseUrl,
-                        onValueChange = { editBaseUrl = it.trim() },
+                        onValueChange = { editBaseUrl = it },
                         label = { Text("Base URL") },
                         placeholder = { Text("https://api.example.com/v1") },
                         singleLine = true,
@@ -2327,7 +2333,7 @@ fun GlobalModelsConfigTab(
 
                     OutlinedTextField(
                         value = editApiKey,
-                        onValueChange = { editApiKey = it.trim() },
+                        onValueChange = { editApiKey = it },
                         label = { Text("API Key（写入 models.json）") },
                         placeholder = { Text("留空则不修改") },
                         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
@@ -2346,7 +2352,7 @@ fun GlobalModelsConfigTab(
 
                     OutlinedTextField(
                         value = editApi,
-                        onValueChange = { editApi = it.trim() },
+                        onValueChange = { editApi = it },
                         label = { Text("API 协议") },
                         placeholder = { Text("openai-completions / anthropic-messages") },
                         singleLine = true,
@@ -2357,11 +2363,14 @@ fun GlobalModelsConfigTab(
             confirmButton = {
                 Button(
                     onClick = {
+                        val trimmedBaseUrl = editBaseUrl.trim()
+                        val trimmedApiKey = editApiKey.trim()
+                        val trimmedApi = editApi.trim()
                         val updated = currentProvider.copy(
-                            baseUrl = editBaseUrl,
+                            baseUrl = trimmedBaseUrl,
                             // 留空时保留原有值，避免一次「只改 Base URL」的编辑把已有 Key 抹掉
-                            apiKey = if (editApiKey.isNotBlank()) editApiKey else currentProvider.apiKey,
-                            api = editApi
+                            apiKey = if (trimmedApiKey.isNotBlank()) trimmedApiKey else currentProvider.apiKey,
+                            api = trimmedApi
                         )
                         providers = providers.map { if (it.name == currentProvider.name) updated else it }
                         showEditProviderDialog = false
@@ -2687,6 +2696,8 @@ fun GlobalModelsConfigTab(
                                                 api = currentProvider.api
                                             ).onSuccess { res ->
                                                 discoveredModels = res.models
+                                                    .filter { it.id.isNotBlank() }
+                                                    .distinctBy { it.id }
                                                 isDiscovering = false
                                             }.onFailure { err ->
                                                 discoverError = err.message

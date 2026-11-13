@@ -57,6 +57,8 @@ import com.pi.app.ui.updater.AppUpdateDialog
 import com.pi.app.ui.updater.UpdateUiState
 import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateCheckResult
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -164,6 +166,7 @@ fun GlobalSettingsScreen(
 
     // 应用内更新状态
     var updateUiState by remember { mutableStateOf<UpdateUiState>(UpdateUiState.Idle) }
+    var updateDownloadJob by remember { mutableStateOf<Job?>(null) }
     var isCheckingUpdate by remember { mutableStateOf(false) }
 
     // 从系统设置授权未知应用安装权限返回时自适应续接安装
@@ -302,11 +305,16 @@ fun GlobalSettingsScreen(
                         isLoadingSkillMd = true
                         coroutineScope.launch {
                             val loaded = onLoadSkillContent(skill)
-                            if (!loaded.isNullOrBlank()) {
-                                skillMarkdownContent = loaded
-                                skillEditBuffer = loaded
+                            val stillSameSkill = selectedSkillForDetail?.let { cur ->
+                                cur.name == skill.name && cur.filePath == skill.filePath
+                            } == true
+                            if (stillSameSkill) {
+                                if (!loaded.isNullOrBlank()) {
+                                    skillMarkdownContent = loaded
+                                    skillEditBuffer = loaded
+                                }
+                                isLoadingSkillMd = false
                             }
-                            isLoadingSkillMd = false
                         }
                     },
                     onInstallSkill = onInstallSkill,
@@ -379,32 +387,40 @@ fun GlobalSettingsScreen(
     AppUpdateDialog(
         state = updateUiState,
         onStartDownload = { info ->
-            coroutineScope.launch {
-                updateUiState = UpdateUiState.Downloading(
-                    info = info,
-                    progress = 0f,
-                    downloadedBytes = 0L,
-                    totalBytes = info.fileSize,
-                    speedText = "连接镜像中...",
-                    channelName = "智能优选通道"
-                )
-                val result = AppUpdateManager.downloadApk(context, info) { progress, downloaded, total, speed, channel ->
-                    updateUiState = UpdateUiState.Downloading(info, progress, downloaded, total, speed, channel)
-                }
-                result.onSuccess { apkFile ->
-                    if (AppUpdateManager.canInstallPackages(context)) {
-                        updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
-                        if (!AppUpdateManager.installApk(context, apkFile)) {
-                            updateUiState = UpdateUiState.Error(
-                                "校验未通过，已阻止安装；请到 Release 手动下载",
-                                info
-                            )
-                        }
-                    } else {
-                        updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
+            updateDownloadJob?.cancel()
+            updateDownloadJob = coroutineScope.launch {
+                try {
+                    updateUiState = UpdateUiState.Downloading(
+                        info = info,
+                        progress = 0f,
+                        downloadedBytes = 0L,
+                        totalBytes = info.fileSize,
+                        speedText = "连接镜像中...",
+                        channelName = "智能优选通道"
+                    )
+                    val result = AppUpdateManager.downloadApk(context, info) { progress, downloaded, total, speed, channel ->
+                        updateUiState = UpdateUiState.Downloading(info, progress, downloaded, total, speed, channel)
                     }
-                }.onFailure { err ->
-                    updateUiState = UpdateUiState.Error(err.message ?: "下载失败", info)
+                    result.onSuccess { apkFile ->
+                        if (AppUpdateManager.canInstallPackages(context)) {
+                            updateUiState = UpdateUiState.ReadyToInstall(apkFile, info)
+                            if (!AppUpdateManager.installApk(context, apkFile)) {
+                                updateUiState = UpdateUiState.Error(
+                                    "校验未通过，已阻止安装；请到 Release 手动下载",
+                                    info
+                                )
+                            }
+                        } else {
+                            updateUiState = UpdateUiState.PermissionRequired(apkFile, info)
+                        }
+                    }.onFailure { err ->
+                        if (err is CancellationException) throw err
+                        updateUiState = UpdateUiState.Error(err.message ?: "下载失败", info)
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } finally {
+                    updateDownloadJob = null
                 }
             }
         },
@@ -424,10 +440,14 @@ fun GlobalSettingsScreen(
             }
         },
         onIgnore = { tagName ->
+            updateDownloadJob?.cancel()
+            updateDownloadJob = null
             AppUpdateManager.ignoreVersion(context, tagName)
             updateUiState = UpdateUiState.Idle
         },
         onDismiss = {
+            updateDownloadJob?.cancel()
+            updateDownloadJob = null
             updateUiState = UpdateUiState.Idle
         }
     )
@@ -2714,7 +2734,16 @@ fun GlobalMcpTab(
         }
         var endpointInput by remember(target) { mutableStateOf(target?.url ?: "") }
         var descInput by remember(target) { mutableStateOf(target?.description ?: "") }
-        var scopeInput by remember(target) { mutableStateOf("user") }
+        var scopeInput by remember(target) {
+            val existing = target?.scope?.trim()?.lowercase()
+            mutableStateOf(
+                when (existing) {
+                    "project", "workspace", "local" -> existing
+                    "global", "user" -> existing
+                    else -> "user"
+                }
+            )
+        }
 
         AlertDialog(
             onDismissRequest = { showAddMcpDialog = false },

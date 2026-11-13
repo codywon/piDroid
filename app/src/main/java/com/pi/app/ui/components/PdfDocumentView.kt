@@ -69,7 +69,8 @@ internal fun PdfDocumentView(
 
     var currentPage by remember(file.path) { mutableIntStateOf(0) }
     var pageCount by remember(file.path) { mutableIntStateOf(0) }
-    var currentBitmap by remember(file.path, currentPage) { mutableStateOf<ImageBitmap?>(null) }
+    // 仅以 file.path 为 key，翻页解码期间保留上一页图像防止白屏闪烁
+    var currentBitmap by remember(file.path) { mutableStateOf<ImageBitmap?>(null) }
     var isLoading by remember(file.path, currentPage) { mutableStateOf(true) }
     var errorMessage by remember(file.path) { mutableStateOf<String?>(null) }
 
@@ -98,6 +99,8 @@ internal fun PdfDocumentView(
                         }
                     }
                 }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 null
             }

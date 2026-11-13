@@ -87,7 +87,23 @@ fun QrScannerScreen(
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    var isProcessing by remember { mutableStateOf(false) }
+    val processingLock = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasCameraPermission = granted
+    }
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+        }
+    }
     val scannerResources = remember { QrScannerResources() }
 
     // 离开扫码页（返回、配对成功、转场）时释放线程池与解码器；
@@ -105,8 +121,11 @@ fun QrScannerScreen(
                 val token = uri.getQueryParameter("token") ?: ""
                 val name = uri.getQueryParameter("name") ?: "My PC"
                 if (url.isNotEmpty() && token.isNotEmpty()) {
-                    isProcessing = true
-                    onScanSuccess(url, token, name)
+                    if (processingLock.compareAndSet(false, true)) {
+                        ContextCompat.getMainExecutor(context).execute {
+                            onScanSuccess(url, token, name)
+                        }
+                    }
                     return true
                 }
             } catch (e: Exception) {
@@ -123,8 +142,11 @@ fun QrScannerScreen(
                     trimmed
                 }
                 if (token.isNotEmpty()) {
-                    isProcessing = true
-                    onScanSuccess(baseUrl, token, name)
+                    if (processingLock.compareAndSet(false, true)) {
+                        ContextCompat.getMainExecutor(context).execute {
+                            onScanSuccess(baseUrl, token, name)
+                        }
+                    }
                     return true
                 }
             } catch (e: Exception) {
@@ -174,70 +196,92 @@ fun QrScannerScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color(ThemePalette.ScrimBase))) {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                val previewView = PreviewView(ctx)
-                val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                val cameraExecutor = Executors.newSingleThreadExecutor()
-                val barcodeScanner = BarcodeScanning.getClient()
-                scannerResources.attach(cameraExecutor, barcodeScanner)
+        if (hasCameraPermission) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { ctx ->
+                    val previewView = PreviewView(ctx)
+                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                    val cameraExecutor = Executors.newSingleThreadExecutor()
+                    val barcodeScanner = BarcodeScanning.getClient()
+                    scannerResources.attach(cameraExecutor, barcodeScanner)
 
-                cameraProviderFuture.addListener({
-                    // 相机初始化是异步的：页面可能已经关掉了，这时不能再绑定
-                    if (scannerResources.released) return@addListener
-                    val cameraProvider = cameraProviderFuture.get()
-                    scannerResources.attach(cameraProvider)
-                    val preview = Preview.Builder().build().also {
-                        it.surfaceProvider = previewView.surfaceProvider
-                    }
-
-                    @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
-                    val imageAnalysis = ImageAnalysis.Builder()
-                        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                        .build()
-                        .also { analysis ->
-                            analysis.setAnalyzer(cameraExecutor) { imageProxy ->
-                                val mediaImage = imageProxy.image
-                                if (mediaImage != null && !isProcessing) {
-                                    val image = InputImage.fromMediaImage(
-                                        mediaImage,
-                                        imageProxy.imageInfo.rotationDegrees
-                                    )
-                                    barcodeScanner.process(image)
-                                        .addOnSuccessListener { barcodes ->
-                                            for (barcode in barcodes) {
-                                                val rawValue = barcode.rawValue ?: continue
-                                                if (parseAndHandleQrCode(rawValue)) {
-                                                    break
-                                                }
-                                            }
-                                        }
-                                        .addOnCompleteListener {
-                                            imageProxy.close()
-                                        }
-                                } else {
-                                    imageProxy.close()
-                                }
-                            }
+                    cameraProviderFuture.addListener({
+                        // 相机初始化是异步的：页面可能已经关掉了，这时不能再绑定
+                        if (scannerResources.released) return@addListener
+                        val cameraProvider = try {
+                            cameraProviderFuture.get()
+                        } catch (e: Exception) {
+                            Log.e("QrScanner", "Get camera provider failed", e)
+                            return@addListener
+                        }
+                        if (scannerResources.released) return@addListener
+                        scannerResources.attach(cameraProvider)
+                        val preview = Preview.Builder().build().also {
+                            it.surfaceProvider = previewView.surfaceProvider
                         }
 
-                    try {
-                        cameraProvider.unbindAll()
-                        cameraProvider.bindToLifecycle(
-                            lifecycleOwner,
-                            CameraSelector.DEFAULT_BACK_CAMERA,
-                            preview,
-                            imageAnalysis
-                        )
-                    } catch (e: Exception) {
-                        Log.e("QrScanner", "Camera bind failed", e)
-                    }
-                }, ContextCompat.getMainExecutor(ctx))
+                        @androidx.annotation.OptIn(androidx.camera.core.ExperimentalGetImage::class)
+                        val imageAnalysis = ImageAnalysis.Builder()
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                            .build()
+                            .also { analysis ->
+                                analysis.setAnalyzer(cameraExecutor) { imageProxy ->
+                                    val mediaImage = imageProxy.image
+                                    if (mediaImage != null && !processingLock.get() && !scannerResources.released) {
+                                        val image = InputImage.fromMediaImage(
+                                            mediaImage,
+                                            imageProxy.imageInfo.rotationDegrees
+                                        )
+                                        barcodeScanner.process(image)
+                                            .addOnSuccessListener { barcodes ->
+                                                for (barcode in barcodes) {
+                                                    val rawValue = barcode.rawValue ?: continue
+                                                    if (parseAndHandleQrCode(rawValue)) {
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                            .addOnCompleteListener {
+                                                imageProxy.close()
+                                            }
+                                    } else {
+                                        imageProxy.close()
+                                    }
+                                }
+                            }
 
-                previewView
+                        try {
+                            cameraProvider.unbindAll()
+                            cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                CameraSelector.DEFAULT_BACK_CAMERA,
+                                preview,
+                                imageAnalysis
+                            )
+                        } catch (e: Exception) {
+                            Log.e("QrScanner", "Camera bind failed", e)
+                        }
+                    }, ContextCompat.getMainExecutor(ctx))
+
+                    previewView
+                }
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable { cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "需要相机权限进行扫码（点击重新授权，或使用下方相册选图）",
+                    color = Color.White.copy(alpha = 0.8f),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                )
             }
-        )
+        }
 
         // 取景器与操作交互层
         Column(

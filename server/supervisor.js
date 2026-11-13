@@ -39,6 +39,7 @@ const STATE_DIR = path.join(SERVER_DIR, 'logs');
 const STACK_LOG = path.join(STATE_DIR, 'stack.log');
 const DEATH_LOG = path.join(STATE_DIR, 'deaths.log');
 const SUPERVISOR_PID_FILE = path.join(STATE_DIR, 'supervisor.pid');
+const PROBE_LATENCY_LOG = path.join(STATE_DIR, 'probe-latency.csv');
 const LAUNCHER = path.join(SERVER_DIR, 'launcher.js');
 const TOKEN_FILE = path.join(SERVER_DIR, '.token');
 
@@ -46,9 +47,17 @@ const PIWEB_PORT = Number(process.env.PIWEB_PORT || 30141);
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT || 4100);
 
 // 探活参数：launcher.js 里"首次编译可能 1s 以上才应答"的坑，这里用「连续 N 次失败」而不是一次失败就判死。
-const PROBE_INTERVAL_MS = 20_000;
-const PROBE_TIMEOUT_MS = 8_000;
-const FAILURES_BEFORE_RESTART = 3;
+// 探活节奏：业界惯例是事件循环健康检查 5~10s 一次。2s 超时才能看见「3~4s 的整段阻塞」，
+// 8s 超时会把它当成正常——这就是劣化期一直没被抓到的原因；3 连失败 ≈ 30s 才动手，容忍偶发抖动。
+const PROBE_INTERVAL_MS = 10_000;
+const PROBE_TIMEOUT_MS = 2_000;
+// 3 连失败 ≈ 30s 看起来很宽容，但 pi-web 有个已知的「合法长阻塞」：
+// /api/file-index 在大目录上要 **29 秒**（实测 2026-11-13，cwd=D:\myscript）。30s 判死线
+// 正好压在它身上——建索引 → 被杀 → 重来，探针永远看不到成功。提到 5（≈50s）。
+const FAILURES_BEFORE_RESTART = 5;
+// 每次 pi-web 起来后都有一段预热尾巴（会话索引重建 + 扩展 session_start），
+// 这期间的慢不计入失败，否则会把刚起来的实例直接再杀一遍。
+const PIWEB_SETTLE_MS = 120_000;
 // 冷启动预算：Next.js 首编译 + resolveProject 逐个 git 探测，机器一忙就会超过 60s。
 // 窗口太短会在「还在启动」时判死，杀掉再拉一份 —— 于是永远起不来。
 const BOOT_GRACE_MS = 120_000;
@@ -116,16 +125,33 @@ function authHeaders() {
 /** 任何 HTTP 应答（含 401/404）都算活着：我们要的是事件循环还在转，不是业务成功。 */
 function probe(url, headers = {}) {
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     const req = http.get(url, { timeout: PROBE_TIMEOUT_MS, headers }, (res) => {
       res.resume();
-      resolve({ ok: true, status: res.statusCode });
+      resolve({ ok: true, status: res.statusCode, ms: Date.now() - startedAt });
     });
     req.on('timeout', () => {
       req.destroy();
-      resolve({ ok: false, reason: 'timeout' });
+      resolve({ ok: false, reason: 'timeout', ms: Date.now() - startedAt });
     });
-    req.on('error', (err) => resolve({ ok: false, reason: err.code || err.message }));
+    req.on('error', (err) => resolve({ ok: false, reason: err.code || err.message, ms: Date.now() - startedAt }));
   });
+}
+
+/** 每次探活一行，便于事后把「卡顿时间点」和网关的 upstream-latency.log 对齐。 */
+function recordProbe(piweb, gateway) {
+  const line = [
+    new Date().toISOString(),
+    piweb.ok ? piweb.status : piweb.reason,
+    piweb.ms,
+    gateway.ok ? gateway.status : gateway.reason,
+    gateway.ms
+  ].join(',');
+  try {
+    fs.appendFileSync(PROBE_LATENCY_LOG, line + '\n');
+  } catch (e) {
+    /* 日志写不进去不该拖垮守护 */
+  }
 }
 
 function stackHealth() {
@@ -151,17 +177,41 @@ function portOwnerPid(port) {
 
 /** 单进程 RSS（MB），用 tasklist 免得再拉一个 PowerShell 起来。 */
 function processRssMb(pid) {
+  if (!pid) return null;
+  if (process.platform !== 'win32') {
+    try {
+      const status = fs.readFileSync(`/proc/${Number(pid)}/status`, 'utf8');
+      const m = status.match(/VmRSS:\s+(\d+)\s+kB/);
+      return m ? Math.round(Number(m[1]) / 1024) : null;
+    } catch {
+      return null;
+    }
+  }
   const r = spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
   if (!r.stdout) return null;
-  const m = r.stdout.match(/"([^"]+)","[^"]*","[^"]*","([\d\s.,]+) K"/);
-  if (!m) return null;
-  return Math.round(Number(m[2].replace(/[^\d]/g, '')) / 1024);
+  // Windows tasklist /FO CSV /NH 输出 5 列，末列为内存用量（如 "123,456 K"）
+  for (const rawLine of r.stdout.split(/\r?\n/)) {
+    const cells = rawLine.trim().match(/"([^"]*)"/g);
+    if (!cells || cells.length < 2) continue;
+    const lastCell = cells[cells.length - 1];
+    const m = lastCell.match(/"([\d\s.,]+)\s*K"/i);
+    if (m) return Math.round(Number(m[1].replace(/[^\d]/g, '')) / 1024);
+  }
+  return null;
 }
 
 function killTree(pid, why) {
   if (!pid) return;
   log(`kill tree pid=${pid} (${why})`);
-  spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+  } else {
+    try {
+      process.kill(-pid, 'SIGTERM');
+    } catch {
+      try { process.kill(pid, 'SIGTERM'); } catch {}
+    }
+  }
 }
 
 class Supervisor {
@@ -172,8 +222,12 @@ class Supervisor {
     this.failures = 0;
     this.restarts = 0;
     this.piwebOnlyRestarts = 0;
+    this.piwebPid = 0;
+    this.piwebSettleUntil = 0;
+    this.settleLogged = false;
     this.rssPeakMb = 0;
     this.stopping = false;
+    this.tickInFlight = false;
     this.probeTimer = null;
     this.rssTimer = null;
     this.restartTimer = null;
@@ -188,20 +242,24 @@ class Supervisor {
     }
     // launcher.js 自己会拉起 pi-web / 网关 / frp / cloudflared，并且 pi-web 退出后自己重启。
     const out = fs.openSync(STACK_LOG, 'a');
-    this.child = spawn(process.execPath, ['--no-deprecation', LAUNCHER], {
-      cwd: SERVER_DIR,
-      stdio: ['ignore', out, out],
-      env: {
-        ...process.env,
-        GATEWAY_PORT: String(GATEWAY_PORT),
-        PORT: String(GATEWAY_PORT),
-        PI_WEB_NO_OPEN: '1',
-        // 给 pi-web 的堆设一个上限：真到了极限也是带 FATAL 信息退出（可取证），
-        // 而不是涨到 GB 级以后以 code 1 无声消失。
-        NODE_OPTIONS: [process.env.NODE_OPTIONS, '--max-old-space-size=3072'].filter(Boolean).join(' ')
-      },
-      windowsHide: true
-    });
+    try {
+      this.child = spawn(process.execPath, ['--no-deprecation', LAUNCHER], {
+        cwd: SERVER_DIR,
+        stdio: ['ignore', out, out],
+        env: {
+          ...process.env,
+          GATEWAY_PORT: String(GATEWAY_PORT),
+          PORT: String(GATEWAY_PORT),
+          PI_WEB_NO_OPEN: '1',
+          // 给 pi-web 的堆设一个上限：真到了极限也是带 FATAL 信息退出（可取证），
+          // 而不是涨到 GB 级以后以 code 1 无声消失。
+          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--max-old-space-size=3072'].filter(Boolean).join(' ')
+        },
+        windowsHide: true
+      });
+    } finally {
+      try { fs.closeSync(out); } catch {}
+    }
     this.childStartedAt = Date.now();
     log(`stack started (pid ${this.child.pid}) reason=${reason}`);
 
@@ -225,58 +283,84 @@ class Supervisor {
     });
   }
 
-  async tick() {
-    if (this.stopping) return;
-    const [piweb, gateway] = await stackHealth();
-    if (piweb.ok && gateway.ok) {
-      this.failures = 0;
-      this.piwebOnlyRestarts = 0;
-      if (!this.healthySince) {
-        this.healthySince = Date.now();
-        log(`healthy: pi-web ${piweb.status} / gateway ${gateway.status}`);
-      } else if (this.restarts > 0 && Date.now() - this.healthySince > 300_000) {
-        // 稳了 5 分钟就把退避清零，否则一次抖动会让之后所有重启都等 5 分钟。
-        log(`stable for 5min, resetting restart backoff (was #${this.restarts})`);
-        this.restarts = 0;
-      }
-      return;
-    }
-    // 刚拉起的实例还没到冷启动预算：不判死，否则会把"正在启动"当成"死了"再拉一份。
-    if (this.child && Date.now() - this.childStartedAt < BOOT_GRACE_MS) return;
-    this.healthySince = 0;
-    this.failures += 1;
-    log(
-      `probe failed ${this.failures}/${FAILURES_BEFORE_RESTART}: pi-web=${piweb.ok ? piweb.status : piweb.reason} gateway=${gateway.ok ? gateway.status : gateway.reason}`
-    );
-    if (this.failures < FAILURES_BEFORE_RESTART) return;
+  /** 换了一个新的 pi-web 进程（谁拉起的都算）：开一个预热窗口。 */
+  detectPiWebRestart() {
+    const pid = portOwnerPid(PIWEB_PORT);
+    if (!pid || pid === this.piwebPid) return;
+    this.piwebPid = pid;
+    this.piwebSettleUntil = Date.now() + PIWEB_SETTLE_MS;
+    this.settleLogged = false;
+    log(`pi-web pid=${pid} serving, settle window ${PIWEB_SETTLE_MS / 1000}s (预热期的慢不计入失败)`);
+  }
 
-    this.failures = 0;
-    const action = planRecovery({ gatewayOk: gateway.ok, piwebOnlyRestarts: this.piwebOnlyRestarts });
-    recordDeath({
-      kind: 'unresponsive',
-      piweb: piweb.ok ? piweb.status : piweb.reason,
-      gateway: gateway.ok ? gateway.status : gateway.reason,
-      childPid: this.child && this.child.pid,
-      action
-    });
-    if (!this.child) {
-      // 端口上挂着一份没人托管的实例（手敲的 / 上一代守护的孤儿）：清掉再起自己的。
-      for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `无主实例占用 ${port}`);
-      this.startChild('adopted stack unresponsive');
-      return;
-    }
-    if (action === 'piweb') {
-      // 只换 pi-web：launcher 的 exit 钩子会在 5s 后把它重新拉起来，网关与 frp 隧道全程不断。
-      this.piwebOnlyRestarts += 1;
-      const owner = portOwnerPid(PIWEB_PORT);
+  async tick() {
+    if (this.stopping || this.tickInFlight) return;
+    this.tickInFlight = true;
+    try {
+      const [piweb, gateway] = await stackHealth();
+      this.detectPiWebRestart();
+      recordProbe(piweb, gateway);
+      if (piweb.ok && gateway.ok) {
+        this.failures = 0;
+        this.piwebOnlyRestarts = 0;
+        if (!this.healthySince) {
+          this.healthySince = Date.now();
+          log(`healthy: pi-web ${piweb.status} (${piweb.ms}ms) / gateway ${gateway.status} (${gateway.ms}ms)`);
+        } else if (this.restarts > 0 && Date.now() - this.healthySince > 300_000) {
+          // 稳了 5 分钟就把退避清零，否则一次抖动会让之后所有重启都等 5 分钟。
+          log(`stable for 5min, resetting restart backoff (was #${this.restarts})`);
+          this.restarts = 0;
+        }
+        return;
+      }
+      // 刚拉起的实例还没到冷启动预算：不判死，否则会把"正在启动"当成"死了"再拉一份。
+      if (this.child && Date.now() - this.childStartedAt < BOOT_GRACE_MS) return;
+      if (Date.now() < this.piwebSettleUntil) {
+        // 预热尾巴期的慢是预期行为：计成失败就会把刚起来的实例再杀一遍（14:26~14:43 连杀 4 次）。
+        this.failures = 0;
+        if (!this.settleLogged) {
+          this.settleLogged = true;
+          log(`probe slow during settle (pi-web=${piweb.ok ? piweb.status : piweb.reason}) — not counted`);
+        }
+        return;
+      }
+      this.healthySince = 0;
+      this.failures += 1;
       log(
-        `recycling pi-web only (${this.piwebOnlyRestarts}/${PIWEB_ONLY_RESTARTS_BEFORE_FULL}) owner=${owner || 'none'} — gateway 与隧道保持不动`
+        `probe failed ${this.failures}/${FAILURES_BEFORE_RESTART}: pi-web=${piweb.ok ? piweb.status : piweb.reason} gateway=${gateway.ok ? gateway.status : gateway.reason}`
       );
-      killTree(owner, 'unresponsive pi-web');
-      return;
+      if (this.failures < FAILURES_BEFORE_RESTART) return;
+
+      this.failures = 0;
+      const action = planRecovery({ gatewayOk: gateway.ok, piwebOnlyRestarts: this.piwebOnlyRestarts });
+      recordDeath({
+        kind: 'unresponsive',
+        piweb: piweb.ok ? piweb.status : piweb.reason,
+        gateway: gateway.ok ? gateway.status : gateway.reason,
+        childPid: this.child && this.child.pid,
+        action
+      });
+      if (!this.child) {
+        // 端口上挂着一份没人托管的实例（手敲的 / 上一代守护的孤儿）：清掉再起自己的。
+        for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `无主实例占用 ${port}`);
+        this.startChild('adopted stack unresponsive');
+        return;
+      }
+      if (action === 'piweb') {
+        // 只换 pi-web：launcher 的 exit 钩子会在 5s 后把它重新拉起来，网关与 frp 隧道全程不断。
+        this.piwebOnlyRestarts += 1;
+        const owner = portOwnerPid(PIWEB_PORT);
+        log(
+          `recycling pi-web only (${this.piwebOnlyRestarts}/${PIWEB_ONLY_RESTARTS_BEFORE_FULL}) owner=${owner || 'none'} — gateway 与隧道保持不动`
+        );
+        killTree(owner, 'unresponsive pi-web');
+        return;
+      }
+      this.piwebOnlyRestarts = 0;
+      killTree(this.child.pid, 'unresponsive stack');
+    } finally {
+      this.tickInFlight = false;
     }
-    this.piwebOnlyRestarts = 0;
-    killTree(this.child.pid, 'unresponsive stack');
   }
 
   sampleRss() {
@@ -446,10 +530,13 @@ async function main() {
       const pid = readSupervisorPid();
       if (pid) {
         console.log(`stopping supervisor ${pid}`);
-        try {
-          process.kill(pid);
-        } catch (e) {}
-        for (let i = 0; i < 40 && readSupervisorPid(); i += 1) await new Promise((r) => setTimeout(r, 250));
+        if (process.platform === 'win32') {
+          killTree(pid, 'restart requested');
+          try { fs.unlinkSync(SUPERVISOR_PID_FILE); } catch {}
+        } else {
+          try { process.kill(pid); } catch (e) {}
+          for (let i = 0; i < 40 && readSupervisorPid(); i += 1) await new Promise((r) => setTimeout(r, 250));
+        }
       }
       for (const port of [PIWEB_PORT, GATEWAY_PORT]) {
         const owner = portOwnerPid(port);
@@ -462,14 +549,21 @@ async function main() {
     case 'stop': {
       const pid = readSupervisorPid();
       if (pid) {
-        try {
-          process.kill(pid);
-        } catch (e) {}
-        console.log(`asked supervisor ${pid} to stop`);
+        if (process.platform === 'win32') {
+          // Windows 的 process.kill 直接 TerminateProcess，不会跑 SIGINT/SIGTERM 钩子；
+          // 直接杀进程树并清端口 + pid 文件，避免整栈成孤儿继续运行。
+          killTree(pid, 'manual stop');
+          try { fs.unlinkSync(SUPERVISOR_PID_FILE); } catch {}
+        } else {
+          try {
+            process.kill(pid);
+          } catch (e) {}
+        }
+        console.log(`stopped supervisor ${pid}`);
       } else {
         console.log('supervisor not running; clearing ports');
-        for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `manual stop ${port}`);
       }
+      for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `manual stop ${port}`);
       break;
     }
     case 'install':

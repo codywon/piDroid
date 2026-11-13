@@ -134,19 +134,26 @@ class PiApiClient(private val prefs: AppPreferences) {
         /** 内存快照缓存上限（见 [cacheSessionDetail]）。 */
         private const val MAX_CACHED_SESSIONS = 4
     }
-    private val sessionHistoryCache = java.util.concurrent.ConcurrentHashMap<String, SessionHistoryData>()
+    private val sessionHistoryCache = object : LinkedHashMap<String, SessionHistoryData>(
+        MAX_CACHED_SESSIONS + 1,
+        0.75f,
+        true
+    ) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, SessionHistoryData>?): Boolean {
+            return size > MAX_CACHED_SESSIONS
+        }
+    }
 
     /**
      * 内存里的会话快照缓存（已解析的 ChatItem 列表，含工具输出/媒体）只留最近几次打开的会话。
      *
      * 不设上限的话它会随「打开过的会话数」线性增长 —— 长时间使用后进程被系统回收，
-     * 用户看到的就是「看着一个任务，过一会直接闪退」。淘汰顺序不保证是 LRU（缓存而已）。
+     * 用户看到的就是「看着一个任务，过一会直接闪退」。采用按访问顺序淘汰的 LRU。
      */
     private fun cacheSessionDetail(sessionId: String, data: SessionHistoryData) {
-        if (sessionHistoryCache.size >= MAX_CACHED_SESSIONS && !sessionHistoryCache.containsKey(sessionId)) {
-            sessionHistoryCache.keys.firstOrNull()?.let { sessionHistoryCache.remove(it) }
+        synchronized(sessionHistoryCache) {
+            sessionHistoryCache[sessionId] = data
         }
-        sessionHistoryCache[sessionId] = data
     }
 
     /** 会话树形状认不出来的日志只报一次（进程内），见 [warnUnknownTreeShape]。 */
@@ -162,13 +169,16 @@ class PiApiClient(private val prefs: AppPreferences) {
     @Volatile
     private var catalogContextWindows: Map<String, Long> = emptyMap()
 
-    fun getCachedSessionDetail(sessionId: String): SessionHistoryData? = sessionHistoryCache[sessionId]
+    fun getCachedSessionDetail(sessionId: String): SessionHistoryData? =
+        synchronized(sessionHistoryCache) { sessionHistoryCache[sessionId] }
 
     fun clearSessionCache(sessionId: String? = null) {
-        if (sessionId == null) {
-            sessionHistoryCache.clear()
-        } else {
-            sessionHistoryCache.remove(sessionId)
+        synchronized(sessionHistoryCache) {
+            if (sessionId == null) {
+                sessionHistoryCache.clear()
+            } else {
+                sessionHistoryCache.remove(sessionId)
+            }
         }
     }
 
@@ -826,8 +836,8 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     private val snapshotWriteLocks = Array(16) { Any() }
 
-    /** 上次成功落盘时间；只在持有对应 [snapshotWriteLocks] 时读写。 */
-    private val snapshotLastWriteAt = mutableMapOf<String, Long>()
+    /** 上次成功落盘时间；各分片锁并发访问同一 Map，使用 ConcurrentHashMap 防止结构损坏。 */
+    private val snapshotLastWriteAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     private fun snapshotDir(): File {
         val dir = File(prefs.cacheDir, "session-snapshots")
@@ -2588,6 +2598,14 @@ class PiApiClient(private val prefs: AppPreferences) {
                             }
                         }
                     }
+                }
+                // 控制 opened/ 缓存文件数量（保留最近 20 个），避免长期使用无限占满缓存目录
+                runCatching {
+                    dir.listFiles()
+                        ?.filter { it.isFile && it != target }
+                        ?.sortedByDescending { it.lastModified() }
+                        ?.drop(19)
+                        ?.forEach { it.delete() }
                 }
                 return@withContext Result.success(target)
             } catch (e: Exception) {
@@ -5618,7 +5636,10 @@ data class CatalogPreset(
                 if (apiKey.isNotBlank()) {
                     reqBuilder.addHeader("Authorization", "Bearer ${apiKey.trim()}")
                 }
+                // 仅复用全局 connectionPool 与 dispatcher，不继承 AuthInterceptor（避免向第三方上游泄漏网关 Token）
                 val directClient = OkHttpClient.Builder()
+                    .connectionPool(client.connectionPool)
+                    .dispatcher(client.dispatcher)
                     .connectTimeout(15, TimeUnit.SECONDS)
                     .readTimeout(20, TimeUnit.SECONDS)
                     .build()
@@ -5718,7 +5739,7 @@ data class CatalogPreset(
                 .url("$baseUrl/api/sessions/$sessionId/export")
                 .get()
                 .build()
-            client.newCall(req).execute().use { resp ->
+            fileClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val rawBody = resp.body?.string()?.take(300) ?: ""
                     val err = runCatching { JsonParser.parseString(rawBody).asJsonObject.get("error").asString }.getOrNull()
@@ -5735,6 +5756,7 @@ data class CatalogPreset(
             }
             Result.success(targetFile)
         } catch (e: Exception) {
+            runCatching { targetFile.delete() }
             Result.failure(e)
         }
     }
@@ -5766,28 +5788,31 @@ data class CatalogPreset(
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (!response.isSuccessful) {
-                    close(IOException("Watch file failed (${response.code})"))
-                    return
-                }
-                val body = response.body
-                if (body == null) {
-                    close(IOException("Response body is null"))
-                    return
-                }
-                try {
-                    val reader = body.byteStream().bufferedReader(Charsets.UTF_8)
-                    var line: String?
-                    while (reader.readLine().also { line = it } != null) {
-                        val currentLine = line ?: break
-                        if (currentLine.startsWith("event: change") || currentLine.startsWith("data: {\"mtime\"")) {
-                            trySend(Unit)
-                        }
+                response.use { resp ->
+                    if (!resp.isSuccessful) {
+                        close(IOException("Watch file failed (${resp.code})"))
+                        return
                     }
-                } catch (e: Exception) {
-                    // 正常流断开
-                } finally {
-                    close()
+                    val body = resp.body
+                    if (body == null) {
+                        close(IOException("Response body is null"))
+                        return
+                    }
+                    try {
+                        body.byteStream().bufferedReader(Charsets.UTF_8).use { reader ->
+                            var line: String?
+                            while (reader.readLine().also { line = it } != null) {
+                                val currentLine = line ?: break
+                                if (currentLine.startsWith("event: change") || currentLine.startsWith("data: {\"mtime\"")) {
+                                    trySend(Unit)
+                                }
+                            }
+                        }
+                    } catch (_: Exception) {
+                        // 正常流断开
+                    } finally {
+                        close()
+                    }
                 }
             }
         })

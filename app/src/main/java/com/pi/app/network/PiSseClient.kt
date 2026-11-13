@@ -11,6 +11,7 @@ import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.data.model.SseConnectionState
 import com.pi.app.data.model.TokenStats
 import com.pi.app.data.storage.AppPreferences
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -48,6 +49,9 @@ class PiSseClient(private val prefs: AppPreferences) {
 
     private val _connectionState = MutableStateFlow(SseConnectionState.DISCONNECTED)
     val connectionState: StateFlow<SseConnectionState> = _connectionState.asStateFlow()
+    private val streamTokenCounter = java.util.concurrent.atomic.AtomicLong(0L)
+    @Volatile
+    private var activeStreamToken: Long = 0L
 
     /**
      * 监听 pi-web Agent 实时流式事件
@@ -56,25 +60,39 @@ class PiSseClient(private val prefs: AppPreferences) {
      * 并具备指数退避自动重连与重连后快照对账触发能力。
      */
     fun listenAgentEvents(sessionId: String): Flow<AgentSseEvent> = callbackFlow {
-        var eventSource: EventSource? = null
-        var isClosedByUser = false
-        var retryAttempt = 0
+        val streamToken = streamTokenCounter.incrementAndGet()
+        activeStreamToken = streamToken
+        val closedByUser = java.util.concurrent.atomic.AtomicBoolean(false)
+        // pi-web 0.16.0：会话结束时服务端先推 session_ended，再主动关流。
+        // 之后的 onClosed 不是断线，不该重挂（见 AgentEventReconnectPolicy）。
+        val sessionEnded = java.util.concurrent.atomic.AtomicBoolean(false)
+        val retryAttempt = java.util.concurrent.atomic.AtomicInteger(0)
+        val currentEventSource = java.util.concurrent.atomic.AtomicReference<EventSource?>(null)
+        val reconnectJob = java.util.concurrent.atomic.AtomicReference<Job?>(null)
+
+        fun updateState(state: SseConnectionState) {
+            if (activeStreamToken == streamToken) {
+                _connectionState.value = state
+            }
+        }
 
         fun connect() {
-            if (isClosedByUser) return
+            if (closedByUser.get()) return
             val baseUrl = prefs.serverUrl.trimEnd('/')
             val token = prefs.authToken
             if (baseUrl.isBlank()) {
-                _connectionState.value = SseConnectionState.DISCONNECTED
+                updateState(SseConnectionState.DISCONNECTED)
                 return
             }
 
-            _connectionState.value = if (retryAttempt == 0) {
+            val attempt = retryAttempt.get()
+            val nextState = if (attempt == 0) {
                 SseConnectionState.CONNECTING
             } else {
                 SseConnectionState.RECONNECTING
             }
-            trySend(AgentSseEvent(type = "connection_state", connectionState = _connectionState.value.name))
+            updateState(nextState)
+            trySend(AgentSseEvent(type = "connection_state", connectionState = nextState.name))
 
             // token 只走 Authorization 头，绝不放进 URL：
             // Cloudflare Tunnel / 反向代理会把完整 URL 写进访问日志，
@@ -94,10 +112,14 @@ class PiSseClient(private val prefs: AppPreferences) {
                 .build()
 
             val listener = object : EventSourceListener() {
+                private fun isCurrentSource(es: EventSource): Boolean {
+                    return !closedByUser.get() && currentEventSource.get() === es
+                }
+
                 override fun onOpen(es: EventSource, response: Response) {
-                    val wasReconnecting = retryAttempt > 0
-                    retryAttempt = 0
-                    _connectionState.value = SseConnectionState.CONNECTED
+                    if (!isCurrentSource(es)) return
+                    val wasReconnecting = retryAttempt.getAndSet(0) > 0
+                    updateState(SseConnectionState.CONNECTED)
                     Log.d("PiSseClient", "SSE Connected for session $sessionId")
                     trySend(AgentSseEvent(type = "connection_state", connectionState = SseConnectionState.CONNECTED.name))
                     if (wasReconnecting) {
@@ -107,22 +129,24 @@ class PiSseClient(private val prefs: AppPreferences) {
                 }
 
                 override fun onEvent(es: EventSource, id: String?, type: String?, data: String) {
+                    if (!isCurrentSource(es)) return
                     val trimmed = data.trim()
                     if (trimmed.isEmpty() || trimmed == "[DONE]") return
                     val parsedList = parsePiWebSsePayload(type, trimmed)
                     for (ev in parsedList) {
+                        if (ev.type == "session_ended") sessionEnded.set(true)
                         trySend(ev)
                     }
                 }
 
                 override fun onClosed(es: EventSource) {
+                    if (!isCurrentSource(es)) return
                     Log.d("PiSseClient", "SSE Closed for session $sessionId")
-                    if (!isClosedByUser) {
-                        scheduleReconnect()
-                    }
+                    scheduleReconnect()
                 }
 
                 override fun onFailure(es: EventSource, t: Throwable?, response: Response?) {
+                    if (!isCurrentSource(es)) return
                     Log.w("PiSseClient", "SSE Disconnected (${response?.code ?: t?.message}), scheduling reconnect...")
                     // 网关在拒绝我们手里的 Token（轮换过）：退避重连只会一直 401，把结论交给
                     // 全局信号后就停手 —— 界面会提示重新扫码，重扫成功后按 state 变化重新挂流。
@@ -132,7 +156,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                         )
                     ) {
                         AuthRejectionSignal.reportRejected()
-                        _connectionState.value = SseConnectionState.DISCONNECTED
+                        updateState(SseConnectionState.DISCONNECTED)
                         trySend(
                             AgentSseEvent(
                                 type = "connection_state",
@@ -141,37 +165,50 @@ class PiSseClient(private val prefs: AppPreferences) {
                         )
                         return
                     }
-                    if (!isClosedByUser) {
-                        scheduleReconnect()
-                    }
+                    scheduleReconnect()
                 }
 
                 private fun scheduleReconnect() {
-                    if (isClosedByUser) return
-                    retryAttempt = (retryAttempt + 1).coerceAtMost(6)
-                    _connectionState.value = SseConnectionState.RECONNECTING
-                    trySend(AgentSseEvent(type = "connection_state", connectionState = SseConnectionState.RECONNECTING.name))
-                    val backoffMs = (1000L * (1L shl (retryAttempt - 1).coerceAtMost(4))).coerceAtMost(10_000L)
-                    launch {
-                        delay(backoffMs)
-                        if (!isClosedByUser) {
-                            eventSource?.cancel()
-                            connect()
-                        }
+                    if (!AgentEventReconnectPolicy.shouldReconnect(sessionEnded.get(), closedByUser.get())) {
+                        // 会话已结束（或调用方已关流）：服务端已经收流，重连只会空转，
+                        // 还会把状态拖进 RECONNECTING 误报「连不上网关」。收成 DISCONNECTED 即可。
+                        updateState(SseConnectionState.DISCONNECTED)
+                        trySend(
+                            AgentSseEvent(
+                                type = "connection_state",
+                                connectionState = SseConnectionState.DISCONNECTED.name
+                            )
+                        )
+                        return
                     }
+                    val attemptCount = retryAttempt.updateAndGet { (it + 1).coerceAtMost(6) }
+                    updateState(SseConnectionState.RECONNECTING)
+                    trySend(AgentSseEvent(type = "connection_state", connectionState = SseConnectionState.RECONNECTING.name))
+                    val backoffMs = (1000L * (1L shl (attemptCount - 1).coerceAtMost(4))).coerceAtMost(10_000L)
+                    reconnectJob.getAndSet(
+                        launch {
+                            delay(backoffMs)
+                            if (!closedByUser.get()) {
+                                currentEventSource.getAndSet(null)?.cancel()
+                                connect()
+                            }
+                        }
+                    )?.cancel()
                 }
             }
 
             val factory = EventSources.createFactory(client)
-            eventSource = factory.newEventSource(request, listener)
+            val created = factory.newEventSource(request, listener)
+            currentEventSource.getAndSet(created)?.cancel()
         }
 
         connect()
 
         awaitClose {
-            isClosedByUser = true
-            _connectionState.value = SseConnectionState.DISCONNECTED
-            eventSource?.cancel()
+            closedByUser.set(true)
+            reconnectJob.getAndSet(null)?.cancel()
+            currentEventSource.getAndSet(null)?.cancel()
+            updateState(SseConnectionState.DISCONNECTED)
         }
     }
 

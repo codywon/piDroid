@@ -664,7 +664,9 @@ fun SvgPreviewCard(
     var svgMarkup by remember(attachment.id, attachment.rawContent, attachment.dataBase64, attachment.filePath) {
         mutableStateOf(attachment.rawContent ?: "")
     }
-    var showRawCode by remember { mutableStateOf(false) }
+    var showRawCode by remember(attachment.id, attachment.rawContent, attachment.dataBase64, attachment.filePath) {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(attachment.id, attachment.rawContent, attachment.dataBase64, attachment.filePath, gateway) {
         if (svgMarkup.isBlank()) {
@@ -1273,6 +1275,7 @@ internal fun SvgWebViewCanvas(
         onRelease = { webView ->
             currentOnWebViewReady?.invoke(null)
             runCatching {
+                webView.removeJavascriptInterface("Android")
                 webView.stopLoading()
                 webView.destroy()
             }
@@ -1390,8 +1393,12 @@ private fun PdfThumbnailCard(
     var firstPageBitmap by remember(attachment.id, attachment.filePath, attachment.dataBase64) {
         mutableStateOf<ImageBitmap?>(null)
     }
-    var pageCount by remember { mutableIntStateOf(0) }
-    var isLoading by remember { mutableStateOf(false) }
+    var pageCount by remember(attachment.id, attachment.filePath, attachment.dataBase64) {
+        mutableIntStateOf(0)
+    }
+    var isLoading by remember(attachment.id, attachment.filePath, attachment.dataBase64) {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(visible, attachment.id, attachment.filePath, attachment.dataBase64, gateway) {
         // PDF 首页渲染（PdfRenderer）比取字节还重，同样等到进视口再做
@@ -1423,6 +1430,8 @@ private fun PdfThumbnailCard(
                             } else null
                         }
                     }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (_: Exception) {
                     null
                 } finally {
@@ -1598,10 +1607,10 @@ fun FullscreenMediaLightboxDialog(
     }
 
     // PDF 翻页状态
-    var pdfPageCount by remember { mutableIntStateOf(0) }
-    var currentPdfPage by remember { mutableIntStateOf(0) }
-    var currentBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
-    var isLoading by remember { mutableStateOf(true) }
+    var pdfPageCount by remember(attachment) { mutableIntStateOf(0) }
+    var currentPdfPage by remember(attachment) { mutableIntStateOf(0) }
+    var currentBitmap by remember(attachment) { mutableStateOf<ImageBitmap?>(null) }
+    var isLoading by remember(attachment) { mutableStateOf(true) }
 
     LaunchedEffect(attachment, currentPdfPage, gateway) {
         if (attachment.kind == MediaKind.IMAGE || attachment.kind == MediaKind.PDF) {
@@ -1612,6 +1621,8 @@ fun FullscreenMediaLightboxDialog(
                     currentBitmap = withContext(Dispatchers.IO) {
                         try {
                             decodeSampledImage(bytes, decodeTargetPx)?.first
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             null
                         }
@@ -1619,8 +1630,17 @@ fun FullscreenMediaLightboxDialog(
                 } else if (attachment.kind == MediaKind.PDF) {
                     val result = withContext(Dispatchers.IO) {
                         try {
-                            val tempFile = File(context.cacheDir, "pdf_full_${attachment.id.hashCode()}.pdf")
-                            if (!tempFile.exists()) tempFile.writeBytes(bytes)
+                            val pdfCacheDir = File(context.cacheDir, "pdf_full_cache").apply { mkdirs() }
+                            val tempFile = File(pdfCacheDir, "pdf_full_${attachment.id.hashCode()}.pdf")
+                            if (!tempFile.exists()) {
+                                tempFile.writeBytes(bytes)
+                                // 限制缓存 PDF 数量最多 6 个，避免长期累积占用存储
+                                pdfCacheDir.listFiles()
+                                    ?.filter { it.isFile && it != tempFile }
+                                    ?.sortedByDescending { it.lastModified() }
+                                    ?.drop(5)
+                                    ?.forEach { runCatching { it.delete() } }
+                            }
                             ParcelFileDescriptor.open(tempFile, ParcelFileDescriptor.MODE_READ_ONLY).use { pfd ->
                                 PdfRenderer(pfd).use { renderer ->
                                     val count = renderer.pageCount
@@ -1637,6 +1657,8 @@ fun FullscreenMediaLightboxDialog(
                                     } else null
                                 }
                             }
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            throw e
                         } catch (_: Exception) {
                             null
                         }
@@ -1856,13 +1878,15 @@ fun FullscreenMediaLightboxDialog(
                         detectTransformGestures { _, pan, zoom, _ ->
                             val newScale = (scale * zoom).coerceIn(0.75f, 6f)
                             scale = newScale
-                            offset = if (newScale > 1f) {
-                                Offset(
-                                    x = offset.x + pan.x,
-                                    y = offset.y + pan.y
+                            if (newScale > 1.05f) {
+                                val maxOffsetX = (size.width * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                val maxOffsetY = (size.height * (newScale - 1f) / 2f).coerceAtLeast(0f)
+                                offset = Offset(
+                                    x = (offset.x + pan.x).coerceIn(-maxOffsetX, maxOffsetX),
+                                    y = (offset.y + pan.y).coerceIn(-maxOffsetY, maxOffsetY)
                                 )
                             } else {
-                                Offset.Zero
+                                offset = Offset.Zero
                             }
                         }
                     }

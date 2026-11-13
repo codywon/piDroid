@@ -92,47 +92,49 @@ internal fun KaTeXFormulaView(
                 if (heightDp <= 0f) {
                     fallback()
                 }
-                AndroidView(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(if (heightDp > 0f) heightDp.dp else 1.dp),
-                    factory = { ctx ->
-                        createFormulaWebView(
-                            context = ctx,
-                            html = html,
-                            onMeasured = { measured ->
-                                if (measured > 0f) {
-                                    heightDp = measured
-                                    failed = false
-                                }
-                            },
-                            onFail = { failed = true }
-                        )
-                    },
-                    onRelease = { view ->
-                        runCatching {
-                            view.stopLoading()
-                            // 先换上默认回调：销毁过程中的报错不能再打回 Compose 状态
-                            view.webViewClient = WebViewClient()
-                            view.destroy()
-                        }
-                    },
-                    update = { view ->
-                        // 用显式 getTag/setTag：View 上有 setTag(Int, Any?) 重载，
-                        // 属性语法在这里容易误读，也避免依赖合成属性的推断
-                        val loaded = view.getTag() as? String
-                        if (loaded != html) {
-                            view.setTag(html)
-                            view.loadDataWithBaseURL(
-                                "https://${KaTeXPageTemplate.ASSET_HOST}/",
-                                html,
-                                "text/html",
-                                "utf-8",
-                                null
+                key(renderKey) {
+                    AndroidView(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(if (heightDp > 0f) heightDp.dp else 1.dp),
+                        factory = { ctx ->
+                            createFormulaWebView(
+                                context = ctx,
+                                html = html,
+                                onMeasured = { measured ->
+                                    if (measured > 0f) {
+                                        heightDp = measured
+                                        failed = false
+                                    }
+                                },
+                                onFail = { failed = true }
                             )
+                        },
+                        onRelease = { view ->
+                            runCatching {
+                                view.stopLoading()
+                                // 先换上默认回调：销毁过程中的报错不能再打回 Compose 状态
+                                view.webViewClient = WebViewClient()
+                                view.destroy()
+                            }
+                        },
+                        update = { view ->
+                            // 用显式 getTag/setTag：View 上有 setTag(Int, Any?) 重载，
+                            // 属性语法在这里容易误读，也避免依赖合成属性的推断
+                            val loaded = view.getTag() as? String
+                            if (loaded != html) {
+                                view.setTag(html)
+                                view.loadDataWithBaseURL(
+                                    "https://${KaTeXPageTemplate.ASSET_HOST}/",
+                                    html,
+                                    "text/html",
+                                    "utf-8",
+                                    null
+                                )
+                            }
                         }
-                    }
-                )
+                    )
+                }
             }
         }
     }
