@@ -1,7 +1,6 @@
 package com.pi.app.ui.git
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -41,14 +40,12 @@ class UnifiedDiffParserTest {
         val removed = files[0].lines.first { it.type == PatchLineType.REMOVED }
         val added = files[0].lines.first { it.type == PatchLineType.ADDED }
 
-        val remRange = removed.highlightRange
-        val addRange = added.highlightRange
-        assertNotNull(remRange)
-        assertNotNull(addRange)
+        val remRange = requireNotNull(removed.highlightRange) { "删除行应高亮差异字符" }
+        val addRange = requireNotNull(added.highlightRange) { "新增行应高亮差异字符" }
 
         // 高亮子串的首尾不应落在低/高代理字符中间
-        val remSub = removed.text.substring(remRange!!.first, remRange.last + 1)
-        val addSub = added.text.substring(addRange!!.first, addRange.last + 1)
+        val remSub = removed.text.substring(remRange.first, remRange.last + 1)
+        val addSub = added.text.substring(addRange.first, addRange.last + 1)
         assertEquals("A", remSub)
         assertEquals("B", addSub)
         assertTrue(!Character.isLowSurrogate(removed.text[remRange.first]))

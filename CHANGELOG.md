@@ -3,7 +3,7 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
-## [2.0.49] - 2026-11-13
+## [2.0.50] - 2026-11-13
 ### 🚀 上游超时与慢接口缓存（对齐升级后的 pi-web）
 - **上游响应头截止线**：
   - 网关对上游请求统一挂 TTFB 截止（默认 5s，压缩/导出/上传/预览等长任务路由放宽到 120s），超时主动放弃并立刻返回 `503 + Retry-After`，手机端不再无意义转圈等到自身超时；WebSocket 升级请求不参与，避免误杀健康的终端连接。

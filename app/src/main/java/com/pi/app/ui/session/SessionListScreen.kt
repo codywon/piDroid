@@ -2100,7 +2100,7 @@ fun SessionListScreen(
                     sessions.filter {
                         WorkspacePaths.samePath(it.workspacePath, targetWs.path) ||
                             WorkspacePaths.samePath(it.cwd, targetWs.path) ||
-                            (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == targetWs.displayName)
+                            (it.projectRoot.isNullOrBlank() && it.cwd.isNullOrBlank() && it.projectKey.isNullOrBlank() && it.project == targetWs.displayName)
                     }
                 }
                 val weekAgo = remember { System.currentTimeMillis() - 7 * 86400000L }
@@ -2234,7 +2234,7 @@ fun SessionListScreen(
             sessions.filter {
                 WorkspacePaths.samePath(it.workspacePath, target.path) ||
                     WorkspacePaths.samePath(it.cwd, target.path) ||
-                    (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == target.displayName)
+                    (it.projectRoot.isNullOrBlank() && it.cwd.isNullOrBlank() && it.projectKey.isNullOrBlank() && it.project == target.displayName)
             }
         }
         val runningSessions = remember(projectSessions) { projectSessions.filter { it.isLive } }
@@ -2315,7 +2315,7 @@ fun SessionListScreen(
                 (
                     WorkspacePaths.samePath(it.workspacePath, target.path) ||
                         WorkspacePaths.samePath(it.cwd, target.path) ||
-                        (it.workspacePath.isBlank() && it.cwd.isBlank() && it.project == target.displayName)
+                        (it.projectRoot.isNullOrBlank() && it.cwd.isNullOrBlank() && it.projectKey.isNullOrBlank() && it.project == target.displayName)
                 ) && archivedSessionIds.contains(it.id)
             }
         }
