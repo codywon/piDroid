@@ -3,6 +3,14 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
+## [2.0.52] - 2026-11-16
+### 🔌 DeepSeek 思考模式 400
+- **中转站上的 DeepSeek 模型自动补 `reasoning_content` 回传标志**：DeepSeek 在思考模式下要求每一轮历史里的 assistant 消息都把 `reasoning_content` 带回去，字段缺失就是 400（`The reasoning_content in the thinking mode must be passed back to the API.`，点重试仍是同一个错）。pi-ai 只按 `provider === "deepseek"` 或 baseUrl 含 `deepseek.com` 判定，`codywon/deepseek-flash` 这类中转站组合被判成「不是 DeepSeek」，重放历史时就不写该字段。现在写 models.json 前统一补 `compat.requiresReasoningContentOnAssistantMessages = true`。
+- **只在唯一写盘出口补，不是逐个调用点**：models.json 有 5 条写入路径（增/改/删模型、思考档位、内置模型覆盖），逻辑挂在 `ModelsConfigWriteContract.payloadOf()`，避免以后新加一条写入路径又漏掉。
+- **判定与 pi-ai 语义一致**：provider 名为 deepseek、baseUrl 指向 deepseek 官方域名、或模型 id 自带 `deepseek`（这条才是救中转站的关键）；只补 `reasoning == true` 的条目（非思考模型补了也是死数据）；已经显式写过该键（哪怕是 `false`）一律尊重；`thinkingFormat` / `maxTokensField` 这类更激进的协议改写不碰，`modelOverrides` 也不改写。
+### 🧪 单元测试
+- 新增 `DeepSeekReasoningCompatTest`：中转站 DeepSeek 命中、现有 compat 字段保留、显式 `false` 不覆盖、非思考模型与非 DeepSeek 家族不动、官方 provider/域名识别、`modelOverrides` 不被改造、畸形条目不抛，以及「标志必须在 `payloadOf` 这条唯一写盘路径上出现」。
+
 ## [2.0.51] - 2026-11-16
 ### 🔌 对齐 pi-web 0.17.0
 - **附件单文件上限 25MB → 50MB**：pi-web 0.17.0 删掉了单文件 25MB 校验（服务端只限「一次请求合计 ≤100MB」），App 侧仍按 25MB 拦。现在放到 50MB——附件是整块读成 `ByteArray` 再 multipart 发的，这个值就是峰值堆占用，要吃到 100MB 得先把上传改成流式。
@@ -10,9 +18,10 @@ All notable changes to the πDroid application will be documented in this file.
 ### 🚪 伴侣网关
 - **上传的响应头截止线单独放宽到 10 分钟**：上传的响应头要等手机把 body 送完才可能来（网关边收边转发），100MB 在 200KB/s 上行要 512s，原来的 120s 会把正常上传杀成 503。上下文压缩 / 导出 / 预览仍是 120s，普通接口仍是 5s。
 - **伴航网关 SDK 1.5.0 → 1.5.2**：与 pi-web 0.17.0 依赖的 `@earendil-works/*` 1.5.2 对齐，避免 `/api/mobile/prompt-enhance` 与主程序跑在两个 SDK 版本上。
+- **修掉压缩请求吃错截止线**：网关的 120s 长任务窗口一直按 URL 里有没有 `/compact` 判断，而手动压缩实际是 `POST /api/agent/{id}` + body `{"type":"compact"}`，URL 里没有这个词——于是压缩一直吃 5s 默认线，超过 5s 的压缩会被网关回 503，界面报「压缩失败」而服务端仍在正常压缩。现在由 compact 请求自己在 URL 上标 `ttfb=long`（命令类型在 body 里，网关流式转发读不到，而 `POST /api/agent` 上还挂着 prompt 这类必须保持 5s 快速失败的命令），网关只对被标注的那一个请求放宽到 120s。
 ### 🧪 单元测试
 - 新增 `SessionSearchHitVisibilityTest`：侧聊/子代理命中被挡、fork 与无 relation 的旧网关保留、保留下来的命中顺序与片段不变。
-- 网关截止线新增两用例：上传走独立的 10 分钟窗口（预览/导出仍 120s、普通接口仍 5s）；100MB / 200KB/s 的耗时必须仍在窗口内。
+- 网关截止线新增三用例：上传走独立的 10 分钟窗口（预览/导出仍 120s、普通接口仍 5s）；100MB / 200KB/s 的耗时必须仍在窗口内；标了 `ttfb=long` 的命令拿 120s、没标的同路径命令仍 5s。
 ## [2.0.50] - 2026-11-13
 ### 🚀 上游超时与慢接口缓存（对齐升级后的 pi-web）
 - **上游响应头截止线**：

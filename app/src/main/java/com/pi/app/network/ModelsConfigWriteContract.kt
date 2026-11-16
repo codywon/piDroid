@@ -19,9 +19,15 @@ internal object ModelsConfigWriteContract {
     /**
      * 写请求的 body：去掉历史上可能被写进去的 `config` 递归包装，保持顶层 `{providers: …}`。
      * 返回值就是入参本身（原地清理），调用方拿到的仍是要写盘的那份配置。
+     *
+     * 顺带做一件**必须挂在这条唯一出口上**的事：给命中 DeepSeek 的自定义模型补
+     * `requiresReasoningContentOnAssistantMessages`（见 [DeepSeekReasoningCompat]）。
+     * 挂在这里而不是各个调用点，是因为 models.json 有 5 条写入路径（增/改/删模型、思考档位、
+     * 内置模型覆盖），漏一条就会出现「通过 App 新加的中转站 DeepSeek 模型照样 400」的复发。
      */
     fun payloadOf(config: JsonObject): JsonObject {
         config.remove("config")
+        DeepSeekReasoningCompat.heal(config)
         return config
     }
 
