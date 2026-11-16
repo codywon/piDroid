@@ -4,6 +4,7 @@ All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
 ## [2.0.52] - 2026-11-16
+> 本版本同时包含未单独发版的 2.0.51（对齐 pi-web 0.17.0：附件上限 50MB、搜索命中过滤侧聊、上传响应头截止线 10 分钟、伴航网关 SDK 1.5.2）。
 ### 🔌 DeepSeek 思考模式 400
 - **中转站上的 DeepSeek 模型自动补 `reasoning_content` 回传标志**：DeepSeek 在思考模式下要求每一轮历史里的 assistant 消息都把 `reasoning_content` 带回去，字段缺失就是 400（`The reasoning_content in the thinking mode must be passed back to the API.`，点重试仍是同一个错）。pi-ai 只按 `provider === "deepseek"` 或 baseUrl 含 `deepseek.com` 判定，`codywon/deepseek-flash` 这类中转站组合被判成「不是 DeepSeek」，重放历史时就不写该字段。现在写 models.json 前统一补 `compat.requiresReasoningContentOnAssistantMessages = true`。
 - **只在唯一写盘出口补，不是逐个调用点**：models.json 有 5 条写入路径（增/改/删模型、思考档位、内置模型覆盖），逻辑挂在 `ModelsConfigWriteContract.payloadOf()`，避免以后新加一条写入路径又漏掉。
