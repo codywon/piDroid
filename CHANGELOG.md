@@ -3,6 +3,14 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
+## [2.0.55] - 2026-11-16
+### 🪟 扩展对话框（2.0.54 的收尾与纠错）
+- **回答失败不再把对话框永久弄丢**：以前先本地出队再发 `extension_ui_response`，请求一失败（网关抖动、鉴权过期）对话框就没了，而扩展还在等回答——会话卡死且无法重试。现在只在回执确认送达后才出队，失败时对话框保留、可再点一次。
+- **扩展自己关掉的面板会真的消失**：上游关闭 `custom` 面板用的是「同一个 id 再发一条 `closed: true`」，不是 `extension_ui_closed`；这条请求按判据是非阻塞的，以前被忽略，面板会一直挂在屏幕上。现在按 id 移除。
+### 📎 附件上传内存
+- **50MB 附件不再需要两倍堆**：原 `readBoundedBytes` 用 `ByteArrayOutputStream` 翻倍扩容、最后 `toByteArray()` 再拷一份，50MB 峰值约 114MB，而应用没开 `largeHeap`——低内存机直接 OOM。现在先问 provider 声明大小，已知且在上限内就一次分配、零拷贝读完；大小未知或有偏差时走有上限的逐块读/续读。半截文件仍然拒收。
+- **合计 100MB 由客户端先扣**：以前只拦单文件 50MB，三个 40MB 附件会先白传一遍再由服务端回 413。现在按「单文件 50MB / 单次合计 100MB」一起拦。
+- **提示文案不再误报**：大小超限被跳过时不再说成「读取失败」，改为「读取失败或超过 50MB」。
 ## [2.0.54] - 2026-11-16
 ### 🪟 扩展对话框通道（对齐 pi-web 0.17.0）
 - **手机上终于能回答扩展的提问**：pi-web 的 `extension_ui_request` 以前在 App 里没有任何落点——`select` / `confirm` / `input` / `editor` 这四种阻塞请求既收不到也答不了，扩展（含 `session_start` 阶段）在等回答时整个会话就停在原地。现在 SSE 显式认出这类事件，聊天页按方法弹出对应对话框（选项列表 / 是-否 / 单行输入 / 多行编辑），回执走 `POST /api/agent/{id}` 的 `extension_ui_response`（`value` / `confirmed` / `cancelled` 三种形态）。
