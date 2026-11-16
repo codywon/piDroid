@@ -2785,6 +2785,7 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 返回 `{results:[{session, entryId, blockIndex, match, before, after}], truncated}`，
      * 每条命中都带会话本身与命中片段，手机端不必自己再扫一遍 jsonl。
      * 实测：q=Wren 返回 25 条 / 29.8 KB / 3.0s（服务端要扫全部会话，所以 UI 要做防抖）。
+     * 0.17.0 起命中可能来自侧聊，见 [openableAsSession]。
      */
     suspend fun searchSessions(query: String): Result<List<SessionSearchHit>> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
@@ -2823,7 +2824,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         )
                     )
                 }
-                Result.success(out)
+                Result.success(out.openableAsSession())
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -3188,7 +3189,9 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 把文件上传到 PC 上的工作目录：
      * POST /api/files/<目录路径>?type=upload&conflict=overwrite
      * multipart/form-data，字段名固定为 `files`（可重复）。
-     * 服务端限制：单文件 ≤25MB，合计 ≤100MB；返回 {uploaded, skipped, errors}（有失败时 207）。
+     * 服务端限制：单次合计 ≤100MB（pi-web 0.17.0 起不再限单文件 25MB）；App 侧单文件上限
+     * 50MB（`ChatScreen.MAX_UPLOAD_FILE_BYTES`，整块读入内存的代价）。
+     * 返回 {uploaded, skipped, errors}（有失败时 207）。
      */
     suspend fun uploadFiles(
         directoryPath: String,

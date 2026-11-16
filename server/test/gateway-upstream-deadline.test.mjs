@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { UPSTREAM_TTFB_DEADLINE_MS, UPSTREAM_SLOW_MS, armUpstreamDeadline } = require('../gateway.js');
+const { UPSTREAM_TTFB_DEADLINE_MS, UPSTREAM_SLOW_MS, LONG_UPSTREAM_TTFB_DEADLINE_MS, UPLOAD_TTFB_DEADLINE_MS, resolveUpstreamDeadlineMs, armUpstreamDeadline } = require('../gateway.js');
 
 function fakeRes({ headersSent = false } = {}) {
   const res = {
@@ -73,4 +73,30 @@ test('thresholds stay in the range the measured stalls need', () => {
   // 实测阻塞 3~4s、最长 >60s：截止线必须明显大于正常请求（2~3ms）又小于一次整段卡死。
   assert.equal(UPSTREAM_TTFB_DEADLINE_MS, 5000);
   assert.equal(UPSTREAM_SLOW_MS, 2000);
+});
+
+// pi-web 0.17.0 把上传放开到「单次合计 100MB」，单文件不再限 25MB。
+// 上传的响应头要等整个 body 送到才有，所以截止线必须按手机上行带宽算，
+// 而不是按「服务端多久算完」算 —— 否则大文件永远传不完就被判死。
+test('an upload gets the upload window, not the compile/export window', () => {
+  const upload = { method: 'POST', url: '/api/files/D%3A%5Cwork%2Frepo?type=upload&conflict=overwrite' };
+  assert.equal(resolveUpstreamDeadlineMs(upload), UPLOAD_TTFB_DEADLINE_MS);
+
+  const preview = { method: 'GET', url: '/api/files/x.pdf?type=preview' };
+  const exportRoute = { method: 'POST', url: '/api/sessions/x/export' };
+  const ordinary = { method: 'GET', url: '/api/sessions' };
+
+  assert.equal(resolveUpstreamDeadlineMs(preview), LONG_UPSTREAM_TTFB_DEADLINE_MS);
+  assert.equal(resolveUpstreamDeadlineMs(exportRoute), LONG_UPSTREAM_TTFB_DEADLINE_MS);
+  // 普通接口仍然守着 5s：卡死的上游必须立刻暴露，不能跟着上传一起变宽松。
+  assert.equal(resolveUpstreamDeadlineMs(ordinary), UPSTREAM_TTFB_DEADLINE_MS);
+});
+
+test('the upload window covers a 100MB upload on a slow mobile uplink', () => {
+  // 100MB 在 200KB/s（弱网 4G 的常见上行）需要 512s，必须仍然小于截止线。
+  const hundredMbAt200KbPerSecond = (100 * 1024 * 1024) / (200 * 1024);
+  assert.ok(
+    UPLOAD_TTFB_DEADLINE_MS / 1000 > hundredMbAt200KbPerSecond,
+    `upload deadline ${UPLOAD_TTFB_DEADLINE_MS}ms must exceed ${Math.round(hundredMbAt200KbPerSecond)}s`
+  );
 });

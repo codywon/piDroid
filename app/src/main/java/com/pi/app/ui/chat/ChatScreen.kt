@@ -3967,7 +3967,7 @@ private fun encodePickedImages(
 /** 单张图片上限：pi 服务端校验为解码后 ≤10MB */
 private const val MAX_PROMPT_IMAGE_BYTES = 10 * 1024 * 1024
 
-/** 读取待上传文件的原始字节；超过 25MB（pi 服务端单文件上限）或读取失败的一律跳过 */
+/** 读取待上传文件的原始字节；超过 50MB（App 侧单文件上限）或读取失败的一律跳过 */
 private fun readPickedFiles(
     context: android.content.Context,
     picked: List<ChatAttachment>
@@ -3985,8 +3985,14 @@ private fun readPickedFiles(
     return out
 }
 
-/** 单文件上限：pi 服务端限制 25MB */
-private const val MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024
+/**
+ * 单文件上限：50MB。
+ *
+ * pi-web 0.17.0 起服务端不再限单文件（旧的 25MB 校验已删），只限「一次请求合计 ≤100MB」。
+ * App 侧仍卡在 50MB：附件是整块读成 ByteArray 再 multipart 发的，这个值就是峰值堆占用，
+ * 再往上放大在手机上就是拿 OOM 换「能传大文件」。要吃到 100MB 得先把上传改成流式。
+ */
+private const val MAX_UPLOAD_FILE_BYTES = 50 * 1024 * 1024
 
 // ==========================================
 // 文件预览面板：按类型分派（对标 pi-web FileViewer）

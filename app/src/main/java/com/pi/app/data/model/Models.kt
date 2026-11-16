@@ -313,6 +313,20 @@ data class SessionSearchHit(
             .trim()
 }
 
+/**
+ * 可以当主会话打开的命中（pi-web 0.17.0 起服务端也搜侧聊）。
+ *
+ * 0.17.0 的 `GET /api/sessions/search` 不再过滤 `relation.kind = "side"`：侧聊只贡献
+ * 「边界消息之后」的正文，所以父会话的历史不会被重复命中一遍，但命中的 `session` 本身
+ * 仍是那个侧聊。而上游 ADR 0007 规定侧聊只在父会话的右栏打开，手机端没有右栏——
+ * 把命中直接当主会话点开就是「同一段对话两份入口」，与列表页过滤 side/subagent 的
+ * 规则（[Session.isHiddenFamilyMember]）自相矛盾。
+ *
+ * 旧版 pi-web 不下发 `relation` 时为 null，此时等于不过滤，向后兼容。
+ */
+fun List<SessionSearchHit>.openableAsSession(): List<SessionSearchHit> =
+    filter { !it.session.isHiddenFamilyMember() }
+
 /** pi 的斜杠命令（agent get_commands）：扩展命令 / prompt 模板 / 技能 */
 data class SlashCommand(
     val name: String,

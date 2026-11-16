@@ -1083,15 +1083,22 @@ function armUpstreamDeadline(proxyReq, req, res, deadlineMs = UPSTREAM_TTFB_DEAD
   }, deadlineMs);
 }
 
-// 耗时操作路由（上下文压缩、HTML 导出、文件上传、预览转码）需要更宽裕的 TTFB 窗口，
+// 耗时操作路由（上下文压缩、HTML 导出、预览转码）需要更宽裕的 TTFB 窗口，
 // 避免 5s 默认截止线误杀客户端的长超时请求。
 const LONG_UPSTREAM_TTFB_DEADLINE_MS = 120000;
+// 上传不属于「服务端算得慢」：它的响应头要等手机把整个 body 送完才可能来（网关是边收边转发，
+// 不是先攒完再发）。pi-web 0.17.0 起单次上传是合计 100MB，0.2MB/s 的上行就要 500s，
+// 120s 的窗口会把正常上传杀成 503 —— 用户看到「上传失败」，文件其实还在路上。
+const UPLOAD_TTFB_DEADLINE_MS = 600000;
 function resolveUpstreamDeadlineMs(req) {
   const url = String((req && req.url) || '').toLowerCase();
+  // POST /api/files/<dir>?type=upload&conflict=…
+  if (url.includes('/upload') || url.includes('type=upload')) {
+    return UPLOAD_TTFB_DEADLINE_MS;
+  }
   if (
     url.includes('/compact') ||
     url.includes('/export') ||
-    url.includes('/upload') ||
     url.includes('type=preview') ||
     url.includes('/files/raw')
   ) {
@@ -1502,5 +1509,8 @@ module.exports = {
   // 上游超时截止 + 延迟采样阈值（单测直接喂假 req/res，不启服务）
   UPSTREAM_TTFB_DEADLINE_MS,
   UPSTREAM_SLOW_MS,
+  LONG_UPSTREAM_TTFB_DEADLINE_MS,
+  UPLOAD_TTFB_DEADLINE_MS,
+  resolveUpstreamDeadlineMs,
   armUpstreamDeadline
 };
