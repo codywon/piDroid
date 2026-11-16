@@ -2908,6 +2908,10 @@ class PiApiClient(private val prefs: AppPreferences) {
      *
      * 对齐 pi-web 的 `/compact [instructions]`：pi 的 `compact(customInstructions)` 会把它原样交给
      * 摘要器。不设客户端超时（见 [compactClient]）。
+     *
+     * 带 `?ttfb=long`：这条命令的响应要等一次完整的摘要生成（十几秒起），而 `/api/agent/{id}`
+     * 上还挂着 prompt / get_state 这类毫秒级命令，网关无法从流式 body 分辨命令类型，
+     * 所以由这条命令自己标注，免得网关 5s 就回 503、界面报「压缩失败」而服务端仍在压缩。
      */
     suspend fun compactContext(
         sessionId: String,
@@ -2917,7 +2921,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             put("type", "compact")
             customInstructions?.takeIf { it.isNotBlank() }?.let { put("customInstructions", it) }
         }
-        return sendAgentAction(sessionId, payload, httpClient = compactClient)
+        return sendAgentAction(sessionId, payload, httpClient = compactClient, query = "ttfb=long")
     }
 
     /**
@@ -3291,14 +3295,16 @@ class PiApiClient(private val prefs: AppPreferences) {
     private suspend fun sendAgentCommandData(
         sessionId: String,
         payload: Map<String, Any>,
-        httpClient: OkHttpClient = client
+        httpClient: OkHttpClient = client,
+        query: String? = null
     ): Result<JsonElement?> =
         withContext(Dispatchers.IO) {
             val baseUrl = prefs.serverUrl
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
             try {
                 val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-                val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+                val url = "$baseUrl/api/agent/$sessionId" + (query?.let { "?$it" } ?: "")
+                val req = Request.Builder().url(url).post(body).build()
                 httpClient.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) {
                         val errBody = runCatching { response.body?.string() }.getOrNull()
@@ -3318,9 +3324,10 @@ class PiApiClient(private val prefs: AppPreferences) {
     private suspend fun sendAgentAction(
         sessionId: String,
         payload: Map<String, Any>,
-        httpClient: OkHttpClient = client
+        httpClient: OkHttpClient = client,
+        query: String? = null
     ): Result<Boolean> =
-        sendAgentCommandData(sessionId, payload, httpClient).map { true }
+        sendAgentCommandData(sessionId, payload, httpClient, query).map { true }
 
     /**
      * 续租会话（`POST /api/agent/{id}/lease`）：重置服务端的空闲倒计时，并回报脚下在干什么。

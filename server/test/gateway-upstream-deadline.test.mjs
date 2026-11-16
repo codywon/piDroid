@@ -92,6 +92,17 @@ test('an upload gets the upload window, not the compile/export window', () => {
   assert.equal(resolveUpstreamDeadlineMs(ordinary), UPSTREAM_TTFB_DEADLINE_MS);
 });
 
+// `POST /api/agent/<id>` 同时挂着 prompt / get_state / compact：命令类型在 body 里，
+// 网关流式转发读不到。所以只认调用方在 URL 上标的 `ttfb=long`（App 只给 compact 带）。
+test('a marked slow command gets the long window; an unmarked one keeps 5s', () => {
+  const compact = { method: 'POST', url: '/api/agent/abc?ttfb=long' };
+  const prompt = { method: 'POST', url: '/api/agent/abc' };
+
+  assert.equal(resolveUpstreamDeadlineMs(compact), LONG_UPSTREAM_TTFB_DEADLINE_MS);
+  // 关键性质：放宽只针对被标注的那一个请求，提示词发送仍然 5s 内失败。
+  assert.equal(resolveUpstreamDeadlineMs(prompt), UPSTREAM_TTFB_DEADLINE_MS);
+});
+
 test('the upload window covers a 100MB upload on a slow mobile uplink', () => {
   // 100MB 在 200KB/s（弱网 4G 的常见上行）需要 512s，必须仍然小于截止线。
   const hundredMbAt200KbPerSecond = (100 * 1024 * 1024) / (200 * 1024);

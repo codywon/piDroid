@@ -1096,6 +1096,14 @@ function resolveUpstreamDeadlineMs(req) {
   if (url.includes('/upload') || url.includes('type=upload')) {
     return UPLOAD_TTFB_DEADLINE_MS;
   }
+  // 同一路径 `POST /api/agent/<id>` 上的命令不是一个量级：compact 要等一次完整的摘要生成
+  // （十几秒起），而 get_state / prompt / abort 都是毫秒级。命令类型在 body 里，网关是流式
+  // 转发、读不到 body，所以由调用方在 URL 上标注 `ttfb=long`（App 侧只给 compact 带）。
+  // 不能用「POST /api/agent 一律放宽」代替：那会把「提示词发不出去」的 5s 快速失败一起
+  // 拖成 120s，而卡死时的快速失败正是这条截止线存在的理由。
+  if (url.includes('ttfb=long')) {
+    return LONG_UPSTREAM_TTFB_DEADLINE_MS;
+  }
   if (
     url.includes('/compact') ||
     url.includes('/export') ||
