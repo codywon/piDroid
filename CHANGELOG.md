@@ -3,7 +3,7 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
-## [2.0.53] - 2026-11-16
+## [2.0.54] - 2026-11-16
 ### 🪟 扩展对话框通道（对齐 pi-web 0.17.0）
 - **手机上终于能回答扩展的提问**：pi-web 的 `extension_ui_request` 以前在 App 里没有任何落点——`select` / `confirm` / `input` / `editor` 这四种阻塞请求既收不到也答不了，扩展（含 `session_start` 阶段）在等回答时整个会话就停在原地。现在 SSE 显式认出这类事件，聊天页按方法弹出对应对话框（选项列表 / 是-否 / 单行输入 / 多行编辑），回执走 `POST /api/agent/{id}` 的 `extension_ui_response`（`value` / `confirmed` / `cancelled` 三种形态）。
 - **不再把扩展文本当模型正文**：这个类型以前落在 SSE 的兼容 fallback 上，而 fallback 会把载荷里的 `text` 当成正文增量——`set_editor_text` 恰好带一个 `text`，扩展往输入框塞字就会印进聊天气泡。现在它有专属解析，未支持的通知式方法（`setStatus` / `setWidget` / `setTitle` / `set_editor_text`）显式忽略，`notify` 转成 Toast。
@@ -18,7 +18,7 @@ All notable changes to the πDroid application will be documented in this file.
 - `cwd` 首尾空格：0.17.0 起服务端不再 `trim()` 查询参数里的 `cwd`，但 App 存工作区时就已 `trim`（`WorkspacePaths.displayPath`），发出去的路径从不带首尾空格。
 ### 🧪 单元测试
 - 新增 `ExtensionUiParsingTest`（10 例）：五种方法的字段还原、阻塞判定、缺 id/method 丢弃、非字符串选项跳过、`closed` 只认布尔 true。
-- 新增 `MarkdownBlockSplitTest`（10 例）：围栏闭合规则、定义行 bail-out、代码里的 `[1]:` 不误伤、列表项不切分。
+- 新增 `MarkdownBlockSplitTest`（10 例）：围栏闭合规则、定义行 bail-out、代码里的 `[1]:` 不误伤、列表项不切分。其中「空行归属」一条首次断言写成了 `第一段\n`（实际块尾会带上那个空行，即 `第一段\n\n`），已按真实契约改正。
 ## [2.0.52] - 2026-11-16
 > 本版本同时包含未单独发版的 2.0.51（对齐 pi-web 0.17.0：附件上限 50MB、搜索命中过滤侧聊、上传响应头截止线 10 分钟、伴航网关 SDK 1.5.2）。
 ### 🔌 DeepSeek 思考模式 400

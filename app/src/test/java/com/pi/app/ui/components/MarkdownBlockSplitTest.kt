@@ -22,7 +22,8 @@ class MarkdownBlockSplitTest {
         val blocks = splitTopLevelMarkdownBlocks("第一段\n\n第二段")
 
         Assert.assertEquals(2, blocks.size)
-        Assert.assertEquals("第一段\n", blocks[0])
+        // 空行属于前一块（块尾保留分隔符），拼接回去才能与原文逐字相等。
+        Assert.assertEquals("第一段\n\n", blocks[0])
         Assert.assertEquals("第二段", blocks[1])
     }
 
