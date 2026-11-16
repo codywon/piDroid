@@ -741,7 +741,8 @@ fun ChatScreen(
                 val payloads = withContext(Dispatchers.IO) { readPickedFiles(context, fileAtts) }
                 val skippedFiles = fileAtts.size - payloads.size
                 if (skippedFiles > 0) {
-                    android.widget.Toast.makeText(context, "$skippedFiles 个文件读取失败，已跳过", android.widget.Toast.LENGTH_SHORT).show()
+                    val capMb = MAX_UPLOAD_FILE_BYTES / (1024 * 1024)
+                    android.widget.Toast.makeText(context, "$skippedFiles 个文件读取失败或超过 ${capMb}MB，已跳过", android.widget.Toast.LENGTH_SHORT).show()
                 }
                 if (payloads.isNotEmpty()) {
                     val res = onUploadFiles(payloads)
@@ -3891,33 +3892,81 @@ private enum class SendKind { SEND, STEER, FOLLOW_UP }
 
 /**
  * 有上限地读取 Uri 字节，防止选入超大文件导致移动端 OutOfMemoryError 闪退。
+ *
+ * 先问 provider 要声明大小：已知且在上限内就**一次分配到位**读完。
+ * 不这么做的话只能走 ByteArrayOutputStream（翻倍扩容，最后 `toByteArray()` 再拷一份），
+ * 50MB 附件会瞬时要两倍堆（100MB+）——应用没开 `largeHeap`，这一步就是拿 OOM 换「能传大文件」。
  */
 private fun readBoundedBytes(
     context: android.content.Context,
     uri: android.net.Uri,
     maxBytes: Int
-): ByteArray? {
-    return try {
-        val stream = context.contentResolver.openInputStream(uri) ?: return null
-        val output = java.io.ByteArrayOutputStream()
-        val chunk = ByteArray(64 * 1024)
-        var total = 0
-        var oversized = false
-        stream.use { input ->
-            while (true) {
-                val r = input.read(chunk)
-                if (r <= 0) break
-                total += r
-                if (total > maxBytes) {
-                    oversized = true
-                    break
+): ByteArray? = try {
+    val declared = runCatching {
+        context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+    }.getOrDefault(-1L)
+    if (declared > maxBytes) {
+        null
+    } else {
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            val exact = if (declared in 1..maxBytes.toLong()) ByteArray(declared.toInt()) else null
+            if (exact == null) {
+                // 大小未知：沿用逐块读的上限保护
+                val output = java.io.ByteArrayOutputStream()
+                if (drainBounded(input, output, alreadyRead = 0, maxBytes = maxBytes) && output.size() > 0) {
+                    output.toByteArray()
+                } else {
+                    null
                 }
-                output.write(chunk, 0, r)
+            } else {
+                var read = 0
+                while (read < exact.size) {
+                    val r = input.read(exact, read, exact.size - read)
+                    if (r <= 0) break
+                    read += r
+                }
+                if (read < exact.size) {
+                    // 比声明的短：半截文件不上传
+                    null
+                } else {
+                    val probe = ByteArray(1)
+                    val more = input.read(probe)
+                    if (more < 0) {
+                        // 声明大小正好：本次读取零拷贝（只有这一条路径能做到）
+                        exact
+                    } else {
+                        // 个别 provider 的 length 偏小：把多出来的按上限续读（只有这条异常路径多拷一次）
+                        val rest = java.io.ByteArrayOutputStream()
+                        rest.write(probe, 0, more)
+                        if (drainBounded(input, rest, alreadyRead = read + more, maxBytes = maxBytes)) {
+                            exact + rest.toByteArray()
+                        } else {
+                            null
+                        }
+                    }
+                }
             }
         }
-        if (oversized || total == 0) null else output.toByteArray()
-    } catch (_: Exception) {
-        null
+    }
+} catch (_: Exception) {
+    null
+}
+
+/** 把剩余字节读进 [output]，超过 [maxBytes]（含已读的 [alreadyRead]）则返回 false。 */
+private fun drainBounded(
+    input: java.io.InputStream,
+    output: java.io.ByteArrayOutputStream,
+    alreadyRead: Int,
+    maxBytes: Int
+): Boolean {
+    val chunk = ByteArray(64 * 1024)
+    var total = alreadyRead
+    while (true) {
+        val r = input.read(chunk)
+        if (r <= 0) return true
+        total += r
+        if (total > maxBytes) return false
+        output.write(chunk, 0, r)
     }
 }
 
@@ -3991,10 +4040,16 @@ private fun readPickedFiles(
     picked: List<ChatAttachment>
 ): List<UploadFileInput> {
     val out = mutableListOf<UploadFileInput>()
+    var totalBytes = 0L
     for (att in picked) {
         val sourceUri = att.uri ?: continue
         try {
+            // 单文件 50MB、单次请求合计 100MB（服务端校验）。合计自己先扣，
+            // 否则三四个大文件会先白传几百 MB，再由服务端回一个 413。
+            if (totalBytes >= MAX_UPLOAD_TOTAL_BYTES) break
             val bytes = readBoundedBytes(context, sourceUri, MAX_UPLOAD_FILE_BYTES) ?: continue
+            if (totalBytes + bytes.size > MAX_UPLOAD_TOTAL_BYTES) continue
+            totalBytes += bytes.size
             out.add(UploadFileInput(name = att.name.ifBlank { "attachment" }, bytes = bytes))
         } catch (e: Exception) {
             // 单个文件失败不影响其它文件
@@ -4011,6 +4066,9 @@ private fun readPickedFiles(
  * 再往上放大在手机上就是拿 OOM 换「能传大文件」。要吃到 100MB 得先把上传改成流式。
  */
 private const val MAX_UPLOAD_FILE_BYTES = 50 * 1024 * 1024
+
+/** 单次上传合计上限：与 pi-web `MAX_UPLOAD_TOTAL_BYTES`（100MB）一致 */
+private const val MAX_UPLOAD_TOTAL_BYTES = 100L * 1024 * 1024
 
 // ==========================================
 // 文件预览面板：按类型分派（对标 pi-web FileViewer）

@@ -2157,6 +2157,11 @@ class MainActivity : ComponentActivity() {
                                             Toast.makeText(this@MainActivity, text, duration).show()
                                         }
                                     }
+                                    // 扩展自己关掉的面板：上游用「同一个 id 再发一条 closed」表示，
+                                    // 而不是 extension_ui_closed —— 不收拾的话对话框会永远挂在屏幕上。
+                                    dialog.method == ExtensionUiDialog.METHOD_CUSTOM && dialog.closed -> {
+                                        extensionUiDialogs = extensionUiDialogs.filterNot { it.id == dialog.id }
+                                    }
                                     // 其余通知式方法（setStatus / setWidget / setTitle / set_editor_text）
                                     // 没有对应的手机界面：显式忽略，而不是落到下面那个会造假的默认分支。
                                     dialog.isBlocking -> {
@@ -3268,9 +3273,6 @@ class MainActivity : ComponentActivity() {
                     onExtensionUiRespond = { dialog, value, confirmed, cancelled ->
                         val sid = activeSessionId
                         if (sid.isNotBlank()) {
-                            // 先在本地出队，再回执：SSE 重连会把仍挂着的请求重放一遍，
-                            // 留着本地这份会让用户重复看到已经答过的对话框。
-                            extensionUiDialogs = extensionUiDialogs.filterNot { it.id == dialog.id }
                             lifecycleScope.launch {
                                 apiClient.respondExtensionUi(
                                     sessionId = sid,
@@ -3278,17 +3280,22 @@ class MainActivity : ComponentActivity() {
                                     value = value,
                                     confirmed = confirmed,
                                     cancelled = cancelled
-                                ).onFailure { err ->
+                                ).onSuccess {
+                                    // 回执确实送到了才出队：先在本地抹掉再发，一旦请求失败，
+                                    // 对话框就永远消失而扩展还在等，会话彻底卡死且无从重试。
+                                    extensionUiDialogs = extensionUiDialogs.filterNot { it.id == dialog.id }
+                                    // 新会话的 session_start 可能正卡在这个对话框上：#1678 之后
+                                    // `/api/agent/new` 会在 session_start 结束前就回包，扩展随后才把
+                                    // 模型/思考级别定下来。答完后按运行时状态纠一次（自带本地切换守卫）。
+                                    if (messages.isEmpty()) refreshSessionModelFromRuntime(sid)
+                                }.onFailure { err ->
+                                    // 对话框留着，用户可以再点一次
                                     Toast.makeText(
                                         this@MainActivity,
                                         "回答扩展请求失败：${err.message ?: "未知错误"}",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
-                                // 新会话的 session_start 可能正卡在这个对话框上：#1678 之后
-                                // `/api/agent/new` 会在 session_start 结束前就回包，扩展随后才把
-                                // 模型/思考级别定下来。答完后按运行时状态纠一次（自带本地切换守卫）。
-                                if (messages.isEmpty()) refreshSessionModelFromRuntime(sid)
                             }
                         }
                     },
