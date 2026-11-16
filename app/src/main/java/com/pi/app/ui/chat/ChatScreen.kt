@@ -254,6 +254,19 @@ fun ChatScreen(
     onLoadGitDiff: suspend (String) -> Result<GitDiffResult> = { Result.success(GitDiffResult()) },
     /** 读取斜杠命令列表（pi 的 agent get_commands：扩展命令 / prompt 模板 / 技能） */
     onLoadCommands: suspend () -> Result<List<SlashCommand>> = { Result.success(emptyList()) },
+    /**
+     * 扩展的阻塞式对话框（pi-web `extension_ui_request`）。
+     *
+     * 扩展可能在任意时刻发问，`session_start` 阶段也一样 —— 那时会话还没有任何消息，
+     * 界面除了这个对话框什么都没有，所以必须由聊天页兜住。
+     */
+    extensionUiDialog: ExtensionUiDialog? = null,
+    /**
+     * 回答对话框：`value`（select / input / editor / custom）、`confirmed`（confirm）、
+     * `cancelled`（用户关掉不答）。三者互斥，按方法取用。
+     */
+    onExtensionUiRespond: (ExtensionUiDialog, String?, Boolean?, Boolean) -> Unit =
+        { _, _, _, _ -> },
     /** 把文件真上传到 PC 的工作目录（pi 的 /api/files?type=upload），返回成功上传的文件名 */
     onUploadFiles: suspend (List<UploadFileInput>) -> Result<UploadFilesResult> = { Result.success(UploadFilesResult()) },
     /**
@@ -2904,6 +2917,11 @@ fun ChatScreen(
         )
     }
 
+    // 扩展的对话框：会话可能正因其停住（含 session_start 阶段），所以它盖在聊天页上而不是塞进某个面板
+    extensionUiDialog?.let { dialog ->
+        ExtensionUiDialogHost(dialog = dialog, onRespond = onExtensionUiRespond)
+    }
+
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -4327,3 +4345,134 @@ private data class FollowSignal(
     /** 首屏「瞬时定位到底部」是否已完成 */
     val initialScrolled: Boolean
 )
+
+/**
+ * 扩展对话框的宿主（对齐 pi-web 的 `extension_ui_request` + `ExtensionUiResponse`）。
+ *
+ * 五种阻塞方法各自对应一种回答形态：
+ *  - `select` → 点选项 → `{value}`；`confirm` → 是/否 → `{confirmed}`；
+ *  - `input` / `editor` → 一段文本 → `{value}`；`custom` → 扩展自己的面板，手机上只读展示，
+ *    关闭即 `{cancelled}`（手机端不实现面板内的按键通道 `extension_ui_input`）。
+ *
+ * 关闭（点外面 / 返回键）一律按 `{cancelled}` 上报，而不是把对话框从界面上抹掉：
+ * 扩展还在等这一次回答，本地悄悄消失只会让会话一直卡在等输入。
+ */
+@Composable
+private fun ExtensionUiDialogHost(
+    dialog: ExtensionUiDialog,
+    onRespond: (ExtensionUiDialog, String?, Boolean?, Boolean) -> Unit
+) {
+    val theme = LocalAppTheme.current
+    val dismiss = { onRespond(dialog, null, null, true) }
+    when (dialog.method) {
+        ExtensionUiDialog.METHOD_SELECT -> AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(dialog.title.ifBlank { "请选择" }, style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    dialog.options.forEach { option ->
+                        Text(
+                            text = option,
+                            fontSize = 14.sp,
+                            color = theme.primary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { onRespond(dialog, option, null, false) }
+                                .padding(vertical = 8.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = dismiss) { Text("取消") } }
+        )
+
+        ExtensionUiDialog.METHOD_CONFIRM -> AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(dialog.title.ifBlank { "确认" }, style = MaterialTheme.typography.titleMedium) },
+            text = { Text(dialog.message, fontSize = 14.sp, color = theme.textSecondary) },
+            confirmButton = {
+                Button(onClick = { onRespond(dialog, null, true, false) }) { Text("确定") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onRespond(dialog, null, false, false) }) { Text("取消") }
+            }
+        )
+
+        ExtensionUiDialog.METHOD_INPUT -> ExtensionUiTextDialog(
+            dialog = dialog,
+            initial = "",
+            singleLine = true,
+            onRespond = onRespond
+        )
+
+        ExtensionUiDialog.METHOD_EDITOR -> ExtensionUiTextDialog(
+            dialog = dialog,
+            initial = dialog.prefill,
+            singleLine = false,
+            onRespond = onRespond
+        )
+
+        // custom：扩展渲染自己的面板，手机端没有按键通道，只读展示 + 关闭。
+        ExtensionUiDialog.METHOD_CUSTOM -> AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(dialog.title.ifBlank { "扩展面板" }, style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    dialog.lines.forEach { line ->
+                        Text(
+                            text = line,
+                            fontSize = 12.5.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = theme.textSecondary
+                        )
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = dismiss) { Text("关闭") } }
+        )
+
+        // 非阻塞方法不该走到这里（notify 已由上层转成提示，其余显式忽略）。
+        else -> Unit
+    }
+}
+
+/** `input` / `editor` 共用的「一段文本」对话框。 */
+@Composable
+private fun ExtensionUiTextDialog(
+    dialog: ExtensionUiDialog,
+    initial: String,
+    singleLine: Boolean,
+    onRespond: (ExtensionUiDialog, String?, Boolean?, Boolean) -> Unit
+) {
+    // 按 id 重置：连续两个请求复用到同一个对话框时，不能把上一个的输入带过去。
+    var text by remember(dialog.id) { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = { onRespond(dialog, null, null, true) },
+        title = { Text(dialog.title.ifBlank { "输入" }, style = MaterialTheme.typography.titleMedium) },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = it },
+                singleLine = singleLine,
+                placeholder = if (dialog.placeholder.isNotBlank()) {
+                    { Text(dialog.placeholder) }
+                } else {
+                    null
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(onClick = { onRespond(dialog, text, null, false) }) { Text("发送") }
+        },
+        dismissButton = {
+            TextButton(onClick = { onRespond(dialog, null, null, true) }) { Text("取消") }
+        }
+    )
+}

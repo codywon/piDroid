@@ -1116,6 +1116,51 @@ enum class SseConnectionState {
 }
 
 /**
+ * 扩展的 `extension_ui_request`（pi-web `lib/types.ts` 的 `ExtensionUiRequest`）。
+ *
+ * 分两类，判据是上游 `isBlockingExtensionUiRequest()`：
+ *  - **阻塞式**（select / confirm / input / editor，以及未关闭的 custom）：扩展在等用户回答，
+ *    会话就停在原地 —— 包括 `session_start` 阶段，所以新会话也可能被它挡住；
+ *  - **通知式**（notify / setStatus / setWidget / setTitle / set_editor_text）：不需要回答，
+ *    只是往页面推一点状态。
+ *
+ * pi-web 只在事件流里发这些请求（`/api/agent/new` 可能先回包、对话框随后到），
+ * 重连时会把仍然挂着的请求重放一遍，所以调用侧必须按 [id] 去重。
+ */
+data class ExtensionUiDialog(
+    val id: String,
+    /** select | confirm | input | editor | custom | notify | setStatus | setWidget | setTitle | set_editor_text */
+    val method: String,
+    val title: String = "",
+    val message: String = "",
+    val options: List<String> = emptyList(),
+    val placeholder: String = "",
+    val prefill: String = "",
+    val lines: List<String> = emptyList(),
+    /** notify 的级别：info | warning | error */
+    val notifyType: String = "",
+    /** custom 面板已被扩展自己关掉（不再阻塞会话） */
+    val closed: Boolean = false
+) {
+    /** 扩展在等用户回答（对齐上游 `isBlockingExtensionUiRequest`）。 */
+    val isBlocking: Boolean
+        get() = when (method) {
+            METHOD_SELECT, METHOD_CONFIRM, METHOD_INPUT, METHOD_EDITOR -> true
+            METHOD_CUSTOM -> !closed
+            else -> false
+        }
+
+    companion object {
+        const val METHOD_SELECT = "select"
+        const val METHOD_CONFIRM = "confirm"
+        const val METHOD_INPUT = "input"
+        const val METHOD_EDITOR = "editor"
+        const val METHOD_CUSTOM = "custom"
+        const val METHOD_NOTIFY = "notify"
+    }
+}
+
+/**
  * SSE 推送事件结构（兼容 pi-web 全量事件流）
  */
 data class AgentSseEvent(
@@ -1152,7 +1197,11 @@ data class AgentSseEvent(
     val subagentsActive: Boolean = false,
     /** SSE `queue_update`：服务端当前真实的排队消息（含压缩期间被 park 的） */
     val steering: List<String> = emptyList(),
-    val followUp: List<String> = emptyList()
+    val followUp: List<String> = emptyList(),
+    /** `extension_ui_request` 的载荷；其它事件为 null */
+    val extensionUi: ExtensionUiDialog? = null,
+    /** `extension_ui_closed` 要关掉的那个对话框 id */
+    val extensionUiId: String? = null
 ) {
     val effectiveText: String
         get() = delta ?: text ?: content ?: ""

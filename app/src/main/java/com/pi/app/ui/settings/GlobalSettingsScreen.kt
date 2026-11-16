@@ -109,6 +109,13 @@ fun GlobalSettingsScreen(
     onSaveSkillContent: (SkillInfo, String) -> Unit = { _, _ -> },
     onInstallSkill: (pkgSource: String, scope: String) -> Unit = { _, _ -> },
     onRefreshSkills: () -> Unit = {},
+    /**
+     * 重新拉一次能力列表（MCP 服务器等）。
+     *
+     * pi-web 0.17.0 起，测试连通成功会把已开会话里失败的 MCP 服务器重新连上（#1684）：
+     * 服务端的运行态变了，界面还拿着测试前那份状态就会显示「失败」。
+     */
+    onRefreshMcp: () -> Unit = {},
     /** 技能列表上次加载失败的原因（null = 正常） */
     skillsLoadError: String? = null,
     plugins: List<PluginPackage>,
@@ -327,7 +334,8 @@ fun GlobalSettingsScreen(
                     mcpServers = mcpServers,
                     apiClient = apiClient,
                     onAddMcpServer = onAddMcpServer,
-                    onManageMcpServer = onManageMcpServer
+                    onManageMcpServer = onManageMcpServer,
+                    onRefreshMcp = onRefreshMcp
                 )
                 GlobalSettingsTab.Plugins -> GlobalPluginsTab(
                     plugins = plugins,
@@ -2294,7 +2302,9 @@ fun GlobalMcpTab(
     apiClient: PiApiClient? = null,
     onAddMcpServer: (name: String, transport: String, endpoint: String, description: String, scope: String) -> Unit = { _, _, _, _, _ -> },
     onManageMcpServer: (action: String, name: String) -> Unit = { _, _ -> },
-    onUpdateMcpCodeMode: (mode: String, scriptMode: Boolean, tokenBudget: Int) -> Unit = { _, _, _ -> }
+    onUpdateMcpCodeMode: (mode: String, scriptMode: Boolean, tokenBudget: Int) -> Unit = { _, _, _ -> },
+    /** 测试连通后重拉服务器列表（服务端已把失败的那条重连上，见 pi-web #1684） */
+    onRefreshMcp: () -> Unit = {}
 ) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
@@ -2480,6 +2490,9 @@ fun GlobalMcpTab(
                                                 testingServerName = null
                                                 res.onSuccess { info ->
                                                     testResultDialog = focusedServer.name to info
+                                                    // 测试连上后服务端会把已开会话里这条失败的重连（#1684），
+                                                    // 重拉一次，免得详情页还挂着测试前的「失败」。
+                                                    onRefreshMcp()
                                                 }.onFailure { err ->
                                                     testErrorDialog = focusedServer.name to (err.message ?: "未知错误")
                                                 }

@@ -312,6 +312,8 @@ private val MULTILINE_HTML_CONTAINER = Regex(
     RegexOption.IGNORE_CASE
 )
 private val BLOCK_FENCE_MARKER = Regex("^ {0,3}(`{3,}|~{3,})")
+/** 链接引用 / 脚注定义行（`[guide]: https://…`、`[^1]: …`）：被别的块引用，不能切断。 */
+private val BLOCK_DEFINITION = Regex("^ {0,3}\\[[^\\]]+\\]:")
 private val BLOCK_LIST_ITEM = Regex("^(?:[*+-]|\\d{1,9}[.)])(?:[ \\t]|$)")
 private val BLOCK_INLINE_CODE = Regex("`[^`]*`")
 private val BLOCK_FRONT_MATTER_OPEN = Regex("^---[ \\t]*\\r?$")
@@ -323,8 +325,7 @@ private val BLOCK_FRONT_MATTER_OPEN = Regex("^---[ \\t]*\\r?$")
  * 不在块公式内。这样已完成的块在重组时字节不变，能命中 [remember] 缓存，
  * 流式输出只需重解析末尾变化的那一块——否则每个 token 都要重解析整篇，是 O(n²)。
  *
- * 代价：跨块的链接引用定义（`[ref]: url`）不再共享。LLM 输出中极少出现，
- * 且短消息走整篇解析路径。
+ * 代价：跨块的链接引用定义（`[ref]: url`）不再共享，所以一旦出现定义行就整篇解析（短消息本来就走整篇）。
  */
 internal fun splitTopLevelMarkdownBlocks(markdown: String): List<String> {
     if (markdown.isEmpty()) return emptyList()
@@ -356,10 +357,19 @@ internal fun splitTopLevelMarkdownBlocks(markdown: String): List<String> {
             val open = fence
             if (open == null) {
                 fence = marker to size
-            } else if (marker == open.first && size >= open.second) {
+            } else if (
+                marker == open.first && size >= open.second &&
+                // 只有「标记后面什么都没写」才算闭合围栏（对齐 pi-web #1654 / #1669）：
+                // 代码块里常见「展示围栏用法」的行，比如 ```` ```js ```` 后面还跟着正文，
+                // 把它当闭合会让后面的内容被当成代码块外的正文切出去。
+                line.substring(fenceMatch.range.last + 1).isBlank()
+            ) {
                 fence = null
             }
         } else if (fence == null) {
+            // 链接引用定义行出现在围栏外：引用可能落在任何一块里，这份 markdown 不再切分
+            // （对齐 pi-web #1656；只看行首的 `[label]:`，不会误伤 `items[1]:` 这种代码）。
+            if (BLOCK_DEFINITION.containsMatchIn(line)) return listOf(markdown)
             // 行内代码里的 $$ 不算块公式界符
             val prose = BLOCK_INLINE_CODE.replace(line, "")
             var odd = false

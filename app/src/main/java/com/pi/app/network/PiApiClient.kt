@@ -2938,6 +2938,40 @@ class PiApiClient(private val prefs: AppPreferences) {
         sendAgentAction(sessionId, mapOf("type" to "abort_compaction"))
     }
 
+    /**
+     * 回答扩展的对话框：`POST /api/agent/{id}` `{"type":"extension_ui_response"}`。
+     *
+     * pi-web 的三种回执形态（`lib/types.ts` 的 `ExtensionUiResponse`）：
+     *  - select / input / editor / custom → `{id, value}`；
+     *  - confirm → `{id, confirmed}`；
+     *  - 用户关掉不答 → `{id, cancelled:true}`。
+     *
+     * 上游按 id 找回等待中的 promise，找不到就静默忽略（`resolveExtensionUiResponse`），
+     * 所以 SSE 重连后被重放的那条请求再答一次也无害。
+     *
+     * 为什么带 `?ttfb=long`：扩展在等这次回答的同时，会话可能正卡在 `session_start` 里，
+     * 上游回包要等扩展被唤醒后才可能——用 5s 默认线会把它误判成卡死。
+     */
+    suspend fun respondExtensionUi(
+        sessionId: String,
+        requestId: String,
+        value: String? = null,
+        confirmed: Boolean? = null,
+        cancelled: Boolean = false
+    ): Result<Boolean> {
+        if (requestId.isBlank()) return Result.failure(IllegalArgumentException("缺少请求ID"))
+        val payload = mutableMapOf<String, Any>(
+            "type" to "extension_ui_response",
+            "id" to requestId
+        )
+        when {
+            cancelled -> payload["cancelled"] = true
+            confirmed != null -> payload["confirmed"] = confirmed
+            else -> payload["value"] = value.orEmpty()
+        }
+        return sendAgentAction(sessionId, payload, query = "ttfb=long")
+    }
+
     suspend fun updateModel(sessionId: String, provider: String, modelId: String): Result<Boolean> = withContext(Dispatchers.IO) {
         sendAgentAction(sessionId, mapOf("type" to "set_model", "provider" to provider, "modelId" to modelId))
     }

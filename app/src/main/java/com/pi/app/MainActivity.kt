@@ -517,6 +517,9 @@ class MainActivity : ComponentActivity() {
         var searchHits by remember { mutableStateOf<List<SessionSearchHit>>(emptyList()) }
         var isSearching by remember { mutableStateOf(false) }
         var searchJob by remember { mutableStateOf<Job?>(null) }
+        // 扩展的阻塞式对话框（pi-web `extension_ui_request`）：扩展在等用户回答时整个会话停住，
+        // 包括 `session_start` 阶段——所以这是会话级状态，切会话时必须跟着清。
+        var extensionUiDialogs by remember { mutableStateOf<List<ExtensionUiDialog>>(emptyList()) }
         // 未读标记：与 pi-web 一致，属于「本设备」状态（它存在浏览器 localStorage）
         var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
         // 追踪上一轮轻量快照中的运行中会话，用于感知后台任务何时完成以自动标为未读
@@ -2138,6 +2141,38 @@ class MainActivity : ComponentActivity() {
                             isToolExecuting = false
                             agentPhaseLabel = null
                         }
+                        "extension_ui_request" -> {
+                            val dialog = event.extensionUi
+                            if (dialog != null) {
+                                when {
+                                    // 通知式：不阻塞会话，只需要让用户看见一条提示。
+                                    dialog.method == ExtensionUiDialog.METHOD_NOTIFY -> {
+                                        val text = dialog.message
+                                        if (text.isNotBlank()) {
+                                            val duration = if (dialog.notifyType == "error" || dialog.notifyType == "warning") {
+                                                Toast.LENGTH_LONG
+                                            } else {
+                                                Toast.LENGTH_SHORT
+                                            }
+                                            Toast.makeText(this@MainActivity, text, duration).show()
+                                        }
+                                    }
+                                    // 其余通知式方法（setStatus / setWidget / setTitle / set_editor_text）
+                                    // 没有对应的手机界面：显式忽略，而不是落到下面那个会造假的默认分支。
+                                    dialog.isBlocking -> {
+                                        // 重连会重放仍挂着的请求：按 id 去重 / 就地替换，不重复弹。
+                                        extensionUiDialogs =
+                                            extensionUiDialogs.filterNot { it.id == dialog.id } + dialog
+                                    }
+                                }
+                            }
+                        }
+                        "extension_ui_closed" -> {
+                            val closedId = event.extensionUiId
+                            if (closedId != null) {
+                                extensionUiDialogs = extensionUiDialogs.filterNot { it.id == closedId }
+                            }
+                        }
                         "editor_paste" -> {
                             // pi-web 0.16.0：扩展往页面输入框塞文本（hooks/useAgentSession.ts 里
                             // `pasteText(stripAnsi(event.text))`）。App 没有这条「扩展→输入框」通道，
@@ -2248,6 +2283,8 @@ class MainActivity : ComponentActivity() {
             // 在途身份与阶段文案（对齐 pi-web 的 finishRun：新会话不得带着上一场的流式身份）
             streamingMessageId = null
             agentPhaseLabel = null
+            // 扩展对话框：上一个会话的提问不该出现在新会话里（且它已经没人能答了）
+            extensionUiDialogs = emptyList()
         }
 
         // 打开任务会话：先建立 SSE 实时监听防止丢包，同时并发拉取完整历史快照
@@ -2687,6 +2724,10 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onRefreshSkills = {
+                        loadCapabilitiesAndModels()
+                    },
+                    // MCP 测试连通后服务端会重连失败的那条（pi-web #1684），重拉能力列表跟上运行态
+                    onRefreshMcp = {
                         loadCapabilitiesAndModels()
                     },
                     onUpdateSkillAlias = { name, alias ->
@@ -3222,6 +3263,34 @@ class MainActivity : ComponentActivity() {
                     onUploadFiles = { files ->
                         // 上传目标必须是真实的会话工作目录（不是工作区显示名）
                         apiClient.uploadFiles(currentSession?.cwd ?: "", files)
+                    },
+                    extensionUiDialog = extensionUiDialogs.firstOrNull(),
+                    onExtensionUiRespond = { dialog, value, confirmed, cancelled ->
+                        val sid = activeSessionId
+                        if (sid.isNotBlank()) {
+                            // 先在本地出队，再回执：SSE 重连会把仍挂着的请求重放一遍，
+                            // 留着本地这份会让用户重复看到已经答过的对话框。
+                            extensionUiDialogs = extensionUiDialogs.filterNot { it.id == dialog.id }
+                            lifecycleScope.launch {
+                                apiClient.respondExtensionUi(
+                                    sessionId = sid,
+                                    requestId = dialog.id,
+                                    value = value,
+                                    confirmed = confirmed,
+                                    cancelled = cancelled
+                                ).onFailure { err ->
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "回答扩展请求失败：${err.message ?: "未知错误"}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                                // 新会话的 session_start 可能正卡在这个对话框上：#1678 之后
+                                // `/api/agent/new` 会在 session_start 结束前就回包，扩展随后才把
+                                // 模型/思考级别定下来。答完后按运行时状态纠一次（自带本地切换守卫）。
+                                if (messages.isEmpty()) refreshSessionModelFromRuntime(sid)
+                            }
+                        }
                     },
                     onSendMessage = { prompt, images, editEntryId, onSubmissionRestore ->
                         // 斜杠命令：客户端拦截执行，与 pi-web 的 slash dispatcher 同构。

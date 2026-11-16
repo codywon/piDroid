@@ -558,6 +558,16 @@ class PiSseClient(private val prefs: AppPreferences) {
                     // 单条消息流结束，不代表整个多步会话结束
                     listOf(AgentSseEvent(type = "message_stop", isStreaming = false))
                 }
+                // 扩展的对话框 / 状态推送。必须显式认出来，不能落到下面的兼容 fallback：
+                // fallback 会把载荷里的 `text` 当正文增量，而 set_editor_text 就带一个 text。
+                "extension_ui_request" -> ExtensionUiParsing.of(obj)
+                    ?.let { listOf(AgentSseEvent(type = "extension_ui_request", extensionUi = it)) }
+                    ?: emptyList()
+                "extension_ui_closed" -> obj.get("id")?.takeIf { it.isJsonPrimitive }?.asString
+                    ?.let { listOf(AgentSseEvent(type = "extension_ui_closed", extensionUiId = it)) }
+                    ?: emptyList()
+                // 扩展内部报错：与 pi-web 一致，不把它渲染成模型正文。
+                "extension_error" -> emptyList()
 
                 else -> {
                     // 兼容简化格式 (delta / thinking / tool)

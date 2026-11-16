@@ -3,6 +3,22 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
+## [2.0.53] - 2026-11-16
+### 🪟 扩展对话框通道（对齐 pi-web 0.17.0）
+- **手机上终于能回答扩展的提问**：pi-web 的 `extension_ui_request` 以前在 App 里没有任何落点——`select` / `confirm` / `input` / `editor` 这四种阻塞请求既收不到也答不了，扩展（含 `session_start` 阶段）在等回答时整个会话就停在原地。现在 SSE 显式认出这类事件，聊天页按方法弹出对应对话框（选项列表 / 是-否 / 单行输入 / 多行编辑），回执走 `POST /api/agent/{id}` 的 `extension_ui_response`（`value` / `confirmed` / `cancelled` 三种形态）。
+- **不再把扩展文本当模型正文**：这个类型以前落在 SSE 的兼容 fallback 上，而 fallback 会把载荷里的 `text` 当成正文增量——`set_editor_text` 恰好带一个 `text`，扩展往输入框塞字就会印进聊天气泡。现在它有专属解析，未支持的通知式方法（`setStatus` / `setWidget` / `setTitle` / `set_editor_text`）显式忽略，`notify` 转成 Toast。
+- **`custom` 面板只读展示**：扩展自绘面板在手机上没有按键通道（`extension_ui_input`），按它的文本渲染 + 「关闭」= `cancelled`，不让会话无限等。
+- **重连不重复弹**：SSE 重连会重放仍挂着的请求，对话框按 id 去重/就地替换；切会话时清空（上一个会话的提问已经没人能答）。答完后如果是还没有消息的新会话，按运行时状态把模型/思考级别纠一次（#1678：`/api/agent/new` 会在 `session_start` 结束前就回包）。
+### 🎨 渲染 parity（对齐 pi-web 0.17.0 的三条流式修复）
+- **围栏闭合收紧**：只有「标记后面什么都没写」才算闭合（#1654 / #1669）。代码块里展示围栏用法（如 ```` ```js 示例 ````）时不再被当成闭合，后续正文不会被切出代码块。
+- **跨块引用定义不再被切开**：围栏外出现 `[guide]: https://…` / `[^1]: …` 时整篇不切分（#1656）；只看行首的 `[label]:`，`for x in items[1]:` 这类代码不受影响（上游第一次修这里时用「任何 `]:`」判断，导致 14k 回复的解析量从 39k 涨到 4.9M 字符）。
+### 🔌 MCP
+- **测试连通后刷新服务器列表**：pi-web 0.17.0 起，测试成功会把已开会话里那条失败的 MCP 服务器重新连上（#1684）。详情页测试成功后重拉一次能力列表，不再挂着测试前的「失败」。
+### ✅ 无需改动（已核对）
+- `cwd` 首尾空格：0.17.0 起服务端不再 `trim()` 查询参数里的 `cwd`，但 App 存工作区时就已 `trim`（`WorkspacePaths.displayPath`），发出去的路径从不带首尾空格。
+### 🧪 单元测试
+- 新增 `ExtensionUiParsingTest`（10 例）：五种方法的字段还原、阻塞判定、缺 id/method 丢弃、非字符串选项跳过、`closed` 只认布尔 true。
+- 新增 `MarkdownBlockSplitTest`（10 例）：围栏闭合规则、定义行 bail-out、代码里的 `[1]:` 不误伤、列表项不切分。
 ## [2.0.52] - 2026-11-16
 > 本版本同时包含未单独发版的 2.0.51（对齐 pi-web 0.17.0：附件上限 50MB、搜索命中过滤侧聊、上传响应头截止线 10 分钟、伴航网关 SDK 1.5.2）。
 ### 🔌 DeepSeek 思考模式 400
