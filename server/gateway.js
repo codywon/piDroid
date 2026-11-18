@@ -82,43 +82,74 @@ function stripYamlComment(line) {
   return idx === -1 ? line : line.slice(0, idx);
 }
 /**
+ * 从 cloudflared ingress 的 service 值中提取本地端口号。
+ * 仅匹配 `https?://host:port`（兼容引号与末尾 `/`），不把 `http_status:404` 误当端口 404。
+ */
+function extractServicePort(serviceValue) {
+  const cleaned = String(serviceValue || '').trim().replace(/^["']|["']$/g, '').replace(/\/+$/, '');
+  const m = cleaned.match(/^https?:\/\/(?:\[[^\]]+\]|[^/:\s]+):(\d{1,5})$/i);
+  return m ? Number(m[1]) : null;
+}
+
+/**
  * 从 cloudflared 配置文本里取出（隧道名, 指向目标端口的 hostname）。
  * 纯函数：不读磁盘，便于单测。
  *
- * ingress 是「- hostname: X」紧跟「service: http://127.0.0.1:PORT」的列表，
- * 按行配对，只接受 service 端口等于 expectedPort 的那一条 —— 指向别的服务的
- * 域名即使配上也会连不上。
+ * ingress 是列表项（以 `- ` 开头），条目内 `hostname` 与 `service` 顺序不限；
+ * 只接受 `service` 端口等于 `expectedPort` 的条目 —— 指向别的服务的域名即使配上也会连不上。
  */
 function parseStableTunnelConfig(text, expectedPort) {
   if (typeof text !== 'string' || !text) return null;
-  const lines = text
-    .split(/\r?\n/)
-    .map((raw) => stripYamlComment(raw).trim())
-    .filter(Boolean);
+  const rawLines = text.split(/\r?\n/);
 
   let tunnelName = null;
-  for (const line of lines) {
-    const match = line.match(/^tunnel:\s*["']?([^"'\s]+)/);
-    if (match) {
-      tunnelName = match[1];
-      break;
-    }
-  }
-  if (!tunnelName) return null;
+  const entries = [];
+  let current = null;
 
-  let pendingHost = null;
-  for (const line of lines) {
-    const hostMatch = line.match(/^-?\s*hostname:\s*["']?([^"'\s]+)/);
-    if (hostMatch) {
-      pendingHost = hostMatch[1];
+  for (const raw of rawLines) {
+    const noComment = stripYamlComment(raw);
+    const trimmed = noComment.trim();
+    if (!trimmed) continue;
+
+    if (!tunnelName) {
+      const match = trimmed.match(/^tunnel:\s*["']?([^"'\s]+)/);
+      if (match) {
+        tunnelName = match[1];
+        continue;
+      }
+    }
+
+    // 顶层非列表 key 出现时，退出当前 ingress 条目
+    if (/^[^\s-]/.test(noComment) && /^[A-Za-z0-9_-]+:/.test(trimmed)) {
+      current = null;
       continue;
     }
-    const portMatch = line.match(/^service:\s*\S*?:(\d{1,5})$/);
-    if (!portMatch || !pendingHost) continue;
-    if (Number(portMatch[1]) === expectedPort) {
-      return { tunnelName, hostname: pendingHost, targetPort: expectedPort };
+
+    let itemLine = trimmed;
+    if (/^-\s+/.test(trimmed) || trimmed === '-') {
+      current = { hostname: null, port: null };
+      entries.push(current);
+      itemLine = trimmed.replace(/^-\s*/, '');
+      if (!itemLine) continue;
     }
-    pendingHost = null;
+    if (!current) continue;
+
+    const hostMatch = itemLine.match(/^hostname:\s*["']?([^"'\s]+)/);
+    if (hostMatch) {
+      current.hostname = hostMatch[1];
+      continue;
+    }
+    const svcMatch = itemLine.match(/^service:\s*(.+)$/);
+    if (svcMatch) {
+      current.port = extractServicePort(svcMatch[1]);
+    }
+  }
+
+  if (!tunnelName) return null;
+  for (const entry of entries) {
+    if (entry.hostname && entry.port === expectedPort) {
+      return { tunnelName, hostname: entry.hostname, targetPort: expectedPort };
+    }
   }
   return null;
 }
@@ -143,7 +174,7 @@ function detectStableTunnelFromConfig(expectedPort) {
     const parsed = parseStableTunnelConfig(text, expectedPort);
     if (parsed) return { tunnel: { ...parsed, filePath }, notes: [] };
 
-    const usedPort = (text.match(/^\s*service:\s*\S*?:(\d{1,5})\s*$/m) || [])[1];
+    const usedPort = (text.match(/^\s*(?:-\s*)?service:\s*["']?https?:\/\/(?:\[[^\]]+\]|[^\s/:]+):(\d{1,5})\/*["']?(?:\s+#.*)?$/im) || [])[1];
     return {
       tunnel: null,
       notes: [
@@ -296,6 +327,7 @@ function checkServerAlive(targetUrl, timeout = 1000) {
         method: 'GET',
         timeout: timeout
       }, (res) => {
+        res.resume();
         resolve(res.statusCode < 500);
       });
       req.on('error', () => resolve(false));
@@ -473,18 +505,31 @@ app.get('/api/ping', authMiddleware, (req, res) => {
   });
 });
 
-// 启动后异步预热（不阻塞监听端口）
-if (PROMPT_ENHANCE_CONFIG.enabled) {
-  promptEnhancementWarmUp = (async () => {
-    const startedAt = Date.now();
-    try {
-      const { service } = await loadPromptEnhancement();
-      await service.prewarm?.();
-      console.log(`[prompt-enhance] 已预热，耗时 ${Date.now() - startedAt}ms`);
-    } catch (error) {
-      console.warn(`[prompt-enhance] 预热失败（不影响网关其他功能）: ${error && error.message}`);
-    }
-  })();
+// 必须在 app.listen 之后再延后预热：模块顶层触发会在 require('./gateway') 阶段就抢占
+// launcher 主线程加载整个 pi SDK，磁盘忙时阻塞 90~175s，导致连 pi-web 都没拉起就被
+// supervisor 判死强杀陷入重启死循环，也会拖慢所有只引纯函数的单测。
+let promptEnhancementWarmUpTimer = null;
+function schedulePromptEnhancementWarmUp(delayMs = 2000) {
+  if (!PROMPT_ENHANCE_CONFIG.enabled || promptEnhancementWarmUp || promptEnhancementWarmUpTimer) {
+    return;
+  }
+  promptEnhancementWarmUpTimer = setTimeout(() => {
+    promptEnhancementWarmUpTimer = null;
+    if (promptEnhancementWarmUp) return;
+    promptEnhancementWarmUp = (async () => {
+      const startedAt = Date.now();
+      try {
+        const { service } = await loadPromptEnhancement();
+        await service.prewarm?.();
+        console.log(`[prompt-enhance] 已预热，耗时 ${Date.now() - startedAt}ms`);
+      } catch (error) {
+        console.warn(`[prompt-enhance] 预热失败（不影响网关其他功能）: ${error && error.message}`);
+      }
+    })();
+  }, delayMs);
+  if (typeof promptEnhancementWarmUpTimer.unref === 'function') {
+    promptEnhancementWarmUpTimer.unref();
+  }
 }
 
 // POST /api/mobile/prompt-enhance：必须是网关自有路由，且必须挂在反向代理之前
@@ -675,17 +720,20 @@ function resolveMediaReadPath(rawPath, rawCwd) {
     return null;
   }
 
-  const roots = [];
-  if (cwd) roots.push(realPathLoose(resolveHomePath(cwd)));
-  roots.push(realPathLoose(os.homedir()));
-  const allowed = roots.some((root) => isPathInside(root, resolved));
-  return allowed ? { path: resolved, contentType } : null;
+  let root;
+  if (cwd) {
+    root = realPathLoose(resolveHomePath(cwd));
+    // 禁止把文件系统根目录（如 C:\ 或 /）当成工作区根目录，防止全盘读取
+    if (path.dirname(root) === root) return null;
+  } else {
+    root = realPathLoose(os.homedir());
+  }
+  return isPathInside(root, resolved) ? { path: resolved, contentType } : null;
 }
 
 // 自动检测并无损自愈本地 ~/.pi/agent/models.json（防止因缺失 baseUrl 的单模型数组或顶层 config 字段导致 pi 无法工作）
-function autoHealLocalModelsJson() {
+function autoHealLocalModelsJson(modelsJsonPath = path.join(os.homedir(), '.pi', 'agent', 'models.json')) {
   try {
-    const modelsJsonPath = path.join(os.homedir(), '.pi', 'agent', 'models.json');
     if (!fs.existsSync(modelsJsonPath)) return;
     const raw = fs.readFileSync(modelsJsonPath, 'utf8').trim();
     if (!raw) return;
@@ -737,7 +785,14 @@ function autoHealLocalModelsJson() {
 
     if (modified) {
       fs.writeFileSync(modelsJsonPath + '.bak', raw, 'utf8');
-      fs.writeFileSync(modelsJsonPath, JSON.stringify(parsed, null, 2), 'utf8');
+      const tmpPath = `${modelsJsonPath}.tmp`;
+      try {
+        fs.writeFileSync(tmpPath, JSON.stringify(parsed, null, 2), 'utf8');
+        fs.renameSync(tmpPath, modelsJsonPath);
+      } catch (writeErr) {
+        try { fs.unlinkSync(tmpPath); } catch {}
+        throw writeErr;
+      }
       console.log('[Gateway] 已自动修复 ~/.pi/agent/models.json 中的模型覆盖配置结构');
     }
   } catch (e) {
@@ -747,8 +802,6 @@ function autoHealLocalModelsJson() {
     }
   }
 }
-
-autoHealLocalModelsJson();
 
 app.get('/api/skills/content', authMiddleware, (req, res, next) => {
   try {
@@ -950,6 +1003,10 @@ function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS, 
   let poller = null;
   let slowSince = 0;
 
+  const onDrain = () => {
+    slowSince = 0;
+  };
+
   const disarm = () => {
     if (timer) {
       clearTimeout(timer);
@@ -958,6 +1015,9 @@ function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS, 
     if (poller) {
       clearInterval(poller);
       poller = null;
+    }
+    if (res && typeof res.off === 'function') {
+      res.off('drain', onDrain);
     }
   };
 
@@ -976,21 +1036,29 @@ function guardEventStreamIdle(proxyRes, req, res, idleMs = SSE_IDLE_TIMEOUT_MS, 
     );
     // 不拖住进程退出：看门狗只是清理，不该成为 launcher 的存活原因
     if (typeof timer.unref === 'function') timer.unref();
-    // 有字节流过，说明这条流不是僵尸：把慢消费者的观察窗口也重置一下
-    slowSince = 0;
   };
 
   proxyRes.on('data', arm);
   proxyRes.on('end', disarm);
   proxyRes.on('close', disarm);
   proxyRes.on('error', disarm);
-  if (res && typeof res.on === 'function') res.on('close', disarm);
+  if (res && typeof res.on === 'function') {
+    res.on('close', disarm);
+    res.on('drain', onDrain);
+  }
   arm();
 
-  // 慢消费者：轮询下游还没送出去的字节数
+  // 慢消费者：轮询下游还没送出去的字节数（兼顾 .pipe() 的 16 KB writableHighWaterMark 反压暂停）
   poller = setInterval(() => {
     const queued = res && typeof res.writableLength === 'number' ? res.writableLength : 0;
-    if (queued < backpressureBytes) {
+    const hwm =
+      res && typeof res.writableHighWaterMark === 'number' && res.writableHighWaterMark > 0
+        ? res.writableHighWaterMark
+        : 16384;
+    const isBackpressured =
+      queued >= backpressureBytes ||
+      Boolean(res && res.writableNeedDrain && queued >= Math.min(backpressureBytes, hwm));
+    if (!isBackpressured) {
       slowSince = 0;
       return;
     }
@@ -1069,8 +1137,9 @@ function clearUpstreamDeadline(req) {
  */
 function armUpstreamDeadline(proxyReq, req, res, deadlineMs = UPSTREAM_TTFB_DEADLINE_MS) {
   return setTimeout(() => {
-    if (res.headersSent || res.writableEnded) return;
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
     console.warn(`[Gateway] 上游 ${deadlineMs / 1000}s 未返回响应头，主动放弃 ${req.method} ${req.url}`);
+    if (req) req.__deadlineAborted = true;
     try {
       proxyReq.destroy();
     } catch {
@@ -1118,28 +1187,58 @@ function resolveUpstreamDeadlineMs(req) {
 const proxy = createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,
-  ws: true,
+  // 禁止在首次 HTTP 请求时自动挂无鉴权的 server.on('upgrade')；
+  // WebSocket 升级唯一由 server.on('upgrade') 鉴权后手动调用 proxy.upgrade(...)。
+  ws: false,
   agent: proxyAgent,
   router: () => TARGET, // 动态支持更新后的目标端口
   on: {
     proxyReq: (proxyReq, req, res) => {
-      // WebSocket 升级由 proxyReqWs 处理，这里挂超时会杀掉健康的终端连接。
+      // WebSocket 升级由 server.on('upgrade') 转交 proxy.upgrade 处理，这里不挂 HTTP 超时。
       if (String(req.headers.upgrade || '').toLowerCase() === 'websocket') return;
       req.__upstreamStartedAt = Date.now();
       req.__upstreamDeadlineTimer = armUpstreamDeadline(proxyReq, req, res, resolveUpstreamDeadlineMs(req));
+      if (res && typeof res.on === 'function') {
+        res.on('close', () => {
+          clearUpstreamDeadline(req);
+          if (!res.writableFinished && !proxyReq.destroyed) {
+            req.__clientAborted = true;
+            try {
+              proxyReq.destroy();
+            } catch {}
+          }
+        });
+      }
     },
     error: (err, req, res) => {
       clearUpstreamDeadline(req);
+      if (req && (req.__clientAborted || req.__deadlineAborted)) {
+        return;
+      }
       console.error(`[Gateway Error] 无法连接到本地 pi-web (${TARGET}):`, err.message);
-      if (!res.headersSent) {
-        res.status(502).json({
-          error: 'Bad Gateway',
-          message: `无法连接到本地 pi-web (${TARGET})。请确认 pi-web 是否已在后台启动 (运行 pi-web 或 npx @agegr/pi-web)`
-        });
+      if (res && typeof res.status === 'function' && typeof res.json === 'function') {
+        if (!res.headersSent && !res.writableEnded && !res.destroyed) {
+          res.status(502).json({
+            error: 'Bad Gateway',
+            message: `无法连接到本地 pi-web (${TARGET})。请确认 pi-web 是否已在后台启动 (运行 pi-web 或 npx @agegr/pi-web)`
+          });
+        }
+      } else if (res && typeof res.destroy === 'function') {
+        try {
+          res.destroy();
+        } catch {}
       }
     },
     proxyRes: (proxyRes, req, res) => {
       clearUpstreamDeadline(req);
+      proxyRes.on('error', (err) => {
+        console.warn('[Gateway] upstream response error:', err && err.message ? err.message : String(err));
+        try {
+          if (res && typeof res.destroy === 'function' && !res.destroyed) {
+            res.destroy();
+          }
+        } catch {}
+      });
       if (req.__upstreamStartedAt) {
         const elapsed = Date.now() - req.__upstreamStartedAt;
         recordUpstreamLatency(elapsed);
@@ -1163,14 +1262,29 @@ function fetchUpstreamJson(routePath, cwd) {
     // file-index 单次要 29s，给 60s 才够；git/status 最长 4.8s，同用一个上限不碍事。
     const req = http.get(target, { timeout: 60000 }, (res) => {
       const chunks = [];
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        reject(err);
+      };
       res.on('data', (chunk) => chunks.push(chunk));
-      res.on('end', () =>
+      res.on('error', fail);
+      res.on('aborted', () => fail(new Error('upstream response aborted')));
+      res.on('close', () => {
+        if (!settled && !res.complete) {
+          fail(new Error('upstream closed prematurely'));
+        }
+      });
+      res.on('end', () => {
+        if (settled) return;
+        settled = true;
         resolve({
           status: res.statusCode,
           contentType: res.headers['content-type'],
           body: Buffer.concat(chunks)
-        })
-      );
+        });
+      });
     });
     req.on('timeout', () => {
       req.destroy(new Error('upstream timeout'));
@@ -1193,6 +1307,10 @@ for (const route of CACHED_ROUTES) {
   app.get(route.path, authMiddleware, async (req, res, next) => {
     const cwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
     if (!cwd) return next();
+    const hasExtraQuery = Object.keys(req.query || {}).some(
+      (k) => k !== 'cwd' && String(req.query[k] ?? '') !== ''
+    );
+    if (hasExtraQuery) return next();
     try {
       const { source, response } = await cache.get(cwd);
       if (!response) return next();
@@ -1243,7 +1361,10 @@ function printBannerAndQr(connectHost, isPiWebRunning, listenPort = PORT) {
 
 // 自动探测并启动网关
 async function start(options = {}) {
-  const listenPort = options.port || PORT;
+  if (options.autoHeal !== false) {
+    autoHealLocalModelsJson();
+  }
+  const listenPort = options.port ?? PORT;
   const targetOverride = options.target || customUrlArg || null;
   const tunnelMode = resolveTunnelMode({
     explicit: options.tunnelMode,
@@ -1274,8 +1395,16 @@ async function start(options = {}) {
 
   return new Promise((resolve, reject) => {
     const server = app.listen(listenPort, '0.0.0.0', () => {
+      if (
+        options.warmUp !== false &&
+        options.prewarmPromptEnhancement !== false &&
+        process.env.PROMPT_ENHANCE_PREWARM !== '0'
+      ) {
+        schedulePromptEnhancementWarmUp();
+      }
+      const actualPort = (server.address() && typeof server.address() === 'object' && server.address().port) || listenPort;
       const localIp = getLocalIp();
-      const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${listenPort}`;
+      const defaultHost = customUrlArg || process.env.TUNNEL_URL || `http://${localIp}:${actualPort}`;
 
       // 有固定隧道配置但没采用（端口不符 / 名字非法）：必须说出来，
       // 否则用户会静默掉回 Quick Tunnel，又一次陷入「自动重连中」且无从排查。
@@ -1327,6 +1456,9 @@ async function start(options = {}) {
          * TLS handshake EOF（被网络环境拦），而默认的 auto/quic 能正常注册连接。
          * 协议就交给 cloudflared 自己选（默认 auto），我们只负责它死了就拉起来。
          */
+        tunnelState.stopping = false;
+        tunnelState.attempt = 0;
+
         const spawnTunnel = () => {
           const startedAt = Date.now();
           const child = spawn(
@@ -1334,7 +1466,8 @@ async function start(options = {}) {
             // 只能给一个位置参数（隧道名）；额外 flag 写在名字后面会被拒：
             // “accepts only one argument, the ID or name of the tunnel to run”。
             ['tunnel', 'run', stableTunnel.name],
-            { shell: true }
+            // cloudflared 走 shell 启动（cmd.exe），且它会反复重连：不隐藏就每次都闪一个黑窗。
+            { shell: true, windowsHide: true }
           );
           pipeTunnelLogs(child.stdout, process.stdout);
           pipeTunnelLogs(child.stderr, process.stderr);
@@ -1345,6 +1478,7 @@ async function start(options = {}) {
           });
 
           child.on('exit', (code, signal) => {
+            if (tunnelState.child === child) tunnelState.child = null;
             if (tunnelState.stopping) return;
             // 稳定运行超过 60s 后再掉，算一次新故障，退避重置
             if (Date.now() - startedAt > 60_000) tunnelState.attempt = 0;
@@ -1354,12 +1488,13 @@ async function start(options = {}) {
               `\n[tunnel] ⚠️ 隧道连接断开（code=${code ?? '-'} signal=${signal ?? '-'}），` +
               `${Math.round(delayMs / 1000)}s 后自动重连（第 ${tunnelState.attempt} 次）`
             );
-            tunnelState.child = null;
+            if (tunnelState.timer) clearTimeout(tunnelState.timer);
             tunnelState.timer = setTimeout(() => {
               tunnelState.timer = null;
               if (tunnelState.stopping) return;
               tunnelState.child = spawnTunnel();
             }, delayMs);
+            if (typeof tunnelState.timer.unref === 'function') tunnelState.timer.unref();
           });
 
           return child;
@@ -1367,7 +1502,7 @@ async function start(options = {}) {
 
         tunnelState.child = spawnTunnel();
 
-        printBannerAndQr(publicUrl, isAlive, listenPort);
+        printBannerAndQr(publicUrl, isAlive, actualPort);
         resolve({
           server,
           tunnelProcess: tunnelState.child,
@@ -1377,10 +1512,8 @@ async function start(options = {}) {
         });
       } else if (isTunnelEnabled) {
         console.log('\n⏳ 正在自动启动 Cloudflare Quick Tunnel 获取公网外网域名，请稍候...');
-        const tunnelProcess = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${listenPort}`], {
-          shell: process.platform === 'win32'
-        });
-        tunnelState.child = tunnelProcess;
+        tunnelState.stopping = false;
+        tunnelState.attempt = 0;
 
         let resolvedOnce = false;
         const regex = /https:\/\/[a-zA-Z0-9-]+\.trycloudflare\.com/i;
@@ -1393,47 +1526,88 @@ async function start(options = {}) {
             clearTimeout(fallbackTimer);
             fallbackTimer = null;
           }
-          printBannerAndQr(publicUrl, isAlive, listenPort);
+          printBannerAndQr(publicUrl, isAlive, actualPort);
           resolve({ server, tunnelProcess: proc, publicUrl, token: AUTH_TOKEN, target: TARGET });
         }
 
-        function handleOutput(data) {
-          if (resolvedOnce) return;
-          const text = data.toString();
-          const match = text.match(regex);
-          if (match) {
-            finishQuickTunnel(match[0], tunnelProcess);
-          }
-        }
+        const spawnQuickTunnel = () => {
+          const startedAt = Date.now();
+          let reconnectUrlLogged = false;
+          const proc = spawn('cloudflared', ['tunnel', '--url', `http://127.0.0.1:${actualPort}`], {
+            shell: process.platform === 'win32',
+            windowsHide: true
+          });
 
-        tunnelProcess.stdout.on('data', handleOutput);
-        tunnelProcess.stderr.on('data', handleOutput);
+          const handleOutput = (data) => {
+            const text = data.toString();
+            const match = text.match(regex);
+            if (!match) return;
+            if (!resolvedOnce) {
+              finishQuickTunnel(match[0], proc);
+            } else if (!reconnectUrlLogged) {
+              reconnectUrlLogged = true;
+              console.log(`\n🌐 [tunnel] Quick Tunnel 重连成功 -> ${match[0]}`);
+            }
+          };
 
-        tunnelProcess.on('error', () => {
-          finishQuickTunnel(defaultHost, null);
-        });
+          proc.stdout.on('data', handleOutput);
+          proc.stderr.on('data', handleOutput);
+
+          proc.on('error', (err) => {
+            console.error(`\n[tunnel] Quick Tunnel 启动失败: ${err.message}`);
+            finishQuickTunnel(defaultHost, null);
+          });
+
+          proc.on('exit', (code, signal) => {
+            if (tunnelState.child === proc) tunnelState.child = null;
+            if (tunnelState.stopping) return;
+            if (!resolvedOnce) {
+              finishQuickTunnel(defaultHost, null);
+            }
+            if (Date.now() - startedAt > 60_000) tunnelState.attempt = 0;
+            tunnelState.attempt += 1;
+            const delayMs = Math.min(60_000, 2_000 * 2 ** (tunnelState.attempt - 1));
+            console.warn(
+              `\n[tunnel] ⚠️ Quick Tunnel 断开（code=${code ?? '-'} signal=${signal ?? '-'}），` +
+              `${Math.round(delayMs / 1000)}s 后自动重连（第 ${tunnelState.attempt} 次）`
+            );
+            if (tunnelState.timer) clearTimeout(tunnelState.timer);
+            tunnelState.timer = setTimeout(() => {
+              tunnelState.timer = null;
+              if (tunnelState.stopping) return;
+              tunnelState.child = spawnQuickTunnel();
+            }, delayMs);
+            if (typeof tunnelState.timer.unref === 'function') tunnelState.timer.unref();
+          });
+
+          return proc;
+        };
+
+        const tunnelProcess = spawnQuickTunnel();
+        tunnelState.child = tunnelProcess;
 
         fallbackTimer = setTimeout(() => {
-          finishQuickTunnel(defaultHost, tunnelProcess);
+          finishQuickTunnel(defaultHost, tunnelState.child);
         }, 10000);
+        if (typeof fallbackTimer.unref === 'function') fallbackTimer.unref();
 
       } else if (tunnelMode === 'frp') {
         // frp：自建服务器 + TCP 直连（默认通道）。
         // 公网地址由 frpc toml 的 customDomains 推导（域名不写死在代码里），
         // 服务器侧由 nginx 把 /pi/ 反代到 frps 的 vhost 端口。
-        const info = frpClient.startFrp({ localPort: listenPort });
+        const info = frpClient.startFrp({ localPort: actualPort });
         for (const note of info.notes) {
           console.warn(`[frp] ⚠️ ${note}`);
         }
         if (!info.ok) {
           console.warn('[frp] 未能启动 frp 隧道，本次只暴露局域网地址。');
-          printBannerAndQr(defaultHost, isAlive, listenPort);
+          printBannerAndQr(defaultHost, isAlive, actualPort);
           resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
           return;
         }
         console.log(`\n🌐 frp 隧道启动中 -> ${info.publicUrl || '(未知公网地址)'}`);
         console.log(`   配置文件: ${info.configPath}`);
-        printBannerAndQr(info.publicUrl || defaultHost, isAlive, listenPort);
+        printBannerAndQr(info.publicUrl || defaultHost, isAlive, actualPort);
         resolve({
           server,
           tunnelProcess: info.child || null,
@@ -1442,14 +1616,15 @@ async function start(options = {}) {
           target: TARGET
         });
       } else {
-        printBannerAndQr(defaultHost, isAlive, listenPort);
+        printBannerAndQr(defaultHost, isAlive, actualPort);
         resolve({ server, tunnelProcess: null, publicUrl: defaultHost, token: AUTH_TOKEN, target: TARGET });
       }
     });
 
-    // WebSocket 升级请求不经过 Express 中间件，ws:true 的代理会绕过 authMiddleware。
+    // WebSocket 升级请求不经过 Express 中间件，ws:false 下由这里独占鉴权。
     // 这里在 server 层单独校验一次 token，未授权直接断开；授权通过后转交 proxy.upgrade。
     server.on('upgrade', (req, socket, head) => {
+      socket.on('error', () => {});
       const authHeader = req.headers['authorization'] || '';
       let token = authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : null;
       if (!token && typeof req.url === 'string') {
@@ -1471,6 +1646,13 @@ async function start(options = {}) {
       }
     });
 
+    server.on('close', () => {
+      if (promptEnhancementWarmUpTimer) {
+        clearTimeout(promptEnhancementWarmUpTimer);
+        promptEnhancementWarmUpTimer = null;
+      }
+    });
+
     server.on('error', (err) => {
       reject(err);
     });
@@ -1484,20 +1666,31 @@ if (require.main === module) {
   });
 }
 
+function setTarget(nextTarget) {
+  TARGET = nextTarget;
+}
+
 module.exports = {
   start,
   app,
+  proxy,
+  proxyAgent,
   getOrCreateToken,
   getLocalIp,
   checkServerAlive,
   printBannerAndQr,
   AUTH_TOKEN,
   // 导出给单测 / launcher：纯函数（不读磁盘、不启动进程）
+  extractServicePort,
   parseStableTunnelConfig,
+  detectStableTunnelFromConfig,
   isSafeTunnelName,
   isSafeHostname,
   resolveStableTunnel,
   stopTunnel,
+  autoHealLocalModelsJson,
+  fetchUpstreamJson,
+  setTarget,
   // 路径边界（单测直接覆盖，不起服务）
   isPathInside,
   isSafeNameSegment,

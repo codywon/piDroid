@@ -26,4 +26,16 @@ function planRecovery({ gatewayOk, piwebOnlyRestarts }) {
   return 'piweb';
 }
 
-module.exports = { PIWEB_ONLY_RESTARTS_BEFORE_FULL, planRecovery };
+/**
+ * 探测不健康时是否应忽略（不累计失败、不触发回收）：
+ * - `hasRestartTimer`: 子进程已退出、正在等退避定时器重启，此时端口不通是预期状态；
+ *   继续计数会在 50s 后误入 `!this.child` 分支当成无主孤儿栈强行拉起，击穿 60s/300s 退避。
+ * - `hasChild && childElapsedMs < bootGraceMs`: 刚拉起的实例仍在冷启动预算内。
+ */
+function shouldIgnoreDownProbe({ hasRestartTimer, hasChild, childElapsedMs, bootGraceMs }) {
+  if (hasRestartTimer) return true;
+  if (hasChild && childElapsedMs < bootGraceMs) return true;
+  return false;
+}
+
+module.exports = { PIWEB_ONLY_RESTARTS_BEFORE_FULL, planRecovery, shouldIgnoreDownProbe };

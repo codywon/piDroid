@@ -133,7 +133,9 @@ test('rejects malformed or unsafe input without calling the model', async () => 
   const cases = [
     [null, 'INVALID_INPUT'],
     [baseBody({ draft: '   ' }), 'INVALID_INPUT'],
+    [baseBody({ draft: '/compact' }), 'INVALID_INPUT'],
     [baseBody({ draft: '/plan 继续' }), 'INVALID_INPUT'],
+    [baseBody({ draft: '!ls -la' }), 'INVALID_INPUT'],
     [baseBody({ draft: '```kotlin\nval a = 1' }), 'INVALID_INPUT'],
     // 草稿上限已放宽到 12000，这里要明显超过它才能触发拦截
     [baseBody({ draft: 'x'.repeat(13000) }), 'INVALID_INPUT'],
@@ -147,6 +149,17 @@ test('rejects malformed or unsafe input without calling the model', async () => 
     assert.equal(result.code, code, JSON.stringify(body));
   }
   assert.equal(modelClient.calls.length, 0);
+});
+
+test('allows prompts starting with multi-segment POSIX paths', async () => {
+  const modelClient = fakeModelClient({ transform: (p) => p.draft });
+  const service = serviceWith(modelClient);
+
+  for (const draft of ['/api/files/raw 返回 403 怎么回事', '/etc/nginx/nginx.conf 需要怎么配']) {
+    const result = await service.enhance(baseBody({ draft }), { subject: 'subject-path' });
+    assert.equal(result.ok, true, `${draft}: ${JSON.stringify(result)}`);
+  }
+  assert.equal(modelClient.calls.length, 2);
 });
 
 test('auto-truncates oversize context gracefully instead of failing', async () => {

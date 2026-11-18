@@ -35,23 +35,29 @@ object FileListParsing {
     fun parseListing(json: String): FileDirectoryListing? {
         if (json.isBlank()) return null
         return runCatching {
-            val root = JsonParser.parseString(json).asJsonObject
+            val root = JsonParser.parseString(json).takeIf { it.isJsonObject }?.asJsonObject
+                ?: return@runCatching null
             if (root.has("error")) return null
 
-            val path = root.get("path")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-            val entriesArray = root.getAsJsonArray("entries") ?: return FileDirectoryListing(path = path)
+            val path = root.get("path")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString.orEmpty()
+            val entriesArray = root.get("entries")?.takeIf { it.isJsonArray }?.asJsonArray
+                ?: return FileDirectoryListing(path = path)
 
             val entries = ArrayList<FileEntry>(entriesArray.size())
             for (element in entriesArray) {
                 if (!element.isJsonObject) continue
                 val obj = element.asJsonObject
-                val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: continue
-                val isDir = obj.get("isDir")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                val size = obj.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val modified = obj.get("modified")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-                val outsideTarget = obj.get("outsideLinkTarget")?.takeIf { !it.isJsonNull }?.asString
-                val outsideEncloses = obj.get("outsideLinkEncloses")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                val hidden = obj.get("hidden")?.takeIf { !it.isJsonNull }?.asString
+                val name = obj.get("name")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: continue
+                val isDir = obj.get("isDir")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asBoolean }.getOrNull() } ?: false
+                val size = obj.get("size")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asLong }.getOrNull() } ?: 0L
+                val modified = obj.get("modified")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString.orEmpty()
+                val outsideTarget = obj.get("outsideLinkTarget")
+                    ?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                val outsideEncloses = obj.get("outsideLinkEncloses")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asBoolean }.getOrNull() } ?: false
+                val hidden = obj.get("hidden")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
 
                 entries.add(
                     FileEntry(
@@ -75,12 +81,19 @@ object FileListParsing {
     fun parseError(json: String): String? {
         if (json.isBlank()) return null
         return runCatching {
-            val root = JsonParser.parseString(json).asJsonObject
-            root.get("error")?.takeIf { !it.isJsonNull }?.asString
-                ?: root.get("detail")?.takeIf { !it.isJsonNull }?.asString
-                ?: root.get("message")?.takeIf { !it.isJsonNull }?.asString
+            val root = JsonParser.parseString(json).takeIf { it.isJsonObject }?.asJsonObject
+                ?: return@runCatching null
+            root.get("error")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                ?: root.get("detail")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                ?: root.get("message")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
         }.getOrNull()
     }
+
+    /**
+     * 安全编码单个 URL 路径段（空格编码为 `%20` 而非 `+`，纯 JVM 不依赖 `android.net.Uri`）。
+     */
+    internal fun encodePathSegment(segment: String): String =
+        java.net.URLEncoder.encode(segment, "UTF-8").replace("+", "%20")
 
     /**
      * 把文件/目录路径编码进 `/api/files/<path>` 的路由段。
@@ -95,9 +108,7 @@ object FileListParsing {
         if (normalized.startsWith("//") && segments.isNotEmpty()) {
             segments[0] = "//${segments[0]}"
         }
-        return segments.joinToString("/") {
-            java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
-        }
+        return segments.joinToString("/") { encodePathSegment(it) }
     }
 
     /**
@@ -130,14 +141,16 @@ object FileListParsing {
     fun parseIndexMatches(json: String): List<FileIndexMatch> {
         if (json.isBlank()) return emptyList()
         return runCatching {
-            val root = JsonParser.parseString(json).asJsonObject
-            val matchesArray = root.getAsJsonArray("matches") ?: return emptyList()
+            val root = JsonParser.parseString(json).takeIf { it.isJsonObject }?.asJsonObject
+                ?: return@runCatching emptyList()
+            val matchesArray = root.get("matches")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
             val result = ArrayList<FileIndexMatch>(matchesArray.size())
             for (element in matchesArray) {
                 if (!element.isJsonObject) continue
                 val obj = element.asJsonObject
-                val path = obj.get("path")?.takeIf { !it.isJsonNull }?.asString ?: continue
-                val isDir = obj.get("isDir")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                val path = obj.get("path")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: continue
+                val isDir = obj.get("isDir")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asBoolean }.getOrNull() } ?: false
                 result.add(FileIndexMatch(path = path, isDir = isDir))
             }
             result

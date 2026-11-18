@@ -87,6 +87,7 @@ fun QrScannerScreen(
     val theme = LocalAppTheme.current
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val latestOnScanSuccess by rememberUpdatedState(onScanSuccess)
     val processingLock = remember { java.util.concurrent.atomic.AtomicBoolean(false) }
     var hasCameraPermission by remember {
         mutableStateOf(
@@ -123,7 +124,7 @@ fun QrScannerScreen(
                 if (url.isNotEmpty() && token.isNotEmpty()) {
                     if (processingLock.compareAndSet(false, true)) {
                         ContextCompat.getMainExecutor(context).execute {
-                            onScanSuccess(url, token, name)
+                            latestOnScanSuccess(url.trim().trimEnd('/'), token, name)
                         }
                     }
                     return true
@@ -136,15 +137,16 @@ fun QrScannerScreen(
                 val uri = Uri.parse(trimmed)
                 val token = uri.getQueryParameter("token") ?: ""
                 val name = uri.getQueryParameter("name") ?: (uri.host ?: "My PC")
+                val pathPart = uri.encodedPath?.trimEnd('/').orEmpty()
                 val baseUrl = if (token.isNotEmpty()) {
-                    "${uri.scheme}://${uri.authority}"
+                    "${uri.scheme}://${uri.authority}$pathPart"
                 } else {
                     trimmed
                 }
                 if (token.isNotEmpty()) {
                     if (processingLock.compareAndSet(false, true)) {
                         ContextCompat.getMainExecutor(context).execute {
-                            onScanSuccess(baseUrl, token, name)
+                            latestOnScanSuccess(baseUrl, token, name)
                         }
                     }
                     return true

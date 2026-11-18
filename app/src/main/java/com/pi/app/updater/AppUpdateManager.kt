@@ -171,6 +171,9 @@ object AppUpdateManager {
         return false
     }
 
+    private fun JSONObject.optCleanString(key: String, fallback: String = ""): String =
+        if (isNull(key)) fallback else optString(key, fallback)
+
     /**
      * 检查 GitHub 是否有新版本
      */
@@ -189,11 +192,11 @@ object AppUpdateManager {
 
                 val bodyStr = response.body?.string() ?: return@withContext UpdateCheckResult.Error("服务器响应为空")
                 val json = JSONObject(bodyStr)
-                val tagName = json.optString("tag_name", "").trim()
-                val releaseTitle = json.optString("name", tagName).trim()
-                val rawNotes = json.optString("body", "• 优化智能体交互与稳定性").trim()
+                val tagName = json.optCleanString("tag_name").trim()
+                val releaseTitle = json.optCleanString("name", tagName).trim()
+                val rawNotes = json.optCleanString("body", "• 优化智能体交互与稳定性").trim()
                 val releaseNotes = cleanChangelogMarkdown(rawNotes)
-                val publishedAt = json.optString("published_at", "").take(10)
+                val publishedAt = json.optCleanString("published_at").take(10)
 
                 val currentVersion = getCurrentVersionName(context)
                 if (!isNewerVersion(currentVersion, tagName)) {
@@ -213,20 +216,20 @@ object AppUpdateManager {
                 if (assets != null) {
                     for (i in 0 until assets.length()) {
                         val asset = assets.optJSONObject(i) ?: continue
-                        val assetName = asset.optString("name", "")
+                        val assetName = asset.optCleanString("name")
 
                         // CI 随包发布的 sha256sum 清单
                         if (assetName.equals(CHECKSUMS_ASSET_NAME, ignoreCase = true)) {
-                            checksumsUrl = asset.optString("browser_download_url", "").takeIf { it.isNotBlank() }
+                            checksumsUrl = asset.optCleanString("browser_download_url").takeIf { it.isNotBlank() }
                             continue
                         }
                         if (!assetName.endsWith(".apk", ignoreCase = true)) continue
 
                         if (assetName.contains("release", ignoreCase = true) || targetDownloadUrl.isEmpty()) {
-                            targetDownloadUrl = asset.optString("browser_download_url", "")
+                            targetDownloadUrl = asset.optCleanString("browser_download_url")
                             targetFileSize = asset.optLong("size", 0L)
                             // GitHub 对较新上传的 asset 提供 "sha256:<hex>" 形式的 digest
-                            expectedSha256 = asset.optString("digest", "")
+                            expectedSha256 = asset.optCleanString("digest")
                                 .takeIf { it.startsWith("sha256:", ignoreCase = true) }
                                 ?.substringAfter(':')
                                 ?.trim()
@@ -261,6 +264,8 @@ object AppUpdateManager {
                 setLastCheckTimestamp(context, System.currentTimeMillis())
                 UpdateCheckResult.HasUpdate(updateInfo)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "checkUpdate error", e)
             UpdateCheckResult.Error(e.localizedMessage ?: "检查更新异常，请检查网络连接")
@@ -690,6 +695,8 @@ object AppUpdateManager {
                             }
                             success
                         }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
                     } catch (_: Exception) {
                         false
                     }
@@ -700,6 +707,8 @@ object AppUpdateManager {
 
             // 测速成功的优先按真实耗时从低到高排列，超时的放在最后
             scoredList.sortedBy { it.second }.map { it.first }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (_: Exception) {
             candidates
         }
@@ -718,17 +727,14 @@ object AppUpdateManager {
      * 优先定向调起 Google Chrome 浏览器，规避国产 ROM 应用商店拦截；若未安装 Chrome 则调起系统默认浏览器。
      */
     fun openInBrowser(context: Context, url: String) {
-        // 先尝试定向拉起 Google Chrome
+        // 先尝试定向拉起 Google Chrome（不依赖 resolveActivity，避免被包可见性过滤拦截）
         try {
             val chromeIntent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
                 setPackage("com.android.chrome")
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            val pm = context.packageManager
-            if (chromeIntent.resolveActivity(pm) != null) {
-                context.startActivity(chromeIntent)
-                return
-            }
+            context.startActivity(chromeIntent)
+            return
         } catch (_: Exception) {
             // Chrome 未安装或受限，平滑降级
         }

@@ -228,4 +228,70 @@ class SessionSnapshotMergeTest {
         assertEquals(MessageRole.AGENT, merged[0].role)
         assertEquals("s1", merged[0].id)
     }
+
+    @Test
+    fun `多步工具回合正序对账保持 A1 T1 A2 顺序不被倒序抓走吞没`() {
+        val local = listOf(
+            item("u_local", MessageRole.USER, "排查问题", entryId = "u1", timestamp = 1_000L),
+            item("a1_local", MessageRole.AGENT, "先看文件。", entryId = null, timestamp = 2_000L),
+            item("t1_local", MessageRole.TOOL, "", entryId = null, timestamp = 3_000L).copy(
+                toolCall = ToolCallInfo(toolCallId = "tc1", toolName = "read", isRunning = false)
+            ),
+            item("a2_local", MessageRole.AGENT, "正在定位问题", entryId = null, timestamp = 4_000L)
+                .copy(isStreaming = true)
+        )
+        val synced = listOf(
+            item("u_disk", MessageRole.USER, "排查问题", entryId = "u1", timestamp = 1_000L),
+            item("a1_disk", MessageRole.AGENT, "先看文件。", entryId = "e_a1", timestamp = 2_000L),
+            item("t1_disk", MessageRole.TOOL, "", entryId = "e_t1", timestamp = 3_000L).copy(
+                toolCall = ToolCallInfo(toolCallId = "tc1", toolName = "read", output = "ok", isRunning = false)
+            )
+        )
+
+        val merged = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning = true)
+
+        assertEquals(4, merged.size)
+        assertEquals(
+            listOf(MessageRole.USER, MessageRole.AGENT, MessageRole.TOOL, MessageRole.AGENT),
+            merged.map { it.role }
+        )
+        assertEquals(listOf("u_local", "a1_local", "t1_local", "a2_local"), merged.map { it.id })
+        assertEquals("先看文件。", merged[1].content)
+        assertEquals("e_a1", merged[1].entryId)
+        assertEquals("ok", merged[2].toolCall?.output)
+        assertEquals("正在定位问题", merged[3].content)
+        assertTrue(merged[3].isStreaming)
+        assertNull(merged[3].entryId)
+    }
+
+    @Test
+    fun `多步回合前缀兼容与 streamMessageId 精确匹配优先命中对应块`() {
+        val local = listOf(
+            item("u_local", MessageRole.USER, "继续排查", entryId = "u1", timestamp = 1_000L),
+            item("a1_local", MessageRole.AGENT, "先看", entryId = null, timestamp = 2_000L)
+                .copy(streamMessageId = "m1"),
+            item("t1_local", MessageRole.TOOL, "", entryId = null, timestamp = 3_000L).copy(
+                toolCall = ToolCallInfo(toolCallId = "tc1", toolName = "read", isRunning = false)
+            ),
+            item("a2_local", MessageRole.AGENT, "继续分析", entryId = null, timestamp = 4_000L)
+                .copy(isStreaming = true, streamMessageId = "m2")
+        )
+        val synced = listOf(
+            item("u_disk", MessageRole.USER, "继续排查", entryId = "u1", timestamp = 1_000L),
+            item("a1_disk", MessageRole.AGENT, "先看文件。", entryId = "e_a1", timestamp = 2_000L)
+                .copy(streamMessageId = "m1"),
+            item("t1_disk", MessageRole.TOOL, "", entryId = "e_t1", timestamp = 3_000L).copy(
+                toolCall = ToolCallInfo(toolCallId = "tc1", toolName = "read", output = "ok", isRunning = false)
+            )
+        )
+
+        val merged = SessionSnapshotMerge.reconcileList(local, synced, effectiveRunning = true)
+
+        assertEquals(4, merged.size)
+        assertEquals(listOf("u_local", "a1_local", "t1_local", "a2_local"), merged.map { it.id })
+        assertEquals("先看文件。", merged[1].content)
+        assertEquals("e_a1", merged[1].entryId)
+        assertEquals("继续分析", merged[3].content)
+        assertTrue(merged[3].isStreaming)
+    }
 }

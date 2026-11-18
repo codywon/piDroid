@@ -47,6 +47,10 @@ class AuthInterceptor(private val prefs: AppPreferences) : Interceptor {
      * 说明不了本机密钥是否有效，拿它置位会让正在用的会话被莫名停掉。
      */
     private fun classify(response: Response, usedStoredToken: Boolean): Response {
+        // 跨源重定向后的外站 401/200（例如网关 302 到第三方页）绝不得污染本地网关密钥状态
+        if (!AuthScope.shouldAttachToken(prefs.serverUrl, response.request.url.toString())) {
+            return response
+        }
         AuthRejectionSignal.apply(
             AuthRejection.verdict(
                 statusCode = response.code,

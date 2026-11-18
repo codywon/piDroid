@@ -88,6 +88,10 @@ object StreamingMessageMerge {
         if (localJoined == snapshot) return TextUpdate.NOOP
         // 快照落后于本地已渲染的正文（正在逐 token 追加中）→ 绝不回退
         if (localJoined.isNotEmpty() && localJoined.startsWith(snapshot)) return TextUpdate.NOOP
+        // 单气泡已含「前半段 + 后半段」，text_end 降级只传来后半段块 → 绝不抹掉前半段
+        if (owned.size == 1 && localJoined.length > snapshot.length && localJoined.endsWith(snapshot)) {
+            return TextUpdate.NOOP
+        }
 
         if (snapshot.startsWith(localJoined)) {
             val target = owned.last()

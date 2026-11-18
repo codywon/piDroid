@@ -61,6 +61,23 @@ test('leaves ordinary prose with single slash untouched', () => {
   assert.deepEqual(protections.map((item) => item.original), ['/src/x.kt']);
 });
 
+test('protects forward-slash Windows paths and scoped node_modules paths as whole units', () => {
+  const draft = '检查 D:/myscript/pi-app，还有 /usr/lib/node_modules/@agegr/pi-web 与 ./node_modules/@agegr/pi-web。';
+  const { masked, protections, restored } = roundTrip(draft);
+  assert.equal(restored.ok, true);
+  assert.equal(restored.text, draft);
+  assert.deepEqual(
+    protections.map((item) => `${item.kind}:${item.original}`),
+    [
+      'win_path:D:/myscript/pi-app',
+      'posix_path:/usr/lib/node_modules/@agegr/pi-web',
+      'posix_path:./node_modules/@agegr/pi-web',
+    ],
+  );
+  assert.doesNotMatch(masked, /pi-web/);
+  assert.match(masked, /，还有/);
+});
+
 test('rejects outputs that lost a protected segment or kept a placeholder', () => {
   const { masked, protections } = maskProtectedSegments('看 @A.kt 和 @B.kt');
   const missing = restoreProtectedSegments(masked.replace(/\[\[PE_\d+_[0-9a-z]{6}\]\]/, 'X'), protections);

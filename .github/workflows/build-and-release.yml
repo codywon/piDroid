@@ -29,6 +29,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v7
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.version_tag || github.ref }}
           fetch-depth: 0
 
       # 版本号只有一个真源：app/build.gradle.kts 的 versionName。tag 只用来命名 Release 与
@@ -36,10 +37,18 @@ jobs:
       # 两者一旦漂移，后果是**持久**的：Release 叫 vX.Y.Z，APK 里的 versionName 却是旧值，
       # 用户装完仍被判为「有新版本」，更新提示永远消不掉。这里在构建前先对齐，几秒就能红。
       - name: Verify tag matches versionName and CHANGELOG
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION_TAG: ${{ github.event.inputs.version_tag }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ github.event.inputs.version_tag }}"
+          VERSION="$REF_NAME"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$INPUT_VERSION_TAG"
+          fi
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本标签格式无效：'${VERSION}'，必须是 vX.Y.Z（例如 v2.0.55）。"
+            exit 1
           fi
           CLEAN="${VERSION#v}"
           GRADLE_VERSION=$(sed -n 's/.*versionName *= *"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
@@ -92,8 +101,14 @@ jobs:
       - name: Refuse the compromised keystore
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
+          if [ -z "$KEYSTORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ]; then
+            echo "::error::Missing signing secrets (KEYSTORE_PASSWORD / KEY_ALIAS)."
+            exit 1
+          fi
           FP=$(keytool -list -v -keystore keystore/release.jks \
+                 -alias "$KEY_ALIAS" \
                  -storepass "$KEYSTORE_PASSWORD" 2>/dev/null \
                | sed -n 's/.*SHA256:[[:space:]]*//p' | head -n 1 | tr -d ' ')
           echo "keystore SHA-256 = ${FP:-<unparsed>}"
@@ -145,10 +160,18 @@ jobs:
 
       - name: Prepare APK Artifact
         id: prepare_apk
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION_TAG: ${{ github.event.inputs.version_tag }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VERSION="${{ github.event.inputs.version_tag }}"
+          VERSION="$REF_NAME"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            VERSION="$INPUT_VERSION_TAG"
+          fi
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本标签格式无效：'${VERSION}'"
+            exit 1
           fi
 
           APK_PATH=$(find ./app/build -name "*.apk" | grep -i "release" | head -n 1)
@@ -178,8 +201,13 @@ jobs:
 
       - name: Extract Release Notes from CHANGELOG
         id: release_notes
+        env:
+          VERSION: ${{ steps.prepare_apk.outputs.version }}
         run: |
-          VERSION="${{ steps.prepare_apk.outputs.version }}"
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::版本格式无效：'${VERSION}'"
+            exit 1
+          fi
           CLEAN_VERSION="${VERSION#v}"
           NOTES_FILE="release_body.md"
 
@@ -217,3 +245,7 @@ jobs:
             ${{ steps.prepare_apk.outputs.apk_path }}
             ${{ steps.prepare_apk.outputs.checksums }}
           body_path: ${{ steps.release_notes.outputs.notes_file }}
+
+      - name: Clean up release keystore
+        if: always()
+        run: rm -f keystore/release.jks

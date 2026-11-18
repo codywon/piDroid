@@ -284,6 +284,9 @@ private fun GitFileListContent(
             }
         }
         else -> {
+            val visibleFiles = remember(status.files) {
+                status.files.filter { it.filePath.isNotBlank() }.distinctBy { it.filePath }
+            }
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -304,7 +307,7 @@ private fun GitFileListContent(
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                text = "共 ${status.files.size} 个文件变更",
+                                text = "共 ${visibleFiles.size} 个文件变更",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = theme.textPrimary
@@ -330,7 +333,7 @@ private fun GitFileListContent(
                 }
 
                 // 文件卡片列表
-                items(status.files, key = { it.filePath }) { file ->
+                items(visibleFiles, key = { it.filePath }) { file ->
                     GitFileRowItem(
                         file = file,
                         repoRoot = status.repositoryRoot,

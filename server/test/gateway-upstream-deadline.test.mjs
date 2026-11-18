@@ -48,14 +48,34 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test('gives up on a stalled upstream and answers 503 with Retry-After', async () => {
   const res = fakeRes();
+  const req = { method: 'GET', url: '/api/sessions' };
   const upstream = fakeProxyReq();
-  armUpstreamDeadline(upstream, { method: 'GET', url: '/api/sessions' }, res, 20);
+  armUpstreamDeadline(upstream, req, res, 20);
   assert.equal(res.body, null, 'must not answer before the deadline elapses');
   await sleep(60);
   assert.equal(upstream.destroyed, true, 'the stalled upstream request must be abandoned');
+  assert.equal(req.__deadlineAborted, true, 'must mark __deadlineAborted so on.error stays silent');
   assert.equal(res.statusCode, 503);
   assert.equal(res.headers['Retry-After'], '5');
   assert.match(res.body.message, /秒内没有响应/);
+});
+
+test('skips writing 503 when response is already ended or destroyed', async () => {
+  const ended = fakeRes();
+  ended.writableEnded = true;
+  const u1 = fakeProxyReq();
+  armUpstreamDeadline(u1, { method: 'GET', url: '/api/sessions' }, ended, 20);
+
+  const destroyed = fakeRes();
+  destroyed.destroyed = true;
+  const u2 = fakeProxyReq();
+  armUpstreamDeadline(u2, { method: 'GET', url: '/api/sessions' }, destroyed, 20);
+
+  await sleep(60);
+  assert.equal(u1.destroyed, false);
+  assert.equal(u2.destroyed, false);
+  assert.equal(ended.body, null);
+  assert.equal(destroyed.body, null);
 });
 
 test('never writes 503 over a response that already started', async () => {

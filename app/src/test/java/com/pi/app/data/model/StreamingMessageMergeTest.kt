@@ -176,4 +176,15 @@ class StreamingMessageMergeTest {
 
         assertEquals(-1, index)
     }
+
+    @Test
+    fun `单气泡已含前半段与后半段时 text_end 降级只传来后半段不得抹掉前半段`() {
+        val first = "第一步完成，准备执行第二步。"
+        val second = "第二步也完成了。"
+        val messages = listOf(user(), agent("$first\n$second", messageId = "ms1", streaming = true))
+
+        val update = StreamingMessageMerge.resolveTextUpdate(messages, "ms1", second)
+
+        assertTrue("快照只带最后一个正文块时必须判定为空操作，防止抹掉前半段", update.noop)
+    }
 }

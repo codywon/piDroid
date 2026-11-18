@@ -133,6 +133,41 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         /** 内存快照缓存上限（见 [cacheSessionDetail]）。 */
         private const val MAX_CACHED_SESSIONS = 4
+
+        private fun JsonObject.safeString(key: String): String? =
+            get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+
+        private fun JsonObject.safeBoolean(key: String): Boolean? =
+            get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.let {
+                runCatching { it.asBoolean }.getOrNull()
+            }
+
+        private fun JsonObject.safeInt(key: String): Int? =
+            get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.let {
+                runCatching { it.asInt }.getOrNull()
+            }
+
+        private fun JsonObject.safeLong(key: String): Long? =
+            get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.let {
+                runCatching { it.asLong }.getOrNull()
+            }
+
+        private fun JsonObject.safeDouble(key: String): Double? =
+            get(key)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.let {
+                runCatching { it.asDouble }.getOrNull()
+            }
+
+        private fun JsonObject.safeObject(key: String): JsonObject? =
+            get(key)?.takeIf { it.isJsonObject }?.asJsonObject
+
+        private fun JsonObject.safeArray(key: String): JsonArray? =
+            get(key)?.takeIf { it.isJsonArray }?.asJsonArray
+
+        private fun JsonElement?.asSafeString(): String? =
+            this?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+
+        private fun JsonElement?.asSafeObject(): JsonObject? =
+            this?.takeIf { it.isJsonObject }?.asJsonObject
     }
     private val sessionHistoryCache = object : LinkedHashMap<String, SessionHistoryData>(
         MAX_CACHED_SESSIONS + 1,
@@ -341,8 +376,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         GatewayHttpException(payload.code, path, payload.body.take(BODY_PREVIEW_CHARS))
 
     suspend fun ping(targetUrl: String? = null, token: String? = null): Result<String> = withContext(Dispatchers.IO) {
-        val baseUrl = targetUrl ?: prefs.serverUrl
-        val authToken = token ?: prefs.authToken
+        val baseUrl = (targetUrl ?: prefs.serverUrl).trim().trimEnd('/')
+        val authToken = (token ?: prefs.authToken).trim()
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("Server URL is empty"))
 
         try {
@@ -393,21 +428,15 @@ class PiApiClient(private val prefs: AppPreferences) {
 
             val rawList: List<Session> = if (jsonElement.isJsonObject) {
                 val obj = jsonElement.asJsonObject
-                if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
-                    runningIds = obj.getAsJsonArray("runningSessionIds")
-                        .mapNotNull { runCatching { it.asString }.getOrNull() }
-                        .toSet()
+                obj.safeArray("runningSessionIds")?.let { arr ->
+                    runningIds = arr.mapNotNull { it.asSafeString() }.toSet()
                 }
-                if (obj.has("awaitingInputSessionIds") && obj.get("awaitingInputSessionIds").isJsonArray) {
-                    awaitingIds = obj.getAsJsonArray("awaitingInputSessionIds")
-                        .mapNotNull { runCatching { it.asString }.getOrNull() }
-                        .toSet()
+                obj.safeArray("awaitingInputSessionIds")?.let { arr ->
+                    awaitingIds = arr.mapNotNull { it.asSafeString() }.toSet()
                 }
-                if (obj.has("sessions")) {
-                    gson.fromJson(obj.get("sessions"), type) ?: emptyList()
-                } else {
-                    emptyList()
-                }
+                obj.safeArray("sessions")?.let { arr ->
+                    gson.fromJson<List<Session>>(arr, type)
+                } ?: emptyList()
             } else if (jsonElement.isJsonArray) {
                 gson.fromJson(jsonElement, type) ?: emptyList()
             } else {
@@ -449,17 +478,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                 return@withContext Result.failure(readFailure(payload, "/api/agent/running"))
             }
             val root = runCatching {
-                JsonParser.parseString(payload.body).asJsonObject
+                JsonParser.parseString(payload.body).asSafeObject()
             }.getOrNull() ?: return@withContext Result.failure(IOException("运行态响应无法解析"))
             fun idSet(key: String): Set<String> =
-                root.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
-                    ?.mapNotNull { runCatching { it.asString }.getOrNull() }
+                root.safeArray(key)
+                    ?.mapNotNull { it.asSafeString() }
                     ?.toSet()
                     ?: emptySet()
             Result.success(
                 RunningSessionsSnapshot(
-                    sessionListVersion = root.get("sessionListVersion")
-                        ?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    sessionListVersion = root.safeLong("sessionListVersion") ?: 0L,
                     runningIds = idSet("runningSessionIds"),
                     awaitingInputIds = idSet("awaitingInputSessionIds"),
                     subagentsActiveIds = idSet("subagentsActiveSessionIds"),
@@ -488,7 +516,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         tail: Int
     ): SessionHistoryData {
         val baseUrl = prefs.serverUrl
-        val json = JsonParser.parseString(body).asJsonObject
+        val json = JsonParser.parseString(body).asSafeObject()
+            ?: throw IOException("会话快照响应格式异常")
 
         // 快照没有模型时保持未知，不能捏造 GPT 后再覆盖真实会话模型。
         var currentProvider = ""
@@ -500,21 +529,18 @@ class PiApiClient(private val prefs: AppPreferences) {
         var lastAssistantInTokens = 0L
         var lastAssistantOutTokens = 0L
 
-        val ctxObj = if (json.has("context") && json.get("context").isJsonObject) {
-            json.getAsJsonObject("context")
-        } else null
+        val ctxObj = json.safeObject("context")
 
         if (ctxObj != null) {
-            if (ctxObj.has("model") && ctxObj.get("model").isJsonObject) {
-                val mObj = ctxObj.getAsJsonObject("model")
-                currentProvider = mObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: currentProvider
-                currentModelId = mObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString
-                    ?: mObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            ctxObj.safeObject("model")?.let { mObj ->
+                currentProvider = mObj.safeString("provider") ?: currentProvider
+                currentModelId = mObj.safeString("modelId")
+                    ?: mObj.safeString("id")
                     ?: currentModelId
-                modelContextWindow = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+                modelContextWindow = mObj.safeLong("contextWindow") ?: 0L
             }
-            if (ctxObj.has("thinkingLevel") && !ctxObj.get("thinkingLevel").isJsonNull) {
-                currentThinkingLevel = ThinkingLevel.fromValue(ctxObj.get("thinkingLevel")?.asString)
+            ctxObj.safeString("thinkingLevel")?.let {
+                currentThinkingLevel = ThinkingLevel.fromValue(it)
             }
         }
 
@@ -522,14 +548,14 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 1) 如果服务端 /api/sessions/[id] 默认只返回最近 50 条 (hasMore == true)，主动通过 /api/sessions/[id]/context?tail=... 及 before=... 向上翻页拉取全量历史
         // 2) 同时支持解析 entries（包含上下文压缩 Compaction 之前的完整早期对话与压缩摘要节点），确保用户点击“展开全部”或“加载前50条”能看到从第 1 条提问开始的整个任务全貌
         val rawContextMessages = JsonArray()
-        val initialCtxMsgs = ctxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
-        val initialEntryIds = ctxObj?.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+        val initialCtxMsgs = ctxObj?.safeArray("messages")
+        val initialEntryIds = ctxObj?.safeArray("entryIds")
         attachEntryIds(initialCtxMsgs, initialEntryIds)
-        val initialHasMore = (ctxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true) ||
-            (json.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true)
+        val initialHasMore = (ctxObj?.safeBoolean("hasMore") == true) ||
+            (json.safeBoolean("hasMore") == true)
         // 活跃叶：与 pi-web `loadSession` 一致，直接用服务端给的 leafId（缺失就没有活跃叶）。
-        val leafId = ctxObj?.get("leafId")?.takeIf { !it.isJsonNull }?.asString
-            ?: json.get("leafId")?.takeIf { !it.isJsonNull }?.asString
+        val leafId = ctxObj?.safeString("leafId")
+            ?: json.safeString("leafId")
 
         if (initialHasMore) {
             if (tail > 100) {
@@ -555,9 +581,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         }
         val entriesArr = when {
             treeEntries != null && treeEntries.size() > 0 -> treeEntries
-            json.has("entries") && json.get("entries").isJsonArray -> json.getAsJsonArray("entries")
-            json.has("messages") && json.get("messages").isJsonArray -> json.getAsJsonArray("messages")
-            else -> null
+            else -> json.safeArray("entries") ?: json.safeArray("messages")
         }
 
         val normalizedEntryMessages = if (entriesArr != null && entriesArr.size() > 0) {
@@ -612,27 +636,21 @@ class PiApiClient(private val prefs: AppPreferences) {
         // 逐字段回退会把单轮 input 拼进累计 cacheRead 的分母，命中率又被钉回 100%。
         var hasCumulativeTokens = false
 
-        if (json.has("stats") && json.get("stats").isJsonObject) {
-            val stats = json.getAsJsonObject("stats")
+        json.safeObject("stats")?.let { stats ->
             cost = stats.get("cost")?.takeIf { !it.isJsonNull }?.let { costElem ->
                 if (costElem.isJsonPrimitive) {
                     runCatching { costElem.asDouble }.getOrDefault(0.0)
                 } else if (costElem.isJsonObject) {
                     val cObj = costElem.asJsonObject
-                    val total = cObj.get("total") ?: cObj.get("cost")
-                    runCatching { total?.asDouble }.getOrNull() ?: runCatching {
-                        val inp = cObj.get("input")?.asDouble ?: 0.0
-                        val out = cObj.get("output")?.asDouble ?: 0.0
-                        inp + out
-                    }.getOrDefault(0.0)
+                    val total = cObj.safeDouble("total") ?: cObj.safeDouble("cost")
+                    total ?: ((cObj.safeDouble("input") ?: 0.0) + (cObj.safeDouble("output") ?: 0.0))
                 } else 0.0
             } ?: 0.0
-            if (stats.has("tokens") && stats.get("tokens").isJsonObject) {
-                val tok = stats.getAsJsonObject("tokens")
-                inTokens = tok.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                outTokens = tok.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                cacheRead = tok.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                cacheWrite = tok.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
+            stats.safeObject("tokens")?.let { tok ->
+                inTokens = tok.safeLong("input") ?: 0L
+                outTokens = tok.safeLong("output") ?: 0L
+                cacheRead = tok.safeLong("cacheRead") ?: 0L
+                cacheWrite = tok.safeLong("cacheWrite") ?: 0L
                 hasCumulativeTokens = true
             }
         }
@@ -697,12 +715,10 @@ class PiApiClient(private val prefs: AppPreferences) {
         val droppedTurns = if (droppedEntryCount > 0) {
             (0 until droppedEntryCount).count { i -> roleOfMessage(normalizedEntryMessages.get(i)) == "user" }
         } else 0
-        val serverTurnsBefore = ctxObj?.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+        val serverTurnsBefore = ctxObj?.safeInt("turnsBefore") ?: 0
 
         val compactions = extractCompactionRecords(json, ctxObj)
-        val treeNodes = BranchTreeTopology.parseTreeJson(
-            json.get("tree")?.takeIf { it.isJsonArray }?.asJsonArray
-        )
+        val treeNodes = BranchTreeTopology.parseTreeJson(json.safeArray("tree"))
 
         return SessionHistoryData(
             messages = chatItems,
@@ -718,7 +734,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             leafId = leafId,
             toolNames = readPinnedToolNames(json),
             // 不透明新鲜度令牌：只做等值比较（pi-web 的 revisionUnchanged 判据）
-            snapshotRevision = json.get("snapshotRevision")?.takeIf { !it.isJsonNull }?.asString,
+            snapshotRevision = json.safeString("snapshotRevision"),
             compactionRecords = compactions,
             branchTreeNodes = treeNodes
         )
@@ -726,19 +742,18 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun extractCompactionRecords(json: JsonObject, ctxObj: JsonObject?): List<CompactionRecord> {
         val records = mutableListOf<CompactionRecord>()
-        val entriesArr = json.get("entries")?.takeIf { it.isJsonArray }?.asJsonArray
-            ?: ctxObj?.get("entries")?.takeIf { it.isJsonArray }?.asJsonArray
+        val entriesArr = json.safeArray("entries") ?: ctxObj?.safeArray("entries")
         if (entriesArr != null) {
             for (el in entriesArr) {
-                val obj = el.takeIf { it.isJsonObject }?.asJsonObject ?: continue
-                val type = obj.get("type")?.takeIf { !it.isJsonNull }?.asString
+                val obj = el.asSafeObject() ?: continue
+                val type = obj.safeString("type")
                 if (type == "compaction" || type == "compactionSummary") {
-                    val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val summary = obj.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val id = obj.safeString("id") ?: ""
+                    val summary = obj.safeString("summary") ?: ""
                     val ts = parseFlexibleTimestamp(obj.get("timestamp"))
-                    val tokensBefore = obj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                    val tokensAfter = obj.get("tokensAfter")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                    val cost = obj.get("cost")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
+                    val tokensBefore = obj.safeLong("tokensBefore") ?: 0L
+                    val tokensAfter = obj.safeLong("tokensAfter") ?: 0L
+                    val cost = obj.safeDouble("cost") ?: 0.0
                     records.add(CompactionRecord(id, ts, summary, tokensBefore, tokensAfter, cost))
                 }
             }
@@ -751,8 +766,8 @@ class PiApiClient(private val prefs: AppPreferences) {
      * 不把「缺失」当成空清单，否则每个跟随 settings.json 的会话都会被显示成「仅聊天」。
      */
     private fun readPinnedToolNames(json: JsonObject): List<String>? {
-        val arr = json.get("toolNames")?.takeIf { it.isJsonArray }?.asJsonArray ?: return null
-        return arr.mapNotNull { el -> el.takeIf { !it.isJsonNull }?.asString }
+        val arr = json.safeArray("toolNames") ?: return null
+        return arr.mapNotNull { it.asSafeString() }
     }
 
     /**
@@ -794,8 +809,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         try {
             // 与 pi-web 前端同一套参数：deferMedia 不带历史图片、tree=summary 只要摘要树。
             val forceParam = if (force) "&force=1" else ""
+            val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
+                .url("$baseUrl/api/sessions/$encodedSessionId?tail=$tail&deferMedia=1&tree=summary$forceParam")
                 .get()
                 .build()
             val payload = readGet(req, snapshotClient)
@@ -820,7 +836,7 @@ class PiApiClient(private val prefs: AppPreferences) {
     private fun warnUnknownTreeShape(json: JsonObject) {
         if (warnedUnknownTreeShape) return
         warnedUnknownTreeShape = true
-        val format = json.get("treeFormat")?.takeIf { !it.isJsonNull }?.let { runCatching { it.asString }.getOrNull() }
+        val format = json.safeString("treeFormat")
         Log.w("PiSync", "unrecognized session tree shape (treeFormat=$format) → falling back to context.messages")
     }
 
@@ -912,13 +928,14 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (beforeEntryId.isBlank()) return@withContext Result.failure(Exception("缺少翻页游标"))
         try {
             val encBefore = URLEncoder.encode(beforeEntryId, "UTF-8")
+            val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
             val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
             // deferMedia=1 必须带：不带时这一页会把工具结果图的 base64 全塞回来。
             // 实测同一会话最近 60 条消息 = 6.45MB JSON（其中 6.36MB 是图片 base64），
             // 往上翻一页就是一次这种量级的请求。pi-web `/context` 原生支持该参数
             // （`deferToolResultImages`，只对 toolResult 生效，≤10MB 的图改写成 URL）。
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&before=$encBefore&deferMedia=1$leafParam")
+                .url("$baseUrl/api/sessions/$encodedSessionId/context?tail=$tail&before=$encBefore&deferMedia=1$leafParam")
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -932,11 +949,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                     )
                 }
                 val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.failure(IOException("更早记录响应无法解析"))
-                val ctx = root.get("context")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
-                val arr = ctx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
-                val entryIds = ctx.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+                val ctx = root.safeObject("context") ?: root
+                val arr = ctx.safeArray("messages")
+                val entryIds = ctx.safeArray("entryIds")
                 attachEntryIds(arr, entryIds)
                 val parsed = parseRawMessagesToChatItems(
                     sessionId = sessionId,
@@ -951,8 +968,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     OlderContextPage(
                         messages = items,
                         oldestEntryId = extractOldestEntryId(ctx, arr),
-                        hasMore = ctx.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        turnsBefore = ctx.get("turnsBefore")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                        hasMore = ctx.safeBoolean("hasMore") == true,
+                        turnsBefore = ctx.safeInt("turnsBefore") ?: 0
                     )
                 )
             }
@@ -984,34 +1001,31 @@ class PiApiClient(private val prefs: AppPreferences) {
         var hasMore = false
 
         // 1. 先尝试直接通过 /api/sessions/$sessionId/context?tail=$tail 获取大窗口数据
+        val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
         val leafParam = if (!leafId.isNullOrBlank()) "&leafId=${URLEncoder.encode(leafId, "UTF-8")}" else ""
         val bigPageJson = runCatching {
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId/context?tail=$tail&deferMedia=1$leafParam")
+                .url("$baseUrl/api/sessions/$encodedSessionId/context?tail=$tail&deferMedia=1$leafParam")
                 .get()
                 .build()
             client.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val str = resp.body?.string() ?: "{}"
-                    JsonParser.parseString(str).takeIf { it.isJsonObject }?.asJsonObject
+                    JsonParser.parseString(str).asSafeObject()
                 } else null
             }
         }.getOrNull()
 
-        val activeCtxObj = if (bigPageJson != null) {
-            if (bigPageJson.has("context") && bigPageJson.get("context").isJsonObject) {
-                bigPageJson.getAsJsonObject("context")
-            } else bigPageJson
-        } else initialCtxObj
+        val activeCtxObj = bigPageJson?.let { it.safeObject("context") ?: it } ?: initialCtxObj
 
-        val baseMsgs = activeCtxObj?.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray ?: initialMsgs
-        val baseEntryIds = activeCtxObj?.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+        val baseMsgs = activeCtxObj?.safeArray("messages") ?: initialMsgs
+        val baseEntryIds = activeCtxObj?.safeArray("entryIds")
         attachEntryIds(baseMsgs, baseEntryIds)
         if (baseMsgs != null) {
             for (el in baseMsgs) collected.add(el)
         }
 
-        hasMore = activeCtxObj?.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true
+        hasMore = activeCtxObj?.safeBoolean("hasMore") == true
         oldestEntryId = extractOldestEntryId(activeCtxObj, baseMsgs)
 
         // 2. 若仍有更早的分页 (hasMore == true)，使用 before=<oldestEntryId> 向上翻页拉取并拼接到最前面
@@ -1021,23 +1035,21 @@ class PiApiClient(private val prefs: AppPreferences) {
             val encBefore = URLEncoder.encode(oldestEntryId, "UTF-8")
             val olderJson = runCatching {
                 val req = Request.Builder()
-                    .url("$baseUrl/api/sessions/$sessionId/context?tail=200&before=$encBefore&deferMedia=1$leafParam")
+                    .url("$baseUrl/api/sessions/$encodedSessionId/context?tail=200&before=$encBefore&deferMedia=1$leafParam")
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val str = resp.body?.string() ?: "{}"
-                        JsonParser.parseString(str).takeIf { it.isJsonObject }?.asJsonObject
+                        JsonParser.parseString(str).asSafeObject()
                     } else null
                 }
             }.getOrNull() ?: break
 
-            val olderCtx = if (olderJson.has("context") && olderJson.get("context").isJsonObject) {
-                olderJson.getAsJsonObject("context")
-            } else olderJson
+            val olderCtx = olderJson.safeObject("context") ?: olderJson
 
-            val olderMsgs = olderCtx.get("messages")?.takeIf { it.isJsonArray }?.asJsonArray
-            val olderEntryIds = olderCtx.get("entryIds")?.takeIf { it.isJsonArray }?.asJsonArray
+            val olderMsgs = olderCtx.safeArray("messages")
+            val olderEntryIds = olderCtx.safeArray("entryIds")
             attachEntryIds(olderMsgs, olderEntryIds)
             if (olderMsgs == null || olderMsgs.size() == 0) break
 
@@ -1046,7 +1058,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             collected.addAll(0, prependList)
 
             val nextOldest = extractOldestEntryId(olderCtx, olderMsgs)
-            hasMore = olderCtx.get("hasMore")?.takeIf { !it.isJsonNull }?.asBoolean == true && nextOldest != oldestEntryId
+            hasMore = olderCtx.safeBoolean("hasMore") == true && nextOldest != oldestEntryId
             oldestEntryId = nextOldest
         }
 
@@ -1058,7 +1070,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         val count = minOf(msgs.size(), ids.size())
         for (i in 0 until count) {
             val m = msgs.get(i)
-            val id = ids.get(i)?.takeIf { !it.isJsonNull }?.asString
+            val id = ids.get(i).asSafeString()
             if (m != null && m.isJsonObject && !id.isNullOrBlank()) {
                 val obj = m.asJsonObject
                 if (!obj.has("entryId")) {
@@ -1070,25 +1082,17 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     /** 一条消息条目（可能是裸消息，也可能是 `{message:{...}}`）的角色。 */
     private fun roleOfMessage(el: com.google.gson.JsonElement?): String? {
-        if (el == null || !el.isJsonObject) return null
-        val obj = el.asJsonObject
-        val msg = if (obj.has("message") && obj.get("message").isJsonObject) {
-            obj.getAsJsonObject("message")
-        } else {
-            obj
-        }
-        return msg.get("role")?.takeIf { !it.isJsonNull }?.asString
+        val obj = el.asSafeObject() ?: return null
+        val msg = obj.safeObject("message") ?: obj
+        return msg.safeString("role")
     }
 
     /** 消息数组里第一条带 entryId 的 id（向前翻页的游标）。 */
     private fun messageEntryId(msgs: JsonArray?): String? {
         if (msgs == null || msgs.size() <= 0) return null
         for (i in 0 until msgs.size()) {
-            val el = msgs.get(i)
-            if (!el.isJsonObject) continue
-            val obj = el.asJsonObject
-            val id = obj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
-                ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            val obj = msgs.get(i).asSafeObject() ?: continue
+            val id = obj.safeString("entryId") ?: obj.safeString("id")
             if (!id.isNullOrBlank()) return id
         }
         return null
@@ -1096,20 +1100,15 @@ class PiApiClient(private val prefs: AppPreferences) {
 
     private fun extractOldestEntryId(ctxObj: JsonObject?, msgs: JsonArray?): String? {
         if (ctxObj != null) {
-            if (ctxObj.has("entryIds") && ctxObj.get("entryIds").isJsonArray) {
-                val ids = ctxObj.getAsJsonArray("entryIds")
-                if (ids.size() > 0 && !ids.get(0).isJsonNull) {
-                    return ids.get(0).asString
-                }
+            val ids = ctxObj.safeArray("entryIds")
+            if (ids != null && ids.size() > 0) {
+                ids.get(0).asSafeString()?.let { return it }
             }
-            if (ctxObj.has("firstEntryId") && !ctxObj.get("firstEntryId").isJsonNull) {
-                return ctxObj.get("firstEntryId").asString
-            }
+            ctxObj.safeString("firstEntryId")?.let { return it }
         }
         if (msgs != null && msgs.size() > 0 && msgs.get(0).isJsonObject) {
             val firstMsg = msgs.get(0).asJsonObject
-            return firstMsg.get("entryId")?.takeIf { !it.isJsonNull }?.asString
-                ?: firstMsg.get("id")?.takeIf { !it.isJsonNull }?.asString
+            return firstMsg.safeString("entryId") ?: firstMsg.safeString("id")
         }
         return null
     }
@@ -1124,7 +1123,7 @@ class PiApiClient(private val prefs: AppPreferences) {
             if (!el.isJsonObject) continue
             val obj = el.asJsonObject
             rawEntries.add(obj)
-            val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            val id = obj.safeString("id")
             if (!id.isNullOrBlank()) {
                 byId[id] = obj
             }
@@ -1143,9 +1142,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                 var curr: JsonObject? = startNode
                 while (curr != null) {
                     branchReversed.add(curr)
-                    val cid = curr.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    val cid = curr.safeString("id")
                     if (cid != null) visited.add(cid)
-                    val pid = curr.get("parentId")?.takeIf { !it.isJsonNull }?.asString
+                    val pid = curr.safeString("parentId")
                     curr = if (!pid.isNullOrBlank() && !visited.contains(pid)) byId[pid] else null
                 }
                 val branch = branchReversed.asReversed()
@@ -1159,25 +1158,25 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         val result = JsonArray()
         for (entry in orderedEntries) {
-            val entryType = entry.get("type")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val entryType = entry.safeString("type") ?: ""
             val entryTs = parseFlexibleTimestamp(entry.get("timestamp"))
-            val eId = entry.get("id")?.takeIf { !it.isJsonNull }?.asString
+            val eId = entry.safeString("id")
             when {
-                entryType == "message" && entry.has("message") && entry.get("message").isJsonObject -> {
-                    val mObj = entry.getAsJsonObject("message").deepCopy()
-                    if (!mObj.has("timestamp") && entryTs > 0L) {
-                        mObj.addProperty("timestamp", entryTs)
+                entryType == "message" -> {
+                    entry.safeObject("message")?.deepCopy()?.let { mObj ->
+                        if (!mObj.has("timestamp") && entryTs > 0L) {
+                            mObj.addProperty("timestamp", entryTs)
+                        }
+                        if (!eId.isNullOrBlank()) {
+                            mObj.addProperty("entryId", eId)
+                        }
+                        result.add(mObj)
                     }
-                    if (!eId.isNullOrBlank()) {
-                        mObj.addProperty("entryId", eId)
-                    }
-                    result.add(mObj)
                 }
                 entryType == "compaction" -> {
-                    val summary = entry.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val tokensBefore = entry.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
-                        ?: entry.get("details")?.takeIf { it.isJsonObject }
-                            ?.asJsonObject?.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                    val summary = entry.safeString("summary") ?: ""
+                    val tokensBefore = entry.safeLong("tokensBefore")
+                        ?: entry.safeObject("details")?.safeLong("tokensBefore")
                         ?: 0L
                     val synthetic = JsonObject().apply {
                         addProperty("role", "compactionSummary")
@@ -1189,7 +1188,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     result.add(synthetic)
                 }
                 entryType == "branch_summary" -> {
-                    val summary = entry.get("summary")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val summary = entry.safeString("summary") ?: ""
                     if (summary.isNotBlank()) {
                         val synthetic = JsonObject().apply {
                             addProperty("role", "branchSummary")
@@ -1215,7 +1214,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             addProperty("role", "custom")
                             addProperty("content", contentText)
                             addProperty("display", true)
-                            entry.get("customType")?.takeIf { !it.isJsonNull }?.asString?.let {
+                            entry.safeString("customType")?.let {
                                 addProperty("customType", it)
                             }
                             if (entryTs > 0L) addProperty("timestamp", entryTs)
@@ -1277,28 +1276,23 @@ class PiApiClient(private val prefs: AppPreferences) {
         for (element in msgs) {
             if (!element.isJsonObject) continue
             val rawObj = element.asJsonObject
-            val msgObj = if (rawObj.has("message") && rawObj.get("message").isJsonObject) {
-                rawObj.getAsJsonObject("message")
-            } else rawObj
-            val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            val msgObj = rawObj.safeObject("message") ?: rawObj
+            val roleStr = msgObj.safeString("role") ?: ""
             if (roleStr == "toolResult" || roleStr == "tool") {
-                val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                    ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                val tName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
-                    ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
-                    ?: "tool"
+                val tcId = msgObj.safeString("toolCallId") ?: msgObj.safeString("id")
+                val tName = msgObj.safeString("toolName") ?: msgObj.safeString("name") ?: "tool"
                 val contentElem = msgObj.get("content") ?: msgObj.get("output")
                 val rawOut = extractTextFromContent(contentElem)
                 val tOut = if (rawOut.length > 12000) {
                     rawOut.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
                 } else rawOut
                 val tMedia = extractMediaFromContent(contentElem, tOut, tcId)
-                val dur = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                val dur = msgObj.safeLong("durationMs") ?: 0L
+                val isErr = msgObj.safeBoolean("isError") ?: false
                 val ts = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
-                val fullOutPath = msgObj.get("fullOutputPath")?.takeIf { !it.isJsonNull }?.asString
-                    ?: msgObj.get("outputPath")?.takeIf { !it.isJsonNull }?.asString
-                    ?: rawObj.get("fullOutputPath")?.takeIf { !it.isJsonNull }?.asString
+                val fullOutPath = msgObj.safeString("fullOutputPath")
+                    ?: msgObj.safeString("outputPath")
+                    ?: rawObj.safeString("fullOutputPath")
                 if (!tcId.isNullOrBlank()) {
                     toolResultById[tcId] =
                         ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts, fullOutPath)
@@ -1309,12 +1303,9 @@ class PiApiClient(private val prefs: AppPreferences) {
         for (element in msgs) {
             if (!element.isJsonObject) continue
             val rawObj = element.asJsonObject
-            val msgObj = if (rawObj.has("message") && rawObj.get("message").isJsonObject) {
-                rawObj.getAsJsonObject("message")
-            } else rawObj
-            val roleStr = msgObj.get("role")?.takeIf { !it.isJsonNull }?.asString ?: ""
-            val customType = msgObj.get("customType")?.takeIf { !it.isJsonNull }?.asString
-                ?: rawObj.get("customType")?.takeIf { !it.isJsonNull }?.asString
+            val msgObj = rawObj.safeObject("message") ?: rawObj
+            val roleStr = msgObj.safeString("role") ?: ""
+            val customType = msgObj.safeString("customType") ?: rawObj.safeString("customType")
             // 哪些消息该渲染见 [SessionMessageVisibility]：pi-web 会丢掉 system 角色与
             // display 非真的 custom 消息，漏对齐就会把扩展注入的内部指令印成用户可见卡片。
             val displayFlag = (msgObj.get("display") ?: rawObj.get("display"))
@@ -1332,31 +1323,30 @@ class PiApiClient(private val prefs: AppPreferences) {
             val timestamp = parseFlexibleTimestamp(msgObj.get("timestamp") ?: rawObj.get("timestamp"))
             // pi 会话条目的真实 ID（entry.id）：从历史快照过来的消息都要带上，
             // 「从此处编辑」才能调 navigate_tree 把会话树切到这个节点。
-            val entryId = rawObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
-                ?: rawObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                ?: msgObj.get("entryId")?.takeIf { !it.isJsonNull }?.asString
-                ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+            val entryId = rawObj.safeString("entryId")
+                ?: rawObj.safeString("id")
+                ?: msgObj.safeString("entryId")
+                ?: msgObj.safeString("id")
 
             var turnUsageStr: String? = null
-            if (roleStr == "assistant" && msgObj.has("usage") && msgObj.get("usage").isJsonObject) {
-                val uObj = msgObj.getAsJsonObject("usage")
-                val uIn = uObj.get("input")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val uOut = uObj.get("output")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val uCacheR = uObj.get("cacheRead")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val uCacheW = uObj.get("cacheWrite")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                val uCost = if (uObj.has("cost") && uObj.get("cost").isJsonObject) {
-                    uObj.getAsJsonObject("cost").get("total")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0
-                } else 0.0
-                if (uIn > 0) {
-                    lastAssistantContextTokens = uIn + uCacheR
-                    lastAssistantInTokens = uIn
-                    lastAssistantOutTokens = uOut
+            if (roleStr == "assistant") {
+                msgObj.safeObject("usage")?.let { uObj ->
+                    val uIn = uObj.safeLong("input") ?: 0L
+                    val uOut = uObj.safeLong("output") ?: 0L
+                    val uCacheR = uObj.safeLong("cacheRead") ?: 0L
+                    val uCacheW = uObj.safeLong("cacheWrite") ?: 0L
+                    val uCost = uObj.safeObject("cost")?.safeDouble("total") ?: 0.0
+                    val turnContext = uIn + uCacheR + uCacheW
+                    if (turnContext > 0) {
+                        lastAssistantContextTokens = turnContext
+                        lastAssistantInTokens = uIn
+                        lastAssistantOutTokens = uOut
+                    }
+                    turnUsageStr = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
                 }
-                turnUsageStr = TokenStats.formatTurnUsage(uIn, uOut, uCacheR, uCacheW, uCost)
             }
 
-            val msgModelName = msgObj.get("model")?.takeIf { !it.isJsonNull }?.asString
-                ?: defaultModelId
+            val msgModelName = msgObj.safeString("model") ?: defaultModelId
 
             when (effectiveRole) {
                 "user" -> {
@@ -1397,7 +1387,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
                 "assistant" -> {
                     var text = ""
-                    var thinking: String? = msgObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
+                    var thinking: String? = msgObj.safeString("thinking")
                     val toolCalls = mutableListOf<ToolCallInfo>()
                     val assistantMedia = mutableListOf<MediaAttachment>()
 
@@ -1408,23 +1398,18 @@ class PiApiClient(private val prefs: AppPreferences) {
                             for (cItem in contentElem.asJsonArray) {
                                 if (!cItem.isJsonObject) continue
                                 val cObj = cItem.asJsonObject
-                                when (cObj.get("type")?.takeIf { !it.isJsonNull }?.asString) {
+                                when (cObj.safeString("type")) {
                                     "text", "output_text", "input_text" -> {
-                                        val t = cObj.get("text")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                                        val t = cObj.safeString("text") ?: ""
                                         text = if (text.isEmpty()) t else "$text\n$t"
                                     }
                                     "thinking" -> {
-                                        val th = cObj.get("thinking")?.takeIf { !it.isJsonNull }?.asString
-                                            ?: cObj.get("text")?.takeIf { !it.isJsonNull }?.asString
-                                            ?: ""
+                                        val th = cObj.safeString("thinking") ?: cObj.safeString("text") ?: ""
                                         thinking = if (thinking.isNullOrEmpty()) th else "$thinking\n$th"
                                     }
                                     "toolCall", "tool_use", "tool_call" -> {
-                                        val tcId = cObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                                            ?: cObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                                        val toolName = cObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
-                                            ?: cObj.get("name")?.takeIf { !it.isJsonNull }?.asString
-                                            ?: "tool"
+                                        val tcId = cObj.safeString("toolCallId") ?: cObj.safeString("id")
+                                        val toolName = cObj.safeString("toolName") ?: cObj.safeString("name") ?: "tool"
                                         val inputElem = cObj.get("input") ?: cObj.get("arguments") ?: cObj.get("args")
                                         val preview = extractToolPreview(inputElem)
                                         val fields = extractToolFields(inputElem)
@@ -1462,8 +1447,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
 
                     val startIndexForTurn = chatItems.size
-                    val errMsg = msgObj.get("errorMessage")?.takeIf { !it.isJsonNull }?.asString
-                        ?: (if (msgObj.get("stopReason")?.takeIf { !it.isJsonNull }?.asString == "error") "上游模型异常中断" else null)
+                    val errMsg = msgObj.safeString("errorMessage")
+                        ?: (if (msgObj.safeString("stopReason") == "error") "上游模型异常中断" else null)
                     // 「This operation was aborted」这类中止并非服务故障：pi 在压缩上下文、用户停止、
                     // 自动重试换手时都会 abort 在途请求，并落一条空正文的 assistant 记录。
                     // 历史回放时不应把它渲染成刺眼的「⚠️ 模型服务异常」。
@@ -1520,22 +1505,19 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
                 "toolResult", "tool" -> {
-                    val tcId = msgObj.get("toolCallId")?.takeIf { !it.isJsonNull }?.asString
-                        ?: msgObj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    val tcId = msgObj.safeString("toolCallId") ?: msgObj.safeString("id")
                     if (tcId != null && consumedResultIds.contains(tcId)) {
                         // 已与对应的 toolCall 卡片配对合并，不再重复渲染第二张卡片
                     } else {
-                        val toolName = msgObj.get("toolName")?.takeIf { !it.isJsonNull }?.asString
-                            ?: msgObj.get("name")?.takeIf { !it.isJsonNull }?.asString
-                            ?: "tool"
+                        val toolName = msgObj.safeString("toolName") ?: msgObj.safeString("name") ?: "tool"
                         val contentElem = msgObj.get("content") ?: msgObj.get("output")
                         val rawToolOutput = extractTextFromContent(contentElem)
                         val toolOutput = if (rawToolOutput.length > 12000) {
                             rawToolOutput.take(12000) + "\n\n... [工具输出过长，已截断显示前 12,000 字符] ..."
                         } else rawToolOutput
                         val toolMedia = extractMediaFromContent(contentElem, toolOutput, tcId)
-                        val duration = msgObj.get("durationMs")?.takeIf { !it.isJsonNull }?.asLong ?: 0L
-                        val isErr = msgObj.get("isError")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                        val duration = msgObj.safeLong("durationMs") ?: 0L
+                        val isErr = msgObj.safeBoolean("isError") ?: false
                         val recentIdx = chatItems.indexOfLast {
                             it.role == MessageRole.TOOL &&
                                 it.toolCall?.toolName == toolName &&
@@ -1577,12 +1559,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                     }
                 }
                 "compactionSummary", "branchSummary" -> {
-                    val summary = msgObj.get("summary")?.takeIf { !it.isJsonNull }?.asString
+                    val summary = msgObj.safeString("summary")
                         ?: extractTextFromContent(msgObj.get("content"))
                     // pi-web 把 token 数放在 details（`details:{tokensBefore}`），旧形态是顶层字段，两者都认。
-                    val tokensBefore = msgObj.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
-                        ?: msgObj.get("details")?.takeIf { it.isJsonObject }
-                            ?.asJsonObject?.get("tokensBefore")?.takeIf { !it.isJsonNull }?.asLong
+                    val tokensBefore = msgObj.safeLong("tokensBefore")
+                        ?: msgObj.safeObject("details")?.safeLong("tokensBefore")
                         ?: 0L
                     val header = if (tokensBefore > 0) {
                         "📦 上下文已归档压缩 (压缩前 ${TokenStats.formatTokenCompact(tokensBefore)} tokens)"
@@ -1658,8 +1639,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (element.isJsonPrimitive) return element.asString
         if (element.isJsonObject) {
             val obj = element.asJsonObject
-            if (obj.size() == 1 && obj.has("command") && obj.get("command").isJsonPrimitive) {
-                return obj.get("command").asString
+            if (obj.size() == 1) {
+                obj.safeString("command")?.let { return it }
             }
         }
         return gson.toJson(element)
@@ -1671,8 +1652,8 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (element.isJsonArray) {
             val sb = StringBuilder()
             for (item in element.asJsonArray) {
-                if (item.isJsonObject && item.asJsonObject.has("text") && !item.asJsonObject.get("text").isJsonNull) {
-                    sb.append(item.asJsonObject.get("text").asString).append("\n")
+                if (item.isJsonObject) {
+                    item.asJsonObject.safeString("text")?.let { sb.append(it).append("\n") }
                 } else if (item.isJsonPrimitive) {
                     sb.append(item.asString).append("\n")
                 }
@@ -1753,24 +1734,21 @@ class PiApiClient(private val prefs: AppPreferences) {
                 return@withContext Result.failure(readFailure(payload, "/api/models"))
             }
             val body = payload.body
-            val json = JsonParser.parseString(body).asJsonObject
+            val json = JsonParser.parseString(body).asSafeObject()
+                ?: return@withContext Result.failure(IOException("模型目录响应无法解析"))
 
                 val models = mutableListOf<ModelInfo>()
-                if (json.has("modelList") && json.get("modelList").isJsonArray) {
-                    val array = json.getAsJsonArray("modelList")
+                json.safeArray("modelList")?.let { array ->
                     for (item in array) {
-                        if (!item.isJsonObject) continue
-                        val obj = item.asJsonObject
-                        val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
-                        val provider = obj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: "Default"
-                        val ctxWin = obj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
+                        val obj = item.asSafeObject() ?: continue
+                        val id = obj.safeString("id") ?: ""
+                        val name = obj.safeString("name") ?: id
+                        val provider = obj.safeString("provider") ?: "Default"
+                        val ctxWin = obj.safeLong("contextWindow")
                             ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW
-                        val maxTok = obj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong ?: 8192L
-                        val reasoning = obj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
-                        val input = obj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
-                            runCatching { it.asString }.getOrNull()
-                        } ?: emptyList()
+                        val maxTok = obj.safeLong("maxTokens") ?: 8192L
+                        val reasoning = obj.safeBoolean("reasoning") ?: true
+                        val input = obj.safeArray("input")?.mapNotNull { it.asSafeString() } ?: emptyList()
                         models.add(ModelInfo(
                             id = id,
                             name = name,
@@ -1785,21 +1763,19 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
 
                 val levelsMap = mutableMapOf<String, List<String>>()
-                if (json.has("thinkingLevels") && json.get("thinkingLevels").isJsonObject) {
-                    val obj = json.getAsJsonObject("thinkingLevels")
+                json.safeObject("thinkingLevels")?.let { obj ->
                     for ((k, v) in obj.entrySet()) {
                         if (v.isJsonArray) {
-                            levelsMap[k] = v.asJsonArray.mapNotNull { runCatching { it.asString }.getOrNull() }
+                            levelsMap[k] = v.asJsonArray.mapNotNull { it.asSafeString() }
                         }
                     }
                 }
 
                 // 解析服务端当前默认模型与默认思考档位 (对标 pi-web /api/models 返回的 defaultModel)
                 var defaultModelRef: DefaultModelRef? = null
-                if (json.has("defaultModel") && json.get("defaultModel").isJsonObject) {
-                    val dObj = json.getAsJsonObject("defaultModel")
-                    val prov = dObj.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val mId = dObj.get("modelId")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                json.safeObject("defaultModel")?.let { dObj ->
+                    val prov = dObj.safeString("provider") ?: ""
+                    val mId = dObj.safeString("modelId") ?: ""
                     if (prov.isNotBlank() && mId.isNotBlank()) {
                         defaultModelRef = DefaultModelRef(provider = prov, modelId = mId)
                         if (applyServerDefaults) {
@@ -1808,7 +1784,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         }
                     }
                 }
-                val defaultThinking = json.get("defaultThinkingLevel")?.takeIf { !it.isJsonNull }?.asString
+                val defaultThinking = json.safeString("defaultThinkingLevel")
                 if (applyServerDefaults && !defaultThinking.isNullOrBlank()) {
                     prefs.defaultThinkingLevel = defaultThinking
                 }
@@ -1899,24 +1875,24 @@ class PiApiClient(private val prefs: AppPreferences) {
             if (!parsed.isJsonObject) return@runCatching null
             val root = parsed.asJsonObject
             val targetObj: JsonObject = when {
-                root.has("providers") && root.get("providers").isJsonObject -> {
+                root.safeObject("providers") != null -> {
                     // 如果同时存在残留的顶层 config 字段，说明曾被旧版写入污染，后续由 sanitizeAndHealModelsConfig 清理
                     root.deepCopy()
                 }
-                root.has("config") && root.get("config").isJsonObject -> {
-                    root.getAsJsonObject("config").deepCopy()
+                root.safeObject("config") != null -> {
+                    root.safeObject("config")!!.deepCopy()
                 }
-                root.has("config") && root.get("config").isJsonPrimitive -> {
-                    val innerStr = root.get("config").asString
-                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                root.safeString("config") != null -> {
+                    val innerStr = root.safeString("config")!!
+                    runCatching { JsonParser.parseString(innerStr).asSafeObject() }.getOrNull() ?: JsonObject()
                 }
-                root.has("content") && root.get("content").isJsonPrimitive -> {
-                    val innerStr = root.get("content").asString
-                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                root.safeString("content") != null -> {
+                    val innerStr = root.safeString("content")!!
+                    runCatching { JsonParser.parseString(innerStr).asSafeObject() }.getOrNull() ?: JsonObject()
                 }
-                root.has("raw") && root.get("raw").isJsonPrimitive -> {
-                    val innerStr = root.get("raw").asString
-                    runCatching { JsonParser.parseString(innerStr).asJsonObject }.getOrNull() ?: JsonObject()
+                root.safeString("raw") != null -> {
+                    val innerStr = root.safeString("raw")!!
+                    runCatching { JsonParser.parseString(innerStr).asSafeObject() }.getOrNull() ?: JsonObject()
                 }
                 else -> root.deepCopy()
             }
@@ -1958,23 +1934,15 @@ class PiApiClient(private val prefs: AppPreferences) {
     private fun sanitizeAndHealModelsConfig(rootConfig: JsonObject): Boolean {
         var modified = false
 
-        val providersObj = if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
-            rootConfig.getAsJsonObject("providers")
-        } else {
-            JsonObject().also { rootConfig.add("providers", it) }
-        }
+        val providersObj = rootConfig.safeObject("providers")
+            ?: JsonObject().also { rootConfig.add("providers", it) }
 
         // 1. 抢救并移除顶层可能残留的 "config" 污染字段
         if (rootConfig.has("config")) {
-            val nested = rootConfig.get("config")
-            if (nested != null && nested.isJsonObject) {
-                val nestedObj = nested.asJsonObject
-                if (nestedObj.has("providers") && nestedObj.get("providers").isJsonObject) {
-                    val nestedProviders = nestedObj.getAsJsonObject("providers")
-                    for ((k, v) in nestedProviders.entrySet()) {
-                        if (!providersObj.has(k) && v.isJsonObject) {
-                            providersObj.add(k, v)
-                        }
+            rootConfig.safeObject("config")?.safeObject("providers")?.let { nestedProviders ->
+                for ((k, v) in nestedProviders.entrySet()) {
+                    if (!providersObj.has(k) && v.isJsonObject) {
+                        providersObj.add(k, v)
                     }
                 }
             }
@@ -1984,41 +1952,32 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         // 2. 检查每个 provider：若没有 baseUrl 却定义了 models 数组，无损转换为 modelOverrides
         for ((_, provElem) in providersObj.entrySet()) {
-            if (!provElem.isJsonObject) continue
-            val pObj = provElem.asJsonObject
-            val baseUrlVal = pObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim() ?: ""
-            val hasModelsArr = pObj.has("models") && pObj.get("models").isJsonArray
-            if (hasModelsArr && baseUrlVal.isEmpty()) {
-                val mArr = pObj.getAsJsonArray("models")
-                val overridesObj = if (pObj.has("modelOverrides") && pObj.get("modelOverrides").isJsonObject) {
-                    pObj.getAsJsonObject("modelOverrides")
-                } else {
-                    JsonObject().also { pObj.add("modelOverrides", it) }
-                }
+            val pObj = provElem.asSafeObject() ?: continue
+            val baseUrlVal = pObj.safeString("baseUrl")?.trim() ?: ""
+            val mArr = pObj.safeArray("models")
+            if (mArr != null && baseUrlVal.isEmpty()) {
+                val overridesObj = pObj.safeObject("modelOverrides")
+                    ?: JsonObject().also { pObj.add("modelOverrides", it) }
 
                 for (mElem in mArr) {
-                    if (!mElem.isJsonObject) continue
-                    val mObj = mElem.asJsonObject
-                    val mId = mObj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
-                    val ovItem = if (overridesObj.has(mId) && overridesObj.get(mId).isJsonObject) {
-                        overridesObj.getAsJsonObject(mId)
-                    } else {
-                        JsonObject().also { overridesObj.add(mId, it) }
-                    }
-                    mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.takeIf { it.isNotBlank() }?.let {
+                    val mObj = mElem.asSafeObject() ?: continue
+                    val mId = mObj.safeString("id")?.trim() ?: continue
+                    val ovItem = overridesObj.safeObject(mId)
+                        ?: JsonObject().also { overridesObj.add(mId, it) }
+                    mObj.safeString("name")?.takeIf { it.isNotBlank() }?.let {
                         ovItem.addProperty("name", it)
                     }
-                    mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong?.let {
+                    mObj.safeLong("contextWindow")?.let {
                         ovItem.addProperty("contextWindow", it)
                     }
-                    mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong?.let {
+                    mObj.safeLong("maxTokens")?.let {
                         ovItem.addProperty("maxTokens", it)
                     }
-                    mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean?.let {
+                    mObj.safeBoolean("reasoning")?.let {
                         ovItem.addProperty("reasoning", it)
                     }
-                    if (mObj.has("input") && mObj.get("input").isJsonArray) {
-                        ovItem.add("input", mObj.getAsJsonArray("input").deepCopy())
+                    mObj.safeArray("input")?.let { inputArr ->
+                        ovItem.add("input", inputArr.deepCopy())
                     }
                 }
 
@@ -2092,13 +2051,11 @@ class PiApiClient(private val prefs: AppPreferences) {
         val merged = catalog.models.toMutableList()
 
         // 1. 应用服务端 models.json 中的 providers.<prov>.models 与 providers.<prov>.modelOverrides 配置
-        if (serverConfig != null && serverConfig.has("providers") && serverConfig.get("providers").isJsonObject) {
-            val providersObj = serverConfig.getAsJsonObject("providers")
+        serverConfig?.safeObject("providers")?.let { providersObj ->
             for ((provName, provElem) in providersObj.entrySet()) {
-                if (!provElem.isJsonObject) continue
-                val pObj = provElem.asJsonObject
-                val provBaseUrl = pObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
-                val provApi = pObj.get("api")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim()
+                val pObj = provElem.asSafeObject() ?: continue
+                val provBaseUrl = pObj.safeString("baseUrl")?.trim()
+                val provApi = pObj.safeString("api")?.trim()
 
                 // 为该提供商下的所有现有模型补充 baseUrl / apiType 元信息，方便编辑弹窗回填
                 if (!provBaseUrl.isNullOrBlank() || !provApi.isNullOrBlank()) {
@@ -2113,19 +2070,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
 
                 // 1a. 处理自定义提供商的 models 数组
-                val mArr = pObj.get("models")?.takeIf { it.isJsonArray }?.asJsonArray
+                val mArr = pObj.safeArray("models")
                 if (mArr != null) {
                     for (mElem in mArr) {
-                        if (!mElem.isJsonObject) continue
-                        val mObj = mElem.asJsonObject
-                        val mId = mObj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
-                        val mName = mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: mId
-                        val ctxWin = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
-                        val maxTok = mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong
-                        val reasoning = mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean
-                        val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
-                            runCatching { it.asString }.getOrNull()
-                        }
+                        val mObj = mElem.asSafeObject() ?: continue
+                        val mId = mObj.safeString("id")?.trim() ?: continue
+                        val mName = mObj.safeString("name")?.trim() ?: mId
+                        val ctxWin = mObj.safeLong("contextWindow")
+                        val maxTok = mObj.safeLong("maxTokens")
+                        val reasoning = mObj.safeBoolean("reasoning")
+                        val inputList = mObj.safeArray("input")?.mapNotNull { it.asSafeString() }
                         val idx = ModelCatalogMerge.indexOf(merged, provName, mId)
 
                         if (idx >= 0) {
@@ -2162,19 +2116,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                 }
 
                 // 1b. 处理 pi-coding-agent 标准 modelOverrides 字典 (无损覆盖内置或扩展模型参数)
-                val ovObj = pObj.get("modelOverrides")?.takeIf { it.isJsonObject }?.asJsonObject
+                val ovObj = pObj.safeObject("modelOverrides")
                 if (ovObj != null) {
                     for ((mIdKey, ovElem) in ovObj.entrySet()) {
-                        if (!ovElem.isJsonObject) continue
-                        val mObj = ovElem.asJsonObject
+                        val mObj = ovElem.asSafeObject() ?: continue
                         val mId = mIdKey.trim()
-                        val mName = mObj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim()
-                        val ctxWin = mObj.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong
-                        val maxTok = mObj.get("maxTokens")?.takeIf { !it.isJsonNull }?.asLong
-                        val reasoning = mObj.get("reasoning")?.takeIf { !it.isJsonNull }?.asBoolean
-                        val inputList = mObj.get("input")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull {
-                            runCatching { it.asString }.getOrNull()
-                        }
+                        val mName = mObj.safeString("name")?.trim()
+                        val ctxWin = mObj.safeLong("contextWindow")
+                        val maxTok = mObj.safeLong("maxTokens")
+                        val reasoning = mObj.safeBoolean("reasoning")
+                        val inputList = mObj.safeArray("input")?.mapNotNull { it.asSafeString() }
                         val idx = ModelCatalogMerge.indexOf(merged, provName, mId)
 
                         if (idx >= 0) {
@@ -2198,8 +2149,8 @@ class PiApiClient(private val prefs: AppPreferences) {
 
         // 2. 收集服务端当前所有合法的 Provider 集合 (不区分大小写)
         val validProviders = mutableSetOf<String>()
-        if (serverConfig != null && serverConfig.has("providers") && serverConfig.get("providers").isJsonObject) {
-            validProviders.addAll(serverConfig.getAsJsonObject("providers").keySet().map { it.lowercase() })
+        serverConfig?.safeObject("providers")?.let { pObj ->
+            validProviders.addAll(pObj.keySet().map { it.lowercase() })
         }
         merged.forEach { validProviders.add(it.provider.lowercase()) }
 
@@ -2306,20 +2257,20 @@ class PiApiClient(private val prefs: AppPreferences) {
             try {
                 val req = Request.Builder()
                     .url(
-                        "$baseUrl/api/agent/$sessionId/bash-output?path=" +
+                        "$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}/bash-output?path=" +
                             URLEncoder.encode(outputPath, "UTF-8")
                     )
                     .get()
                     .build()
                 client.newCall(req).execute().use { resp ->
                     val body = resp.body?.string() ?: "{}"
-                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                     if (!resp.isSuccessful || root == null) {
-                        val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                        val err = root?.safeString("error") ?: "HTTP ${resp.code}"
                         return@withContext Result.failure(IOException(err))
                     }
-                    val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val out = data?.get("output")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                    val data = root.safeObject("data")
+                    val out = data?.safeString("output") ?: ""
                     Result.success(out)
                 }
             } catch (e: Exception) {
@@ -2339,18 +2290,18 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                 if (!resp.isSuccessful || root == null) {
-                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                    val err = root?.safeString("error") ?: "HTTP ${resp.code}"
                     return@withContext Result.failure(IOException(err))
                 }
                 Result.success(
                     FileMeta(
-                        size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                        language = root.get("language")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                        mime = root.get("mime")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                        mtime = root.get("mtime")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString,
-                        previewKind = root.get("previewKind")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                        size = root.safeLong("size") ?: 0L,
+                        language = root.safeString("language") ?: "",
+                        mime = root.safeString("mime") ?: "",
+                        mtime = root.safeString("mtime"),
+                        previewKind = root.safeString("previewKind")
                     )
                 )
             }
@@ -2467,21 +2418,21 @@ class PiApiClient(private val prefs: AppPreferences) {
                         )
                     }
 
-                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                    val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                     if (!resp.isSuccessful || root == null) {
-                        val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                        val err = root?.safeString("error") ?: "HTTP ${resp.code}"
                         return@withContext Result.failure(IOException(err))
                     }
-                    val content = root.get("content")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val isBinary = root.get("binary")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asBoolean == true
-                    val mtime = root.get("mtime")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                    val content = root.safeString("content") ?: ""
+                    val isBinary = root.safeBoolean("binary") == true
+                    val mtime = root.safeString("mtime")
                     Result.success(
                         FileTextChunk(
                             content = content,
-                            nextOffset = root.get("nextOffset")?.takeIf { !it.isJsonNull }?.asLong
+                            nextOffset = root.safeLong("nextOffset")
                                 ?: (offset + content.toByteArray(Charsets.UTF_8).size),
-                            truncated = root.get("truncated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false,
-                            size = root.get("size")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                            truncated = root.safeBoolean("truncated") ?: false,
+                            size = root.safeLong("size") ?: 0L,
                             binary = isBinary,
                             mtime = mtime
                         )
@@ -2541,7 +2492,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val body = resp.body?.string() ?: ""
                     if (!resp.isSuccessful) {
                         val err = runCatching {
-                            JsonParser.parseString(body).asJsonObject.get("error")?.asString
+                            JsonParser.parseString(body).asSafeObject()?.safeString("error")
                         }.getOrNull()
                         return@withContext Result.failure(IOException(err ?: "HTTP ${resp.code}"))
                     }
@@ -2591,7 +2542,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                             var total = 0L
                             while (true) {
                                 val read = input.read(buffer)
-                                if (read <= 0) break
+                                if (read < 0) break
+                                if (read == 0) continue
                                 total += read
                                 if (total > maxBytes) throw IOException("文件过大，暂不支持外部打开")
                                 output.write(buffer, 0, read)
@@ -2655,7 +2607,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                             // 读到一半被 reset：已收到的字节不完整，只能整份重试
                             throw FileStreamResetException(e)
                         }
-                        if (read <= 0) break
+                        if (read < 0) break
+                        if (read == 0) continue
                         total += read
                         if (total > maxBytes) {
                             return@withContext Result.failure(IOException("文件过大，暂不预览"))
@@ -2692,9 +2645,7 @@ class PiApiClient(private val prefs: AppPreferences) {
      */
     suspend fun getAutoCompactionEnabled(sessionId: String): Result<Boolean?> =
         sendAgentCommandData(sessionId, mapOf("type" to "get_state")).map { data ->
-            data?.takeIf { it.isJsonObject }
-                ?.asJsonObject?.get("autoCompactionEnabled")
-                ?.takeIf { !it.isJsonNull }?.asBoolean
+            data.asSafeObject()?.safeBoolean("autoCompactionEnabled")
         }
 
     /** 开关 pi 的自动重试（agent {"type":"set_auto_retry","enabled":bool}） */
@@ -2719,25 +2670,23 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.failure(IOException("读取 git 状态失败 (${resp.code})"))
                 }
                 val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.failure(IOException("git 状态响应无法解析"))
-                val files = root.get("files")?.takeIf { it.isJsonArray }?.asJsonArray?.mapNotNull { el ->
-                    runCatching {
-                        val o = el.asJsonObject
-                        GitFileChange(
-                            filePath = o.get("filePath")?.asString ?: "",
-                            status = o.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                            code = o.get("code")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        )
-                    }.getOrNull()
-                } ?: emptyList()
+                val files = (root.safeArray("files")?.mapNotNull { el ->
+                    val o = el.asSafeObject() ?: return@mapNotNull null
+                    GitFileChange(
+                        filePath = o.safeString("filePath") ?: "",
+                        status = o.safeString("status") ?: "",
+                        code = o.safeString("code") ?: ""
+                    )
+                } ?: emptyList()).filter { it.filePath.isNotBlank() }.distinctBy { it.filePath }
                 Result.success(
                     GitStatusResult(
-                        isGitRepository = root.get("isGitRepository")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        repositoryRoot = root.get("repositoryRoot")?.takeIf { !it.isJsonNull }?.asString ?: "",
+                        isGitRepository = root.safeBoolean("isGitRepository") == true,
+                        repositoryRoot = root.safeString("repositoryRoot") ?: "",
                         files = files,
-                        additions = root.get("additions")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
-                        deletions = root.get("deletions")?.takeIf { !it.isJsonNull }?.asInt ?: 0
+                        additions = root.safeInt("additions") ?: 0,
+                        deletions = root.safeInt("deletions") ?: 0
                     )
                 )
             }
@@ -2761,16 +2710,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                 if (!resp.isSuccessful || root == null) {
-                    val err = root?.get("error")?.asString ?: "HTTP ${resp.code}"
+                    val err = root?.safeString("error") ?: "HTTP ${resp.code}"
                     return@withContext Result.failure(IOException("读取 diff 失败：$err"))
                 }
                 Result.success(
                     GitDiffResult(
-                        supported = root.get("supported")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                        status = root.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                        patch = root.get("patch")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        supported = root.safeBoolean("supported") == true,
+                        status = root.safeString("status") ?: "",
+                        patch = root.safeString("patch") ?: ""
                     )
                 )
             }
@@ -2803,24 +2752,23 @@ class PiApiClient(private val prefs: AppPreferences) {
                     return@withContext Result.failure(IOException("搜索失败 (${resp.code})"))
                 }
                 val body = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.success(emptyList())
-                val arr = root.get("results")?.takeIf { it.isJsonArray }?.asJsonArray
+                val arr = root.safeArray("results")
                     ?: return@withContext Result.success(emptyList())
                 val out = mutableListOf<SessionSearchHit>()
                 for (el in arr) {
-                    if (!el.isJsonObject) continue
-                    val o = el.asJsonObject
-                    val sessionEl = o.get("session")?.takeIf { it.isJsonObject } ?: continue
+                    val o = el.asSafeObject() ?: continue
+                    val sessionEl = o.safeObject("session") ?: continue
                     val session = runCatching { gson.fromJson(sessionEl, Session::class.java) }.getOrNull()
                         ?: continue
                     out.add(
                         SessionSearchHit(
                             session = session,
-                            entryId = o.get("entryId")?.takeIf { !it.isJsonNull }?.asString,
-                            match = o.get("match")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                            before = o.get("before")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                            after = o.get("after")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                            entryId = o.safeString("entryId"),
+                            match = o.safeString("match") ?: "",
+                            before = o.safeString("before") ?: "",
+                            after = o.safeString("after") ?: ""
                         )
                     )
                 }
@@ -2841,32 +2789,34 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
         try {
             val body = gson.toJson(mapOf("type" to "get_commands")).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
+            val req = Request.Builder().url("$baseUrl/api/agent/$encodedSessionId").post(body).build()
             client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     return@withContext Result.failure(IOException("读取命令列表失败 (${resp.code})"))
                 }
                 val raw = resp.body?.string() ?: "{}"
-                val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                val root = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.success(emptyList())
-                val data = root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
-                val arr = data.get("commands")?.takeIf { it.isJsonArray }?.asJsonArray
+                val data = root.safeObject("data") ?: root
+                val arr = data.safeArray("commands")
                     ?: return@withContext Result.success(emptyList())
                 val out = mutableListOf<SlashCommand>()
                 for (el in arr) {
-                    if (!el.isJsonObject) continue
-                    val o = el.asJsonObject
-                    val name = o.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
+                    val o = el.asSafeObject() ?: continue
+                    val name = o.safeString("name")?.trim() ?: continue
                     if (name.isBlank()) continue
                     out.add(
                         SlashCommand(
                             name = name,
-                            description = o.get("description")?.takeIf { !it.isJsonNull }?.asString ?: "",
-                            source = o.get("source")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                            description = o.safeString("description") ?: "",
+                            source = o.safeString("source") ?: ""
                         )
                     )
                 }
-                Result.success(out)
+                Result.success(
+                    out.filter { it.name.isNotBlank() }.distinctBy { "${it.source}:${it.name}" }
+                )
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -3003,7 +2953,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder()
-                .url("$baseUrl/api/agent/$sessionId?systemPrompt=0")
+                .url("$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}?systemPrompt=0")
                 .get()
                 .build()
             val payload = readGet(req)
@@ -3011,58 +2961,52 @@ class PiApiClient(private val prefs: AppPreferences) {
                 return@withContext Result.failure(IOException("读取 agent 状态失败 (${payload.code})"))
             }
             val raw = payload.body
-            val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+            val root = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull()
                 ?: return@withContext Result.failure(IOException("agent 状态响应无法解析"))
             // 兼容两种形态：{running, state:{...}} 或直接是 state 本体
-            val data = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject
-                ?: root.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
-                ?: root
-            val usage = data.get("contextUsage")?.takeIf { it.isJsonObject }?.asJsonObject
-            val modelObj = data.get("model")?.takeIf { it.isJsonObject }?.asJsonObject
-            val queue = data.get("queuedMessages")?.takeIf { it.isJsonObject }?.asJsonObject
+            val data = root.safeObject("state") ?: root.safeObject("data") ?: root
+            val usage = data.safeObject("contextUsage")
+            val modelObj = data.safeObject("model")
+            val queue = data.safeObject("queuedMessages")
             fun queueTexts(key: String): List<String> {
-                val arr = queue?.get(key)?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+                val arr = queue?.safeArray(key) ?: return emptyList()
                 return arr.mapNotNull { el ->
                     when {
                         el.isJsonPrimitive -> el.asString
-                        el.isJsonObject -> el.asJsonObject.get("message")?.takeIf { !it.isJsonNull }?.asString
-                            ?: el.asJsonObject.get("text")?.takeIf { !it.isJsonNull }?.asString
+                        el.isJsonObject -> el.asJsonObject.safeString("message")
+                            ?: el.asJsonObject.safeString("text")
                         else -> null
                     }
                 }.filter { it.isNotBlank() }
             }
-            val isStreaming = data.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean == true
-            val isPromptRunning = data.get("isPromptRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
-            val isBashRunning = data.get("isBashRunning")?.takeIf { !it.isJsonNull }?.asBoolean == true
+            val isStreaming = data.safeBoolean("isStreaming") == true
+            val isPromptRunning = data.safeBoolean("isPromptRunning") == true
+            val isBashRunning = data.safeBoolean("isBashRunning") == true
             // 顶层 running = 「pi-web 里有没有活着的 agent 运行时」，不等于正在执行。
             // 兼容 POST /api/agent/{id} 的 {success,data} 形态（没有顶层 running 字段）。
-            val runtimeAlive = root.get("running")?.takeIf { !it.isJsonNull }?.asBoolean
-                ?: data.has("isStreaming")
+            val runtimeAlive = root.safeBoolean("running") ?: data.has("isStreaming")
             Result.success(
                 AgentRuntimeState(
-                    percent = usage?.get("percent")?.takeIf { !it.isJsonNull }?.asDouble ?: 0.0,
-                    contextWindow = usage?.get("contextWindow")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
-                    contextTokens = usage?.get("tokens")?.takeIf { !it.isJsonNull }?.asLong ?: 0L,
+                    percent = usage?.safeDouble("percent") ?: 0.0,
+                    contextWindow = usage?.safeLong("contextWindow") ?: 0L,
+                    contextTokens = usage?.safeLong("tokens") ?: 0L,
                     hasContextUsage = usage != null,
-                    provider = modelObj?.get("provider")?.takeIf { !it.isJsonNull }?.asString,
-                    modelId = modelObj?.get("id")?.takeIf { !it.isJsonNull }?.asString
-                        ?: modelObj?.get("modelId")?.takeIf { !it.isJsonNull }?.asString,
-                    thinkingLevel = data.get("thinkingLevel")?.takeIf { !it.isJsonNull }?.asString,
+                    provider = modelObj?.safeString("provider"),
+                    modelId = modelObj?.safeString("id") ?: modelObj?.safeString("modelId"),
+                    thinkingLevel = data.safeString("thinkingLevel"),
                     isStreaming = isStreaming,
-                    isCompacting = data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                    isCompacting = data.safeBoolean("isCompacting") == true,
                     isBashRunning = isBashRunning,
-                    pendingMessageCount = data.get("pendingMessageCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+                    pendingMessageCount = data.safeInt("pendingMessageCount") ?: 0,
                     // 与 pi-web 同一口径（rpc-manager 的 `isRunning()`）：流式生成 / 提示词在跑 /
                     // bash 在跑 / **正在压缩上下文**。之前漏了压缩：手动 compact 期间服务端算「在跑」，
                     // 本地却算「空闲」，于是压缩刚开就被判完成（通知 / 唤醒锁 / 排队消息都对不上）。
                     running = runtimeAlive &&
                         (isStreaming || isPromptRunning || isBashRunning ||
-                            data.get("isCompacting")?.takeIf { !it.isJsonNull }?.asBoolean == true),
+                            data.safeBoolean("isCompacting") == true),
                     runtimeAlive = runtimeAlive,
-                    autoCompactionEnabled =
-                        data.get("autoCompactionEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
-                    autoRetryEnabled =
-                        data.get("autoRetryEnabled")?.takeIf { !it.isJsonNull }?.asBoolean == true,
+                    autoCompactionEnabled = data.safeBoolean("autoCompactionEnabled") == true,
+                    autoRetryEnabled = data.safeBoolean("autoRetryEnabled") == true,
                     steering = queueTexts("steering"),
                     followUp = queueTexts("followUp")
                 )
@@ -3095,12 +3039,11 @@ class PiApiClient(private val prefs: AppPreferences) {
     }
 
     private fun parseUiState(raw: String): SessionUiSnapshot {
-        val root = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull() ?: JsonObject()
-        val state = root.get("state")?.takeIf { it.isJsonObject }?.asJsonObject ?: root
+        val root = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull() ?: JsonObject()
+        val state = root.safeObject("state") ?: root
         val flags = mutableMapOf<String, SessionUiFlags>()
-        state.get("sessions")?.takeIf { it.isJsonObject }?.asJsonObject?.entrySet()?.forEach { (id, el) ->
-            if (el.isJsonObject) {
-                val o = el.asJsonObject
+        state.safeObject("sessions")?.entrySet()?.forEach { (id, el) ->
+            el.asSafeObject()?.let { o ->
                 flags[id] = SessionUiFlags(
                     pinned = o.get("pinnedAt")?.takeIf { !it.isJsonNull } != null,
                     archived = o.get("archivedAt")?.takeIf { !it.isJsonNull } != null
@@ -3108,15 +3051,15 @@ class PiApiClient(private val prefs: AppPreferences) {
             }
         }
         val pinnedProjects = mutableSetOf<String>()
-        state.get("projects")?.takeIf { it.isJsonObject }?.asJsonObject?.entrySet()?.forEach { (key, el) ->
+        state.safeObject("projects")?.entrySet()?.forEach { (key, el) ->
             if (el.isJsonObject && el.asJsonObject.get("pinnedAt")?.takeIf { !it.isJsonNull } != null) {
                 pinnedProjects.add(key.lowercase())
             }
         }
-        val order = state.get("projectOrder")?.takeIf { it.isJsonArray }?.asJsonArray
-            ?.mapNotNull { runCatching { it.asString }.getOrNull() } ?: emptyList()
+        val order = state.safeArray("projectOrder")
+            ?.mapNotNull { it.asSafeString() } ?: emptyList()
         return SessionUiSnapshot(
-            revision = state.get("revision")?.takeIf { !it.isJsonNull }?.asInt ?: 0,
+            revision = state.safeInt("revision") ?: 0,
             sessionFlags = flags,
             pinnedProjectKeys = pinnedProjects,
             projectOrder = order
@@ -3256,22 +3199,20 @@ class PiApiClient(private val prefs: AppPreferences) {
                 .build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
-                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                 if (json == null) {
                     return@withContext Result.failure(IOException("上传响应无法解析 (${resp.code})"))
                 }
                 if (!resp.isSuccessful && resp.code != 207) {
-                    val err = json.get("error")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP ${resp.code}"
+                    val err = json.safeString("error") ?: "HTTP ${resp.code}"
                     return@withContext Result.failure(IOException("上传失败：$err"))
                 }
-                fun strList(key: String) = json.get(key)?.takeIf { it.isJsonArray }?.asJsonArray
-                    ?.mapNotNull { runCatching { it.asString }.getOrNull() } ?: emptyList()
-                val errors = json.get("errors")?.takeIf { it.isJsonArray }?.asJsonArray
+                fun strList(key: String) = json.safeArray(key)
+                    ?.mapNotNull { it.asSafeString() } ?: emptyList()
+                val errors = json.safeArray("errors")
                     ?.mapNotNull { el ->
-                        runCatching {
-                            val o = el.asJsonObject
-                            (o.get("name")?.asString ?: "?") + ": " + (o.get("error")?.asString ?: "")
-                        }.getOrNull()
+                        val o = el.asSafeObject() ?: return@mapNotNull null
+                        (o.safeString("name") ?: "?") + ": " + (o.safeString("error") ?: "")
                     } ?: emptyList()
                 Result.success(
                     UploadFilesResult(
@@ -3337,7 +3278,8 @@ class PiApiClient(private val prefs: AppPreferences) {
             if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
             try {
                 val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-                val url = "$baseUrl/api/agent/$sessionId" + (query?.let { "?$it" } ?: "")
+                val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
+                val url = "$baseUrl/api/agent/$encodedSessionId" + (query?.let { "?$it" } ?: "")
                 val req = Request.Builder().url(url).post(body).build()
                 httpClient.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) {
@@ -3347,7 +3289,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                         )
                     }
                     val bodyStr = runCatching { response.body?.string() }.getOrNull().orEmpty()
-                    val root = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val root = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                     Result.success(root?.get("data")?.takeIf { !it.isJsonNull })
                 }
             } catch (e: Exception) {
@@ -3374,7 +3316,7 @@ class PiApiClient(private val prefs: AppPreferences) {
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
             val req = Request.Builder()
-                .url("$baseUrl/api/agent/$sessionId/lease")
+                .url("$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}/lease")
                 .post("".toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { resp ->
@@ -3441,49 +3383,48 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val jsonEl = runCatching { JsonParser.parseString(body) }.getOrNull() ?: return@use null
                     val array = when {
                         jsonEl.isJsonArray -> jsonEl.asJsonArray
-                        jsonEl.isJsonObject && jsonEl.asJsonObject.has("skills") && jsonEl.asJsonObject.get("skills").isJsonArray ->
-                            jsonEl.asJsonObject.getAsJsonArray("skills")
-                        jsonEl.isJsonObject && jsonEl.asJsonObject.has("items") && jsonEl.asJsonObject.get("items").isJsonArray ->
-                            jsonEl.asJsonObject.getAsJsonArray("items")
+                        jsonEl.isJsonObject -> {
+                            val rootObj = jsonEl.asJsonObject
+                            rootObj.safeArray("skills") ?: rootObj.safeArray("items")
+                        }
                         else -> null
                     } ?: return@use null
 
                     val list = mutableListOf<SkillInfo>()
                     for (item in array) {
-                        if (!item.isJsonObject) continue
-                        val obj = item.asJsonObject
-                        val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("id")?.takeIf { !it.isJsonNull }?.asString
+                        val obj = item.asSafeObject() ?: continue
+                        val name = obj.safeString("name")
+                            ?: obj.safeString("id")
                             ?: continue
-                        val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
-                        val baseDir = obj.get("baseDir")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("dir")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("directory")?.takeIf { !it.isJsonNull }?.asString
-                        val rawFilePath = obj.get("filePath")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("path")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("skillPath")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("location")?.takeIf { !it.isJsonNull }?.asString
+                        val description = obj.safeString("description")
+                        val baseDir = obj.safeString("baseDir")
+                            ?: obj.safeString("dir")
+                            ?: obj.safeString("directory")
+                        val rawFilePath = obj.safeString("filePath")
+                            ?: obj.safeString("path")
+                            ?: obj.safeString("skillPath")
+                            ?: obj.safeString("location")
                         val resolvedFilePath = rawFilePath?.takeIf { it.isNotBlank() }
                             ?: baseDir?.takeIf { it.isNotBlank() }?.let { dir ->
                                 val sep = if (dir.contains('\\')) "\\" else "/"
                                 dir.trimEnd('/', '\\') + sep + "SKILL.md"
                             }
-                        val inlineContent = obj.get("content")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("markdown")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("rawContent")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj.get("body")?.takeIf { !it.isJsonNull }?.asString
-                        val disabled = obj.get("disableModelInvocation")?.takeIf { !it.isJsonNull }?.asBoolean
-                            ?: obj.get("disabled")?.takeIf { !it.isJsonNull }?.asBoolean
+                        val inlineContent = obj.safeString("content")
+                            ?: obj.safeString("markdown")
+                            ?: obj.safeString("rawContent")
+                            ?: obj.safeString("body")
+                        val disabled = obj.safeBoolean("disableModelInvocation")
+                            ?: obj.safeBoolean("disabled")
                             ?: false
 
-                        val installObj = obj.get("install")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val installObj = obj.safeObject("install")
                         val install = installObj?.let { runCatching { gson.fromJson(it, SkillInstallInfo::class.java) }.getOrNull() }
 
-                        val sourceInfoObj = obj.get("sourceInfo")?.takeIf { it.isJsonObject }?.asJsonObject
+                        val sourceInfoObj = obj.safeObject("sourceInfo")
                         val sourceInfo = sourceInfoObj?.let { runCatching { gson.fromJson(it, SkillSourceInfo::class.java) }.getOrNull() }
 
                         val scopeStr = install?.scope?.takeIf { it.isNotBlank() }
-                            ?: obj.get("scope")?.takeIf { !it.isJsonNull }?.asString
+                            ?: obj.safeString("scope")
                             ?: sourceInfo?.scope
                             ?: ""
 
@@ -3559,20 +3500,18 @@ class PiApiClient(private val prefs: AppPreferences) {
                         return@use null
                     }
                     val body = response.body?.string() ?: "{}"
-                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
+                    val json = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull() ?: return@use null
                     val list = mutableListOf<PluginPackage>()
-                    if (json.has("packages") && json.get("packages").isJsonArray) {
-                        val array = json.getAsJsonArray("packages")
+                    json.safeArray("packages")?.let { array ->
                         for (item in array) {
-                            if (!item.isJsonObject) continue
-                            val obj = item.asJsonObject
-                            val packageName = obj.get("packageName")?.takeIf { !it.isJsonNull }?.asString ?: "plugin"
-                            val version = obj.get("version")?.takeIf { !it.isJsonNull }?.asString ?: "1.0.0"
-                            val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
-                            val source = obj.get("source")?.takeIf { !it.isJsonNull }?.asString
-                            val scope = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: "global"
-                            val status = obj.get("status")?.takeIf { !it.isJsonNull }?.asString ?: "loaded"
-                            val disabled = obj.get("disabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                            val obj = item.asSafeObject() ?: continue
+                            val packageName = obj.safeString("packageName") ?: "plugin"
+                            val version = obj.safeString("version") ?: "1.0.0"
+                            val description = obj.safeString("description")
+                            val source = obj.safeString("source")
+                            val scope = obj.safeString("scope") ?: "global"
+                            val status = obj.safeString("status") ?: "loaded"
+                            val disabled = obj.safeBoolean("disabled") ?: false
 
                             list.add(
                                 PluginPackage(
@@ -3621,37 +3560,32 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val resultServers = client.newCall(req).execute().use { response ->
                     if (!response.isSuccessful) return@use null
                     val body = response.body?.string() ?: "{}"
-                    val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
+                    val json = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull() ?: return@use null
 
                     // 代码模式不在 /api/mcp 里（上游也从来没在这里）：旧代码在此“读不到就
                     // 默认 automatic/3000”，等于把编造的值当成用户配置显示。现在只读服务器。
                     val servers = mutableListOf<McpServerInfo>()
-                    if (json.has("servers") && json.get("servers").isJsonArray) {
-                        val array = json.getAsJsonArray("servers")
+                    json.safeArray("servers")?.let { array ->
                         for (item in array) {
-                            if (!item.isJsonObject) continue
-                            val obj = item.asJsonObject
-                            val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                            val description = obj.get("description")?.takeIf { !it.isJsonNull }?.asString
-                            val rawTransport = obj.get("transport")?.takeIf { !it.isJsonNull }?.asString
-                            val cmd = obj.get("command")?.takeIf { !it.isJsonNull }?.asString
+                            val obj = item.asSafeObject() ?: continue
+                            val name = obj.safeString("name") ?: ""
+                            val description = obj.safeString("description")
+                            val rawTransport = obj.safeString("transport")
+                            val cmd = obj.safeString("command")
                             val transport = when {
                                 rawTransport?.equals("stdio", ignoreCase = true) == true -> "stdio"
                                 rawTransport != null -> "http"
                                 !cmd.isNullOrBlank() -> "stdio"
                                 else -> "http"
                             }
-                            val urlVal = obj.get("url")?.takeIf { !it.isJsonNull }?.asString ?: run {
-                                val args = if (obj.has("args") && obj.get("args").isJsonArray) {
-                                    obj.getAsJsonArray("args").mapNotNull { runCatching { it.asString }.getOrNull() }.joinToString(" ")
-                                } else ""
+                            val urlVal = obj.safeString("url") ?: run {
+                                val args = obj.safeArray("args")
+                                    ?.mapNotNull { it.asSafeString() }?.joinToString(" ") ?: ""
                                 if (!cmd.isNullOrBlank()) "$cmd $args".trim() else null
                             }
-                            val enabled = obj.get("enabled")?.takeIf { !it.isJsonNull }?.asBoolean ?: true
-                            val count = obj.get("toolExposureCount")?.takeIf { !it.isJsonNull }?.asInt ?: 0
-                            val state = if (obj.has("status") && obj.get("status").isJsonObject) {
-                                obj.getAsJsonObject("status")?.get("state")?.takeIf { !it.isJsonNull }?.asString
-                            } else "connected"
+                            val enabled = obj.safeBoolean("enabled") ?: true
+                            val count = obj.safeInt("toolExposureCount") ?: 0
+                            val state = obj.safeObject("status")?.safeString("state") ?: "connected"
 
                             servers.add(
                                 McpServerInfo(
@@ -3705,25 +3639,20 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val jsonElement = JsonParser.parseString(body)
                 if (jsonElement.isJsonObject) {
                     val obj = jsonElement.asJsonObject
-                    if (obj.has("runningSessionIds") && obj.get("runningSessionIds").isJsonArray) {
-                        val runningIds = obj.getAsJsonArray("runningSessionIds")
-                            .mapNotNull { runCatching { it.asString }.getOrNull() }
-                            .toSet()
+                    obj.safeArray("runningSessionIds")?.let { arr ->
+                        val runningIds = arr.mapNotNull { it.asSafeString() }.toSet()
                         if (runningIds.contains(sessionId)) {
                             return@withContext Result.success(true)
                         }
                     }
-                    if (obj.has("sessions") && obj.get("sessions").isJsonArray) {
-                        val sessionsArr = obj.getAsJsonArray("sessions")
+                    obj.safeArray("sessions")?.let { sessionsArr ->
                         for (el in sessionsArr) {
-                            if (el.isJsonObject) {
-                                val sObj = el.asJsonObject
-                                val id = sObj.get("id")?.takeIf { !it.isJsonNull }?.asString
-                                if (id == sessionId) {
-                                    val isRunning = sObj.get("isRunning")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                    val isStreaming = sObj.get("isStreaming")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                                    return@withContext Result.success(isRunning || isStreaming)
-                                }
+                            val sObj = el.asSafeObject() ?: continue
+                            val id = sObj.safeString("id")
+                            if (id == sessionId) {
+                                val isRunning = sObj.safeBoolean("isRunning") ?: false
+                                val isStreaming = sObj.safeBoolean("isStreaming") ?: false
+                                return@withContext Result.success(isRunning || isStreaming)
                             }
                         }
                     }
@@ -3942,22 +3871,16 @@ class PiApiClient(private val prefs: AppPreferences) {
                 ?: return@withContext Result.success(true) // 本地已保存覆盖，避免网络异常时覆盖服务端配置
 
             val rootConfig = fetched.config
-            val providersObj = if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
-                rootConfig.getAsJsonObject("providers")
-            } else {
-                JsonObject().also { rootConfig.add("providers", it) }
-            }
+            val providersObj = rootConfig.safeObject("providers")
+                ?: JsonObject().also { rootConfig.add("providers", it) }
 
             // 大小写不敏感匹配已有 provider key，防止产生大小写重复节点
             val actualProviderKey = providersObj.keySet().firstOrNull { it.equals(pKeyInput, ignoreCase = true) } ?: pKeyInput
-            val providerObj = if (providersObj.has(actualProviderKey) && providersObj.get(actualProviderKey).isJsonObject) {
-                providersObj.getAsJsonObject(actualProviderKey)
-            } else {
-                JsonObject().also { providersObj.add(actualProviderKey, it) }
-            }
+            val providerObj = providersObj.safeObject(actualProviderKey)
+                ?: JsonObject().also { providersObj.add(actualProviderKey, it) }
 
-            val existingBaseUrl = providerObj.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString?.trim() ?: ""
-            val hasExistingCustomModelsArray = providerObj.has("models") && providerObj.get("models").isJsonArray && existingBaseUrl.isNotBlank()
+            val existingBaseUrl = providerObj.safeString("baseUrl")?.trim() ?: ""
+            val hasExistingCustomModelsArray = providerObj.safeArray("models") != null && existingBaseUrl.isNotBlank()
 
             if (cleanBaseUrl.isNotBlank()) {
                 providerObj.addProperty("baseUrl", cleanBaseUrl)
@@ -3981,16 +3904,13 @@ class PiApiClient(private val prefs: AppPreferences) {
                 if (!providerObj.has("api") && cleanApiType.isNotBlank()) {
                     providerObj.addProperty("api", cleanApiType)
                 }
-                val modelsArr = if (providerObj.has("models") && providerObj.get("models").isJsonArray) {
-                    providerObj.getAsJsonArray("models")
-                } else {
-                    JsonArray().also { providerObj.add("models", it) }
-                }
+                val modelsArr = providerObj.safeArray("models")
+                    ?: JsonArray().also { providerObj.add("models", it) }
 
                 var replaced = false
                 for (i in 0 until modelsArr.size()) {
                     val elem = modelsArr.get(i)
-                    if (elem.isJsonObject && elem.asJsonObject.get("id")?.asString.equals(mId, ignoreCase = true)) {
+                    if (elem.isJsonObject && elem.asJsonObject.safeString("id").equals(mId, ignoreCase = true)) {
                         val existingModelObj = elem.asJsonObject.deepCopy()
                         existingModelObj.addProperty("id", mId)
                         existingModelObj.addProperty("name", modelName.trim().ifBlank { mId })
@@ -4017,17 +3937,11 @@ class PiApiClient(private val prefs: AppPreferences) {
             } else if (effectiveBaseUrl.isBlank()) {
                 // 场景 B：内置提供商（如 google / gemini / anthropic / openai 等，在 models.json 中无自定义 baseUrl）
                 // 严格使用 pi-coding-agent 的 `modelOverrides` 机制覆盖该模型参数，绝不写入 `models` 数组！
-                val overridesObj = if (providerObj.has("modelOverrides") && providerObj.get("modelOverrides").isJsonObject) {
-                    providerObj.getAsJsonObject("modelOverrides")
-                } else {
-                    JsonObject().also { providerObj.add("modelOverrides", it) }
-                }
+                val overridesObj = providerObj.safeObject("modelOverrides")
+                    ?: JsonObject().also { providerObj.add("modelOverrides", it) }
                 val actualModelKey = overridesObj.keySet().firstOrNull { it.equals(mId, ignoreCase = true) } ?: mId
-                val ovModelObj = if (overridesObj.has(actualModelKey) && overridesObj.get(actualModelKey).isJsonObject) {
-                    overridesObj.getAsJsonObject(actualModelKey)
-                } else {
-                    JsonObject().also { overridesObj.add(actualModelKey, it) }
-                }
+                val ovModelObj = overridesObj.safeObject(actualModelKey)
+                    ?: JsonObject().also { overridesObj.add(actualModelKey, it) }
                 ovModelObj.addProperty("name", modelName.trim().ifBlank { mId })
                 ovModelObj.addProperty("contextWindow", contextWindow)
                 ovModelObj.addProperty("maxTokens", maxTokens)
@@ -4187,17 +4101,16 @@ class PiApiClient(private val prefs: AppPreferences) {
             } else null
         }
         return runCatching {
-            val json = JsonParser.parseString(body).takeIf { it.isJsonObject }?.asJsonObject ?: return@runCatching null
+            val json = JsonParser.parseString(body).asSafeObject() ?: return@runCatching null
             val directKeys = listOf("content", "markdown", "rawContent", "raw", "body", "text", "source")
             for (k in directKeys) {
-                val v = json.get(k)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                val v = json.safeString(k)
                 if (!v.isNullOrBlank()) return@runCatching v
             }
             for (nestedKey in listOf("skill", "data", "document")) {
-                if (json.has(nestedKey) && json.get(nestedKey).isJsonObject) {
-                    val sub = json.getAsJsonObject(nestedKey)
+                json.safeObject(nestedKey)?.let { sub ->
                     for (k in directKeys) {
-                        val v = sub.get(k)?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                        val v = sub.safeString(k)
                         if (!v.isNullOrBlank()) return@runCatching v
                     }
                 }
@@ -4225,18 +4138,17 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val parsed = client.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@use null
                     val body = resp.body?.string() ?: return@use null
-                    val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
-                    val resultsArr = root.getAsJsonArray("results") ?: return@use null
+                    val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull() ?: return@use null
+                    val resultsArr = root.safeArray("results") ?: return@use null
                     val list = mutableListOf<SkillSearchResult>()
                     for (el in resultsArr) {
-                        if (!el.isJsonObject) continue
-                        val obj = el.asJsonObject
-                        val pkg = obj.get("package")?.takeIf { !it.isJsonNull }?.asString ?: continue
-                        val installs = obj.get("installs")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                        val url = obj.get("url")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        val obj = el.asSafeObject() ?: continue
+                        val pkg = obj.safeString("package") ?: continue
+                        val installs = obj.safeString("installs") ?: ""
+                        val url = obj.safeString("url") ?: ""
                         list.add(SkillSearchResult(`package` = pkg, installs = installs, url = url))
                     }
-                    list
+                    list.filter { it.`package`.isNotBlank() }.distinctBy { it.`package` }
                 }
                 if (!parsed.isNullOrEmpty()) {
                     return@withContext Result.success(parsed)
@@ -4257,17 +4169,16 @@ class PiApiClient(private val prefs: AppPreferences) {
             val list = client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@use null
                 val body = resp.body?.string() ?: return@use null
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use null
-                val skillsArr = root.getAsJsonArray("skills") ?: return@use null
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull() ?: return@use null
+                val skillsArr = root.safeArray("skills") ?: return@use null
                 val resList = mutableListOf<SkillSearchResult>()
                 for (el in skillsArr) {
-                    if (!el.isJsonObject) continue
-                    val obj = el.asJsonObject
-                    val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString?.trim() ?: continue
-                    val source = obj.get("source")?.takeIf { !it.isJsonNull }?.asString?.trim()
-                    val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString?.trim()
+                    val obj = el.asSafeObject() ?: continue
+                    val name = obj.safeString("name")?.trim() ?: continue
+                    val source = obj.safeString("source")?.trim()
+                    val id = obj.safeString("id")?.trim()
                     val repo = source ?: id ?: continue
-                    val installsNum = obj.get("installs")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 0L
+                    val installsNum = obj.safeLong("installs") ?: 0L
                     val installsStr = when {
                         installsNum >= 1_000_000 -> "${String.format("%.1f", installsNum / 1_000_000.0).replace(".0", "")}M installs"
                         installsNum >= 1_000 -> "${String.format("%.1f", installsNum / 1_000.0).replace(".0", "")}K installs"
@@ -4277,7 +4188,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     val url = if (!id.isNullOrBlank()) "https://skills.sh/$id" else ""
                     resList.add(SkillSearchResult(`package` = "$repo@$name", installs = installsStr, url = url))
                 }
-                resList
+                resList.filter { it.`package`.isNotBlank() }.distinctBy { it.`package` }
             }
             if (list != null) return@withContext Result.success(list)
         } catch (e: Exception) {
@@ -4309,7 +4220,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     Result.success(true)
                 } else {
                     val errMsg = runCatching {
-                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                        JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error")
                     }.getOrNull()?.takeIf { it.isNotBlank() } ?: "安装技能失败 (${resp.code})"
                     Result.failure(IOException(errMsg))
                 }
@@ -4338,18 +4249,17 @@ class PiApiClient(private val prefs: AppPreferences) {
             val list = client.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return@use emptyList<SkillUpdateInfo>()
                 val body = resp.body?.string() ?: return@use emptyList<SkillUpdateInfo>()
-                val root = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull() ?: return@use emptyList<SkillUpdateInfo>()
-                val arr = root.getAsJsonArray("updates") ?: return@use emptyList<SkillUpdateInfo>()
+                val root = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull() ?: return@use emptyList<SkillUpdateInfo>()
+                val arr = root.safeArray("updates") ?: return@use emptyList<SkillUpdateInfo>()
                 val resList = mutableListOf<SkillUpdateInfo>()
                 for (el in arr) {
-                    if (!el.isJsonObject) continue
-                    val obj = el.asJsonObject
-                    val pkg = obj.get("package")?.takeIf { !it.isJsonNull }?.asString ?: continue
-                    val sc = obj.get("scope")?.takeIf { !it.isJsonNull }?.asString ?: "global"
-                    val st = obj.get("state")?.takeIf { !it.isJsonNull }?.asString ?: "up-to-date"
-                    val cur = obj.get("currentVersion")?.takeIf { !it.isJsonNull }?.asString
-                    val lat = obj.get("latestVersion")?.takeIf { !it.isJsonNull }?.asString
-                    val msg = obj.get("message")?.takeIf { !it.isJsonNull }?.asString
+                    val obj = el.asSafeObject() ?: continue
+                    val pkg = obj.safeString("package") ?: continue
+                    val sc = obj.safeString("scope") ?: "global"
+                    val st = obj.safeString("state") ?: "up-to-date"
+                    val cur = obj.safeString("currentVersion")
+                    val lat = obj.safeString("latestVersion")
+                    val msg = obj.safeString("message")
                     resList.add(SkillUpdateInfo(`package` = pkg, scope = sc, state = st, currentVersion = cur, latestVersion = lat, message = msg))
                 }
                 resList
@@ -4382,7 +4292,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                     Result.success(true)
                 } else {
                     val errMsg = runCatching {
-                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                        JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error")
                     }.getOrNull()?.takeIf { it.isNotBlank() } ?: "更新技能失败 (${resp.code})"
                     Result.failure(IOException(errMsg))
                 }
@@ -4680,7 +4590,7 @@ data class CatalogPreset(
                 .build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: ""
-                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                 if (json == null) {
                     return@withContext Result.success(
                         ModelTestResult(
@@ -4690,11 +4600,14 @@ data class CatalogPreset(
                         )
                     )
                 }
-                val ok = json.get("ok")?.asBoolean ?: false
-                val latencyMs = json.get("latencyMs")?.asLong
-                val status = json.get("status")?.asInt ?: resp.code
-                val responseText = json.get("responseText")?.asString
-                val error = json.get("error")?.asString
+                val ok = json.get("ok")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asBoolean }.getOrNull() } ?: false
+                val latencyMs = json.get("latencyMs")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asLong }.getOrNull() }
+                val status = json.get("status")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asInt }.getOrNull() } ?: resp.code
+                val responseText = json.get("responseText")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                val error = json.get("error")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
                 Result.success(
                     ModelTestResult(
                         ok = ok,
@@ -4731,22 +4644,32 @@ data class CatalogPreset(
                     return@withContext Result.failure(IOException("HTTP ${resp.code}"))
                 }
                 val bodyStr = resp.body?.string() ?: ""
-                val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.success(null)
-                val rec = json.getAsJsonObject("recommendation") ?: return@withContext Result.success(null)
-                val preset = rec.getAsJsonObject("preset") ?: return@withContext Result.success(null)
+                val rec = json.get("recommendation")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: return@withContext Result.success(null)
+                val preset = rec.get("preset")?.takeIf { it.isJsonObject }?.asJsonObject
+                    ?: return@withContext Result.success(null)
 
-                val name = preset.get("name")?.asString
-                val reasoning = preset.get("reasoning")?.asBoolean
-                val inputArr = preset.getAsJsonArray("input")?.mapNotNull { if (it.isJsonPrimitive) it.asString else null }
-                val contextWindow = preset.get("contextWindow")?.asLong
-                val maxTokens = preset.get("maxTokens")?.asLong
+                val name = preset.get("name")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString
+                val reasoning = preset.get("reasoning")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asBoolean }.getOrNull() }
+                val inputArr = preset.get("input")?.takeIf { it.isJsonArray }?.asJsonArray
+                    ?.mapNotNull { if (!it.isJsonNull && it.isJsonPrimitive) it.asString else null }
+                val contextWindow = preset.get("contextWindow")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asLong }.getOrNull() }
+                val maxTokens = preset.get("maxTokens")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asLong }.getOrNull() }
 
-                val cost = preset.getAsJsonObject("cost")
-                val costInput = cost?.get("input")?.asDouble
-                val costOutput = cost?.get("output")?.asDouble
-                val costCacheRead = cost?.get("cacheRead")?.asDouble
-                val costCacheWrite = cost?.get("cacheWrite")?.asDouble
+                val cost = preset.get("cost")?.takeIf { it.isJsonObject }?.asJsonObject
+                val costInput = cost?.get("input")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asDouble }.getOrNull() }
+                val costOutput = cost?.get("output")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asDouble }.getOrNull() }
+                val costCacheRead = cost?.get("cacheRead")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asDouble }.getOrNull() }
+                val costCacheWrite = cost?.get("cacheWrite")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }
+                    ?.let { runCatching { it.asDouble }.getOrNull() }
 
                 Result.success(
                     CatalogPreset(
@@ -4787,7 +4710,8 @@ data class CatalogPreset(
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         try {
-            val configObj = JsonParser.parseString(rawJson).asJsonObject
+            val configObj = JsonParser.parseString(rawJson).asSafeObject()
+                ?: return@withContext Result.failure(IllegalArgumentException("models.json 必须是 JSON 对象"))
             sanitizeAndHealModelsConfig(configObj)
             val saved = putModelsConfigToServer(baseUrl, configObj)
             if (saved.isFailure) {
@@ -4813,16 +4737,14 @@ data class CatalogPreset(
             val fetched = fetchServerModelsConfigWithEnvelope(baseUrl, autoPushHeal = false)
                 ?: return@withContext Result.failure(IOException("读取网关 models.json 失败，删除未生效"))
             val rootConfig = fetched.config
-            if (rootConfig.has("providers") && rootConfig.get("providers").isJsonObject) {
-                val providersObj = rootConfig.getAsJsonObject("providers")
+            rootConfig.safeObject("providers")?.let { providersObj ->
                 val pKey = providersObj.keySet().firstOrNull { it.equals(providerName.trim(), ignoreCase = true) }
-                if (pKey != null && providersObj.get(pKey).isJsonObject) {
-                    val pObj = providersObj.getAsJsonObject(pKey)
-                    if (pObj.has("models") && pObj.get("models").isJsonArray) {
-                        val arr = pObj.getAsJsonArray("models")
+                val pObj = pKey?.let { providersObj.safeObject(it) }
+                if (pKey != null && pObj != null) {
+                    pObj.safeArray("models")?.let { arr ->
                         val newArr = JsonArray()
                         for (item in arr) {
-                            if (item.isJsonObject && item.asJsonObject.get("id")?.asString.equals(modelId.trim(), ignoreCase = true)) {
+                            if (item.isJsonObject && item.asJsonObject.safeString("id").equals(modelId.trim(), ignoreCase = true)) {
                                 continue
                             }
                             newArr.add(item)
@@ -4833,8 +4755,7 @@ data class CatalogPreset(
                             pObj.remove("models")
                         }
                     }
-                    if (pObj.has("modelOverrides") && pObj.get("modelOverrides").isJsonObject) {
-                        val ovObj = pObj.getAsJsonObject("modelOverrides")
+                    pObj.safeObject("modelOverrides")?.let { ovObj ->
                         val mKey = ovObj.keySet().firstOrNull { it.equals(modelId.trim(), ignoreCase = true) }
                         if (mKey != null) ovObj.remove(mKey)
                         if (ovObj.size() == 0) pObj.remove("modelOverrides")
@@ -4914,7 +4835,7 @@ data class CatalogPreset(
                     return@withContext Result.failure(IOException("读取工具设置失败 (HTTP ${resp.code})"))
                 }
                 val json = runCatching {
-                    JsonParser.parseString(resp.body?.string() ?: "{}").asJsonObject
+                    JsonParser.parseString(resp.body?.string() ?: "{}").asSafeObject()
                 }.getOrNull() ?: return@withContext Result.failure(IOException("读取工具设置失败：响应不是 JSON"))
                 Result.success(parseToolSettings(json))
             }
@@ -4937,13 +4858,13 @@ data class CatalogPreset(
                 val raw = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
                     // pi-web 的拒绝带 {error, reason}，原样透出原因，不编造成功
-                    val json = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
-                    val msg = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                    val json = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull()
+                    val msg = json?.safeString("error")
                     return@withContext Result.failure(
                         IOException(msg ?: "保存工具设置失败 (HTTP ${resp.code})")
                     )
                 }
-                val json = runCatching { JsonParser.parseString(raw).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull()
                     ?: return@withContext Result.failure(IOException("保存工具设置失败：响应不是 JSON"))
                 Result.success(parseToolSettings(json))
             }
@@ -4975,49 +4896,46 @@ data class CatalogPreset(
                     return@withContext Result.failure(IOException("无法浏览远程目录 (${resp.code})"))
                 }
                 val str = resp.body?.string() ?: "{}"
-                val json = JsonParser.parseString(str).asJsonObject
-                val currentPath = json.get("current")?.takeIf { !it.isJsonNull }?.asString
-                    ?: json.get("path")?.takeIf { !it.isJsonNull }?.asString
-                    ?: json.get("dir")?.takeIf { !it.isJsonNull }?.asString
+                val json = JsonParser.parseString(str).asSafeObject()
+                    ?: return@withContext Result.failure(IOException("目录响应格式异常"))
+                val currentPath = json.safeString("current")
+                    ?: json.safeString("path")
+                    ?: json.safeString("dir")
                     ?: path
-                val parentPath = json.get("parentPath")?.takeIf { !it.isJsonNull }?.asString
-                    ?: json.get("parent")?.takeIf { !it.isJsonNull }?.asString
+                val parentPath = json.safeString("parentPath")
+                    ?: json.safeString("parent")
 
                 val dirs = mutableListOf<RemoteDirEntry>()
                 val arrKeys = listOf("directories", "dirs", "drives", "entries", "children", "subdirs", "items")
                 for (k in arrKeys) {
-                    if (json.has(k) && json.get(k).isJsonArray) {
-                        val arr = json.getAsJsonArray(k)
-                        for (el in arr) {
-                            if (el.isJsonObject) {
-                                val o = el.asJsonObject
-                                val isDir = if (o.has("isDirectory") && !o.get("isDirectory").isJsonNull) {
-                                    o.get("isDirectory").asBoolean
-                                } else true
-                                if (!isDir) continue
-                                val dName = o.get("name")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                                val dPath = o.get("path")?.takeIf { !it.isJsonNull }?.asString
-                                    ?: if (currentPath.isNotBlank() && dName.isNotBlank()) {
-                                        val sep = if (currentPath.contains('\\')) "\\" else "/"
-                                        currentPath.trimEnd('/', '\\') + sep + dName
-                                    } else dName
-                                if (dName.isNotBlank()) {
-                                    dirs.add(RemoteDirEntry(name = dName, path = dPath))
-                                }
-                            } else if (el.isJsonPrimitive) {
-                                val dName = el.asString
-                                val sep = if (currentPath.contains('\\')) "\\" else "/"
-                                val dPath = if (dName.contains('/') || dName.contains('\\')) {
-                                    dName
-                                } else if (currentPath.isNotBlank()) {
+                    val arr = json.safeArray(k) ?: continue
+                    for (el in arr) {
+                        if (el.isJsonObject) {
+                            val o = el.asJsonObject
+                            val isDir = o.safeBoolean("isDirectory") ?: true
+                            if (!isDir) continue
+                            val dName = o.safeString("name") ?: ""
+                            val dPath = o.safeString("path")
+                                ?: if (currentPath.isNotBlank() && dName.isNotBlank()) {
+                                    val sep = if (currentPath.contains('\\')) "\\" else "/"
                                     currentPath.trimEnd('/', '\\') + sep + dName
                                 } else dName
-                                val shortName = dName.substringAfterLast('\\').substringAfterLast('/').ifBlank { dName }
-                                dirs.add(RemoteDirEntry(name = shortName, path = dPath))
+                            if (dName.isNotBlank()) {
+                                dirs.add(RemoteDirEntry(name = dName, path = dPath))
                             }
+                        } else if (el.isJsonPrimitive) {
+                            val dName = el.asString
+                            val sep = if (currentPath.contains('\\')) "\\" else "/"
+                            val dPath = if (dName.contains('/') || dName.contains('\\')) {
+                                dName
+                            } else if (currentPath.isNotBlank()) {
+                                currentPath.trimEnd('/', '\\') + sep + dName
+                            } else dName
+                            val shortName = dName.substringAfterLast('\\').substringAfterLast('/').ifBlank { dName }
+                            dirs.add(RemoteDirEntry(name = shortName, path = dPath))
                         }
-                        if (dirs.isNotEmpty()) break
                     }
+                    if (dirs.isNotEmpty()) break
                 }
                 Result.success(RemoteBrowseData(currentPath = currentPath, parentPath = parentPath, directories = dirs))
             }
@@ -5043,13 +4961,13 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    val err = runCatching { JsonParser.parseString(body).asJsonObject.get("error")?.asString }.getOrNull()
+                    val err = runCatching { JsonParser.parseString(body).asSafeObject()?.safeString("error") }.getOrNull()
                         ?: "HTTP ${resp.code}"
                     return@withContext Result.failure(IOException(err))
                 }
-                val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
-                val resolved = obj?.get("cwd")?.takeIf { !it.isJsonNull }?.asString
-                    ?: obj?.get("path")?.takeIf { !it.isJsonNull }?.asString
+                val obj = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
+                val resolved = obj?.safeString("cwd")
+                    ?: obj?.safeString("path")
                     ?: clean
                 Result.success(resolved)
             }
@@ -5128,9 +5046,9 @@ data class CatalogPreset(
                 client.newCall(valReq).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val body = resp.body?.string() ?: "{}"
-                        val obj = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
-                        val resolved = obj?.get("cwd")?.takeIf { !it.isJsonNull }?.asString
-                            ?: obj?.get("path")?.takeIf { !it.isJsonNull }?.asString
+                        val obj = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
+                        val resolved = obj?.safeString("cwd")
+                            ?: obj?.safeString("path")
                         if (!resolved.isNullOrBlank()) {
                             validatedPath = resolved
                             prefs.addCustomWorkspace(validatedPath)
@@ -5179,15 +5097,15 @@ data class CatalogPreset(
                 .build()
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string() ?: "{}"
-                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                 if (resp.isSuccessful) {
-                    val sid = json?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString
-                        ?: json?.get("id")?.takeIf { !it.isJsonNull }?.asString
+                    val sid = json?.safeString("sessionId")
+                        ?: json?.safeString("id")
                     if (!sid.isNullOrBlank()) {
                         return@withContext Result.success(sid)
                     }
                 }
-                val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                val err = json?.safeString("error")
                     ?: "创建新任务失败 (${resp.code})"
                 Result.failure(IOException(err))
             }
@@ -5212,24 +5130,25 @@ data class CatalogPreset(
                 payload["toolNames"] = toolNames
             }
             val body = gson.toJson(payload).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            val encodedSessionId = FileListParsing.encodePathSegment(sessionId)
+            val req = Request.Builder().url("$baseUrl/api/agent/$encodedSessionId").post(body).build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
                     // 这三种拒绝都不是故障（运行中 / 子代理固定 / 只读拦截），翻译成人话，
                     // 别把 500 原文直接糊到用户脸上。
                     val serverMsg = runCatching {
-                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                        JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error")
                     }.getOrNull() ?: ""
                     val friendly = ToolErrorMessages.explain(serverMsg)
                         ?: serverMsg.takeIf { it.isNotBlank() }
                         ?: "权限切换失败 (HTTP ${resp.code})"
                     Result.failure(IOException(friendly))
                 } else {
-                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
-                    val dataObj = json?.getAsJsonObject("data")
-                    val newSid = dataObj?.get("sessionId")?.takeIf { !it.isJsonNull }?.asString ?: sessionId
-                    val recreated = dataObj?.get("recreated")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
+                    val dataObj = json?.safeObject("data")
+                    val newSid = dataObj?.safeString("sessionId") ?: sessionId
+                    val recreated = dataObj?.safeBoolean("recreated") ?: false
                     Result.success(SetToolsResult(sessionId = newSid, recreated = recreated))
                 }
             }
@@ -5249,12 +5168,15 @@ data class CatalogPreset(
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("没有活跃会话"))
         try {
             val body = gson.toJson(mapOf("type" to "get_tools")).toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/agent/$sessionId").post(body).build()
+            val req = Request.Builder()
+                .url("$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}")
+                .post(body)
+                .build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
                     val msg = runCatching {
-                        JsonParser.parseString(bodyStr).asJsonObject.get("error")?.asString
+                        JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error")
                     }.getOrNull()
                     return@withContext Result.failure(
                         IOException(msg?.takeIf { it.isNotBlank() } ?: "读取工具定义失败 (HTTP ${resp.code})")
@@ -5327,20 +5249,15 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: ""
                 if (resp.isSuccessful) {
-                    val root = try {
-                        com.google.gson.JsonParser.parseString(bodyStr).asJsonObject
-                    } catch (_: Exception) {
-                        JsonObject()
-                    }
-                    val resultObj = if (root.has("result") && root.get("result").isJsonObject) {
-                        root.getAsJsonObject("result")
-                    } else root
+                    val root = runCatching {
+                        JsonParser.parseString(bodyStr).asSafeObject()
+                    }.getOrNull() ?: JsonObject()
+                    val resultObj = root.safeObject("result") ?: root
                     val toolNames = mutableListOf<String>()
-                    if (resultObj.has("tools") && resultObj.get("tools").isJsonArray) {
-                        val arr = resultObj.getAsJsonArray("tools")
+                    resultObj.safeArray("tools")?.let { arr ->
                         for (item in arr) {
                             if (item.isJsonObject) {
-                                val tName = item.asJsonObject.get("name")?.asString
+                                val tName = item.asJsonObject.safeString("name")
                                 if (!tName.isNullOrBlank()) toolNames.add(tName)
                             } else if (item.isJsonPrimitive) {
                                 toolNames.add(item.asString)
@@ -5373,7 +5290,10 @@ data class CatalogPreset(
             // hasJsonContentType()，不满足直接回 415（body 本身并不读）。
             // 之前这里发的是空 body + 无 Content-Type，于是稳定吃 415。
             val body = "{}".toRequestBody(jsonMediaType)
-            val req = Request.Builder().url("$baseUrl/api/sessions/$sessionId/fork").post(body).build()
+            val req = Request.Builder()
+                .url("$baseUrl/api/sessions/${FileListParsing.encodePathSegment(sessionId)}/fork")
+                .post(body)
+                .build()
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
@@ -5411,19 +5331,19 @@ data class CatalogPreset(
                     addProperty("targetId", targetEntryId)
                 }
                 val req = Request.Builder()
-                    .url("$baseUrl/api/agent/$sessionId")
+                    .url("$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}")
                     .post(gson.toJson(payload).toRequestBody(jsonMediaType))
                     .build()
                 client.newCall(req).execute().use { resp ->
                     val bodyStr = resp.body?.string() ?: "{}"
-                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                     if (!resp.isSuccessful || json?.get("error")?.takeIf { !it.isJsonNull } != null) {
-                        val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                        val err = json?.safeString("error")
                             ?: "HTTP ${resp.code}"
                         return@withContext Result.failure(IOException(err))
                     }
-                    val data = json?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val cancelled = data?.get("cancelled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                    val data = json?.safeObject("data")
+                    val cancelled = data?.safeBoolean("cancelled") ?: false
                     if (cancelled) Result.failure(IOException("服务端取消了本次分支切换"))
                     else Result.success(true)
                 }
@@ -5451,20 +5371,20 @@ data class CatalogPreset(
                     addProperty("entryId", targetEntryId)
                 }
                 val req = Request.Builder()
-                    .url("$baseUrl/api/agent/$sessionId")
+                    .url("$baseUrl/api/agent/${FileListParsing.encodePathSegment(sessionId)}")
                     .post(gson.toJson(payload).toRequestBody(jsonMediaType))
                     .build()
                 client.newCall(req).execute().use { resp ->
                     val bodyStr = resp.body?.string() ?: "{}"
-                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
+                    val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
                     if (!resp.isSuccessful || json?.get("error")?.takeIf { !it.isJsonNull } != null) {
-                        val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                        val err = json?.safeString("error")
                             ?: "HTTP ${resp.code}"
                         return@withContext Result.failure(IOException(err))
                     }
-                    val data = json?.get("data")?.takeIf { it.isJsonObject }?.asJsonObject
-                    val cancelled = data?.get("cancelled")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                    val newSid = data?.get("newSessionId")?.takeIf { !it.isJsonNull }?.asString
+                    val data = json?.safeObject("data")
+                    val cancelled = data?.safeBoolean("cancelled") ?: false
+                    val newSid = data?.safeString("newSessionId")
                     if (cancelled) Result.failure(IOException("服务端取消了本次分叉"))
                     else if (newSid.isNullOrBlank()) Result.failure(IOException("未返回有效的分叉会话ID"))
                     else Result.success(newSid)
@@ -5480,19 +5400,19 @@ data class CatalogPreset(
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
         try {
             val req = Request.Builder()
-                .url("${baseUrl}/api/sessions/${sessionId}/auto-name")
+                .url("${baseUrl}/api/sessions/${FileListParsing.encodePathSegment(sessionId)}/auto-name")
                 .post("{}".toRequestBody(jsonMediaType))
                 .build()
             client.newCall(req).execute().use { resp ->
                 val body = resp.body?.string() ?: "{}"
-                val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                val json = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                 if (resp.isSuccessful) {
-                    val title = json?.get("title")?.takeIf { !it.isJsonNull }?.asString
+                    val title = json?.safeString("title")
                     if (!title.isNullOrBlank()) {
                         return@withContext Result.success(title)
                     }
                 }
-                val errorMsg = json?.get("error")?.takeIf { !it.isJsonNull }?.asString
+                val errorMsg = json?.safeString("error")
                     ?: "大模型生成标题响应异常 (${resp.code})"
                 Result.failure(IOException(errorMsg))
             }
@@ -5575,20 +5495,21 @@ data class CatalogPreset(
                 override fun onResponse(call: Call, response: Response) {
                     val result = response.use { resp ->
                         val body = resp.body?.string() ?: ""
-                        val json = runCatching { JsonParser.parseString(body).asJsonObject }.getOrNull()
+                        val json = runCatching { JsonParser.parseString(body).asSafeObject() }.getOrNull()
                         if (resp.isSuccessful && json != null) {
-                            val text = json.get("enhancedText")?.takeIf { !it.isJsonNull }?.asString
+                            val text = json.safeString("enhancedText")
                             if (!text.isNullOrBlank()) {
+                                val modelObj = json.safeObject("model")
                                 Result.success(
                                     PromptEnhancementResult(
-                                        requestId = json.get("requestId")?.takeIf { !it.isJsonNull }?.asString ?: requestId,
-                                        draftRevision = json.get("draftRevision")?.takeIf { !it.isJsonNull }?.asLong ?: draftRevision,
-                                        branchRevision = json.get("branchRevision")?.takeIf { !it.isJsonNull }?.asLong ?: branchRevision,
+                                        requestId = json.safeString("requestId") ?: requestId,
+                                        draftRevision = json.safeLong("draftRevision") ?: draftRevision,
+                                        branchRevision = json.safeLong("branchRevision") ?: branchRevision,
                                         enhancedText = text,
-                                        changed = json.get("changed")?.takeIf { !it.isJsonNull }?.asBoolean ?: true,
-                                        provider = json.getAsJsonObject("model")?.get("provider")?.takeIf { !it.isJsonNull }?.asString ?: provider,
-                                        modelId = json.getAsJsonObject("model")?.get("modelId")?.takeIf { !it.isJsonNull }?.asString ?: modelId,
-                                        contextUsed = json.get("contextUsed")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
+                                        changed = json.safeBoolean("changed") ?: true,
+                                        provider = modelObj?.safeString("provider") ?: provider,
+                                        modelId = modelObj?.safeString("modelId") ?: modelId,
+                                        contextUsed = json.safeBoolean("contextUsed") ?: false
                                     )
                                 )
                             } else {
@@ -5598,9 +5519,9 @@ data class CatalogPreset(
                             // 499（网关侧判定「客户端已断开」）通常是因为本地 callTimeout 先到、
                             // 或用户切走而连接被关掉；对用户而言就是「已取消」，不该出现裸状态码。
                             val statusCode = resp.code
-                            val code = json?.get("code")?.takeIf { !it.isJsonNull }?.asString
+                            val code = json?.safeString("code")
                                 ?: if (statusCode == 499) "CANCELLED" else "HTTP_$statusCode"
-                            val message = json?.get("message")?.takeIf { !it.isJsonNull }?.asString
+                            val message = json?.safeString("message")
                                 ?: if (statusCode == 499) "增强已取消" else "增强失败 (HTTP $statusCode)"
                             Result.failure(PromptEnhancementException(code, message))
                         }
@@ -5647,22 +5568,22 @@ data class CatalogPreset(
                 client.newCall(req).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val body = resp.body?.string() ?: "{}"
-                        val json = JsonParser.parseString(body).asJsonObject
+                        val json = JsonParser.parseString(body).asSafeObject() ?: JsonObject()
                         val list = mutableListOf<DiscoveredModelItem>()
-                        if (json.has("models") && json.get("models").isJsonArray) {
-                            for (item in json.getAsJsonArray("models")) {
-                                if (!item.isJsonObject) continue
-                                val obj = item.asJsonObject
-                                val id = obj.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                                val name = obj.get("name")?.takeIf { !it.isJsonNull }?.asString ?: id
+                        json.safeArray("models")?.let { arr ->
+                            for (item in arr) {
+                                val obj = item.asSafeObject() ?: continue
+                                val id = obj.safeString("id") ?: ""
+                                val name = obj.safeString("name") ?: id
                                 if (id.isNotBlank()) {
                                     list.add(DiscoveredModelItem(id = id, name = name))
                                 }
                             }
                         }
-                        if (list.isNotEmpty()) {
-                            val ep = json.get("endpoint")?.takeIf { !it.isJsonNull }?.asString ?: baseUrl
-                            return@withContext Result.success(DiscoverModelsResult(models = list, endpoint = ep))
+                        val deduped = list.filter { it.id.isNotBlank() }.distinctBy { it.id }
+                        if (deduped.isNotEmpty()) {
+                            val ep = json.safeString("endpoint") ?: baseUrl
+                            return@withContext Result.success(DiscoverModelsResult(models = deduped, endpoint = ep))
                         }
                     }
                 }
@@ -5690,19 +5611,19 @@ data class CatalogPreset(
                 directClient.newCall(reqBuilder.build()).execute().use { resp ->
                     if (resp.isSuccessful) {
                         val body = resp.body?.string() ?: "{}"
-                        val json = JsonParser.parseString(body).asJsonObject
+                        val json = JsonParser.parseString(body).asSafeObject() ?: JsonObject()
                         val list = mutableListOf<DiscoveredModelItem>()
-                        if (json.has("data") && json.get("data").isJsonArray) {
-                            for (item in json.getAsJsonArray("data")) {
-                                if (!item.isJsonObject) continue
-                                val id = item.asJsonObject.get("id")?.takeIf { !it.isJsonNull }?.asString ?: ""
+                        json.safeArray("data")?.let { arr ->
+                            for (item in arr) {
+                                val id = item.asSafeObject()?.safeString("id") ?: ""
                                 if (id.isNotBlank()) {
                                     list.add(DiscoveredModelItem(id = id, name = id))
                                 }
                             }
                         }
-                        if (list.isNotEmpty()) {
-                            return@withContext Result.success(DiscoverModelsResult(models = list, endpoint = targetUrl))
+                        val deduped = list.filter { it.id.isNotBlank() }.distinctBy { it.id }
+                        if (deduped.isNotEmpty()) {
+                            return@withContext Result.success(DiscoverModelsResult(models = deduped, endpoint = targetUrl))
                         }
                     } else {
                         return@withContext Result.failure(Exception("上游服务返回 HTTP ${resp.code}"))
@@ -5734,7 +5655,7 @@ data class CatalogPreset(
                     Result.success(true)
                 } else {
                     val errBody = resp.body?.string() ?: ""
-                    val msg = runCatching { JsonParser.parseString(errBody).asJsonObject.get("error").asString }.getOrNull() ?: "HTTP ${resp.code}"
+                    val msg = runCatching { JsonParser.parseString(errBody).asSafeObject()?.safeString("error") }.getOrNull() ?: "HTTP ${resp.code}"
                     Result.failure(Exception(msg))
                 }
             }
@@ -5759,7 +5680,7 @@ data class CatalogPreset(
                     Result.success(true)
                 } else {
                     val errBody = resp.body?.string() ?: ""
-                    val msg = runCatching { JsonParser.parseString(errBody).asJsonObject.get("error").asString }.getOrNull() ?: "HTTP ${resp.code}"
+                    val msg = runCatching { JsonParser.parseString(errBody).asSafeObject()?.safeString("error") }.getOrNull() ?: "HTTP ${resp.code}"
                     Result.failure(Exception(msg))
                 }
             }
@@ -5780,13 +5701,13 @@ data class CatalogPreset(
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
         try {
             val req = Request.Builder()
-                .url("$baseUrl/api/sessions/$sessionId/export")
+                .url("$baseUrl/api/sessions/${FileListParsing.encodePathSegment(sessionId)}/export")
                 .get()
                 .build()
             fileClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) {
                     val rawBody = resp.body?.string()?.take(300) ?: ""
-                    val err = runCatching { JsonParser.parseString(rawBody).asJsonObject.get("error").asString }.getOrNull()
+                    val err = runCatching { JsonParser.parseString(rawBody).asSafeObject()?.safeString("error") }.getOrNull()
                         ?: rawBody.ifBlank { "HTTP ${resp.code}" }
                     return@withContext Result.failure(IOException("导出失败 (${resp.code})：$err"))
                 }
@@ -5808,19 +5729,22 @@ data class CatalogPreset(
     /**
      * 监听远端文件变更事件（GET /api/files/[...path]?type=watch 的 SSE 长连接）。
      */
-    fun watchFileChanges(absPath: String): Flow<Unit> = callbackFlow {
+    fun watchFileChanges(absPath: String, sessionId: String? = null): Flow<Unit> = callbackFlow {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank() || absPath.isBlank()) {
             close()
             return@callbackFlow
         }
-        val encodedPath = absPath.replace('\\', '/').split('/').filter { it.isNotBlank() }
-            .joinToString("/") { URLEncoder.encode(it, "UTF-8") }
-        val url = "$baseUrl/api/files/$encodedPath?type=watch"
+        val url = fileApiUrl(absPath, "watch", sessionId)
+        if (url.isBlank()) {
+            close()
+            return@callbackFlow
+        }
         val req = Request.Builder()
             .url(url)
             .header("Accept", "text/event-stream")
             .header("Cache-Control", "no-cache")
+            .header("Accept-Encoding", "identity")
             .build()
 
         val call = sseStreamClient.newCall(req)
@@ -5881,11 +5805,12 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    val err = runCatching { JsonParser.parseString(bodyStr).asJsonObject.get("error").asString }.getOrNull()
+                    val err = runCatching { JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error") }.getOrNull()
                         ?: "HTTP ${resp.code}"
                     Result.failure(IOException(err))
                 } else {
-                    val json = JsonParser.parseString(bodyStr).asJsonObject
+                    val json = JsonParser.parseString(bodyStr).asSafeObject()
+                        ?: return@withContext Result.failure(IOException("worktrees 响应格式异常"))
                     Result.success(WorktreeResponseParsing.parse(json))
                 }
             }
@@ -5913,13 +5838,14 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    val err = runCatching { JsonParser.parseString(bodyStr).asJsonObject.get("error").asString }.getOrNull()
+                    val err = runCatching { JsonParser.parseString(bodyStr).asSafeObject()?.safeString("error") }.getOrNull()
                         ?: "HTTP ${resp.code}"
                     Result.failure(IOException(err))
                 } else {
-                    val json = JsonParser.parseString(bodyStr).asJsonObject
-                    val path = json.get("path")?.takeIf { !it.isJsonNull }?.asString ?: ""
-                    val b = json.get("branch")?.takeIf { !it.isJsonNull }?.asString ?: branch
+                    val json = JsonParser.parseString(bodyStr).asSafeObject()
+                        ?: return@withContext Result.failure(IOException("worktree 响应格式异常"))
+                    val path = json.safeString("path") ?: ""
+                    val b = json.safeString("branch") ?: branch
                     Result.success(WorktreeItem(path = path, branch = b, isCurrent = true))
                 }
             }
@@ -5947,9 +5873,9 @@ data class CatalogPreset(
             client.newCall(req).execute().use { resp ->
                 val bodyStr = resp.body?.string() ?: "{}"
                 if (!resp.isSuccessful) {
-                    val json = runCatching { JsonParser.parseString(bodyStr).asJsonObject }.getOrNull()
-                    val dirty = json?.get("dirty")?.takeIf { !it.isJsonNull }?.asBoolean ?: false
-                    val err = json?.get("error")?.takeIf { !it.isJsonNull }?.asString ?: "HTTP ${resp.code}"
+                    val json = runCatching { JsonParser.parseString(bodyStr).asSafeObject() }.getOrNull()
+                    val dirty = json?.safeBoolean("dirty") ?: false
+                    val err = json?.safeString("error") ?: "HTTP ${resp.code}"
                     if (dirty) {
                         Result.failure(IOException("WORKTREE_DIRTY:$err"))
                     } else {

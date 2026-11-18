@@ -70,7 +70,8 @@ object FileDownloader {
 
         while (true) {
             val bytes = input.read(buffer)
-            if (bytes <= 0) break
+            if (bytes < 0) break
+            if (bytes == 0) continue
             output.write(buffer, 0, bytes)
             bytesCopied += bytes
             if (totalLength > 0 && onProgress != null) {
@@ -175,6 +176,7 @@ object FileDownloader {
                 }
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Result.failure(e)
         }
     }
@@ -216,6 +218,7 @@ object FileDownloader {
                 Result.success(Unit)
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
             Result.failure(e)
         }
     }

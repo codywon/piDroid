@@ -11,6 +11,7 @@ const {
   isSafeNameSegment,
   resolveSkillDocument,
   resolveMediaReadPath,
+  autoHealLocalModelsJson,
 } = await import("../gateway.js");
 
 /** 主目录之外的合成路径：用来断言「不在任何白名单根目录内」。 */
@@ -114,6 +115,53 @@ test("media paths resolve relative to the session cwd", () => {
 test("media outside home and cwd is refused", () => {
   assert.equal(resolveMediaReadPath(outsideHome("shot.png"), ""), null);
   assert.equal(resolveMediaReadPath(outsideHome("shot.png"), outsideHome()), null);
+});
+
+test("media inside homedir is refused when cwd is specified outside it, and root cwd is rejected", () => {
+  const cwd = tempDir("pidroid-media-cwd-");
+  const homeDirTemp = fs.mkdtempSync(path.join(os.homedir(), ".pidroid-media-home-"));
+  try {
+    const homeShot = path.join(homeDirTemp, "home-secret.png");
+    fs.writeFileSync(homeShot, "png");
+    // 未传 cwd 时回退主目录，可访问
+    assert.equal(resolveMediaReadPath(homeShot, "")?.contentType, "image/png");
+    // 指定了 cwd 时，不得越界回退读取主目录内但 cwd 外的文件
+    assert.equal(resolveMediaReadPath(homeShot, cwd), null);
+
+    // 根目录 cwd（C:\ 或 /）必须拒绝，禁止借 cwd 放开全盘读取
+    const fsRoot = path.parse(cwd).root;
+    const cwdShot = path.join(cwd, "shot.png");
+    fs.writeFileSync(cwdShot, "png");
+    assert.equal(resolveMediaReadPath(cwdShot, fsRoot), null);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+    fs.rmSync(homeDirTemp, { recursive: true, force: true });
+  }
+});
+
+test("autoHealLocalModelsJson rewrites config atomically without leaving .tmp", () => {
+  const dir = tempDir("pidroid-heal-");
+  try {
+    const file = path.join(dir, "models.json");
+    const original = JSON.stringify({
+      config: { providers: { custom: { baseUrl: "https://x/v1" } } },
+      providers: {
+        builtin: { api: "openai-completions", models: [{ id: "gpt-4o", name: "GPT-4o", maxTokens: 4096 }] },
+      },
+    });
+    fs.writeFileSync(file, original, "utf8");
+    autoHealLocalModelsJson(file);
+
+    assert.equal(fs.existsSync(file + ".tmp"), false, "temp file must be renamed away");
+    assert.equal(fs.readFileSync(file + ".bak", "utf8"), original);
+    const healed = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(healed.config, undefined);
+    assert.equal(healed.providers.custom.baseUrl, "https://x/v1");
+    assert.equal(healed.providers.builtin.models, undefined);
+    assert.equal(healed.providers.builtin.modelOverrides["gpt-4o"].maxTokens, 4096);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── HTTP 层：确认接口真的把守卫接上了（不只测试纯函数）──────────────���─────────

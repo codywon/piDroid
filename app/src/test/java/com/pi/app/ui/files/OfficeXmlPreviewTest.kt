@@ -116,4 +116,60 @@ class OfficeXmlPreviewTest {
         // 未知实体原样保留，不做破坏性替换
         assertEquals("&unknown;", OfficeXmlPreview.unescapeXml("&unknown;"))
     }
+
+    @Test
+    fun `attribute enforces xml whitespace word boundaries and allows empty values`() {
+        val tag = """<c ht="20" r="B2" ext="foo" t="s">"""
+        assertEquals("s", OfficeXmlPreview.attribute(tag, "t"))
+        assertEquals("B2", OfficeXmlPreview.attribute(tag, "r"))
+        assertNull(OfficeXmlPreview.attribute(tag, "x"))
+
+        assertEquals("", OfficeXmlPreview.attribute("""<c r="" t=''>""", "r"))
+        assertEquals("", OfficeXmlPreview.attribute("""<c r="" t=''>""", "t"))
+        assertEquals("s", OfficeXmlPreview.attribute("""<c msg='t="fake"' t="s">""", "t"))
+        assertEquals("ok", OfficeXmlPreview.attribute("""t="no_ws" <c t="ok">""", "t"))
+    }
+
+    @Test
+    fun `extract xlsx ignores suffix attribute collisions and preserves empty sheet name`() {
+        val bytes = zipOf(
+            mapOf(
+                "xl/workbook.xml" to
+                    """<?xml version="1.0"?><workbook><sheets><sheet name="" sheetId="1"/></sheets></workbook>""",
+                "xl/sharedStrings.xml" to
+                    """<?xml version="1.0"?><sst><si><t>命中共享串</t></si></sst>""",
+                "xl/worksheets/sheet1.xml" to
+                    """<?xml version="1.0"?><worksheet><sheetData>
+                       <row r="1"><c ht="20" r="B1" ext="foo" t="s"><v>0</v></c></row>
+                       </sheetData></worksheet>"""
+            )
+        )
+        val preview = OfficeXmlPreview.extract(bytes, "edge.xlsx") as OfficePreview.Sheet
+        assertEquals("", preview.sheetName)
+        assertEquals(listOf(listOf("", "命中共享串")), preview.rows)
+    }
+
+    @Test
+    fun `extract returns null safely when single entry or total unpacked bytes exceed budget`() {
+        // 单条目 > 8MB
+        val bigPayload = "a".repeat(8 * 1024 * 1024 + 256)
+        val overEntryZip = zipOf(
+            mapOf(
+                "xl/worksheets/sheet1.xml" to
+                    """<worksheet><sheetData><row r="1"><c r="A1"><v>$bigPayload</v></c></row></sheetData></worksheet>"""
+            )
+        )
+        assertNull(OfficeXmlPreview.extract(overEntryZip, "over_entry.xlsx"))
+
+        // 单条目均 < 8MB，但合计 > 16MB
+        val chunk6Mb = "b".repeat(6 * 1024 * 1024)
+        val overTotalZip = zipOf(
+            mapOf(
+                "xl/sharedStrings.xml" to "<sst><si><t>$chunk6Mb</t></si></sst>",
+                "xl/worksheets/sheet1.xml" to "<worksheet><sheetData><row r=\"1\"><c r=\"A1\"><v>$chunk6Mb</v></c></row></sheetData></worksheet>",
+                "xl/worksheets/sheet2.xml" to "<worksheet><sheetData><row r=\"1\"><c r=\"A1\"><v>$chunk6Mb</v></c></row></sheetData></worksheet>"
+            )
+        )
+        assertNull(OfficeXmlPreview.extract(overTotalZip, "over_total.xlsx"))
+    }
 }

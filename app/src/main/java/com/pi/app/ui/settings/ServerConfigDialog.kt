@@ -104,8 +104,8 @@ fun ServerConfigDialog(
         },
         confirmButton = {
             Button(
-                onClick = { onConfirm(url.trim(), token.trim(), name.trim()) },
-                enabled = url.isNotBlank() && token.isNotBlank(),
+                onClick = { onConfirm(url.trim().trimEnd('/'), token.trim(), name.trim()) },
+                enabled = url.trim().trimEnd('/').isNotBlank() && token.isNotBlank(),
                 colors = ButtonDefaults.buttonColors(containerColor = theme.primary),
                 shape = RoundedCornerShape(8.dp)
             ) {

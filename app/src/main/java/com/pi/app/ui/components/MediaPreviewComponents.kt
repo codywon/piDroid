@@ -59,7 +59,6 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
@@ -327,7 +326,10 @@ suspend fun resolveMediaBytes(
             val encPath = URLEncoder.encode(resolvedPath, "UTF-8")
             val encCwd = URLEncoder.encode(gateway.cwd, "UTF-8")
             candidateUrls.add("$base/api/files/raw?path=$encPath&cwd=$encCwd")
-            candidateUrls.add("$base/api/files?path=$encPath&cwd=$encCwd")
+            val encodedSegments = com.pi.app.network.FileListParsing.encodeFilePath(resolvedPath)
+            if (encodedSegments.isNotEmpty()) {
+                candidateUrls.add("$base/api/files/$encodedSegments?type=download")
+            }
             if (!resolvedPath.startsWith("/")) {
                 candidateUrls.add("$base/$resolvedPath")
             }
@@ -784,7 +786,6 @@ fun SvgPreviewCard(
                         // pi 画的流程图往往比插图高：给到 300dp（点开还能全屏缩放），
                         // 否则 SVG 会被 CSS 的 max-height 压成一条窄带看不清文字
                         .heightIn(min = 120.dp, max = 300.dp)
-                        .clickable { onOpenFullscreen() }
                         .padding(8.dp),
                     contentAlignment = Alignment.Center
                 ) {
@@ -794,6 +795,12 @@ fun SvgPreviewCard(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(260.dp)
+                    )
+                    // 透明全尺寸点击拦截层：原生 WebView 会拦截 AndroidView 触控事件，导致点击图面无法打开全屏
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clickable { onOpenFullscreen() }
                     )
                 }
             } else {
@@ -811,6 +818,133 @@ fun SvgPreviewCard(
 }
 
 /**
+ * 对将要嵌入 HTML 模板的 SVG 片段做闭合防御：
+ * 补全未闭合的 `<!-- ... -->` 注释及未闭合的 `<style>` / `<script>` / `<title>` / `<svg>`，
+ * 避免畸形或截断的 SVG 吞没后续控制元素与内联缩放 `<script>`。
+ */
+internal fun closeDanglingSvgMarkup(svg: String): String {
+    var i = 0
+    val len = svg.length
+    var inComment = false
+    var rawTextTag: String? = null // "script" | "style" | "title"
+    var rawTagHeadOpen = false
+    var svgDepth = 0
+    var svgHeadOpen = false
+
+    while (i < len) {
+        if (inComment) {
+            if (svg.startsWith("-->", i)) {
+                inComment = false
+                i += 3
+            } else {
+                i++
+            }
+            continue
+        }
+
+        if (rawTextTag != null) {
+            if (rawTagHeadOpen) {
+                val c = svg[i]
+                if (c == '"' || c == '\'') {
+                    val closeQ = svg.indexOf(c, i + 1)
+                    i = if (closeQ >= 0) closeQ + 1 else len
+                    continue
+                }
+                if (c == '/' && i + 1 < len && svg[i + 1] == '>') {
+                    rawTextTag = null
+                    rawTagHeadOpen = false
+                    i += 2
+                    continue
+                }
+                if (c == '>') {
+                    rawTagHeadOpen = false
+                }
+                i++
+                continue
+            } else {
+                val closeTag = "</$rawTextTag>"
+                if (svg.regionMatches(i, closeTag, 0, closeTag.length, ignoreCase = true)) {
+                    rawTextTag = null
+                    i += closeTag.length
+                } else {
+                    i++
+                }
+                continue
+            }
+        }
+
+        if (svgHeadOpen) {
+            val c = svg[i]
+            if (c == '"' || c == '\'') {
+                val closeQ = svg.indexOf(c, i + 1)
+                i = if (closeQ >= 0) closeQ + 1 else len
+                continue
+            }
+            if (c == '/' && i + 1 < len && svg[i + 1] == '>') {
+                if (svgDepth > 0) svgDepth--
+                svgHeadOpen = false
+                i += 2
+                continue
+            }
+            if (c == '>') {
+                svgHeadOpen = false
+            }
+            i++
+            continue
+        }
+
+        if (svg.startsWith("<!--", i)) {
+            inComment = true
+            i += 4
+            continue
+        }
+
+        if (svg[i] == '<') {
+            val matchedRaw = listOf("script", "style", "title").firstOrNull { tag ->
+                svg.regionMatches(i + 1, tag, 0, tag.length, ignoreCase = true) &&
+                    (i + 1 + tag.length == len || svg[i + 1 + tag.length].isWhitespace() ||
+                        svg[i + 1 + tag.length] == '>' || svg[i + 1 + tag.length] == '/')
+            }
+            if (matchedRaw != null) {
+                rawTextTag = matchedRaw
+                rawTagHeadOpen = true
+                i += 1 + matchedRaw.length
+                continue
+            }
+            if (svg.regionMatches(i + 1, "svg", 0, 3, ignoreCase = true) &&
+                (i + 4 == len || svg[i + 4].isWhitespace() || svg[i + 4] == '>' || svg[i + 4] == '/')
+            ) {
+                svgDepth++
+                svgHeadOpen = true
+                i += 4
+                continue
+            }
+            if (svg.regionMatches(i + 1, "/svg>", 0, 5, ignoreCase = true)) {
+                if (svgDepth > 0) svgDepth--
+                i += 6
+                continue
+            }
+        }
+        i++
+    }
+
+    if (!inComment && rawTextTag == null && !rawTagHeadOpen && !svgHeadOpen && svgDepth == 0) {
+        return svg
+    }
+
+    return buildString(svg.length + 32) {
+        append(svg)
+        if (inComment) append(" -->")
+        if (rawTextTag != null) {
+            if (rawTagHeadOpen) append('>')
+            append("</").append(rawTextTag).append('>')
+        }
+        if (svgHeadOpen) append('>')
+        repeat(svgDepth) { append("</svg>") }
+    }
+}
+
+/**
  * 构建 SVG 在 WebView 中的渲染 HTML。
  *
  * 抽为独立函数以便纯 JVM 单元测试覆盖手势逻辑与安全沙箱约束（CSP nonce、脚本标签防护）。
@@ -821,6 +955,7 @@ internal fun buildSvgHtml(
     enableZoom: Boolean,
     scriptNonce: String
 ): String {
+    val safeSvg = closeDanglingSvgMarkup(cleanSvg)
     val cspMeta =
         """<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data: blob:; script-src 'nonce-$scriptNonce'">"""
     val bgHex = if (isDark) "#14161F" else "#F8FAFC"
@@ -846,7 +981,7 @@ internal fun buildSvgHtml(
           svg { display: block; width: 100%; height: auto; max-height: 92vh; }
         </style>
         </head>
-        <body>$cleanSvg</body>
+        <body>$safeSvg</body>
         </html>
         """.trimIndent()
     } else {
@@ -886,7 +1021,7 @@ internal fun buildSvgHtml(
         </head>
         <body>
         <div id="container">
-          $cleanSvg
+          $safeSvg
         </div>
         <div id="zoom-badge">100%</div>
         <script nonce="$scriptNonce">
@@ -1606,10 +1741,11 @@ fun FullscreenMediaLightboxDialog(
         offset = Offset.Zero
     }
 
-    // PDF 翻页状态
+    // PDF 翻页状态与文件型 SVG 异步解码状态
     var pdfPageCount by remember(attachment) { mutableIntStateOf(0) }
     var currentPdfPage by remember(attachment) { mutableIntStateOf(0) }
     var currentBitmap by remember(attachment) { mutableStateOf<ImageBitmap?>(null) }
+    var resolvedSvgContent by remember(attachment) { mutableStateOf(attachment.rawContent.orEmpty()) }
     var isLoading by remember(attachment) { mutableStateOf(true) }
 
     LaunchedEffect(attachment, currentPdfPage, gateway) {
@@ -1667,6 +1803,15 @@ fun FullscreenMediaLightboxDialog(
                         currentBitmap = result.first
                         pdfPageCount = result.second
                     }
+                }
+            }
+            isLoading = false
+        } else if (attachment.kind == MediaKind.SVG) {
+            if (resolvedSvgContent.isBlank()) {
+                isLoading = true
+                val bytes = resolveMediaBytes(attachment, gateway)
+                if (bytes != null && bytes.isNotEmpty()) {
+                    resolvedSvgContent = String(bytes, Charsets.UTF_8)
                 }
             }
             isLoading = false
@@ -1913,13 +2058,13 @@ fun FullscreenMediaLightboxDialog(
                         }
                     }
 
-                    attachment.kind == MediaKind.SVG -> {
+                    attachment.kind == MediaKind.SVG && resolvedSvgContent.isNotBlank() -> {
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
                         ) {
                             SvgWebViewCanvas(
-                                svgContent = attachment.rawContent ?: "",
+                                svgContent = resolvedSvgContent,
                                 enableZoom = true,
                                 modifier = Modifier.fillMaxSize(),
                                 onScaleChanged = { newScale -> scale = newScale },

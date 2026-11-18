@@ -146,6 +146,7 @@ internal fun ArtifactViewerFullScreen(
     onAtMention: ((String) -> Unit)? = null,
     onDownloadFile: ((String) -> Unit)? = null,
     onWatchFileChanges: ((String) -> Flow<Unit>)? = null,
+    onDownloadMediaToCache: (suspend (String) -> Result<File>)? = null,
 ) {
     val theme = LocalAppTheme.current
 
@@ -448,11 +449,15 @@ internal fun ArtifactViewerFullScreen(
                     when (kind) {
                         ArtifactKind.AUDIO -> AudioArtifactCard(
                             source = path?.let { onResolveMediaSource(it) },
-                            errorText = message
+                            errorText = message,
+                            path = path,
+                            onDownloadToCache = onDownloadMediaToCache
                         )
                         ArtifactKind.VIDEO -> VideoArtifactCard(
                             source = path?.let { onResolveMediaSource(it) },
-                            errorText = message
+                            errorText = message,
+                            path = path,
+                            onDownloadToCache = onDownloadMediaToCache
                         )
                         ArtifactKind.DOCX -> DocxArtifactCard(
                             html = docxHtml,
@@ -788,13 +793,6 @@ internal fun ArtifactViewerFullScreen(
                                 }
                             }
                         }
-                    }
-
-                    // 音频/视频没有内嵌渲染失败时的兜底提示
-                    if ((kind == ArtifactKind.AUDIO || kind == ArtifactKind.VIDEO) &&
-                        message != null && text.isNullOrBlank()
-                    ) {
-                        ArtifactHintCard(text = message)
                     }
                 }
             }

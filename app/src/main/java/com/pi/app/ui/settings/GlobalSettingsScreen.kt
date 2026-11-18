@@ -1913,6 +1913,9 @@ fun GlobalSkillsTab(
                     }
 
                     // 搜索结果列表
+                    val distinctSearchResults = searchResults
+                        .filter { it.`package`.isNotBlank() }
+                        .distinctBy { it.`package` }
                     if (isSearching) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp), contentAlignment = Alignment.Center) {
@@ -1938,16 +1941,16 @@ fun GlobalSkillsTab(
                                 )
                             }
                         }
-                    } else if (hasSearched && searchResults.isEmpty()) {
+                    } else if (hasSearched && distinctSearchResults.isEmpty()) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp), contentAlignment = Alignment.Center) {
                                 Text("未在 skills.sh 找到匹配的技能，请更换关键词搜索", fontSize = 12.sp, color = theme.textMuted)
                             }
                         }
-                    } else if (searchResults.isNotEmpty()) {
+                    } else if (distinctSearchResults.isNotEmpty()) {
                         item {
                             Text(
-                                text = "搜索结果 (${searchResults.size} 项)",
+                                text = "搜索结果 (${distinctSearchResults.size} 项)",
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = theme.textSecondary,
@@ -1955,7 +1958,7 @@ fun GlobalSkillsTab(
                             )
                         }
 
-                        items(searchResults, key = { it.`package` }) { result ->
+                        items(distinctSearchResults, key = { it.`package` }) { result ->
                             val isAlreadyInstalled = skills.any {
                                 it.scope.equals(addSkillTargetScope, true) &&
                                     (it.install?.`package` == result.`package` || it.name.equals(result.skillName, ignoreCase = true))
@@ -2317,16 +2320,18 @@ fun GlobalMcpTab(
     var showBudgetDialog by remember { mutableStateOf(false) }
     /** 服务器详情页的字段说明：散在三个分组里的副标题收敥成一个 ⓘ */
     var showServerHelp by remember { mutableStateOf(false) }
-    var testingServerName by remember { mutableStateOf<String?>(null) }
+    var testingServerKey by remember { mutableStateOf<String?>(null) }
     var testResultDialog by remember { mutableStateOf<Pair<String, McpTestToolResult>?>(null) }
     var testErrorDialog by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     // 二级视图：服务器详情（列表行只负责进入，写操作全部在详情页）
-    var selectedServerName by remember { mutableStateOf<String?>(null) }
-    BackHandler(enabled = selectedServerName != null) { selectedServerName = null }
-    val focusedServer = mcpServers.firstOrNull { it.name == selectedServerName }
+    fun mcpServerKey(server: McpServerInfo): String = "${server.scope.orEmpty()}:${server.name}"
+    var selectedServerKey by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = selectedServerKey != null) { selectedServerKey = null }
+    val focusedServer = mcpServers.firstOrNull { mcpServerKey(it) == selectedServerKey }
 
     if (focusedServer != null) {
+        val focusedServerKey = mcpServerKey(focusedServer)
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -2344,7 +2349,7 @@ fun GlobalMcpTab(
                         tint = theme.textSecondary,
                         modifier = Modifier
                             .size(22.dp)
-                            .clickable { selectedServerName = null }
+                            .clickable { selectedServerKey = null }
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Column(modifier = Modifier.weight(1f)) {
@@ -2469,7 +2474,7 @@ fun GlobalMcpTab(
                         )
                         SettingsRow(
                             title = "测试连接",
-                            subtitle = if (testingServerName == focusedServer.name) {
+                            subtitle = if (testingServerKey == focusedServerKey) {
                                 "正在向网关发起探测…"
                             } else {
                                 "手机上触发一次 MCP 握手并列出工具"
@@ -2477,17 +2482,17 @@ fun GlobalMcpTab(
                             topDivider = true,
                             trailing = {
                                 SettingsInlineAction(
-                                    text = if (testingServerName == focusedServer.name) "测试中" else "测试",
+                                    text = if (testingServerKey == focusedServerKey) "测试中" else "测试",
                                     onClick = {
                                         val client = apiClient
-                                        if (client != null && testingServerName == null) {
-                                            testingServerName = focusedServer.name
+                                        if (client != null && testingServerKey == null) {
+                                            testingServerKey = focusedServerKey
                                             coroutineScope.launch {
                                                 val res = client.testMcpServer(
                                                     name = focusedServer.name,
                                                     scope = focusedServer.scope ?: "global"
                                                 )
-                                                testingServerName = null
+                                                testingServerKey = null
                                                 res.onSuccess { info ->
                                                     testResultDialog = focusedServer.name to info
                                                     // 测试连上后服务端会把已开会话里这条失败的重连（#1684），
@@ -2664,29 +2669,32 @@ fun GlobalMcpTab(
                             )
                         }
                         mcpServers.forEachIndexed { index, server ->
-                            val isConnected = server.isConnected && server.enabled
-                            SettingsRow(
-                                title = server.name,
-                                subtitle = buildString {
-                                    append((server.transport ?: "http").lowercase())
-                                    if (server.toolExposureCount > 0) {
-                                        append(" · ${server.toolExposureCount} 个工具")
-                                    }
-                                    append(" · ")
-                                    append(
-                                        when {
-                                            isConnected -> "已连接"
-                                            server.enabled -> "未连接"
-                                            else -> "已停用"
+                            val serverKey = mcpServerKey(server)
+                            key("$serverKey:$index") {
+                                val isConnected = server.isConnected && server.enabled
+                                SettingsRow(
+                                    title = server.name,
+                                    subtitle = buildString {
+                                        append((server.transport ?: "http").lowercase())
+                                        if (server.toolExposureCount > 0) {
+                                            append(" · ${server.toolExposureCount} 个工具")
                                         }
-                                    )
-                                },
-                                monoSubtitle = true,
-                                topDivider = index > 0,
-                                leading = { SettingsStatusDot(active = isConnected) },
-                                showChevron = true,
-                                onClick = { selectedServerName = server.name }
-                            )
+                                        append(" · ")
+                                        append(
+                                            when {
+                                                isConnected -> "已连接"
+                                                server.enabled -> "未连接"
+                                                else -> "已停用"
+                                            }
+                                        )
+                                    },
+                                    monoSubtitle = true,
+                                    topDivider = index > 0,
+                                    leading = { SettingsStatusDot(active = isConnected) },
+                                    showChevron = true,
+                                    onClick = { selectedServerKey = serverKey }
+                                )
+                            }
                         }
                     }
                     Spacer(modifier = Modifier.height(10.dp))
@@ -3495,6 +3503,8 @@ fun GlobalSystemSettingsTab(
                         value = when {
                             authToken.isBlank() -> "未设置"
                             showFullToken -> authToken
+                            authToken.length <= 4 -> "••••••••"
+                            authToken.length <= 10 -> "${authToken.take(2)}••••${authToken.takeLast(2)}"
                             else -> "${authToken.take(6)}••••${authToken.takeLast(4)}"
                         },
                         monoValue = true,

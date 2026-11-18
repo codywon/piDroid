@@ -388,6 +388,27 @@ class GenerativeUiTest {
     }
 
     @Test
+    fun `serializeSelfContainedSvg skips xml prolog comments and quoted greater-than`() {
+        val payload = WidgetPayload(
+            title = "prolog_svg",
+            code = """
+                <?xml version="1.0" encoding="utf-8"?>
+                <!-- leading comment with <svg> fake -->
+                <svg data-expr="a>b" viewBox="0 0 100 100"><g class="c-teal"><rect/></g></svg>
+            """.trimIndent()
+        )
+
+        val out = serializeSelfContainedSvg(payload, isDark = false)
+        // 不得出现重复的 <?xml 声明
+        assertEquals(1, out.split("<?xml").size - 1)
+        // 样式必须注入到真实 <svg ...> 开标签之后，而非前置声明或属性值 a>b 中间
+        val svgOpenEnd = out.indexOf("""data-expr="a>b" viewBox="0 0 100 100">""")
+        assertTrue(svgOpenEnd > 0)
+        assertTrue(out.indexOf("<style>") > svgOpenEnd)
+        assertTrue(out.contains("xmlns=\"http://www.w3.org/2000/svg\""))
+    }
+
+    @Test
     fun `export helper sanitizes filenames safely`() {
         assertEquals("openclaw_architecture", WidgetExportHelper.cleanFilename("openclaw architecture", "default"))
         assertEquals("diagram_1", WidgetExportHelper.cleanFilename("diagram/1:?*", "default"))

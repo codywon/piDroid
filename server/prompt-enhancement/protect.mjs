@@ -51,12 +51,12 @@ const RULES = [
   { name: 'inline_code', re: /`[^`\n]+`/g },
   // URL（排除 '['，避免紧邻占位符 [[PE_...]] 时吞进前一条的占位符）
   { name: 'url', re: /https?:\/\/[^\s<>"'`[\]，。；：、！？（）【】“”]+/g, trim: true },
+  // Windows 绝对路径（兼容 D:\... 与 D:/...；放在 reference 之前以完整保护含 @scope 的路径）
+  { name: 'win_path', re: /[A-Za-z]:[\\/][^\s"'`\[，。；：、！？（）【】“”]+/g, trim: true },
+  // POSIX 路径：/a/b、./a、../a（单段 "a/b" 不算路径；放在 reference 之前避免 @agegr/pi-web 被拆断）
+  { name: 'posix_path', re: /\B(?:\/|\.\.?\/)[\w.@-]+(?:\/[\w.@-]+)*/g, trim: true },
   // @ 引用：避免误切邮箱（如 user@example.com）
   { name: 'reference', re: /(?<![\w.])@[^\s@，。；：、,;:!?！？()（）\[\]【】<>"'“”‘’]+/g, trim: true },
-  // Windows 绝对路径（排除 '['，避免紧邻占位符时吞掉 [[PE_...]]）
-  { name: 'win_path', re: /[A-Za-z]:\\[^\s"'`\[]+/g, trim: true },
-  // POSIX 路径：/a/b、./a、../a（单段 "a/b" 不算路径，避免误伤普通文本）
-  { name: 'posix_path', re: /\B(?:\/|\.\.?\/)[\w.@-]+(?:\/[\w.@-]+)*/g, trim: true },
   // 模板变量：{{var}} / ${var} / {{ var }}
   { name: 'template_var', re: /\{\{[^{}\n]{1,80}\}\}|\$\{[^{}\n]{1,80}\}/g },
 ];

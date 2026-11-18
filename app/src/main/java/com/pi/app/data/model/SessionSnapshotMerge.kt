@@ -202,6 +202,10 @@ object SessionSnapshotMerge {
         val matchedLocalIndices = mutableSetOf<Int>()
         val reconciledCommitted = ArrayList<ChatItem>(synced.size)
         val newestFirst = local.indices.reversed()
+        val turnStart = StreamingMessageMerge.currentTurnStart(local)
+        val singleUncommittedAgentInTurn = (turnStart until local.size).count { i ->
+            local[i].role == MessageRole.AGENT && local[i].entryId.isNullOrBlank()
+        } == 1
 
         for (diskItem in synced) {
             // 优先按 entryId 精确匹配（同时校验角色一致，杜绝不同角色意外共用 entryId 导致错位覆写）
@@ -268,15 +272,39 @@ object SessionSnapshotMerge {
                 }
             }
 
-            // 若 entryId 未匹配，针对在途或流式生成的助手消息按角色顺序匹配
+            // 若 entryId 未匹配，针对在途或流式生成的助手消息按正序匹配：
+            // ① 若双方 streamMessageId 均非空，优先精确匹配；
+            // ② 否则按正序（绝不倒序抓走末尾流式新块）查找内容兼容的未落盘 AGENT 气泡。
             if (localMatchIdx < 0 && diskItem.role == MessageRole.AGENT) {
-                for (i in newestFirst) {
-                    if (matchedLocalIndices.contains(i)) continue
-                    val item = local[i]
-                    if (item.role != MessageRole.AGENT) continue
-                    if (!item.entryId.isNullOrBlank()) continue
-                    localMatchIdx = i
-                    break
+                val diskStreamId = diskItem.streamMessageId
+                if (!diskStreamId.isNullOrBlank()) {
+                    for (i in local.indices) {
+                        if (matchedLocalIndices.contains(i)) continue
+                        val item = local[i]
+                        if (item.role != MessageRole.AGENT || !item.entryId.isNullOrBlank()) continue
+                        if (!item.streamMessageId.isNullOrBlank() && item.streamMessageId == diskStreamId) {
+                            localMatchIdx = i
+                            break
+                        }
+                    }
+                }
+                if (localMatchIdx < 0) {
+                    val diskText = diskItem.content.trim()
+                    for (i in local.indices) {
+                        if (matchedLocalIndices.contains(i)) continue
+                        val item = local[i]
+                        if (item.role != MessageRole.AGENT || !item.entryId.isNullOrBlank()) continue
+                        val localText = item.content.trim()
+                        val compatible = localText.isEmpty() ||
+                            diskText.isEmpty() ||
+                            diskText.startsWith(localText) ||
+                            localText.startsWith(diskText) ||
+                            (singleUncommittedAgentInTurn && i >= turnStart)
+                        if (compatible) {
+                            localMatchIdx = i
+                            break
+                        }
+                    }
                 }
             }
 

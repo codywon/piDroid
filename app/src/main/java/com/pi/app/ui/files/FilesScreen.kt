@@ -123,7 +123,8 @@ internal fun FilesScreen(
 
     // 当前浏览路径及多级导航历史栈
     var currentPath by rememberSaveable(workspaceCwd) { mutableStateOf(workspaceCwd) }
-    val navigationStack = remember { mutableStateListOf<String>() }
+    val navigationStack = remember(workspaceCwd) { mutableStateListOf<String>() }
+    val mentionBasePath = workspaceCwd.ifBlank { currentPath }
 
     var showHidden by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
@@ -233,7 +234,7 @@ internal fun FilesScreen(
     }
 
     // 搜索输入防抖
-    LaunchedEffect(searchQuery, searchOpen) {
+    LaunchedEffect(searchQuery, searchOpen, currentPath) {
         if (!searchOpen || searchQuery.trim().isEmpty()) {
             searchResults = emptyList()
             searchLoading = false
@@ -637,7 +638,7 @@ internal fun FilesScreen(
                                                 Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
                                             },
                                             onAtMention = {
-                                                val rel = FileListParsing.relativePath(fullPath, currentPath)
+                                                val rel = FileListParsing.relativePath(fullPath, mentionBasePath)
                                                 onAtMention(rel, node.isDir)
                                             }
                                         )
@@ -704,7 +705,7 @@ internal fun FilesScreen(
                                             Toast.makeText(context, "已复制路径", Toast.LENGTH_SHORT).show()
                                         },
                                         onAtMention = {
-                                            val rel = FileListParsing.relativePath(fullPath, currentPath)
+                                            val rel = FileListParsing.relativePath(fullPath, mentionBasePath)
                                             onAtMention(rel, entry.isDir)
                                         }
                                     )
@@ -744,8 +745,9 @@ internal fun FilesScreen(
                 nextOffset = previewNextOffset,
                 sizeBytes = previewSizeBytes,
                 isOpeningExternally = false,
-                sessionCwd = currentPath,
+                sessionCwd = mentionBasePath,
                 onResolveMediaSource = { p -> onResolveFileSource(p) },
+                onDownloadMediaToCache = onDownloadFileToCache,
                 onBack = { closePreview() },
                 onToggleRawMode = { raw -> previewRawMode = raw },
                 onLoadMore = { loadMorePreviewText() },

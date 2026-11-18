@@ -38,9 +38,13 @@ test('secrets never reach the log', () => {
   assert.ok(text.includes('auth.token = ***'));
 });
 
-test('redactLine leaves ordinary text alone', () => {
+test('redactLine leaves ordinary text alone and masks 20+ hex pi tokens', () => {
   assert.equal(redactLine('✓ Ready in 176ms'), '✓ Ready in 176ms');
   assert.equal(redactLine('model=gpt-5.1'), 'model=gpt-5.1');
+  const rawToken = 'pi_0123456789abcdef0123456789abcdef';
+  const redacted = redactLine(`prefix_${rawToken} suffix`);
+  assert.equal(redacted.includes(rawToken), false);
+  assert.ok(redacted.includes('pi_***'));
 });
 
 test('long lines are clipped, not dropped', () => {

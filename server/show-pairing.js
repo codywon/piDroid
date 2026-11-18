@@ -61,6 +61,33 @@ function printPairing(label, url, token, hostName) {
   qrcode.generate(buildConnectUri(url, token, hostName), { small: true });
 }
 
+function resolvePairingPublicUrl(port, { env = process.env, frpClient = frp, loadGateway = () => require("./gateway") } = {}) {
+  let publicUrl = "";
+  let configPath = "";
+  let localPort = 0;
+  try {
+    const info = frpClient.describeFrp();
+    publicUrl = info.publicUrl || "";
+    configPath = info.configPath || "";
+    localPort = info.localPort || 0;
+  } catch {
+    publicUrl = "";
+  }
+  if (!publicUrl) {
+    try {
+      const gateway = loadGateway();
+      const stable = gateway.resolveStableTunnel(port);
+      if (stable && stable.tunnel && stable.tunnel.hostname) {
+        publicUrl = `https://${stable.tunnel.hostname}`;
+      }
+    } catch {
+      // 忽略回退解析异常
+    }
+  }
+  if (!publicUrl) publicUrl = (env.PI_PUBLIC_URL || "").trim();
+  return { publicUrl, configPath, localPort };
+}
+
 function main() {
   const token = readToken();
   if (!token) {
@@ -72,23 +99,13 @@ function main() {
   const port = parseInt(process.env.GATEWAY_PORT || "4100", 10);
   const hostName = os.hostname();
 
-  let publicUrl = "";
-  let configPath = "";
-  try {
-    const info = frp.describeFrp();
-    publicUrl = info.publicUrl || "";
-    configPath = info.configPath || "";
-    const proxyPort = info.localPort;
-    if (proxyPort && proxyPort !== port) {
-      console.warn(
-        `⚠️  frpc 配置里 localPort=${proxyPort}，而本命令按 ${port} 生成局域网地址；` +
-        `若两者不一致，公网入口会 502（改 ${configPath} 或加 --port）。`
-      );
-    }
-  } catch {
-    publicUrl = "";
+  const { publicUrl, configPath, localPort: proxyPort } = resolvePairingPublicUrl(port);
+  if (proxyPort && proxyPort !== port) {
+    console.warn(
+      `⚠️  frpc 配置里 localPort=${proxyPort}，而本命令按 ${port} 生成局域网地址；` +
+      `若两者不一致，公网入口会 502（改 ${configPath} 或加 --port）。`
+    );
   }
-  if (!publicUrl) publicUrl = (process.env.PI_PUBLIC_URL || "").trim();
 
   console.log("======================================================");
   console.log("       🛡️  piDroid 配对信息（当前正在运行的服务）");
@@ -111,4 +128,8 @@ function main() {
   console.log("======================================================");
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { resolvePairingPublicUrl, buildConnectUri, main };

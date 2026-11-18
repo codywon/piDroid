@@ -17,9 +17,9 @@ import org.junit.Test
  */
 class SessionSaverTest {
 
-    /** 按当前线格式造一份 16 个槽位的存档，只覆盖需要断言的位置。 */
+    /** 按当前线格式造一份 18 个槽位的存档（后 2 位可空），只覆盖需要断言的位置。 */
     private fun slotValues(vararg overrides: Pair<Int, String>): List<String> {
-        val base = MutableList(16) { "" }
+        val base = MutableList(18) { "" }
         overrides.forEach { (index, value) -> base[index] = value }
         return base
     }
@@ -72,5 +72,36 @@ class SessionSaverTest {
         assertEquals("s1", restored.id)
         assertEquals(0, restored.messageCount)
         assertTrue(!restored.isRunning)
+    }
+
+    @Test
+    fun `legacy 16-slot wire archive restores relation as null`() {
+        val legacy = MutableList(16) { "" }.apply { set(0, "s_legacy") }
+        val restored = SessionSaver.restore(legacy)!!
+
+        assertEquals("s_legacy", restored.id)
+        assertNull(restored.relation)
+    }
+
+    @Test
+    fun `wire order preserves relation kind and parentSessionId`() {
+        val saved = slotValues(
+            0 to "s_child",
+            16 to "subagent",
+            17 to "s_parent"
+        )
+        val restored = SessionSaver.restore(saved)!!
+
+        assertEquals(SessionRelation(kind = "subagent", parentSessionId = "s_parent"), restored.relation)
+
+        val forkOnly = slotValues(
+            0 to "s_fork",
+            16 to "fork"
+        )
+        val restoredFork = SessionSaver.restore(forkOnly)!!
+        assertEquals(SessionRelation(kind = "fork", parentSessionId = null), restoredFork.relation)
+
+        val noRelation = slotValues(0 to "s_plain")
+        assertNull(SessionSaver.restore(noRelation)!!.relation)
     }
 }

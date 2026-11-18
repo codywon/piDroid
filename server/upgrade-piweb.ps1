@@ -20,7 +20,12 @@ $ErrorActionPreference = 'Continue'
 # This script lives in server/: the sibling lifecycle scripts are right here,
 # the repo root is one level up ($PSScriptRoot\..).
 $pkg = Join-Path $env:APPDATA 'npm\node_modules\@agegr\pi-web'
-$taskName = 'piDroid Gateway (frp)'
+$legacyTaskName = 'piDroid Gateway (frp)'
+$stackTaskName = 'piDroid Stack'
+$watchdogTaskName = 'piDroid Stack Watchdog'
+$supervisorScript = Join-Path $PSScriptRoot 'supervisor.js'
+$supervisorPidFile = Join-Path $PSScriptRoot 'logs\supervisor.pid'
+$wasSupervisorRunning = Test-Path -LiteralPath $supervisorPidFile
 
 function Write-Step([int]$n, [string]$text) {
     Write-Host ''
@@ -80,13 +85,21 @@ Write-Host ("  current: {0}" -f ($before -replace '.*@agegr/pi-web@', '@'))
 
 # ---------------------------------------------------------------- 2. stop tree
 Write-Step 2 'Stopping the piDroid stack (gateway + pi-web)'
-# End the task FIRST: while it is still "Running", Task Scheduler's
-# restart-on-failure may resurrect the tree (and relock the folder) mid-install.
-# /End only kills wscript, which is why stop-gateway.cmd follows it.
-schtasks /Query /TN $taskName > $null 2>&1
-if ($LASTEXITCODE -eq 0) {
-    schtasks /End /TN $taskName > $null 2>&1
-    Write-Host ("  ended scheduled task: {0}" -f $taskName)
+# End all tasks FIRST: while a task is still "Running", Task Scheduler's
+# restart-on-failure (or the 5-min watchdog) may resurrect the tree mid-install.
+# /End only kills the immediate action process, so supervisor stop + stop-gateway.cmd follow.
+foreach ($tn in @($watchdogTaskName, $stackTaskName, $legacyTaskName)) {
+    schtasks /Query /TN $tn > $null 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        schtasks /End /TN $tn > $null 2>&1
+        Write-Host ("  ended scheduled task: {0}" -f $tn)
+    }
+}
+if (Test-Path -LiteralPath $supervisorScript) {
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmd) {
+        & $nodeCmd.Source $supervisorScript stop | Out-Host
+    }
 }
 $holders = Get-PiWebHolders
 if ($holders) {
@@ -158,11 +171,36 @@ if ($after) {
 
 # ---------------------------------------------------------------- 6. restart
 Write-Step 6 'Starting the stack again'
-schtasks /Query /TN $taskName > $null 2>&1
+$restarted = $false
+schtasks /Query /TN $stackTaskName > $null 2>&1
 if ($LASTEXITCODE -eq 0) {
-    schtasks /Run /TN $taskName | Out-Host
-    Write-Host ("  started scheduled task: {0}" -f $taskName)
-} else {
+    schtasks /Run /TN $stackTaskName | Out-Host
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host ("  started scheduled task: {0}" -f $stackTaskName)
+        $restarted = $true
+    }
+}
+if (-not $restarted) {
+    schtasks /Query /TN $legacyTaskName > $null 2>&1
+    if ($LASTEXITCODE -eq 0) {
+        schtasks /Run /TN $legacyTaskName | Out-Host
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host ("  started scheduled task: {0}" -f $legacyTaskName)
+            $restarted = $true
+        }
+    }
+}
+if (-not $restarted -and $wasSupervisorRunning -and (Test-Path -LiteralPath $supervisorScript)) {
+    $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($nodeCmd) {
+        & $nodeCmd.Source $supervisorScript ensure | Out-Host
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host '  started stack via supervisor ensure'
+            $restarted = $true
+        }
+    }
+}
+if (-not $restarted) {
     $bat = Join-Path $PSScriptRoot 'start-server-tunnel.bat'
     if (Test-Path -LiteralPath $bat) {
         Start-Process -FilePath $bat -WorkingDirectory $PSScriptRoot

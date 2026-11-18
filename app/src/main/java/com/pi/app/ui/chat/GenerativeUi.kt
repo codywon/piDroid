@@ -425,14 +425,79 @@ fun serializeSelfContainedSvg(payload: WidgetPayload, isDark: Boolean): String {
     val bgHex = if (isDark) "#1a1a1a" else "#FFFFFF"
     val tokens = widgetTokens(isDark)
 
-    val svgTagEnd = raw.indexOf('>')
+    // 跳过前置 <?xml ...?> / <?...?> / <!-- ... --> 寻找真正的 <svg 开标签
+    var i = 0
+    var svgStart = -1
+    while (i < raw.length) {
+        when {
+            raw.startsWith("<!--", i) -> {
+                val commentEnd = raw.indexOf("-->", i + 4)
+                if (commentEnd < 0) return raw
+                i = commentEnd + 3
+            }
+            raw.startsWith("<?", i) -> {
+                val piEnd = raw.indexOf("?>", i + 2)
+                if (piEnd < 0) return raw
+                i = piEnd + 2
+            }
+            raw.startsWith("<svg", i, ignoreCase = true) -> {
+                val nextCh = raw.getOrNull(i + 4)
+                if (nextCh == null || nextCh.isWhitespace() || nextCh == '>' || nextCh == '/') {
+                    svgStart = i
+                    break
+                }
+                i += 4
+            }
+            else -> i++
+        }
+    }
+    if (svgStart < 0) return raw
+
+    // 从 <svg 之后跳过引号内字符，定位真正的闭合 '>'
+    var quoteChar = '\u0000'
+    var svgTagEnd = -1
+    var scan = svgStart + 4
+    while (scan < raw.length) {
+        val ch = raw[scan]
+        if (quoteChar != '\u0000') {
+            if (ch == quoteChar) quoteChar = '\u0000'
+        } else if (ch == '"' || ch == '\'') {
+            quoteChar = ch
+        } else if (ch == '>') {
+            svgTagEnd = scan
+            break
+        }
+        scan++
+    }
     if (svgTagEnd < 0) return raw
 
-    val svgHeader = raw.substring(0, svgTagEnd + 1)
-    val svgBody = raw.substring(svgTagEnd + 1)
+    // 去掉前置已有的 <?xml ...?> 声明（避免输出重复 XML 声明），保留注释等前置片段
+    val rawPrefix = raw.substring(0, svgStart).trim()
+    val leadingExtra = if (rawPrefix.startsWith("<?xml", ignoreCase = true) &&
+        rawPrefix.getOrNull(5)?.isWhitespace() == true
+    ) {
+        val declEnd = rawPrefix.indexOf("?>")
+        if (declEnd >= 0) rawPrefix.substring(declEnd + 2).trim() else ""
+    } else {
+        rawPrefix
+    }
 
-    val headerWithXmlns = if (!svgHeader.contains("xmlns=")) {
-        svgHeader.replaceFirst("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"")
+    val rawHeader = raw.substring(svgStart, svgTagEnd + 1)
+    val isSelfClosing = rawHeader.dropLast(1).trimEnd().endsWith("/")
+    val svgHeader = if (isSelfClosing) {
+        rawHeader.dropLast(1).trimEnd().dropLast(1).trimEnd() + ">"
+    } else {
+        rawHeader
+    }
+    val svgBody = if (isSelfClosing) {
+        "</svg>" + raw.substring(svgTagEnd + 1)
+    } else {
+        raw.substring(svgTagEnd + 1)
+    }
+
+    val hasXmlns = Regex("""(?i)\sxmlns\s*=""").containsMatchIn(svgHeader)
+    val headerWithXmlns = if (!hasXmlns) {
+        svgHeader.substring(0, 4) + " xmlns=\"http://www.w3.org/2000/svg\"" + svgHeader.substring(4)
     } else {
         svgHeader
     }
@@ -446,7 +511,8 @@ svg { background-color: $bgHex; }
 <rect width="100%" height="100%" fill="$bgHex"/>
 """.trimIndent()
 
-    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n$headerWithXmlns\n$styleBlock\n$svgBody"
+    val prefixLine = if (leadingExtra.isNotEmpty()) "$leadingExtra\n" else ""
+    return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n$prefixLine$headerWithXmlns\n$styleBlock\n$svgBody"
 }
 
 fun buildWidgetHtml(
@@ -1115,14 +1181,18 @@ private fun createWidgetWebView(
             view: WebView?,
             request: WebResourceRequest?
         ): Boolean {
-            val url = request?.url?.toString() ?: return false
-            // 只接管真正的网页跳转；about:blank（销毁时清理）这类内部导航不能外抛
-            if (!url.startsWith("http://") && !url.startsWith("https://")) return false
-            // 微组件里的外链一律走系统浏览器，不在卡片里接管导航
-            runCatching {
-                context.startActivity(
-                    android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url))
-                )
+            val uri = request?.url
+            val scheme = uri?.scheme
+            if (request?.isForMainFrame == true &&
+                request.hasGesture() &&
+                (scheme.equals("http", ignoreCase = true) || scheme.equals("https", ignoreCase = true))
+            ) {
+                // 微组件里的外链仅在用户主动点击主框架 http(s) 链接时交由系统浏览器打开，其余一律拦截
+                runCatching {
+                    context.startActivity(
+                        android.content.Intent(android.content.Intent.ACTION_VIEW, uri)
+                    )
+                }
             }
             return true
         }

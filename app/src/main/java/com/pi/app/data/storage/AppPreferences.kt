@@ -13,7 +13,6 @@ class AppPreferences(context: Context) {
 
     private val prefs: SharedPreferences =
         context.getSharedPreferences("pidroid_prefs", Context.MODE_PRIVATE)
-    private val stateLock = Any()
 
     /**
      * 网关地址。
@@ -24,7 +23,7 @@ class AppPreferences(context: Context) {
      * `trimEnd('/')`，于是历史版本里已经存进本地的那条脏值需要 getter 兼容一下。
      */
     var serverUrl: String
-        get() = (prefs.getString(KEY_SERVER_URL, "") ?: "").trim()
+        get() = (prefs.getString(KEY_SERVER_URL, "") ?: "").trim().trimEnd('/')
         set(value) = prefs.edit().putString(KEY_SERVER_URL, value.trim().trimEnd('/')).apply()
 
     var authToken: String
@@ -127,6 +126,10 @@ class AppPreferences(context: Context) {
             original = original,
             enhanced = enhanced
         )
+    }
+
+    fun saveSessionDraft(sessionId: String, text: String) {
+        saveSessionDraftWithUndo(sessionId, text, null)
     }
 
     /**
@@ -318,6 +321,9 @@ class AppPreferences(context: Context) {
             .putStringSet(KEY_UNREAD_SESSIONS, currentUnread)
             .remove("session_title_$sessionId")
             .remove("draft_$sessionId")
+            .remove("pe_undo_ck_$sessionId")
+            .remove("pe_undo_enhanced_$sessionId")
+            .remove("pe_undo_original_$sessionId")
             .apply()
     }
 
@@ -435,18 +441,18 @@ class AppPreferences(context: Context) {
         for ((k, v) in root.entrySet()) {
             if (!v.isJsonObject) continue
             val o = v.asJsonObject
-            val provider = o.get("provider")?.asString ?: continue
-            val modelId = o.get("modelId")?.asString ?: continue
+            val provider = o.get("provider")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: continue
+            val modelId = o.get("modelId")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: continue
             map[k] = StoredModelOverride(
                 provider = provider,
                 modelId = modelId,
-                name = o.get("name")?.asString ?: modelId,
-                baseUrl = o.get("baseUrl")?.asString ?: "",
-                apiType = o.get("apiType")?.asString ?: "openai-completions",
-                contextWindow = o.get("contextWindow")?.asLong ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW,
-                maxTokens = o.get("maxTokens")?.asLong ?: 8192L,
-                reasoning = o.get("reasoning")?.asBoolean ?: true,
-                supportsVision = o.get("supportsVision")?.asBoolean ?: false
+                name = o.get("name")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: modelId,
+                baseUrl = o.get("baseUrl")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: "",
+                apiType = o.get("apiType")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asString ?: "openai-completions",
+                contextWindow = o.get("contextWindow")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: ModelDefaults.DEFAULT_CONTEXT_WINDOW,
+                maxTokens = o.get("maxTokens")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asLong ?: 8192L,
+                reasoning = o.get("reasoning")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asBoolean ?: true,
+                supportsVision = o.get("supportsVision")?.takeIf { !it.isJsonNull && it.isJsonPrimitive }?.asBoolean ?: false
             )
         }
         return map
@@ -464,6 +470,14 @@ class AppPreferences(context: Context) {
             }
             apply()
         }
+    }
+
+    fun clearConnection() {
+        prefs.edit()
+            .remove(KEY_SERVER_URL)
+            .remove(KEY_AUTH_TOKEN)
+            .remove(KEY_DEVICE_NAME)
+            .apply()
     }
 
     fun clear() {
@@ -543,6 +557,7 @@ class AppPreferences(context: Context) {
     }
 
     companion object {
+        private val stateLock = Any()
         private const val KEY_SERVER_URL = "key_server_url"
         private const val KEY_AUTH_TOKEN = "key_auth_token"
         private const val KEY_DEVICE_NAME = "key_device_name"

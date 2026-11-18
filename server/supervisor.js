@@ -32,7 +32,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
-const { PIWEB_ONLY_RESTARTS_BEFORE_FULL, planRecovery } = require('./recovery-plan');
+const { redactLine } = require('./crash-forensics');
+const { PIWEB_ONLY_RESTARTS_BEFORE_FULL, planRecovery, shouldIgnoreDownProbe } = require('./recovery-plan');
 
 const SERVER_DIR = __dirname;
 const STATE_DIR = path.join(SERVER_DIR, 'logs');
@@ -95,15 +96,20 @@ function recordDeath(entry) {
  * 写满的管道上），所以取证只能回读日志尾部。以前在 stdout 上挂 onData 抓 chunk，但 stdio 用的
  * 是 fd，`child.stdout` 恒为 null，`tail` 从来没有过内容。
  */
-function readLogTail(maxLines = 15) {
+function readLogTail(maxLines = 15, logPath = STACK_LOG) {
   try {
-    const size = fs.statSync(STACK_LOG).size;
+    const size = fs.statSync(logPath).size;
     const from = Math.max(0, size - 8 * 1024);
-    const fd = fs.openSync(STACK_LOG, 'r');
+    const fd = fs.openSync(logPath, 'r');
     try {
       const buf = Buffer.alloc(size - from);
       fs.readSync(fd, buf, 0, buf.length, from);
-      return buf.toString('utf8').split(/\r?\n/).filter((line) => line.trim()).slice(-maxLines);
+      return buf
+        .toString('utf8')
+        .split(/\r?\n/)
+        .filter((line) => line.trim())
+        .slice(-maxLines)
+        .map((line) => redactLine(line));
     } finally {
       fs.closeSync(fd);
     }
@@ -161,18 +167,51 @@ function stackHealth() {
   ]);
 }
 
-/** 端口占用者 PID（netstat 比 Process API 便宜，且这台机器上没有 lsof）。 */
-function portOwnerPid(port) {
-  const r = spawnSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', windowsHide: true });
-  if (!r.stdout) return null;
-  const needle = `:${port} `;
-  for (const line of r.stdout.split(/\r?\n/)) {
-    if (!line.includes(needle) || !line.includes('LISTENING')) continue;
-    const parts = line.trim().split(/\s+/);
+function parseNetstatPid(stdout, port) {
+  if (!stdout) return null;
+  const suffix = `:${Number(port)}`;
+  for (const rawLine of String(stdout).split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 5) continue;
+    if (parts[0].toUpperCase() !== 'TCP') continue;
+    if (parts[3].toUpperCase() !== 'LISTENING') continue;
+    if (!parts[1].endsWith(suffix)) continue;
     const pid = Number(parts[parts.length - 1]);
     if (Number.isInteger(pid) && pid > 0) return pid;
   }
   return null;
+}
+
+function parsePosixPortPid(lsofOut, ssOut) {
+  if (lsofOut) {
+    const pid = Number(String(lsofOut).trim().split(/\s+/)[0]);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+  }
+  if (ssOut) {
+    const m = String(ssOut).match(/pid=(\d+)/);
+    if (m) {
+      const pid = Number(m[1]);
+      if (Number.isInteger(pid) && pid > 0) return pid;
+    }
+  }
+  return null;
+}
+
+/** 端口占用者 PID（Windows 用 netstat -ano 兼容 IPv4 与 IPv6 [::]:port；POSIX 用 lsof/ss）。 */
+function portOwnerPid(port) {
+  const portNum = Number(port);
+  if (!Number.isInteger(portNum) || portNum <= 0) return null;
+  if (process.platform === 'win32') {
+    const r = spawnSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true });
+    return parseNetstatPid(r.stdout, portNum);
+  }
+  const lsof = spawnSync('lsof', ['-nP', `-iTCP:${portNum}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  const fromLsof = !lsof.error ? parsePosixPortPid(lsof.stdout, '') : null;
+  if (fromLsof) return fromLsof;
+  const ss = spawnSync('ss', ['-tlnp', `sport = :${portNum}`], { encoding: 'utf8' });
+  return !ss.error ? parsePosixPortPid('', ss.stdout) : null;
 }
 
 /** 单进程 RSS（MB），用 tasklist 免得再拉一个 PowerShell 起来。 */
@@ -215,7 +254,17 @@ function killTree(pid, why) {
 }
 
 class Supervisor {
-  constructor() {
+  constructor(deps = {}) {
+    this.deps = {
+      stackHealth,
+      portOwnerPid,
+      killTree,
+      readSupervisorPid,
+      recordProbe,
+      recordDeath,
+      log,
+      ...deps
+    };
     this.child = null;
     this.childStartedAt = 0;
     this.healthySince = 0;
@@ -270,6 +319,8 @@ class Supervisor {
       recordDeath({ kind: 'stack', code, signal, uptimeS, rssPeakMb: this.rssPeakMb, tail: readLogTail() });
       this.child = null;
       this.rssPeakMb = 0;
+      this.failures = 0;
+      this.healthySince = 0;
       if (normal) return;
       // 有 launcher 之外的残留（比如 ps1 守护、手敲的一次性实例）时先清掉，否则新的那份只会 EADDRINUSE 秒退。
       for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `残留占用 ${port}`);
@@ -285,55 +336,68 @@ class Supervisor {
 
   /** 换了一个新的 pi-web 进程（谁拉起的都算）：开一个预热窗口。 */
   detectPiWebRestart() {
-    const pid = portOwnerPid(PIWEB_PORT);
+    const pid = this.deps.portOwnerPid(PIWEB_PORT);
     if (!pid || pid === this.piwebPid) return;
     this.piwebPid = pid;
     this.piwebSettleUntil = Date.now() + PIWEB_SETTLE_MS;
     this.settleLogged = false;
-    log(`pi-web pid=${pid} serving, settle window ${PIWEB_SETTLE_MS / 1000}s (预热期的慢不计入失败)`);
+    this.deps.log(`pi-web pid=${pid} serving, settle window ${PIWEB_SETTLE_MS / 1000}s (预热期的慢不计入失败)`);
   }
 
   async tick() {
     if (this.stopping || this.tickInFlight) return;
     this.tickInFlight = true;
     try {
-      const [piweb, gateway] = await stackHealth();
+      const [piweb, gateway] = await this.deps.stackHealth();
       this.detectPiWebRestart();
-      recordProbe(piweb, gateway);
+      this.deps.recordProbe(piweb, gateway);
       if (piweb.ok && gateway.ok) {
+        if (this.restartTimer) {
+          clearTimeout(this.restartTimer);
+          this.restartTimer = null;
+        }
         this.failures = 0;
         this.piwebOnlyRestarts = 0;
         if (!this.healthySince) {
           this.healthySince = Date.now();
-          log(`healthy: pi-web ${piweb.status} (${piweb.ms}ms) / gateway ${gateway.status} (${gateway.ms}ms)`);
+          this.deps.log(`healthy: pi-web ${piweb.status} (${piweb.ms}ms) / gateway ${gateway.status} (${gateway.ms}ms)`);
         } else if (this.restarts > 0 && Date.now() - this.healthySince > 300_000) {
           // 稳了 5 分钟就把退避清零，否则一次抖动会让之后所有重启都等 5 分钟。
-          log(`stable for 5min, resetting restart backoff (was #${this.restarts})`);
+          this.deps.log(`stable for 5min, resetting restart backoff (was #${this.restarts})`);
           this.restarts = 0;
         }
         return;
       }
-      // 刚拉起的实例还没到冷启动预算：不判死，否则会把"正在启动"当成"死了"再拉一份。
-      if (this.child && Date.now() - this.childStartedAt < BOOT_GRACE_MS) return;
-      if (Date.now() < this.piwebSettleUntil) {
-        // 预热尾巴期的慢是预期行为：计成失败就会把刚起来的实例再杀一遍（14:26~14:43 连杀 4 次）。
+      // 刚拉起的实例还没到冷启动预算，或正在等退避定时器重启：不累计失败、不误判为无主孤儿栈。
+      if (
+        shouldIgnoreDownProbe({
+          hasRestartTimer: Boolean(this.restartTimer),
+          hasChild: Boolean(this.child),
+          childElapsedMs: this.child ? Date.now() - this.childStartedAt : 0,
+          bootGraceMs: BOOT_GRACE_MS
+        })
+      ) {
+        return;
+      }
+      if (gateway.ok && Date.now() < this.piwebSettleUntil) {
+        // 预热尾巴期的慢是预期行为：仅在网关健康时忽略 pi-web 预热慢，绝不掩盖网关宕机。
         this.failures = 0;
         if (!this.settleLogged) {
           this.settleLogged = true;
-          log(`probe slow during settle (pi-web=${piweb.ok ? piweb.status : piweb.reason}) — not counted`);
+          this.deps.log(`probe slow during settle (pi-web=${piweb.ok ? piweb.status : piweb.reason}) — not counted`);
         }
         return;
       }
       this.healthySince = 0;
       this.failures += 1;
-      log(
+      this.deps.log(
         `probe failed ${this.failures}/${FAILURES_BEFORE_RESTART}: pi-web=${piweb.ok ? piweb.status : piweb.reason} gateway=${gateway.ok ? gateway.status : gateway.reason}`
       );
       if (this.failures < FAILURES_BEFORE_RESTART) return;
 
       this.failures = 0;
       const action = planRecovery({ gatewayOk: gateway.ok, piwebOnlyRestarts: this.piwebOnlyRestarts });
-      recordDeath({
+      this.deps.recordDeath({
         kind: 'unresponsive',
         piweb: piweb.ok ? piweb.status : piweb.reason,
         gateway: gateway.ok ? gateway.status : gateway.reason,
@@ -342,44 +406,49 @@ class Supervisor {
       });
       if (!this.child) {
         // 端口上挂着一份没人托管的实例（手敲的 / 上一代守护的孤儿）：清掉再起自己的。
-        for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `无主实例占用 ${port}`);
+        for (const port of [PIWEB_PORT, GATEWAY_PORT]) this.deps.killTree(this.deps.portOwnerPid(port), `无主实例占用 ${port}`);
         this.startChild('adopted stack unresponsive');
         return;
       }
       if (action === 'piweb') {
         // 只换 pi-web：launcher 的 exit 钩子会在 5s 后把它重新拉起来，网关与 frp 隧道全程不断。
         this.piwebOnlyRestarts += 1;
-        const owner = portOwnerPid(PIWEB_PORT);
-        log(
+        const owner = this.deps.portOwnerPid(PIWEB_PORT);
+        this.deps.log(
           `recycling pi-web only (${this.piwebOnlyRestarts}/${PIWEB_ONLY_RESTARTS_BEFORE_FULL}) owner=${owner || 'none'} — gateway 与隧道保持不动`
         );
-        killTree(owner, 'unresponsive pi-web');
+        this.deps.killTree(owner, 'unresponsive pi-web');
         return;
       }
       this.piwebOnlyRestarts = 0;
-      killTree(this.child.pid, 'unresponsive stack');
+      this.deps.killTree(this.child.pid, 'unresponsive stack');
     } finally {
       this.tickInFlight = false;
     }
   }
 
   sampleRss() {
-    const pid = portOwnerPid(PIWEB_PORT);
+    const pid = this.deps.portOwnerPid(PIWEB_PORT);
     if (!pid) return;
     const mb = processRssMb(pid);
     if (!mb) return;
     if (mb > this.rssPeakMb) this.rssPeakMb = mb;
     if (mb < RSS_RECYCLE_MB) return;
-    recordDeath({ kind: 'rss-recycle', rssMb: mb, thresholdMb: RSS_RECYCLE_MB, childPid: this.child && this.child.pid });
-    log(`pi-web RSS ${mb} MB >= ${RSS_RECYCLE_MB} MB, recycling whole stack`);
-    if (this.child) killTree(this.child.pid, 'rss recycle');
-    else killTree(portOwnerPid(PIWEB_PORT), 'rss recycle (unmanaged)');
+    this.deps.recordDeath({ kind: 'rss-recycle', rssMb: mb, thresholdMb: RSS_RECYCLE_MB, childPid: this.child && this.child.pid });
+    this.deps.log(`pi-web RSS ${mb} MB >= ${RSS_RECYCLE_MB} MB, recycling whole stack`);
+    if (this.child) this.deps.killTree(this.child.pid, 'rss recycle');
+    else this.deps.killTree(this.deps.portOwnerPid(PIWEB_PORT), 'rss recycle (unmanaged)');
   }
 
   run() {
+    const alive = this.deps.readSupervisorPid();
+    if (alive && alive !== process.pid) {
+      this.deps.log(`supervisor already running (pid ${alive}), exiting duplicate instance`);
+      return;
+    }
     this.stopping = false;
     fs.writeFileSync(SUPERVISOR_PID_FILE, String(process.pid));
-    log(`supervisor started (pid ${process.pid}) ports pi-web=${PIWEB_PORT} gateway=${GATEWAY_PORT} rssRecycle=${RSS_RECYCLE_MB}MB`);
+    this.deps.log(`supervisor started (pid ${process.pid}) ports pi-web=${PIWEB_PORT} gateway=${GATEWAY_PORT} rssRecycle=${RSS_RECYCLE_MB}MB`);
 
     const shutdown = (why) => {
       if (this.stopping) return;
@@ -420,12 +489,28 @@ class Supervisor {
   }
 }
 
-function readSupervisorPid() {
+function readSupervisorPid({
+  pidFile = SUPERVISOR_PID_FILE,
+  kill = process.kill.bind(process),
+  platform = process.platform,
+  runTasklist = (pid) =>
+    spawnSync('tasklist', ['/FI', `PID eq ${pid}`, '/NH'], { encoding: 'utf8', windowsHide: true })
+} = {}) {
   try {
-    const raw = fs.readFileSync(SUPERVISOR_PID_FILE, 'utf8').trim();
+    const raw = fs.readFileSync(pidFile, 'utf8').trim();
     const pid = Number(raw);
     if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
+    try {
+      kill(pid, 0);
+    } catch (e) {
+      if (!e || e.code !== 'EPERM') return null;
+    }
+    if (platform === 'win32') {
+      const r = runTasklist(pid);
+      if (!r || r.error) return null;
+      const out = String(r.stdout || '');
+      if (!/\bnode(?:\.exe)?\b/i.test(out)) return null;
+    }
     return pid;
   } catch (e) {
     return null;
@@ -433,7 +518,11 @@ function readSupervisorPid() {
 }
 
 function scheduleRun() {
-  spawn(process.execPath, [__filename, 'run'], { detached: true, stdio: 'ignore', cwd: SERVER_DIR }).unref();
+  if (process.platform === 'win32') {
+    const started = schtasks(['/Run', '/TN', TASKNAME]);
+    if (started.code === 0) return;
+  }
+  spawn(process.execPath, [__filename, 'run'], { detached: true, stdio: 'ignore', cwd: SERVER_DIR, windowsHide: true }).unref();
 }
 
 function schtasks(args) {
@@ -448,14 +537,14 @@ function install() {
   const sup = path.join(SERVER_DIR, 'supervisor.js');
   const ps = `
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '${sup.replace(/'/g, "''")} run' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
+$action = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '"${sup.replace(/'/g, "''")}" run' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
 $triggers = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME))
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+$settings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName '${TASKNAME}' -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null
 
-$wAction = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '${sup.replace(/'/g, "''")} ensure' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
+$wAction = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '"${sup.replace(/'/g, "''")}" ensure' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
 $wTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-$wSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+$wSettings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
 Register-ScheduledTask -TaskName '${WATCHDOG_TASKNAME}' -Action $wAction -Trigger $wTrigger -Settings $wSettings -Force | Out-Null
 Get-ScheduledTask -TaskName '${TASKNAME}','${WATCHDOG_TASKNAME}' | Select-Object TaskName,State | Format-Table -AutoSize | Out-String
 `;
@@ -578,7 +667,21 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  Supervisor,
+  readSupervisorPid,
+  readLogTail,
+  portOwnerPid,
+  parseNetstatPid,
+  parsePosixPortPid,
+  PIWEB_SETTLE_MS,
+  BOOT_GRACE_MS,
+  FAILURES_BEFORE_RESTART
+};

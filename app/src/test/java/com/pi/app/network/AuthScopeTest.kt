@@ -132,4 +132,77 @@ class AuthScopeTest {
         assertFalse(AuthScope.shouldAttachToken("http://[::1]:4100", "http://[::1]:9999/api/ping"))
         assertFalse(AuthScope.shouldAttachToken("http://[::1]:4100", "http://[::2]:4100/api/ping"))
     }
+
+    @Test
+    fun `ipv6 rfc5952 zero compression and leading zeros match canonical form`() {
+        // 网关配置带前导零，OkHttp 规范化后去掉前导零并按 RFC 5952 压缩
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "http://[2408:8207:0800::1]:4100",
+                "http://[2408:8207:800::1]:4100/api/ping"
+            )
+        )
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "https://[2001:0DB8:0000:0000:0000:0000:0000:0001]",
+                "https://[2001:db8::1]:443/api/ping"
+            )
+        )
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "http://[0:0:0:0:0:0:0:1]:4100",
+                "http://[::1]:4100/api/ping"
+            )
+        )
+        // 多组全零：RFC 5952 压缩最长组（相等时选最左）
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "http://[2001:db8:0:0:1:0:0:1]:4100",
+                "http://[2001:db8::1:0:0:1]:4100/api/ping"
+            )
+        )
+        // IPv4 映射形态也按 16-byte 归一
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "http://[::ffff:192.0.2.128]:4100",
+                "http://[::ffff:c000:280]:4100/api/ping"
+            )
+        )
+        // 非法 IPv6 必须 fail-closed
+        assertFalse(AuthScope.shouldAttachToken("http://[2001::1::2]:4100", "http://[2001::1::2]:4100/x"))
+        assertFalse(AuthScope.shouldAttachToken("http://[gggg::1]:4100", "http://[gggg::1]:4100/x"))
+        assertFalse(AuthScope.shouldAttachToken("http://[1:2:3:4:5:6:7]:4100", "http://[1:2:3:4:5:6:7]:4100/x"))
+        assertFalse(AuthScope.shouldAttachToken("http://[1:2:3:4:5:6:7::8]:4100", "http://[1:2:3:4:5:6:7::8]:4100/x"))
+    }
+
+    @Test
+    fun `internationalized domain names normalize to punycode`() {
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "https://中文.example.com",
+                "https://xn--fiq228c.example.com/api/ping"
+            )
+        )
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "https://xn--fiq228c.example.com",
+                "https://中文.example.com/api/ping"
+            )
+        )
+        assertTrue(
+            AuthScope.shouldAttachToken(
+                "https://München.de",
+                "https://xn--mnchen-3ya.de/api/ping"
+            )
+        )
+        assertFalse(
+            AuthScope.shouldAttachToken(
+                "https://中文.example.com",
+                "https://其他.example.com/api/ping"
+            )
+        )
+        // 非法域名（含空格或空标签）必须 fail-closed
+        assertFalse(AuthScope.shouldAttachToken("https://a b.com", "https://a b.com/x"))
+        assertFalse(AuthScope.shouldAttachToken("https://bad..host.com", "https://bad..host.com/x"))
+    }
 }

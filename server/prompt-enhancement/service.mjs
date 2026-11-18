@@ -19,8 +19,8 @@ import { EnhancementFailure, mapModelError } from './model-client.mjs';
 
 export const CAPABILITY_VERSION = 1;
 
-/** 首版明确不支持：斜杠命令与 shell 前缀不参与增强（避免改写执行语义）。 */
-const COMMAND_PREFIX_RE = /^\s*(?:\/|!\s*\S)/;
+/** 首版明确不支持：斜杠命令（单段 /cmd）与 shell 前缀不参与增强，避免改写执行语义；多段路径（如 /api/files/raw）正常放行。 */
+const COMMAND_PREFIX_RE = /^\s*(?:\/[A-Za-z0-9_:-]+(?:\s|$)|!\s*\S)/;
 
 /** 限流桶数量阈值：超过就在每次限流检查时顺手清理过期主体。 */
 const RATE_BUCKET_SWEEP_AT = 256;

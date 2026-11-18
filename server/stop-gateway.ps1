@@ -44,7 +44,9 @@ foreach ($port in $ports) {
 foreach ($proc in $procs) {
     if ($proc.CommandLine -and (
             $proc.CommandLine -match 'start-hidden' -or
-            $proc.CommandLine -match 'frpc-pidroid\.toml')) {
+            $proc.CommandLine -match 'frpc-pidroid\.toml' -or
+            $proc.CommandLine -match 'supervisor\.js' -or
+            $proc.CommandLine -match 'launcher\.js')) {
         $anchors[[int]$proc.ProcessId] = $true
     }
 }

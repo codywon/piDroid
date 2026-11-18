@@ -37,11 +37,13 @@ internal object OfficeXmlPreview {
     /** pptx 最多渲染的页数 */
     const val MAX_SLIDES = 60
     /** 解包后单条目上限（防止 zip 炸弹把内存吃穿） */
-    private const val MAX_ENTRY_BYTES = 24 * 1024 * 1024
-    /** 单次解析总解压字符上限 */
-    private const val MAX_TOTAL_BYTES = 48 * 1024 * 1024
+    private const val MAX_ENTRY_BYTES = 8 * 1024 * 1024
+    /** 单次解析总解压字节上限 */
+    private const val MAX_TOTAL_BYTES = 16 * 1024 * 1024
     /** 解包条目数量上限 */
     private const val MAX_ZIP_ENTRIES = 1000
+
+    private class ZipBudgetExceededException : RuntimeException()
 
     fun isSupportedExtension(ext: String): Boolean {
         return ext.lowercase(Locale.ROOT) in setOf("xlsx", "pptx")
@@ -53,14 +55,16 @@ internal object OfficeXmlPreview {
     fun extract(bytes: ByteArray, fileName: String): OfficePreview? {
         val ext = fileName.substringAfterLast('.', "").lowercase(Locale.ROOT)
         if (!isSupportedExtension(ext)) return null
-        return runCatching {
+        return try {
             val entries = readZipEntries(bytes)
             when (ext) {
                 "xlsx" -> extractSheet(entries)
                 "pptx" -> extractSlides(entries)
                 else -> null
             }
-        }.getOrNull()
+        } catch (_: Throwable) {
+            null
+        }
     }
 
     // ---------------------------------------------------------------- zip
@@ -80,29 +84,32 @@ internal object OfficeXmlPreview {
                     (name.startsWith("xl/worksheets/") && name.endsWith(".xml")) ||
                     (name.startsWith("ppt/slides/slide") && name.endsWith(".xml"))
                 if (!needed) continue
-                val text = readEntryText(zip)
-                if (text != null) {
-                    totalBytes += text.length
-                    if (totalBytes > MAX_TOTAL_BYTES) break
-                    result[name] = text
-                }
+                val remainingBudget = MAX_TOTAL_BYTES - totalBytes
+                if (remainingBudget <= 0) throw ZipBudgetExceededException()
+                val (text, readBytes) = readEntryText(zip, remainingBudget)
+                totalBytes += readBytes
+                result[name] = text
             }
         }
         return result
     }
 
-    private fun readEntryText(zip: ZipInputStream): String? {
+    private fun readEntryText(zip: ZipInputStream, remainingTotalBudget: Int): Pair<String, Int> {
         val buffer = ByteArray(8 * 1024)
         val out = java.io.ByteArrayOutputStream()
         var total = 0
+        val limit = minOf(MAX_ENTRY_BYTES, remainingTotalBudget)
         while (true) {
             val read = zip.read(buffer)
-            if (read <= 0) break
+            if (read < 0) break
+            if (read == 0) continue
+            if (read > limit - total) {
+                throw ZipBudgetExceededException()
+            }
             total += read
-            if (total > MAX_ENTRY_BYTES) return null
             out.write(buffer, 0, read)
         }
-        return out.toString(Charsets.UTF_8.name())
+        return out.toString(Charsets.UTF_8.name()) to total
     }
 
     // ---------------------------------------------------------------- xlsx
@@ -284,20 +291,42 @@ internal object OfficeXmlPreview {
         return xmlTexts(xml, tag).firstOrNull().orEmpty()
     }
 
-    private fun attribute(xml: String, name: String): String? {
-        val key = "$name=\""
-        val start = xml.indexOf(key)
-        if (start >= 0) {
-            val valueStart = start + key.length
-            val valueEnd = xml.indexOf('"', valueStart)
-            if (valueEnd > valueStart) return unescapeXml(xml.substring(valueStart, valueEnd))
-        }
-        val singleKey = "$name='"
-        val s2 = xml.indexOf(singleKey)
-        if (s2 >= 0) {
-            val valueStart = s2 + singleKey.length
-            val valueEnd = xml.indexOf('\'', valueStart)
-            if (valueEnd > valueStart) return unescapeXml(xml.substring(valueStart, valueEnd))
+    private fun isXmlWhitespace(ch: Char): Boolean =
+        ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+
+    internal fun attribute(xml: String, name: String): String? {
+        if (name.isEmpty()) return null
+        var quoteChar = '\u0000'
+        var i = 0
+        while (i < xml.length) {
+            val ch = xml[i]
+            if (quoteChar != '\u0000') {
+                if (ch == quoteChar) quoteChar = '\u0000'
+                i++
+                continue
+            }
+            if (ch == '"' || ch == '\'') {
+                quoteChar = ch
+                i++
+                continue
+            }
+            if (i > 0 && isXmlWhitespace(xml[i - 1]) &&
+                i + name.length + 1 < xml.length &&
+                xml.regionMatches(i, name, 0, name.length) &&
+                xml[i + name.length] == '='
+            ) {
+                val quote = xml[i + name.length + 1]
+                if (quote == '"' || quote == '\'') {
+                    val valueStart = i + name.length + 2
+                    val valueEnd = xml.indexOf(quote, valueStart)
+                    return if (valueEnd >= valueStart) {
+                        unescapeXml(xml.substring(valueStart, valueEnd))
+                    } else {
+                        null
+                    }
+                }
+            }
+            i++
         }
         return null
     }

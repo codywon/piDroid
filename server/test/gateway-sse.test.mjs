@@ -90,10 +90,11 @@ test('client closing disarms the watchdog instead of double-killing', async () =
 // 光有 idle 看门狗不够：24 KB/s 的活跃会话 90s 就能在 pi-web 堆出实测的 2.2 MB。
 // 网关能直接看到 `res.writableLength`，所以这里另有一条更快的判据。
 
-function fakeDownstream(writableLength) {
+function fakeDownstream(writableLength, extra = {}) {
   const stream = new EventEmitter();
   stream.destroyed = false;
   stream.writableLength = writableLength;
+  Object.assign(stream, extra);
   stream.destroy = () => {
     stream.destroyed = true;
   };
@@ -121,15 +122,69 @@ test('a client that keeps draining is never dropped', async () => {
   assert.equal(downstream.destroyed, false);
 });
 
-test('bytes flowing resets the slow-consumer window', async () => {
+test('upstream data flowing does NOT save a stuck slow consumer', async () => {
   const upstream = fakeStream();
   const downstream = fakeDownstream(4096);
   guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, FAST);
 
-  // 每 10ms 有数据流过 -> 空闲计时与慢消费者窗口都被重置
+  // 上游持续产生字节，但下游缓冲一直积压未 drain：必须判定为慢消费者并断开
   const heartbeat = setInterval(() => upstream.emit('data', 'data: {"type":"heartbeat"}\n\n'), 10);
-  await new Promise((r) => setTimeout(r, 150));
+  await new Promise((r) => setTimeout(r, 120));
   clearInterval(heartbeat);
 
-  assert.equal(downstream.destroyed, false, 'a still-moving stream must survive');
+  assert.equal(downstream.destroyed, true, 'slow consumer must be dropped even when upstream sends bytes');
+  assert.equal(upstream.destroyed, true, 'upstream must also be destroyed to stop queue growth');
+});
+
+test('downstream drain events reset the slow-consumer window', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(4096);
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, {
+    backpressureBytes: 100,
+    backpressureMs: 60,
+    pollMs: 10,
+  });
+
+  // 每次 drain 都代表下游正在消费，不应误杀
+  const drainTimer = setInterval(() => downstream.emit('drain'), 20);
+  await new Promise((r) => setTimeout(r, 140));
+  clearInterval(drainTimer);
+
+  assert.equal(downstream.destroyed, false, 'actively draining stream must survive');
+  assert.equal(upstream.destroyed, false);
+  upstream.emit('end');
+});
+
+test('drops a consumer backpressured at writableHighWaterMark with writableNeedDrain', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(16384, {
+    writableHighWaterMark: 16384,
+    writableNeedDrain: true,
+  });
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, {
+    backpressureBytes: 256 * 1024,
+    backpressureMs: 30,
+    pollMs: 10,
+  });
+
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(downstream.destroyed, true, 'pipe() stalled at 16KB highWaterMark must be dropped');
+  assert.equal(upstream.destroyed, true);
+});
+
+test('survives when writableNeedDrain is false below backpressureBytes', async () => {
+  const upstream = fakeStream();
+  const downstream = fakeDownstream(16384, {
+    writableHighWaterMark: 16384,
+    writableNeedDrain: false,
+  });
+  guardEventStreamIdle(upstream, { method: 'GET', url: '/api/agent/x/events' }, downstream, 10_000, {
+    backpressureBytes: 256 * 1024,
+    backpressureMs: 30,
+    pollMs: 10,
+  });
+
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(downstream.destroyed, false);
+  upstream.emit('end');
 });

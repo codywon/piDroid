@@ -323,7 +323,9 @@ function launch() {
   const startedAt = Date.now();
   const child = spawn(binary, ["-c", info.configPath], {
     stdio: ["ignore", "pipe", "pipe"],
-    env: stripProxyEnv(process.env)
+    env: stripProxyEnv(process.env),
+    // frpc.exe 是控制台程序：frp 重连很频繁，不隐藏就会反复闪黑窗。
+    windowsHide: true
   });
   frpState.child = child;
   pipeFrpcLogs(child.stdout, process.stdout);

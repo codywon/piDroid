@@ -89,13 +89,21 @@ class KeepAliveManager(private val context: Context) {
      */
     @Synchronized
     fun releaseWakeLock() {
-        if (wakeLock?.isHeld == true) {
-            wakeLock?.release()
-            Log.d("KeepAliveManager", "WakeLock released")
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Log.d("KeepAliveManager", "WakeLock released")
+            }
+        } catch (e: Exception) {
+            Log.w("KeepAliveManager", "Failed to release WakeLock", e)
         }
-        if (wifiLock?.isHeld == true) {
-            wifiLock?.release()
-            Log.d("KeepAliveManager", "WifiLock released")
+        try {
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+                Log.d("KeepAliveManager", "WifiLock released")
+            }
+        } catch (e: Exception) {
+            Log.w("KeepAliveManager", "Failed to release WifiLock", e)
         }
     }
 }

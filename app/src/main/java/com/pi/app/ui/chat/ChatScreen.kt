@@ -1,16 +1,23 @@
 package com.pi.app.ui.chat
 
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
 import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.MediaController
 import android.widget.VideoView
+import com.pi.app.data.storage.FileDownloader
+import com.pi.app.network.AuthScope
 import com.pi.app.ui.files.FilePreviewDataSource
+import com.pi.app.ui.files.OfficePreview
 import com.pi.app.ui.files.RemoteFilePreviewLoader
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -447,6 +454,8 @@ fun ChatScreen(
     var artifactMime by remember { mutableStateOf("") }
     /** Word 预览：服务端转好的整页 HTML，直接给 WebView */
     var artifactDocxHtml by remember { mutableStateOf<String?>(null) }
+    /** Excel / PPT 端内 OOXML 预览数据 */
+    var artifactOffice by remember { mutableStateOf<OfficePreview?>(null) }
     /** 非文本类型（Word / PDF / 媒体）的提示与错误文案 */
     var artifactMessage by remember { mutableStateOf<String?>(null) }
     /** 正在把文件下载到缓存交给外部应用 */
@@ -461,11 +470,29 @@ fun ChatScreen(
     // Git 变更全屏阅读面板
     var showGitChangesScreen by remember { mutableStateOf(false) }
 
-    // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）：跟随输入框里的 "/" 自动展开
-    var commands by remember { mutableStateOf<List<SlashCommand>>(emptyList()) }
-    var isLoadingCommands by remember { mutableStateOf(false) }
+    // 切换会话时立即清理覆盖层与递增请求序号，防止上一个会话的文件/微组件/Git 面板跨会话残留或异步回写
+    LaunchedEffect(sessionId) {
+        artifactRequestSeq += 1
+        artifactTitle = null
+        artifactText = null
+        artifactImage = null
+        artifactPdfFile = null
+        artifactDocxHtml = null
+        artifactOffice = null
+        artifactPath = null
+        artifactMessage = null
+        widgetOverlay = null
+        showGitChangesScreen = false
+        isOpeningExternally = false
+        isLoadingArtifact = false
+        isLoadingMoreArtifact = false
+    }
+
+    // 斜杠命令面板（扩展命令 / prompt 模板 / 技能）：跟随输入框里的 "/" 自动展开，按会话隔离避免跨项目残留
+    var commands by remember(sessionId) { mutableStateOf<List<SlashCommand>>(emptyList()) }
+    var isLoadingCommands by remember(sessionId) { mutableStateOf(false) }
     // 会话被重建（set_tools 跨越仅聊天边界）后，旧会话的命令清单不再属于当前会话
-    LaunchedEffect(commandsRevision) {
+    LaunchedEffect(sessionId, commandsRevision) {
         commands = emptyList()
         isLoadingCommands = false
     }
@@ -788,6 +815,7 @@ fun ChatScreen(
         artifactKind = ArtifactKind.TEXT
         artifactMime = ""
         artifactDocxHtml = null
+        artifactOffice = null
         artifactMessage = null
         isOpeningExternally = false
         artifactRawMode = false
@@ -859,6 +887,7 @@ fun ChatScreen(
         artifactKind = ArtifactKind.TEXT
         artifactMime = ""
         artifactDocxHtml = null
+        artifactOffice = null
         artifactMessage = null
         isOpeningExternally = false
         artifactRawMode = false
@@ -882,6 +911,7 @@ fun ChatScreen(
             artifactMime = preview.mime
             artifactMeta = preview.metaLabel
             artifactDocxHtml = preview.docxHtml
+            artifactOffice = preview.officePreview
             artifactMessage = preview.message
             artifactNextOffset = preview.nextOffset
             artifactTruncated = preview.truncated
@@ -1251,7 +1281,7 @@ fun ChatScreen(
     // 只看前者时，只要某一次快照把 hasMore 报成 false（旧版服务端缺字段 / 游标刚好落页尾），
     // 自动续批就永久停手，表现就是“往上翻不动、后半段历史没了”。
     val hasUnloadedHistory = hasEarlierOnServer || earlierTurnCount > 0
-    val firstVisibleIndex by remember { derivedStateOf { listState.firstVisibleItemIndex } }
+    val firstVisibleIndex by remember(listState) { derivedStateOf { listState.firstVisibleItemIndex } }
     LaunchedEffect(firstVisibleIndex, hasInitialScrolled, hasUnloadedHistory, isLoadingOlder) {
         if (hasInitialScrolled && !isLoadingOlder && hasUnloadedHistory && firstVisibleIndex <= 0) {
             captureViewportAnchor()
@@ -1460,13 +1490,11 @@ fun ChatScreen(
                                 letterSpacing = 0.4.sp,
                                 color = theme.textMuted
                             )
-                            // pi-web 的 recall：把排队内容全部放回输入框（服务端队列同步清空）
+                            // pi-web 的 recall：把排队内容全部放回输入框（仅通过服务端 clearQueue 成功后的 recallRequest 单一通道回填，杜绝双重粘贴与断网假清空）
                             Row(
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(6.dp))
                                     .clickable {
-                                        val recalled = queuedMessages.joinToString("\n\n") { it.text }
-                                        updateDraft(if (inputText.isBlank()) recalled else "$recalled\n\n$inputText")
                                         onClearQueue()
                                     }
                                     .padding(horizontal = 8.dp, vertical = 3.dp),
@@ -1959,7 +1987,11 @@ fun ChatScreen(
                             ?.drop(1)
                         val showSlashMenu = slashQuery != null && !slashQuery.contains(' ')
                         // 内置命令永远排在服务端命令前面：它们不依赖网关，离线也能看见
-                        val paletteCommands = remember(commands) { BUILTIN_SLASH_COMMANDS + commands }
+                        val paletteCommands = remember(commands) {
+                            (BUILTIN_SLASH_COMMANDS + commands)
+                                .filter { it.name.isNotBlank() }
+                                .distinctBy { "${it.source}:${it.name}" }
+                        }
                         val matchedCommands = remember(paletteCommands, slashQuery) {
                             val q = slashQuery?.trim().orEmpty()
                             if (q.isEmpty()) {
@@ -1971,11 +2003,14 @@ fun ChatScreen(
                                 }.take(8)
                             }
                         }
-                        LaunchedEffect(showSlashMenu) {
+                        LaunchedEffect(showSlashMenu, sessionId, commandsRevision) {
                             if (showSlashMenu && commands.isEmpty() && !isLoadingCommands) {
                                 isLoadingCommands = true
-                                onLoadCommands().onSuccess { commands = it }
-                                isLoadingCommands = false
+                                try {
+                                    onLoadCommands().onSuccess { commands = it }
+                                } finally {
+                                    isLoadingCommands = false
+                                }
                             }
                         }
                         if (showSlashMenu) {
@@ -2638,13 +2673,13 @@ fun ChatScreen(
                 // 时间轴当前高亮档位：直接读「首个可见行」的 key（turn_<n>_…）解析回合号。
                 // 旧实现用 firstVisibleItemIndex 减去顶部横幅再当回合下标猜，一旦回合被折叠成
                 // 「过程组 / 最终答复」多行（或上滑续批插入新行），索引与回合号就对不上，高亮乱跳。
-                var activeTurnNumber by remember { mutableStateOf(allTurns.firstOrNull()?.turnNumber ?: 1) }
+                var activeTurnNumber by remember(sessionId) { mutableStateOf(allTurns.firstOrNull()?.turnNumber ?: 1) }
                 // 点击后 1.6s 内锁定高亮（对标 pi-web 的 M.current 锁）。
                 // 没这个锁时，跳转那一帧布局还没稳，按“可见行”重算一次就会把高亮回退到上一行，
                 // 表现就是「点 N ，深蓝色却亮在 N-1」。
-                var activeTurnLockUntil by remember { mutableStateOf(0L) }
+                var activeTurnLockUntil by remember(sessionId) { mutableStateOf(0L) }
 
-                LaunchedEffect(Unit) {
+                LaunchedEffect(listState) {
                     snapshotFlow {
                         val info = listState.layoutInfo
                         val viewport = (info.viewportEndOffset - info.viewportStartOffset).coerceAtLeast(1)
@@ -2811,6 +2846,7 @@ fun ChatScreen(
             image = artifactImage,
             pdfFile = artifactPdfFile,
             docxHtml = artifactDocxHtml,
+            officePreview = artifactOffice,
             message = artifactMessage,
             rawMode = artifactRawMode,
             isLoading = isLoadingArtifact,
@@ -2821,6 +2857,7 @@ fun ChatScreen(
             isOpeningExternally = isOpeningExternally,
             sessionCwd = sessionCwd,
             onResolveMediaSource = { p -> onResolveFileSource(p) },
+            onDownloadMediaToCache = onDownloadFileToCache,
             onBack = {
                 artifactRequestSeq += 1
                 artifactTitle = null
@@ -2828,6 +2865,7 @@ fun ChatScreen(
                 artifactImage = null
                 artifactPdfFile = null
                 artifactDocxHtml = null
+                artifactOffice = null
                 isLoadingArtifact = false
                 isLoadingMoreArtifact = false
             },
@@ -2856,12 +2894,43 @@ fun ChatScreen(
                 artifactImage = null
                 artifactPdfFile = null
                 artifactDocxHtml = null
+                artifactOffice = null
                 isLoadingArtifact = false
                 isLoadingMoreArtifact = false
                 android.widget.Toast.makeText(context, "已引用到输入框: $mentionText", android.widget.Toast.LENGTH_SHORT).show()
             },
             onDownloadFile = { path ->
-                openArtifactExternally()
+                coroutineScope.launch {
+                    android.widget.Toast.makeText(context, "正在下载到手机…", android.widget.Toast.LENGTH_SHORT).show()
+                    onDownloadFileToCache(path)
+                        .onSuccess { cacheFile ->
+                            val displayName = FileLinks.displayName(path).ifBlank { cacheFile.name }
+                            val mime = artifactMime.takeIf { path == artifactPath && it.isNotBlank() }
+                                ?: FileDownloader.getMimeType(displayName)
+                            saveCachedFileToDownloads(context, cacheFile, displayName, mime)
+                                .onSuccess { savedPath ->
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "已下载到: $savedPath",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                                .onFailure { err ->
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "下载失败: ${err.message}",
+                                        android.widget.Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                        }
+                        .onFailure { err ->
+                            android.widget.Toast.makeText(
+                                context,
+                                "下载失败: ${err.message}",
+                                android.widget.Toast.LENGTH_LONG
+                            ).show()
+                        }
+                }
             }
         )
     }
@@ -3905,15 +3974,33 @@ private fun readBoundedBytes(
     val declared = runCatching {
         context.contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
     }.getOrDefault(-1L)
-    if (declared > maxBytes) {
+    readBoundedStreamBytes(declared = declared, maxBytes = maxBytes) {
+        context.contentResolver.openInputStream(uri)
+    }
+} catch (e: CancellationException) {
+    throw e
+} catch (_: Throwable) {
+    null
+}
+
+/**
+ * 纯 JVM 有上限流读取核心：支持空文件（`declared == 0L` 返回 `ByteArray(0)`）、
+ * 声明偏大提前 EOF 截断、声明偏小续读及临时 `0` 字节返回，并拦截 `OutOfMemoryError`。
+ */
+internal fun readBoundedStreamBytes(
+    declared: Long,
+    maxBytes: Int,
+    openStream: () -> java.io.InputStream?
+): ByteArray? = try {
+    if (maxBytes < 0 || declared > maxBytes) {
         null
     } else {
-        context.contentResolver.openInputStream(uri)?.use { input ->
+        openStream()?.use { input ->
             val exact = if (declared in 1..maxBytes.toLong()) ByteArray(declared.toInt()) else null
             if (exact == null) {
-                // 大小未知：沿用逐块读的上限保护
+                // 大小未知或 declared == 0L：走逐块上限保护，允许 0 字节空文件返回 ByteArray(0)
                 val output = java.io.ByteArrayOutputStream()
-                if (drainBounded(input, output, alreadyRead = 0, maxBytes = maxBytes) && output.size() > 0) {
+                if (drainBounded(input, output, alreadyRead = 0, maxBytes = maxBytes)) {
                     output.toByteArray()
                 } else {
                     null
@@ -3922,15 +4009,20 @@ private fun readBoundedBytes(
                 var read = 0
                 while (read < exact.size) {
                     val r = input.read(exact, read, exact.size - read)
-                    if (r <= 0) break
+                    if (r < 0) break
+                    if (r == 0) continue
                     read += r
                 }
                 if (read < exact.size) {
-                    // 比声明的短：半截文件不上传
-                    null
+                    // 部分云盘 Provider 预估长度偏大：提前遇到 EOF 时返回已读字节
+                    exact.copyOf(read)
                 } else {
                     val probe = ByteArray(1)
-                    val more = input.read(probe)
+                    var more: Int
+                    while (true) {
+                        more = input.read(probe)
+                        if (more != 0) break
+                    }
                     if (more < 0) {
                         // 声明大小正好：本次读取零拷贝（只有这一条路径能做到）
                         exact
@@ -3948,24 +4040,28 @@ private fun readBoundedBytes(
             }
         }
     }
-} catch (_: Exception) {
+} catch (e: CancellationException) {
+    throw e
+} catch (_: Throwable) {
     null
 }
 
 /** 把剩余字节读进 [output]，超过 [maxBytes]（含已读的 [alreadyRead]）则返回 false。 */
-private fun drainBounded(
+internal fun drainBounded(
     input: java.io.InputStream,
     output: java.io.ByteArrayOutputStream,
     alreadyRead: Int,
     maxBytes: Int
 ): Boolean {
+    if (alreadyRead > maxBytes) return false
     val chunk = ByteArray(64 * 1024)
     var total = alreadyRead
     while (true) {
         val r = input.read(chunk)
-        if (r <= 0) return true
+        if (r < 0) return true
+        if (r == 0) continue
+        if (r > maxBytes - total) return false
         total += r
-        if (total > maxBytes) return false
         output.write(chunk, 0, r)
     }
 }
@@ -4013,7 +4109,7 @@ private fun encodePickedImages(
                 else -> "image/png"
             }
             val bytes = readBoundedBytes(context, sourceUri, MAX_PROMPT_IMAGE_BYTES)
-            if (bytes == null) {
+            if (bytes == null || bytes.isEmpty()) {
                 skipped++
                 continue
             }
@@ -4114,32 +4210,102 @@ internal fun ArtifactHintCard(text: String) {
 }
 
 /**
- * 音频播放器：pi-web 只是把 `/api/files/<path>?type=read` 塞给浏览器的 <audio>，
- * 手机端的等价物是 MediaPlayer —— 但网关只认 `Authorization: Bearer`
- * （`QUERY_TOKEN_PATH_PATTERN` 只对 `/events` 放行 `?token=`），
- * 所以必须用带 headers 的 setDataSource，不能只给一个裸 URL。
+ * 对流式媒体播放源做同源校验：仅当目标 URL 与已配置网关同源时才保留 Authorization 头，
+ * 防止 MediaPlayer / VideoView 向非网关地址或跨源目标直接发送凭据。
+ */
+internal fun sanitizePlaybackSourceForStreaming(
+    source: FilePlaybackSource?,
+    gatewayServerUrl: String
+): FilePlaybackSource? {
+    source ?: return null
+    val url = source.url.trim()
+    if (url.isEmpty()) return null
+    val isTrustedSameOrigin = gatewayServerUrl.isNotBlank() &&
+        AuthScope.shouldAttachToken(gatewayServerUrl, url)
+    val filteredHeaders = if (isTrustedSameOrigin) {
+        source.headers
+    } else {
+        source.headers.filterKeys { key ->
+            !key.equals("Authorization", ignoreCase = true) &&
+                !key.equals("Proxy-Authorization", ignoreCase = true)
+        }
+    }
+    return if (filteredHeaders == source.headers) source else source.copy(headers = filteredHeaders)
+}
+
+/**
+ * 音频播放器：优先通过 [onDownloadToCache] 经 OkHttp（走 [AuthScope] 与重试）下载到本地缓存文件再播放，
+ * 彻底杜绝系统 MediaPlayer 在跨源 HTTP 重定向时把网关 Authorization 头带给第三方域名。
  */
 @Composable
-internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) {
+internal fun AudioArtifactCard(
+    source: FilePlaybackSource?,
+    errorText: String?,
+    path: String? = null,
+    onDownloadToCache: (suspend (String) -> Result<File>)? = null
+) {
     val theme = LocalAppTheme.current
     val context = LocalContext.current
-    if (source == null) {
+    val gatewayUrl = LocalMediaGatewayConfig.current.serverUrl
+    val useLocalCache = !path.isNullOrBlank() && onDownloadToCache != null
+    val streamingSource = remember(source, gatewayUrl) {
+        sanitizePlaybackSourceForStreaming(source, gatewayUrl)
+    }
+
+    if (!useLocalCache && streamingSource == null) {
         ArtifactHintCard(errorText ?: "无法获取音频地址（请检查网关配置）")
         return
     }
 
-    var isPlaying by remember(source.url) { mutableStateOf(false) }
-    var isPreparing by remember(source.url) { mutableStateOf(true) }
-    var durationMs by remember(source.url) { mutableStateOf(0) }
-    var positionMs by remember(source.url) { mutableStateOf(0) }
-    var failure by remember(source.url) { mutableStateOf<String?>(null) }
-    val playerHolder = remember(source.url) { mutableStateOf<MediaPlayer?>(null) }
+    val mediaKey = if (useLocalCache) "cache:$path" else "stream:${streamingSource?.url.orEmpty()}"
+    var cachedFile by remember(mediaKey) { mutableStateOf<File?>(null) }
+    var isDownloading by remember(mediaKey) { mutableStateOf(useLocalCache) }
+    var cacheFailure by remember(mediaKey) { mutableStateOf<String?>(null) }
 
-    DisposableEffect(source.url) {
+    if (useLocalCache) {
+        val latestDownload by rememberUpdatedState(onDownloadToCache)
+        LaunchedEffect(path) {
+            cachedFile = null
+            cacheFailure = null
+            isDownloading = true
+            latestDownload?.invoke(path!!)?.onSuccess { file ->
+                cachedFile = file
+            }?.onFailure { err ->
+                cacheFailure = "无法加载音频：${err.message ?: "下载失败"}"
+            }
+            isDownloading = false
+        }
+    }
+
+    if (useLocalCache && cacheFailure != null) {
+        ArtifactHintCard(errorText ?: cacheFailure!!)
+        return
+    }
+
+    var isPlaying by remember(mediaKey) { mutableStateOf(false) }
+    var isPreparing by remember(mediaKey) { mutableStateOf(true) }
+    var durationMs by remember(mediaKey) { mutableStateOf(0) }
+    var positionMs by remember(mediaKey) { mutableStateOf(0) }
+    var failure by remember(mediaKey) { mutableStateOf<String?>(null) }
+    val playerHolder = remember(mediaKey) { mutableStateOf<MediaPlayer?>(null) }
+
+    val readyToBind = if (useLocalCache) cachedFile != null else streamingSource != null
+    DisposableEffect(mediaKey, cachedFile, streamingSource) {
+        if (!readyToBind) {
+            return@DisposableEffect onDispose { }
+        }
         val player = MediaPlayer()
         playerHolder.value = player
+        isPreparing = true
+        failure = null
         runCatching {
-            player.setDataSource(context, Uri.parse(source.url), source.headers)
+            val local = cachedFile
+            if (local != null) {
+                player.setDataSource(local.absolutePath)
+            } else {
+                val safe = streamingSource!!
+                player.setDataSource(context, Uri.parse(safe.url), safe.headers)
+            }
             player.setOnPreparedListener { mp ->
                 isPreparing = false
                 durationMs = mp.duration.coerceAtLeast(0)
@@ -4166,7 +4332,7 @@ internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) 
     }
 
     // 进度轮询（MediaPlayer 没有进度回调），仅在播放时运行
-    LaunchedEffect(source.url, isPlaying) {
+    LaunchedEffect(mediaKey, isPlaying) {
         while (isPlaying) {
             val player = playerHolder.value
             if (player != null) {
@@ -4206,7 +4372,7 @@ internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) 
                             }
                         }
                     },
-                    enabled = !isPreparing && failure == null
+                    enabled = !isDownloading && !isPreparing && failure == null
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -4233,7 +4399,7 @@ internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) 
                     color = theme.textMuted
                 )
             }
-            if (isPreparing) {
+            if (isDownloading || isPreparing) {
                 Text(text = "正在缓冲…", fontSize = 10.5.sp, color = theme.textMuted)
             }
             val hint = failure ?: errorText
@@ -4245,16 +4411,84 @@ internal fun AudioArtifactCard(source: FilePlaybackSource?, errorText: String?) 
 }
 
 /**
- * 视频播放器：VideoView 自带 Surface 生命周期与缩放，
- * 并能把鉴权头透传给底层的 MediaPlayer（`setVideoURI(uri, headers)`）。
+ * 视频播放器：优先通过 [onDownloadToCache] 下载到本地缓存文件后再交给 VideoView，
+ * 避免底层媒体播放器在跨源重定向时泄漏网关 Authorization 头。
  */
 @Composable
-internal fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) {
-    if (source == null) {
+internal fun VideoArtifactCard(
+    source: FilePlaybackSource?,
+    errorText: String?,
+    path: String? = null,
+    onDownloadToCache: (suspend (String) -> Result<File>)? = null
+) {
+    val theme = LocalAppTheme.current
+    val gatewayUrl = LocalMediaGatewayConfig.current.serverUrl
+    val useLocalCache = !path.isNullOrBlank() && onDownloadToCache != null
+    val streamingSource = remember(source, gatewayUrl) {
+        sanitizePlaybackSourceForStreaming(source, gatewayUrl)
+    }
+
+    if (!useLocalCache && streamingSource == null) {
         ArtifactHintCard(errorText ?: "无法获取视频地址（请检查网关配置）")
         return
     }
-    key(source.url, source.headers) {
+
+    val mediaKey = if (useLocalCache) "cache:$path" else "stream:${streamingSource?.url.orEmpty()}"
+    var cachedFile by remember(mediaKey) { mutableStateOf<File?>(null) }
+    var isDownloading by remember(mediaKey) { mutableStateOf(useLocalCache) }
+    var cacheFailure by remember(mediaKey) { mutableStateOf<String?>(null) }
+    var playbackFailure by remember(mediaKey) { mutableStateOf<String?>(null) }
+
+    if (useLocalCache) {
+        val latestDownload by rememberUpdatedState(onDownloadToCache)
+        LaunchedEffect(path) {
+            cachedFile = null
+            cacheFailure = null
+            playbackFailure = null
+            isDownloading = true
+            latestDownload?.invoke(path!!)?.onSuccess { file ->
+                cachedFile = file
+            }?.onFailure { err ->
+                cacheFailure = "无法加载视频：${err.message ?: "下载失败"}"
+            }
+            isDownloading = false
+        }
+    }
+
+    val activeFailure = cacheFailure ?: playbackFailure
+    if (activeFailure != null) {
+        ArtifactHintCard(errorText ?: activeFailure)
+        return
+    }
+
+    if (useLocalCache && (isDownloading || cachedFile == null)) {
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = theme.surfaceContainer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(220.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    strokeWidth = 2.dp,
+                    color = theme.primary
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("正在缓冲视频…", fontSize = 12.sp, color = theme.textMuted)
+            }
+        }
+        return
+    }
+
+    val local = cachedFile
+    val safeStream = streamingSource
+    key(local?.absolutePath, safeStream?.url, safeStream?.headers) {
         AndroidView(
             factory = { ctx ->
                 VideoView(ctx).apply {
@@ -4262,8 +4496,19 @@ internal fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) 
                     controller.setAnchorView(this)
                     setMediaController(controller)
                     setOnPreparedListener { mp -> runCatching { mp.start() } }
-                    setOnErrorListener { _, _, _ -> true }
-                    runCatching { setVideoURI(Uri.parse(source.url), source.headers) }
+                    setOnErrorListener { _, what, extra ->
+                        playbackFailure = "视频播放失败（$what/$extra）"
+                        true
+                    }
+                    runCatching {
+                        if (local != null) {
+                            setVideoPath(local.absolutePath)
+                        } else if (safeStream != null) {
+                            setVideoURI(Uri.parse(safeStream.url), safeStream.headers)
+                        }
+                    }.onFailure {
+                        playbackFailure = "无法加载视频：${it.message}"
+                    }
                 }
             },
             // VideoView 靠 onDetachedFromWindow 不一定释放 MediaPlayer，显式停掉避免浮在后台放
@@ -4272,6 +4517,75 @@ internal fun VideoArtifactCard(source: FilePlaybackSource?, errorText: String?) 
                 .fillMaxWidth()
                 .height(220.dp)
         )
+    }
+}
+
+/** 把已缓存的文件写入系统公共下载目录 `Download/πDroid`。 */
+private suspend fun saveCachedFileToDownloads(
+    context: Context,
+    sourceFile: File,
+    displayFileName: String,
+    mimeType: String
+): Result<String> = withContext(Dispatchers.IO) {
+    try {
+        val safeName = FileDownloader.sanitizeFileName(displayFileName)
+        val resolvedMime = mimeType.ifBlank { FileDownloader.getMimeType(safeName) }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val contentValues = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                put(MediaStore.MediaColumns.MIME_TYPE, resolvedMime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/πDroid")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                ?: return@withContext Result.failure(java.io.IOException("无法在系统下载目录创建文件"))
+            try {
+                sourceFile.inputStream().use { input ->
+                    resolver.openOutputStream(uri)?.use { output ->
+                        input.copyTo(output)
+                    } ?: throw java.io.IOException("无法写入目标输出流")
+                }
+                contentValues.clear()
+                contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                resolver.update(uri, contentValues, null, null)
+                Result.success("Download/πDroid/$safeName")
+            } catch (e: Exception) {
+                runCatching { resolver.delete(uri, null, null) }
+                throw e
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            val targetDir = File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "πDroid"
+            )
+            if (!targetDir.exists() && !targetDir.mkdirs()) {
+                return@withContext Result.failure(java.io.IOException("无法创建下载目录"))
+            }
+            var targetFile = File(targetDir, safeName)
+            if (targetFile.exists()) {
+                val dot = safeName.lastIndexOf('.')
+                val baseName = if (dot > 0) safeName.substring(0, dot) else safeName
+                val extSuffix = if (dot > 0) safeName.substring(dot) else ""
+                targetFile = File(targetDir, "${baseName}_${System.currentTimeMillis()}$extSuffix")
+            }
+            try {
+                sourceFile.inputStream().use { input ->
+                    java.io.FileOutputStream(targetFile).use { output ->
+                        input.copyTo(output)
+                    }
+                }
+                Result.success(targetFile.absolutePath)
+            } catch (e: Exception) {
+                runCatching { targetFile.delete() }
+                throw e
+            }
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
     }
 }
 

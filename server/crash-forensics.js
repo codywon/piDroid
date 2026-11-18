@@ -23,6 +23,7 @@ function redactLine(line) {
   return String(line)
     .replace(/((?:auth\.)?token\s*=\s*)[^\s,"}&]+/gi, '$1***')
     .replace(/\b(pi_[0-9a-zA-Z]{8,})\b/g, 'pi_***')
+    .replace(/pi_[0-9a-f]{20,}/gi, 'pi_***')
     .replace(/((?:password|passwd|secret|api[_-]?key)\s*[=:]\s*)[^\s,"}&]+/gi, '$1***');
 }
 
@@ -65,7 +66,8 @@ function sampleProcessMemoryMb(pid) {
       const out = execSync(`tasklist /FI "PID eq ${Number(pid)}" /FO CSV /NH`, {
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
-        timeout: 4000
+        timeout: 4000,
+        windowsHide: true
       });
       return parseWindowsTasklistCsv(out);
     }

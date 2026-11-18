@@ -28,6 +28,8 @@ class PiForegroundService : Service() {
         val action = intent?.action
         if (action == ACTION_STOP) {
             isRunning = false
+            startPending = false
+            stopRequested = false
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -40,7 +42,6 @@ class PiForegroundService : Service() {
         val targetSessionId = intent?.getStringExtra(EXTRA_TARGET_SESSION_ID)
 
         val notification = buildNotification(title, content, subText, bigText, targetSessionId)
-        isRunning = true
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -56,10 +57,23 @@ class PiForegroundService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            isRunning = true
+            startPending = false
+            if (stopRequested) {
+                stopRequested = false
+                isRunning = false
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+                return START_NOT_STICKY
+            }
         } catch (e: Exception) {
             // 少数 ROM 会因后台启动限制拒绝 startForeground。不能让它崩溃，
             // 但必须留下痕迹：保活静默失效时用户只会觉得「后台老是被杀」。
+            isRunning = false
+            startPending = false
+            stopRequested = false
             Log.e(TAG, "startForeground rejected by the system; keep-alive is not active", e)
+            stopSelf()
         }
 
         return START_STICKY
@@ -67,6 +81,8 @@ class PiForegroundService : Service() {
 
     override fun onDestroy() {
         isRunning = false
+        startPending = false
+        stopRequested = false
         super.onDestroy()
     }
 
@@ -147,6 +163,12 @@ class PiForegroundService : Service() {
         var isRunning: Boolean = false
             private set
 
+        @Volatile
+        private var startPending: Boolean = false
+
+        @Volatile
+        private var stopRequested: Boolean = false
+
         /** 上次刷新通知图标时的 App 版本。*/
         private const val PREFS_NOTIFY = "pidroid_notify_prefs"
         private const val KEY_LAST_ICON_VERSION = "key_last_notified_app_version"
@@ -182,6 +204,7 @@ class PiForegroundService : Service() {
             targetSessionId: String? = null
         ) {
             try {
+                stopRequested = false
                 // 如果前台服务已经在运行，直接利用 NotificationManager 静默无缝刷新通知，避免闪烁
                 if (isRunning) {
                     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -233,18 +256,28 @@ class PiForegroundService : Service() {
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     dropStaleNotification(context)
+                    startPending = true
                     context.startForegroundService(intent)
                 } else {
                     dropStaleNotification(context)
                     context.startService(intent)
                 }
             } catch (e: Exception) {
+                startPending = false
                 Log.e(TAG, "Failed to start the foreground keep-alive service", e)
             }
         }
 
         fun stop(context: Context) {
             try {
+                // 若刚刚发起 startForegroundService 但尚未进入 onStartCommand，只登记停止诉求，
+                // 待 onStartCommand 兑现 startForeground 契约后再自行收尾，避免触发 ForegroundServiceDidNotStartInTimeException。
+                if (startPending && !isRunning) {
+                    stopRequested = true
+                    return
+                }
+                stopRequested = false
+                isRunning = false
                 // 直接使用 stopService 停止服务：
                 // 1. 避免后台场景下调用 startService(ACTION_STOP) 触发 IllegalStateException；
                 // 2. 避免 ACTION_STOP 与随后紧接的 ACTION_START 排队并发导致新服务启动后被误杀。

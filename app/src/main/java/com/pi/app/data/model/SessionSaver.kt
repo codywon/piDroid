@@ -35,7 +35,9 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 session.active.toString(),
                 session.awaitingInput.toString(),
                 session.isRunning.toString(),
-                session.isWorktree.toString()
+                session.isWorktree.toString(),
+                session.relation?.kind ?: "",
+                session.relation?.parentSessionId ?: ""
             )
         }
     },
@@ -45,6 +47,13 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
         } else {
             fun text(index: Int): String = values.getOrNull(index) as? String ?: ""
             fun optional(index: Int): String? = text(index).ifEmpty { null }
+            val relationKind = optional(16)
+            val relationParentId = optional(17)
+            val relation = if (relationKind != null || relationParentId != null) {
+                SessionRelation(kind = relationKind, parentSessionId = relationParentId)
+            } else {
+                null
+            }
             Session(
                 id = text(0),
                 name = optional(1),
@@ -61,7 +70,8 @@ val SessionSaver: Saver<Session?, Any> = listSaver(
                 active = text(12).toBooleanStrictOrNull() ?: false,
                 awaitingInput = text(13).toBooleanStrictOrNull() ?: false,
                 isRunning = text(14).toBooleanStrictOrNull() ?: false,
-                isWorktree = text(15).toBooleanStrictOrNull() ?: false
+                isWorktree = text(15).toBooleanStrictOrNull() ?: false,
+                relation = relation
             )
         }
     }

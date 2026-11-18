@@ -1,5 +1,6 @@
 package com.pi.app.ui.components
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -73,5 +74,24 @@ class SvgCanvasHtmlTest {
         assertTrue("必须包含基准缩放比函数", html.contains("function getBaseScale("))
         assertTrue("必须包含动态更新计算函数", html.contains("function updateViewBox("))
         assertTrue("必须监听窗口尺寸变动自适应", html.contains("window.addEventListener('resize'"))
+    }
+
+    @Test
+    fun `未闭合的 SVG 注释与标签不会吞没后续缩放脚本`() {
+        val danglingSvg = "<svg viewBox=\"0 0 100 100\"><circle cx=\"50\" cy=\"50\" r=\"40\"/><!-- unclosed comment"
+        val closed = closeDanglingSvgMarkup(danglingSvg)
+        assertTrue("未闭合注释必须被补全", closed.contains("-->"))
+        assertTrue("未闭合 svg 标签必须被补全", closed.endsWith("</svg>"))
+
+        val html = buildSvgHtml(
+            cleanSvg = danglingSvg,
+            isDark = true,
+            enableZoom = true,
+            scriptNonce = testNonce
+        )
+        val commentCloseIdx = html.indexOf("-->")
+        val scriptOpenIdx = html.indexOf("<script nonce=\"$testNonce\">")
+        assertTrue("注释必须在脚本之前闭合", commentCloseIdx in 0 until scriptOpenIdx)
+        assertEquals("合法完整 SVG 不应被改动", sampleSvg, closeDanglingSvgMarkup(sampleSvg))
     }
 }

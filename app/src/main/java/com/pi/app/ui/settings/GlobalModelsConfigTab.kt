@@ -454,6 +454,8 @@ fun GlobalModelsConfigTab(
                 api = prov.api
             ).onSuccess { res ->
                 discoveredModels = res.models
+                    .filter { it.id.isNotBlank() }
+                    .distinctBy { it.id }
                 isDiscovering = false
             }.onFailure { err ->
                 discoverError = err.message

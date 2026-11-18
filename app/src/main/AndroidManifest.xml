@@ -26,6 +26,14 @@
 
     <uses-feature android:name="android.hardware.camera" android:required="false" />
 
+    <queries>
+        <package android:name="com.android.chrome" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+
     <application
         android:name=".PiApp"
         android:allowBackup="true"

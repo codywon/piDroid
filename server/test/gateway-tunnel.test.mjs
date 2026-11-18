@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 // 只取纯函数：gateway.js 顶层会建 token、注册路由，但不会 listen。
 const {
   parseStableTunnelConfig,
+  detectStableTunnelFromConfig,
   isSafeTunnelName,
   isSafeHostname,
 } = await import("../gateway.js");
@@ -41,6 +45,60 @@ ingress:
   const found = parseStableTunnelConfig(config, 4100);
   assert.equal(found.tunnelName, "pi");
   assert.equal(found.hostname, "pi.example.com");
+});
+
+test("supports quoted service with trailing slash and service before hostname", () => {
+  const config = `
+tunnel: pi
+ingress:
+  - service: "http://127.0.0.1:3000/"
+    hostname: other.example.com
+  - service: "http://127.0.0.1:4100/"
+    hostname: pi.example.com
+  - service: http_status:404
+`;
+  const found = parseStableTunnelConfig(config, 4100);
+  assert.deepEqual(found, {
+    tunnelName: "pi",
+    hostname: "pi.example.com",
+    targetPort: 4100,
+  });
+});
+
+test("detectStableTunnelFromConfig never mistakes http_status:404 for port 404", () => {
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pidroid-cf-"));
+  const cfDir = path.join(tmpHome, ".cloudflared");
+  fs.mkdirSync(cfDir, { recursive: true });
+  const prevUserProfile = process.env.USERPROFILE;
+  const prevHome = process.env.HOME;
+  try {
+    process.env.USERPROFILE = tmpHome;
+    process.env.HOME = tmpHome;
+
+    fs.writeFileSync(
+      path.join(cfDir, "config.yml"),
+      "tunnel: pi\ningress:\n  - service: http_status:404\n",
+      "utf8",
+    );
+    const only404 = detectStableTunnelFromConfig(4100);
+    assert.equal(only404.tunnel, null);
+    assert.equal(only404.notes.some((n) => n.includes("404")), false, JSON.stringify(only404.notes));
+
+    fs.writeFileSync(
+      path.join(cfDir, "config.yml"),
+      'tunnel: pi\ningress:\n  - hostname: pi.example.com\n    service: "http://127.0.0.1:3000/"\n  - service: http_status:404\n',
+      "utf8",
+    );
+    const mismatch = detectStableTunnelFromConfig(4100);
+    assert.equal(mismatch.tunnel, null);
+    assert.equal(mismatch.notes.some((n) => n.includes("3000")), true, JSON.stringify(mismatch.notes));
+  } finally {
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = prevUserProfile;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  }
 });
 
 test("a config without a tunnel key yields nothing", () => {

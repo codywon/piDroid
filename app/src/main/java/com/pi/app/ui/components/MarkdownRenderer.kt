@@ -75,8 +75,10 @@ import java.util.Locale
  * 大模型友好型 CJK Markdown 与多行块级公式规整引擎
  */
 object CjkMarkdownNormalizer {
-    // 仅保护三反引号/三波浪线多行围栏代码块，避免单反引号保护导致外部粘连/孤立反引号把大片正文误识别为代码块
-    private val FENCED_CODE_BLOCK_PATTERN = Regex("""(?m)^[ \t]*(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n[ \t]*\1[ \t]*$|```[\s\S]*?```|~~~[\s\S]*?~~~""")
+    // 仅保护三反引号/三波浪线多行围栏代码块（含流式输出文末尚未闭合的围栏），避免单反引号保护导致外部粘连/孤立反引号把大片正文误识别为代码块
+    private val FENCED_CODE_BLOCK_PATTERN = Regex(
+        """(?m)^[ \t]*(`{3,}|~{3,})[^\n]*\n(?:[\s\S]*?\n)?[ \t]*\1[ \t]*$|```[\s\S]*?```|~~~[\s\S]*?~~~|(?m)^[ \t]*(?:`{3,}|~{3,})[^\n]*(?:\n[\s\S]*)?$"""
+    )
     private val BLOCK_MATH_DOLLAR_REGEX = Regex("""\$\$\s*([\s\S]+?)\s*\$\$""")
     private val BLOCK_MATH_BRACKET_REGEX = Regex("""\\\[\s*([\s\S]+?)\s*\\\]""")
     private val INLINE_MATH_PAREN_REGEX = Regex("""\\\(\s*([^\n]+?)\s*\\\)""")
@@ -400,6 +402,15 @@ fun MarkdownRenderer(
 ) {
     if (content.isBlank()) return
 
+    val latestOnOpenLink by rememberUpdatedState(onOpenLink)
+    val stableOnOpenLink: ((String) -> Unit)? = remember(onOpenLink != null) {
+        if (onOpenLink != null) {
+            { href: String -> latestOnOpenLink?.invoke(href) }
+        } else {
+            null
+        }
+    }
+
     val blocks = remember(content) {
         val normalized = CjkMarkdownNormalizer.normalize(content)
         if (normalized.length >= BLOCK_CACHE_MIN_CHARS) {
@@ -416,7 +427,7 @@ fun MarkdownRenderer(
         ) {
             blocks.forEachIndexed { idx, block ->
                 key(idx, block) {
-                    MarkdownBlock(block, isUser, onOpenLink)
+                    MarkdownBlock(block, isUser, stableOnOpenLink)
                 }
             }
         }
@@ -446,6 +457,14 @@ private fun RenderAstBlockNode(
     onOpenLink: ((String) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
+    val latestOnOpenLink by rememberUpdatedState(onOpenLink)
+    val openLinkProxy: ((String) -> Unit)? = remember(onOpenLink != null) {
+        if (onOpenLink != null) {
+            { href: String -> latestOnOpenLink?.invoke(href) }
+        } else {
+            null
+        }
+    }
 
     when (node) {
         is Heading -> {
@@ -455,8 +474,8 @@ private fun RenderAstBlockNode(
                 3 -> 14.sp
                 else -> 13.sp
             }
-            val annotated = remember(node, isUser, theme.primary) {
-                buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            val annotated = remember(node, isUser, theme.primary, openLinkProxy != null) {
+                buildInlineAnnotatedString(node, isUser, openLinkProxy, theme.primary)
             }
             Column(
                 modifier = Modifier
@@ -487,8 +506,8 @@ private fun RenderAstBlockNode(
             val inlineMedia = remember(node) { extractInlineMediaFromNode(node) }
             // 音频/视频不归相册管：交给已有的全屏查看器（那里有真正的播放器）
             val playbackLinks = remember(node) { extractPlaybackLinksFromNode(node) }
-            val annotated = remember(node, isUser, theme.primary) {
-                buildInlineAnnotatedString(node, isUser, onOpenLink, theme.primary)
+            val annotated = remember(node, isUser, theme.primary, openLinkProxy != null) {
+                buildInlineAnnotatedString(node, isUser, openLinkProxy, theme.primary)
             }
             val rawTrimmed = annotated.text.trim()
             if (rawTrimmed.startsWith("$$") && rawTrimmed.endsWith("$$") && rawTrimmed.length > 4) {
@@ -511,7 +530,7 @@ private fun RenderAstBlockNode(
                             MediaPlaybackChip(
                                 label = label,
                                 isVideo = isVideo,
-                                onOpen = { onOpenLink?.invoke(href) }
+                                onOpen = { latestOnOpenLink?.invoke(href) }
                             )
                         }
                     }
@@ -596,7 +615,7 @@ private fun RenderAstBlockNode(
         }
 
         is TableBlock -> {
-            AstTableCard(tableNode = node, isUser = isUser, onOpenLink = onOpenLink)
+            AstTableCard(tableNode = node, isUser = isUser, onOpenLink = openLinkProxy)
         }
 
         is ThematicBreak -> {
@@ -646,8 +665,8 @@ private fun RenderAstBlockNode(
                         }
                         val firstPara = node.firstChild as? Paragraph
                         if (firstPara != null) {
-                            val firstAnnotated = remember(firstPara, isUser, theme.primary) {
-                                buildInlineAnnotatedString(firstPara, isUser, onOpenLink, theme.primary)
+                            val firstAnnotated = remember(firstPara, isUser, theme.primary, openLinkProxy != null) {
+                                buildInlineAnnotatedString(firstPara, isUser, openLinkProxy, theme.primary)
                             }
                             val firstMatch = CALLOUT_HEADER_REGEX.find(firstAnnotated.text)
                             if (firstMatch != null) {
@@ -670,7 +689,7 @@ private fun RenderAstBlockNode(
                             }
                             var extraChild = firstPara.next
                             while (extraChild != null) {
-                                RenderAstBlockNode(node = extraChild, isUser = isUser, onOpenLink = onOpenLink)
+                                RenderAstBlockNode(node = extraChild, isUser = isUser, onOpenLink = openLinkProxy)
                                 extraChild = extraChild.next
                             }
                         } else {
@@ -707,7 +726,7 @@ private fun RenderAstBlockNode(
                         Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             var quoteChild = node.firstChild
                             while (quoteChild != null) {
-                                RenderAstBlockNode(node = quoteChild, isUser = isUser, onOpenLink = onOpenLink)
+                                RenderAstBlockNode(node = quoteChild, isUser = isUser, onOpenLink = openLinkProxy)
                                 quoteChild = quoteChild.next
                             }
                         }
@@ -758,7 +777,7 @@ private fun RenderAstBlockNode(
                             ) {
                                 var itemChild = item.firstChild
                                 while (itemChild != null) {
-                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = onOpenLink)
+                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = openLinkProxy)
                                     itemChild = itemChild.next
                                 }
                             }
@@ -802,7 +821,7 @@ private fun RenderAstBlockNode(
                             ) {
                                 var itemChild = item.firstChild
                                 while (itemChild != null) {
-                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = onOpenLink)
+                                    RenderAstBlockNode(node = itemChild, isUser = isUser, onOpenLink = openLinkProxy)
                                     itemChild = itemChild.next
                                 }
                             }
@@ -997,27 +1016,133 @@ private fun buildInlineAnnotatedString(
 
 private val GLOBAL_FALLBACK_BOLD_REGEX = Regex("""\*\*[\t ]*([^*]+?)[\t ]*\*\*""")
 
+internal data class FallbackBoldReplacement(
+    val matchStart: Int,
+    val matchEnd: Int,
+    val innerStart: Int,
+    val innerEnd: Int
+)
+
+private fun mergeProtectedRanges(ranges: List<IntRange>, maxLen: Int): List<IntRange> {
+    if (ranges.isEmpty() || maxLen <= 0) return emptyList()
+    val sorted = ranges
+        .mapNotNull { r ->
+            val start = r.first.coerceIn(0, maxLen)
+            val end = (r.last + 1).coerceIn(0, maxLen)
+            if (start < end) start until end else null
+        }
+        .sortedWith(compareBy<IntRange> { it.first }.thenBy { it.last })
+    if (sorted.isEmpty()) return emptyList()
+    val merged = ArrayList<IntRange>(sorted.size)
+    var curStart = sorted[0].first
+    var curEnd = sorted[0].last + 1
+    for (idx in 1 until sorted.size) {
+        val nextStart = sorted[idx].first
+        val nextEnd = sorted[idx].last + 1
+        if (nextStart <= curEnd) {
+            if (nextEnd > curEnd) curEnd = nextEnd
+        } else {
+            merged.add(curStart until curEnd)
+            curStart = nextStart
+            curEnd = nextEnd
+        }
+    }
+    merged.add(curStart until curEnd)
+    return merged
+}
+
+internal fun findSafeFallbackBoldReplacements(
+    text: String,
+    codeRanges: List<IntRange>,
+    linkRanges: List<IntRange> = emptyList()
+): List<FallbackBoldReplacement> {
+    if (text.isEmpty() || !text.contains("**")) return emptyList()
+
+    val mergedCode = mergeProtectedRanges(codeRanges, text.length)
+    val freeSegments = ArrayList<IntRange>()
+    var pos = 0
+    for (code in mergedCode) {
+        if (code.first > pos) {
+            freeSegments.add(pos until code.first)
+        }
+        pos = code.last + 1
+    }
+    if (pos < text.length) {
+        freeSegments.add(pos until text.length)
+    }
+
+    val replacements = ArrayList<FallbackBoldReplacement>()
+    for (seg in freeSegments) {
+        val segStart = seg.first
+        val segEnd = seg.last + 1
+        val sub = text.substring(segStart, segEnd)
+        if (!sub.contains("**")) continue
+
+        var localPos = 0
+        while (localPos < sub.length) {
+            val match = GLOBAL_FALLBACK_BOLD_REGEX.find(sub, localPos) ?: break
+            val innerGroup = match.groups[1]
+            if (innerGroup == null) {
+                localPos = match.range.first + 2
+                continue
+            }
+            val mStart = segStart + match.range.first
+            val mEnd = segStart + match.range.last + 1
+            val innerStart = segStart + innerGroup.range.first
+            val innerEnd = segStart + innerGroup.range.last + 1
+
+            val crossesLinkBoundary = linkRanges.any { link ->
+                val lStart = link.first
+                val lEnd = link.last + 1
+                val overlaps = mStart < lEnd && mEnd > lStart
+                val containsLink = mStart <= lStart && lEnd <= mEnd
+                val insideLink = lStart <= mStart && mEnd <= lEnd
+                overlaps && !containsLink && !insideLink
+            }
+            if (crossesLinkBoundary) {
+                localPos = match.range.first + 2
+                continue
+            }
+
+            replacements.add(
+                FallbackBoldReplacement(
+                    matchStart = mStart,
+                    matchEnd = mEnd,
+                    innerStart = innerStart,
+                    innerEnd = innerEnd
+                )
+            )
+            localPos = match.range.last + 1
+        }
+    }
+    return replacements
+}
+
 private fun fixUnrenderedBoldInAnnotatedString(source: AnnotatedString): AnnotatedString {
     val rawText = source.text
     if (!rawText.contains("**")) return source
-    if (!GLOBAL_FALLBACK_BOLD_REGEX.containsMatchIn(rawText)) return source
+
+    val inlineCodeBg = Color(ThemePalette.InlineCodeTint)
+    val codeRanges = source.spanStyles
+        .filter { it.start < it.end && (it.item.fontFamily == FontFamily.Monospace || it.item.background == inlineCodeBg) }
+        .map { it.start until it.end }
+    val linkRanges = source.getLinkAnnotations(0, rawText.length)
+        .filter { it.start < it.end }
+        .map { it.start until it.end }
+
+    val replacements = findSafeFallbackBoldReplacements(rawText, codeRanges, linkRanges)
+    if (replacements.isEmpty()) return source
 
     return buildAnnotatedString {
         var cursor = 0
-        GLOBAL_FALLBACK_BOLD_REGEX.findAll(rawText).forEach { match ->
-            val matchStart = match.range.first
-            val matchEnd = match.range.last + 1
-            val innerBoldContent = match.groupValues[1]
-
-            if (matchStart > cursor) {
-                append(source.subSequence(cursor, matchStart))
+        for (rep in replacements) {
+            if (rep.matchStart > cursor) {
+                append(source.subSequence(cursor, rep.matchStart))
             }
-
             pushStyle(SpanStyle(fontWeight = FontWeight.Bold))
-            append(innerBoldContent)
+            append(source.subSequence(rep.innerStart, rep.innerEnd))
             pop()
-
-            cursor = matchEnd
+            cursor = rep.matchEnd
         }
         if (cursor < rawText.length) {
             append(source.subSequence(cursor, rawText.length))
@@ -1954,8 +2079,16 @@ private fun AstTableCard(
     onOpenLink: ((String) -> Unit)? = null
 ) {
     val theme = LocalAppTheme.current
+    val latestOnOpenLink by rememberUpdatedState(onOpenLink)
+    val openLinkProxy: ((String) -> Unit)? = remember(onOpenLink != null) {
+        if (onOpenLink != null) {
+            { href: String -> latestOnOpenLink?.invoke(href) }
+        } else {
+            null
+        }
+    }
 
-    val tableData = remember(tableNode, theme.primary) {
+    val tableData = remember(tableNode, theme.primary, openLinkProxy != null) {
         val headers = mutableListOf<AnnotatedString>()
         val rows = mutableListOf<List<AnnotatedString>>()
 
@@ -1969,7 +2102,7 @@ private fun AstTableCard(
                             var cellNode = rowNode.firstChild
                             while (cellNode != null) {
                                 if (cellNode is TableCell) {
-                                    headers.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
+                                    headers.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = openLinkProxy, linkColor = theme.primary))
                                 }
                                 cellNode = cellNode.next
                             }
@@ -1986,7 +2119,7 @@ private fun AstTableCard(
                             var cellNode = rowNode.firstChild
                             while (cellNode != null) {
                                 if (cellNode is TableCell) {
-                                    rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = onOpenLink, linkColor = theme.primary))
+                                    rowCells.add(buildInlineAnnotatedString(cellNode, isUser = false, onOpenLink = openLinkProxy, linkColor = theme.primary))
                                 }
                                 cellNode = cellNode.next
                             }

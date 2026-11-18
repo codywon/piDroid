@@ -74,9 +74,9 @@ internal fun PdfDocumentView(
     var isLoading by remember(file.path, currentPage) { mutableStateOf(true) }
     var errorMessage by remember(file.path) { mutableStateOf<String?>(null) }
 
-    // 缩放与平移状态（每次切页复位为 1x 与原点）
-    var scale by remember(currentPage) { mutableFloatStateOf(1f) }
-    var offset by remember(currentPage) { mutableStateOf(Offset.Zero) }
+    // 缩放与平移状态（切换文件或切页时复位为 1x 与原点）
+    var scale by remember(file.path, currentPage) { mutableFloatStateOf(1f) }
+    var offset by remember(file.path, currentPage) { mutableStateOf(Offset.Zero) }
 
     LaunchedEffect(file.path, currentPage) {
         isLoading = true
@@ -147,7 +147,7 @@ internal fun PdfDocumentView(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .pointerInput(currentPage) {
+                            .pointerInput(file.path, currentPage) {
                                 detectTapGestures(
                                     onDoubleTap = { tapOffset ->
                                         if (scale > 1.05f) {
@@ -166,7 +166,7 @@ internal fun PdfDocumentView(
                                     }
                                 )
                             }
-                            .pointerInput(currentPage) {
+                            .pointerInput(file.path, currentPage) {
                                 detectTransformGestures { _, pan, zoom, _ ->
                                     val newScale = (scale * zoom).coerceIn(0.75f, 6f)
                                     scale = newScale

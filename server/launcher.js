@@ -62,15 +62,17 @@ if (piUrlIndex !== -1 && args[piUrlIndex + 1]) {
   piWebUrl = args[piUrlIndex + 1];
 }
 
-// 卡顿取证靠端口去找真正的 next 服务进程（spawn 拿到的是 cmd.exe）。
-const PI_WEB_PORT = (() => {
+function parsePiWebPort(rawUrl) {
   try {
-    const parsed = new URL(piWebUrl);
+    const parsed = new URL(rawUrl);
     return Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
   } catch {
     return 30141;
   }
-})();
+}
+
+// 卡顿取证靠端口去找真正的 next 服务进程（spawn 拿到的是 cmd.exe）。
+const PI_WEB_PORT = parsePiWebPort(piWebUrl);
 
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`
@@ -205,7 +207,7 @@ function killProcessTree(pid) {
   if (!pid) return;
   if (process.platform === 'win32') {
     try {
-      execSync(`taskkill /pid ${pid} /T /F >nul 2>&1`);
+      execSync(`taskkill /pid ${pid} /T /F >nul 2>&1`, { windowsHide: true });
     } catch (e) {}
   } else {
     try {
@@ -231,10 +233,10 @@ function cleanupChildren() {
     piWebProcess = null;
   }
 
-  if (tunnelProcess && tunnelProcess.pid) {
+  if (tunnelProcess && tunnelProcess.pid && tunnelProcess.exitCode === null && !tunnelProcess.killed) {
     killProcessTree(tunnelProcess.pid);
-    tunnelProcess = null;
   }
+  tunnelProcess = null;
   // 命名隧道 / frp 客户端都会自己重连（换新 PID），所以要显式让它们停手，
   // 否则会留孤儿进程，甚至退出瞬间又被守护逻辑拉起来。
   try { gateway.stopTunnel(); } catch (e) {}
@@ -262,14 +264,16 @@ function shutdown(exitCode = 0) {
   }, 200);
 }
 
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
-process.on('exit', () => {
-  if (!isShuttingDown) {
-    isShuttingDown = true;
-    cleanupChildren();
-  }
-});
+function registerShutdownHandlers() {
+  process.on('SIGINT', () => shutdown(0));
+  process.on('SIGTERM', () => shutdown(0));
+  process.on('exit', () => {
+    if (!isShuttingDown) {
+      isShuttingDown = true;
+      cleanupChildren();
+    }
+  });
+}
 
 // 3. 启动本地官方 pi-web 子进程
 //
@@ -447,6 +451,10 @@ function spawnPiWeb(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
   const proc = spawn(cmd, cmdArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: useShell,
+    // useShell 时真正被拉起来的是 cmd.exe → pi-web.cmd → node。launcher 跑在
+    // 没有可见控制台的上下文里（计划任务 / start-hidden.vbs），不带 windowsHide
+    // 的话 cmd.exe 会新申请一个可见控制台窗口，用户那边就是黑窗一闪。
+    windowsHide: true,
     // next start 靠 cwd 找 `.next`：inspector 诊断路径必须把 cwd 设到包目录，
     // 否则会以 “Could not find a production build” 秒退。普通路径继续用 launcher 自己的 cwd。
     cwd: cwd || undefined,
@@ -514,7 +522,7 @@ function launchPiWeb() {
 
   // 检查是否全局有 pi-web 命令
   try {
-    execSync(checkCmd, { stdio: 'ignore', timeout: PI_WEB_WHERE_TIMEOUT_MS });
+    execSync(checkCmd, { stdio: 'ignore', timeout: PI_WEB_WHERE_TIMEOUT_MS, windowsHide: true });
     cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
     useShell = isWindows;
   } catch (e) {
@@ -570,21 +578,62 @@ function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
 // 4. 等待服务就绪轮询（实现搬到了 startup-probe.js，可单测）
 
 // 主启动流程
-async function main() {
+async function main(deps = {}) {
+  const checkGw = deps.checkGatewayRunning || checkGatewayRunning;
+  const checkAlive = deps.checkUrlAlive || checkUrlAlive;
+  const launchPi = deps.launchPiWeb || launchPiWeb;
+  const resolveHost = deps.resolveConnectHost || resolveConnectHost;
+  const printBanner = deps.printBannerAndQr || gateway.printBannerAndQr;
+  const probePub = deps.probePublicUrl || probePublicUrl;
+  const resumeStdin = deps.resumeStdin !== false;
+
   console.log('\n======================================================');
   console.log('    🚀  piDroid 统合启动中心 (Unified Companion)     ');
   console.log('       [原生 pi-web 协同 + 工业级移动端安全网关]       ');
   console.log('======================================================\n');
 
-  // 步骤 A: 检查 pi-web 是否已运行
+  // 步骤 A: 先检查伴侣网关是否已在运行（查看器模式只做只读探测，绝不拉起新 pi-web，以免 Ctrl+C 误杀）
+  const isGatewayRunning = await checkGw(gatewayPort);
+  if (isGatewayRunning) {
+    const piWebReady = await checkAlive(piWebUrl, 1200);
+    // 网关由其他窗口或 supervisor 托管。这里必须用与 gateway.start() 相同的解析逻辑，
+    // 否则会退回到「展示局域网 IP」。
+    const { mode, connectHost, configPath } = resolveHost();
+    console.log(`[1/1] ✓ 检测到伴侣安全网关已在端口 ${gatewayPort} 运行中，直接呈现连接凭据：`);
+    printBanner(connectHost, piWebReady, gatewayPort);
+    if (mode !== 'none') {
+      // 已经在跑的网关未必接管了隧道，直接探一下公网地址，别把打不开的二维码交给用户。
+      const reachable = await probePub(connectHost);
+      if (reachable) {
+        console.log(`\n✅ ${connectHost} 连通正常：网关与${mode === 'frp' ? ' frp ' : ' Cloudflare '}隧道都在运行，无需重启。`);
+        console.log('   （本窗口只是查看器，Ctrl+C 不会停掉后台服务。）');
+      } else {
+        console.warn(`\n⚠️  ${connectHost} 暂时探测不通。`);
+        console.warn(`   本地网关是正常的（${gatewayPort} 端口在听），常见原因是隧道进程已退出。`);
+        if (configPath) console.warn(`   frp 配置: ${configPath}`);
+        console.warn('   处理：关掉旧网关窗口后重新运行本脚本 —— 启动器会把隧道拉起，并在它断开时自动重连。');
+      }
+    }
+    console.log('💡 提示: 网关服务已在后台常驻。随时按 Ctrl+C 可退出此查看窗口。\n');
+    if (resumeStdin) {
+      // 保持挂起，等待用户扫码或按 Ctrl+C
+      if (process.stdin.isTTY) {
+        process.stdin.setRawMode && process.stdin.setRawMode(false);
+      }
+      process.stdin.resume();
+    }
+    return;
+  }
+
+  // 步骤 B: 检查 pi-web 是否已运行
   //
   // 先看端口再看 HTTP：Next.js 首次编译时 `/` 可能 1 秒以上才应答，只靠一次 HTTP 探测
   // 会把"正在跑的"判成"没在跑"，于是又拉起第二份 —— 必然 EADDRINUSE 30141 秒退，
   // 日志里留下一串假的 "Next.js exited unexpectedly"（线上真的碰过）。
-  const piWebPort = Number(new URL(piWebUrl).port || 80);
+  const piWebPort = parsePiWebPort(piWebUrl);
   let alreadyRunning = await isPortListening(piWebPort);
   if (!alreadyRunning) {
-    alreadyRunning = await probeWithRetry(() => checkUrlAlive(piWebUrl, 1200), {
+    alreadyRunning = await probeWithRetry(() => checkAlive(piWebUrl, 1200), {
       attempts: 3,
       delayMs: 600,
     });
@@ -595,7 +644,7 @@ async function main() {
   if (alreadyRunning) {
     console.log(`[1/3] ✓ 检测到本地已存在运行中的 pi-web (${piWebUrl})，直接接入。`);
   } else if (!skipPiWeb) {
-    piWebProcess = await launchPiWeb();
+    piWebProcess = await launchPi();
     process.stdout.write('[2/3] 等待 pi-web 服务就绪中...');
     // 同时盯 exit：自己拉起的那份如果因为端口被抢占而秒退，就不要白等 25 秒。
     const outcome = await waitForReadyOrExit(piWebUrl, piWebProcess);
@@ -620,39 +669,6 @@ async function main() {
     console.log('[1/3] 已跳过启动 pi-web (--no-pi-web)。');
   }
 
-  // 步骤 B: 检查伴侣网关是否已在运行
-  const isGatewayRunning = await checkGatewayRunning(gatewayPort);
-  if (isGatewayRunning) {
-    // 网关由其他窗口托管。这里必须用与 gateway.start() 相同的解析逻辑（frp → toml，
-    // Cloudflare → cloudflared 配置），否则会退回到「展示局域网 IP」：用户扫了那张二维码，
-    // 一旦离开家里 Wi-Fi 就连不上，表现仍是「一直自动重连中」。
-    const { mode, connectHost, configPath } = resolveConnectHost();
-    console.log(`[2/2] ✓ 检测到伴侣安全网关已在端口 ${gatewayPort} 运行中，直接呈现连接凭据：`);
-    gateway.printBannerAndQr(connectHost, piWebReady, gatewayPort);
-    if (mode !== 'none') {
-      // 已经在跑的网关未必接管了隧道（可能是用 start-server.bat 起的，
-      // 也可能隧道进程自己退出了），直接探一下公网地址，
-      // 别把一张打不开的二维码交给用户。
-      const reachable = await probePublicUrl(connectHost);
-      if (reachable) {
-        console.log(`\n✅ ${connectHost} 连通正常：网关与${mode === 'frp' ? ' frp ' : ' Cloudflare '}隧道都在运行，无需重启。`);
-        console.log('   （本窗口只是查看器，Ctrl+C 不会停掉后台服务。）');
-      } else {
-        console.warn(`\n⚠️  ${connectHost} 暂时探测不通。`);
-        console.warn(`   本地网关是正常的（${gatewayPort} 端口在听），常见原因是隧道进程已退出。`);
-        if (configPath) console.warn(`   frp 配置: ${configPath}`);
-        console.warn('   处理：关掉旧网关窗口后重新运行本脚本 —— 启动器会把隧道拉起，并在它断开时自动重连。');
-      }
-    }
-    console.log('💡 提示: 网关服务已在后台常驻。随时按 Ctrl+C 可退出此查看窗口。\n');
-    // 保持挂起，等待用户扫码或按 Ctrl+C
-    if (process.stdin.isTTY) {
-      process.stdin.setRawMode && process.stdin.setRawMode(false);
-    }
-    process.stdin.resume();
-    return;
-  }
-
   // 步骤 C: 启动伴侣安全网关
   console.log('[2/2] 正在启动安全伴侣网关与配对中枢...');
   try {
@@ -670,7 +686,15 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  console.error('[启动致命错误]:', err);
-  shutdown(1);
-});
+if (require.main === module) {
+  registerShutdownHandlers();
+  main().catch((err) => {
+    console.error('[启动致命错误]:', err);
+    shutdown(1);
+  });
+}
+
+module.exports = {
+  parsePiWebPort,
+  main
+};

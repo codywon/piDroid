@@ -18,8 +18,9 @@ rem shell gets "Access denied" -> exit 2. Re-run elevated: one UAC prompt beats
 rem telling the user to open a second window.
 if "%RC%"=="2" (
     echo [stop-gateway] requesting administrator rights...
+    set "STOP_PS1=%~dp0stop-gateway.ps1"
     powershell -NoProfile -Command ^
-        "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','%~dp0stop-gateway.ps1'"
+        "Start-Process powershell -Verb RunAs -Wait -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',([char]34 + $env:STOP_PS1 + [char]34)"
     if errorlevel 1 (
         echo [stop-gateway] elevated run failed or was cancelled
         exit /b 1

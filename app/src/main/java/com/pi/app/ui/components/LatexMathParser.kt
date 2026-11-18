@@ -168,7 +168,7 @@ object LatexMathParser {
         }
     }
 
-    private fun tokenizeAndParseFormula(formula: String): List<MathToken> {
+    internal fun tokenizeAndParseFormula(formula: String): List<MathToken> {
         val tokens = mutableListOf<MathToken>()
         var i = 0
         val len = formula.length
@@ -258,8 +258,9 @@ object LatexMathParser {
                 continue
             }
 
-            tokens.add(MathToken.Text(c.toString()))
-            i++
+            val (chStr, nextIdx) = readSingleCodePoint(formula, i)
+            tokens.add(MathToken.Text(chStr))
+            i = nextIdx
         }
 
         return tokens
@@ -364,7 +365,7 @@ object LatexMathParser {
         }
 
         if (i >= len || formula[i] != '{') {
-            if (i < len) return formula[i].toString() to (i + 1)
+            if (i < len) return readSingleCodePoint(formula, i)
             return "" to i
         }
 
@@ -398,7 +399,13 @@ object LatexMathParser {
             while (cmdEnd < len && formula[cmdEnd].isLetter()) cmdEnd++
             return formula.substring(i, cmdEnd) to cmdEnd
         }
-        return formula[i].toString() to (i + 1)
+        return readSingleCodePoint(formula, i)
+    }
+
+    private fun readSingleCodePoint(text: String, index: Int): Pair<String, Int> {
+        val cp = Character.codePointAt(text, index)
+        val step = Character.charCount(cp)
+        return text.substring(index, index + step) to (index + step)
     }
 
     private fun readWord(formula: String, startIndex: Int): Pair<String, Int> {
@@ -476,7 +483,7 @@ object LatexMathParser {
         "text", "mbox", "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "operatorname"
     )
 
-    private sealed class MathToken {
+    internal sealed class MathToken {
         data class Text(val content: String) : MathToken()
         data class Variable(val name: String) : MathToken()
         data class Operator(val symbol: String) : MathToken()

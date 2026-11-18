@@ -1,5 +1,7 @@
 package com.pi.app.ui.updater
 
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -13,7 +15,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -26,6 +32,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.pi.app.ui.theme.LocalAppTheme
 import com.pi.app.updater.AppUpdateManager
 import com.pi.app.updater.UpdateInfo
@@ -407,6 +417,40 @@ fun AppUpdateDialog(
                     }
 
                     is UpdateUiState.PermissionRequired -> {
+                        var hasInstallPermission by remember(state.apkFile.path) {
+                            mutableStateOf(AppUpdateManager.canInstallPackages(context))
+                        }
+                        val fallbackLifecycleOwner = LocalLifecycleOwner.current
+                        val hostLifecycleOwner = remember(context, fallbackLifecycleOwner) {
+                            var current: Context? = context
+                            var found: LifecycleOwner? = null
+                            while (current is ContextWrapper) {
+                                if (current is LifecycleOwner) {
+                                    found = current
+                                    break
+                                }
+                                current = current.baseContext
+                            }
+                            found ?: (current as? LifecycleOwner) ?: fallbackLifecycleOwner
+                        }
+                        DisposableEffect(hostLifecycleOwner, fallbackLifecycleOwner, context) {
+                            val observer = LifecycleEventObserver { _, event ->
+                                if (event == Lifecycle.Event.ON_RESUME) {
+                                    hasInstallPermission = AppUpdateManager.canInstallPackages(context)
+                                }
+                            }
+                            hostLifecycleOwner.lifecycle.addObserver(observer)
+                            if (fallbackLifecycleOwner !== hostLifecycleOwner) {
+                                fallbackLifecycleOwner.lifecycle.addObserver(observer)
+                            }
+                            onDispose {
+                                hostLifecycleOwner.lifecycle.removeObserver(observer)
+                                if (fallbackLifecycleOwner !== hostLifecycleOwner) {
+                                    fallbackLifecycleOwner.lifecycle.removeObserver(observer)
+                                }
+                            }
+                        }
+
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(12.dp),
@@ -415,14 +459,14 @@ fun AppUpdateDialog(
                         ) {
                             Column(modifier = Modifier.padding(16.dp)) {
                                 Text(
-                                    text = "需要开启【安装未知应用】权限",
+                                    text = if (hasInstallPermission) "已获得【安装未知应用】权限" else "需要开启【安装未知应用】权限",
                                     fontWeight = FontWeight.Bold,
                                     color = theme.textPrimary,
                                     fontSize = 14.sp
                                 )
                                 Spacer(modifier = Modifier.height(6.dp))
                                 Text(
-                                    text = "首次升级需允许安装未知应用",
+                                    text = if (hasInstallPermission) "点击下方按钮即可覆盖安装新版本" else "首次升级需允许安装未知应用",
                                     fontSize = 12.sp,
                                     color = theme.textMuted,
                                     lineHeight = 18.sp
@@ -448,8 +492,13 @@ fun AppUpdateDialog(
 
                             Button(
                                 onClick = {
-                                    val intent = AppUpdateManager.createInstallPermissionIntent(context)
-                                    context.startActivity(intent)
+                                    if (AppUpdateManager.canInstallPackages(context)) {
+                                        hasInstallPermission = true
+                                        onInstall(state.apkFile)
+                                    } else {
+                                        val intent = AppUpdateManager.createInstallPermissionIntent(context)
+                                        context.startActivity(intent)
+                                    }
                                 },
                                 modifier = Modifier.weight(1.4f),
                                 shape = RoundedCornerShape(10.dp),
@@ -458,9 +507,17 @@ fun AppUpdateDialog(
                                     contentColor = if (theme.isDark) Color.Black else Color.White
                                 )
                             ) {
-                                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Icon(
+                                    imageVector = if (hasInstallPermission) Icons.Default.InstallMobile else Icons.Default.Settings,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
                                 Spacer(modifier = Modifier.width(6.dp))
-                                Text("前往授权", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text(
+                                    text = if (hasInstallPermission) "立即覆盖安装" else "前往授权",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
                             }
                         }
                     }
