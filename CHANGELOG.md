@@ -3,6 +3,25 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
+## [2.0.56] - 2026-11-18
+### 🚪 伴侣网关与守护进程
+- **路径与代理安全加固**：静态与路由路径校验在 `decodeURIComponent` 后做二次前缀及 `..` 检查；反向代理清洗响应头中的 CR/LF 字符；上游响应流中途断连时统一销毁下游套接字（`res.destroy()`），避免 `Content-Length` 挂起等待或 `chunked` 发出伪造的完整结束块。
+- **提示词增强与预热修复**：网关 `listen` 启动时恢复默认后台预热提示词增强模块（可通过 `PROMPT_ENHANCE_PREWARM=0` 显式关闭）；保护器按围栏长度匹配闭合代码块，避免外层 ```` ```` ```` 被内层 ```` ``` ```` 提前截断；请求超时定时器在中止后立即清理，不再拖住事件循环。
+- **守护进程高可用与后台静默**：健康探针补齐请求超时与响应流排空，支持连续探针超时自愈重启；升级锁记录 PID 与时间戳以自动回收孤儿陈旧锁；崩溃取证改为异步非阻塞采集并加并发互斥；Windows 下启动 `pi-web`、`frpc` 等后台子进程统一启用 `windowsHide` 消除黑窗闪烁，并加固 `stop-gateway` / `upgrade-piweb` 脚本与 IPv6 配对二维码 URL 格式。
+### 🔄 会话状态与流式对账
+- **切会话/工作区防串台**：模型切换、思考档位切换、手动压缩与分支树拉取等异步回调补齐目标 `sessionId` / `workspace` 一致性核验，旧会话迟到响应不再污染当前界面。
+- **SSE 重连消息对账与快照合并保存**：重连拉取全量快照时与本地流式尾部消息按内容对齐去重，消除尾部气泡短暂闪烁或重复；`SessionSaver` 支持合并保存期间新到达的尾随快照，不再漏存最后一帧；`AppPreferences` 快照读写改为按会话粒度加锁，清理历史缓存时自动跳过当前活跃会话。
+### 🌐 网络、鉴权与保活
+- **JSON 显式 `null` 与 SSE 帧解析加固**：全面收敛 `JsonObject` 字段读取对 `JsonNull` 的安全处理，避免服务端返回显式 `null` 时抛 `IllegalArgumentException`；SSE 客户端支持多行 `data:` 拼接与 `event:` 类型分派。
+- **鉴权作用域与文件下载安全**：`AuthScope` 规范化 IPv6 方括号主机名并收紧路径前缀边界（防止 `/api2` 误匹配 `/api` 凭证）；下载流用 `use` 确保异常关闭，同名目标文件自动追加递增序号防止静默覆盖。
+- **前台保活服务修复**：`PiForegroundService` 改为 `START_NOT_STICKY` 避免系统无 Intent 重启崩溃；修正 Android 14+ 通知渠道禁用判定与保活状态同步。
+### 🎨 界面、文档预览与应用内更新
+- **文档与富文本渲染修复**：Office XML 预览增加单条目与累计解压字节上限（防 Zip Bomb）、按 OPC 关系文件动态定位主部件并改进 XLSX 日期序列值识别；LaTeX 解析支持非 BMP 代理对字符（如数学花体/Emoji）而不产生乱码；Markdown 渲染收敛行首代码块围栏识别与中日韩粗体边界归一化；生成式 UI 与 SVG 预览补齐脚本转义与 `WebView` 销毁回收。
+- **页面交互与系统兼容**：Git 变更页按工作区隔离防串台；`AndroidManifest.xml` 补齐 Android 11+ 浏览器与 `https` `VIEW` `<queries>` 声明；二维码扫描 `ImageProxy` 异常安全关闭；设置弹窗与模型配置表单状态随外部数据同步刷新。
+- **应用内更新闭环**：安装广播接收器覆盖全部 `PackageInstaller.STATUS_*` 分支（含存储不足、不兼容、系统中止等错误提示），从系统安装器返回前台时自动复核版本状态，不再永久卡在「正在安装」。
+### 🛡️ CI 发布流水线与单元测试
+- **发版工作流加固**：`workflow_dispatch` 显式检出目标版本标签，GitHub 上下文表达式全部收口至 `env:` 隔离以消除脚本注入风险，`keytool` 指纹校验显式指定 `-alias`，并在构建结束时 `always()` 清理临时签名密钥。
+- **单元测试扩充**：新增 `PiSsePayloadParsingTest`、`ChatScreenHelpersTest`、`LatexMathSurrogatePairTest`、`MarkdownNormalizerAndBoldTest` 以及网关 `gateway-proxy.test.mjs`、`supervisor-hardening.test.mjs` 等多组回归测试。
 ## [2.0.55] - 2026-11-16
 ### 🪟 扩展对话框（2.0.54 的收尾与纠错）
 - **回答失败不再把对话框永久弄丢**：以前先本地出队再发 `extension_ui_response`，请求一失败（网关抖动、鉴权过期）对话框就没了，而扩展还在等回答——会话卡死且无法重试。现在只在回执确认送达后才出队，失败时对话框保留、可再点一次。
