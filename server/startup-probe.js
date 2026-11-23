@@ -34,7 +34,7 @@ function checkUrlAlive(targetUrl, timeoutMs = 800) {
         {
           hostname: parsed.hostname,
           port: parsed.port || defaultPort,
-          path: '/',
+          path: `${parsed.pathname || '/'}${parsed.search || ''}`,
           method: 'GET',
           timeout: timeoutMs,
         },

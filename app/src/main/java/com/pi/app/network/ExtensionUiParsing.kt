@@ -30,6 +30,8 @@ object ExtensionUiParsing {
             prefill = obj.stringOrNull("prefill") ?: "",
             lines = obj.stringList("lines"),
             notifyType = obj.stringOrNull("notifyType") ?: "",
+            // 只有带截止时间的请求才给：pi-web 只在 `timeout` 为正且有限时下发 expiresAt。
+            expiresAt = obj.longOrNull("expiresAt"),
             // 只有显式 true 才算已关闭：缺字段（旧版本、或非 custom）一律当未关闭处理。
             closed = obj.get("closed")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isBoolean }?.asBoolean == true
         )
@@ -38,6 +40,9 @@ object ExtensionUiParsing {
 
 private fun JsonObject.stringOrNull(key: String): String? =
     get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString?.takeIf { it.isNotEmpty() }
+
+private fun JsonObject.longOrNull(key: String): Long? =
+    get(key)?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
 
 /** 只收字符串元素：`lines` / `options` 里万一混进非字符串，跳过它而不是整条请求失败。 */
 private fun JsonObject.stringList(key: String): List<String> =

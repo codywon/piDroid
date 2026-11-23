@@ -315,7 +315,7 @@ function getLocalIp() {
   return '127.0.0.1';
 }
 
-// 探测本地服务是否存活
+// 探测本地服务是否存活（走零 I/O 的 /api/home，避免触发重路由）
 function checkServerAlive(targetUrl, timeout = 1000) {
   return new Promise((resolve) => {
     try {
@@ -323,7 +323,7 @@ function checkServerAlive(targetUrl, timeout = 1000) {
       const req = http.request({
         hostname: url.hostname,
         port: url.port,
-        path: '/api/sessions',
+        path: '/api/home',
         method: 'GET',
         timeout: timeout
       }, (res) => {
@@ -1375,9 +1375,12 @@ async function start(options = {}) {
   // 固定隧道按「实际监听端口」解析，避免与 `--port` / start({port}) 形成第二份真值。
   const stable = resolveStableTunnel(listenPort);
 
-  // 先检查指定目标或 30141，再检查 3000
+  // 先检查指定目标或 30141，再检查 3000（调用方已探明时直接复用结果，避免启动期重复探测）
   let isAlive = false;
-  if (targetOverride) {
+  if (targetOverride && typeof options.targetAlive === 'boolean') {
+    TARGET = targetOverride;
+    isAlive = options.targetAlive;
+  } else if (targetOverride) {
     TARGET = targetOverride;
     isAlive = await checkServerAlive(TARGET);
   } else {
@@ -1397,8 +1400,7 @@ async function start(options = {}) {
     const server = app.listen(listenPort, '0.0.0.0', () => {
       if (
         options.warmUp !== false &&
-        options.prewarmPromptEnhancement !== false &&
-        process.env.PROMPT_ENHANCE_PREWARM !== '0'
+        (options.prewarmPromptEnhancement === true || process.env.PROMPT_ENHANCE_PREWARM === '1')
       ) {
         schedulePromptEnhancementWarmUp();
       }

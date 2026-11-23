@@ -3,6 +3,19 @@
 All notable changes to the πDroid application will be documented in this file.
 
 > 版本标题里的日期一律为本地时间（UTC+8）。
+## [2.0.57] - 2026-11-23
+### 🔌 对齐 pi-web 0.18.0
+全量审计 0.17.0 → 0.18.0：依赖升到 pi SDK `1.6.0` / Next `16.4.6`，**API 路由零增删**；四批跟随工作一次落地。
+- **伴航网关 SDK 1.5.2 → 1.6.0**：`server/package.json` 的两个 `@earendil-works/*` 与 pi-web 0.18.0 内置版本对齐，避免 `/api/mobile/prompt-enhance` 与主程序跑在两代 SDK 上；`ModelRuntime.create` 与 `dist/core/model-runtime.js` / `dist/config.js` 子路径在 1.6.0 中仍在（已实测导入 0.39 s、`create` 可用），`npm test` 171/171。
+- **传输层回归**：0.18.0 起路由响应改由 Next 自己 gzip（不再有 `lib/json-response.ts` 的 ≥1KB 门槛），且 16.4.5+ 会丢弃 handler 自设的 `Content-Encoding` / `Content-Length`。实测确认：`Accept-Encoding: identity` 仍被尊重（SSE 与文件变更 watch 都靠它），SSE 的 `no-cache, no-transform` 保证不被压缩，`/api/files` 的 `no-transform` 保证 SVG/206 不被改写；唯一变化是**文件下载与预览变成 chunked、没有 `Content-Length`**，下载进度百分比因此不再显示（`copyStreamWithProgress` 本就有 `totalLength > 0` 守卫，不会报错）。
+- **SSE 协议卫生**：显式忽略 0.18.0 新增的 `user_message_entry`（#1746，只用于那条消息上的「新会话」，落到兼容 fallback 会变成一条空 delta 事件）；并行批次的 `tool_execution_end` 现在会带 `result`（`content`/`details`/`usage`）与重连重放，App 早已按 `toolCallId` 收结果、`toolResult` 消息到达后覆盖，无需改动。
+- **扩展对话框倒计时**：`extension_ui_request` 的 `expiresAt` 现在解析进 `ExtensionUiDialog`，阻塞式对话框标题下显示「N 秒后自动关闭」（对齐 pi-web `ChatWindow` 的 `chat.extensionExpiresIn`）；到点仍由服务端结掉请求并推 `extension_ui_closed`，手机端按 id 摘掉对话框。
+- **渲染 parity（#1753）**：新增 `stripAnsi()`（移植 pi-web `lib/ansi.ts`），正文与 thinking 在入库前剥除终端转义与 pi-tui 光标标记，模型把 `\x1b[38;5;5m` 当推理前缀时不再显示成 `[38;5;5mThinking:[39m`；渲染、复制、thinking 预览共用同一份干净文本。
+- **目录没了也能继续**：`cwd-missing` 不再只是一句 Toast——弹出「换个目录 Fork 继续」，候选是已知工作区也可手输；`forkSession()` 因此支持可选 `targetCwd`，对应 `POST /api/sessions/[id]/fork` 的新 `{cwd}`（整份历史复制到新目录，源会话不动，上游 `forkSessionIntoCwd()`）。注意服务端以 `Object.hasOwn(body,"cwd")` 判定，所以不带目标目录时请求体仍是 `{}`（空串会被 `cwd-invalid` 拒掉）。
+### 🚪 守护进程与启动链路（同期改动）
+- **pi-web 冷启预热**：launcher 起来后延迟一发 `GET /api/sessions?summary=1` 把磁盘会话索引提前建好，不再拖在启动链路上或用定时轮询轰上游；进程退出/重启用 `unref` 定时器取消。
+- **后台静默启动**：新增 `server/supervisor-hidden.vbs`，计划任务经 `wscript` 拉起 `supervisor.js ensure` 不再闪窗（对应 2.0.56 里只做了子进程 `windowsHide` 的那一步）。
+- **探针与恢复加固**：健康探针、崩溃取证、恢复计划的超时与并发收敛，避免一次卡住的诊断把手机端多拖 1 s。
 ## [2.0.56] - 2026-11-18
 ### 🚪 伴侣网关与守护进程
 - **路径与代理安全加固**：静态与路由路径校验在 `decodeURIComponent` 后做二次前缀及 `..` 检查；反向代理清洗响应头中的 CR/LF 字符；上游响应流中途断连时统一销毁下游套接字（`res.destroy()`），避免 `Content-Length` 挂起等待或 `chunked` 发出伪造的完整结束块。

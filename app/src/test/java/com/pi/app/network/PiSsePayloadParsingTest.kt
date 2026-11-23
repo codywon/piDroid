@@ -168,4 +168,41 @@ class PiSsePayloadParsingTest {
         assertEquals("final reply", endEvents[0].content)
         assertEquals("msg-end-1", endEvents[0].messageId)
     }
+
+    /**
+     * pi-web 0.18.0 给 run 中投递的 user 消息补发 `user_message_entry`（#1746，只用于那条消息上的
+     * 「新会话」）。手机端没有这个入口，必须显式忽略：落到兼容 fallback 会变成一条 delta 为空的
+     * 事件，被当成正文增量处理。
+     */
+    @Test
+    fun `user message entry is ignored instead of becoming an empty delta`() {
+        val payload = """{"type":"user_message_entry","entryId":"e1","timestamp":1763000000000}"""
+        val events = PiSseClient.parsePiWebSsePayload("user_message_entry", payload)
+        assertTrue(events.isEmpty())
+    }
+
+    /**
+     * 模型可能把终端转义写进正文/思考（#1753）：对齐 pi-web 的 TextBlock / ThinkingText，
+     * 入库前就剥掉，否则手机端显示成 `[38;5;5mThinking:[39m`。
+     */
+    @Test
+    fun `assistant text and thinking drop terminal escapes`() {
+        val payload = """
+            {
+              "type": "message_end",
+              "message": {
+                "id": "msg-ansi",
+                "role": "assistant",
+                "content": [
+                  {"type": "thinking", "thinking": "\u001b[2mthinking\u001b[0m"},
+                  {"type": "output_text", "text": "\u001b[38;5;5manswer\u001b[39m"}
+                ]
+              }
+            }
+        """.trimIndent()
+        val events = PiSseClient.parsePiWebSsePayload(null, payload)
+        assertEquals(1, events.size)
+        assertEquals("thinking", events[0].thinking)
+        assertEquals("answer", events[0].content)
+    }
 }

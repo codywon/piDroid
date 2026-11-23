@@ -1139,6 +1139,13 @@ data class ExtensionUiDialog(
     val lines: List<String> = emptyList(),
     /** notify 的级别：info | warning | error */
     val notifyType: String = "",
+    /**
+     * 上游给的自动关闭时刻（epoch ms）；null = 一直等人回答。
+     *
+     * 到点后服务端会自己把请求按默认值结掉并推 `extension_ui_closed`（pi-web
+     * `requestExtensionUi()` 的 `cleanup()`），手机端只负责把倒计时显示出来。
+     */
+    val expiresAt: Long? = null,
     /** custom 面板已被扩展自己关掉（不再阻塞会话） */
     val closed: Boolean = false
 ) {

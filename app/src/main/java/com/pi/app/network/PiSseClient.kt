@@ -11,6 +11,7 @@ import com.pi.app.data.model.MediaAttachment
 import com.pi.app.data.model.MediaLoadPolicy
 import com.pi.app.data.model.SseConnectionState
 import com.pi.app.data.model.TokenStats
+import com.pi.app.data.model.stripAnsi
 import com.pi.app.data.storage.AppPreferences
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.awaitClose
@@ -457,6 +458,10 @@ class PiSseClient(private val prefs: AppPreferences) {
                         ?: emptyList()
                     // 扩展内部报错：与 pi-web 一致，不把它渲染成模型正文。
                     "extension_error" -> emptyList()
+                    // 0.18.0 起给 run 中投递的 user 消息补发 entryId（#1746，用于那条消息上的
+                    // 「新会话」）。手机端没有分叉入口，显式忽略：落到下面的兼容 fallback 会
+                    // 变成一条 delta 为空的事件。
+                    "user_message_entry" -> emptyList()
 
                     else -> {
                         // 兼容简化格式 (delta / thinking / tool)
@@ -521,8 +526,9 @@ class PiSseClient(private val prefs: AppPreferences) {
                 }
             }
             return AssistantContentBlocks(
-                text = textSb.toString(),
-                thinking = thinkingSb.toString().takeIf { it.isNotEmpty() }
+                // 与 pi-web 的 TextBlock / ThinkingText 同口径：转义序列只对终端有意义（#1753）。
+                text = stripAnsi(textSb.toString()),
+                thinking = stripAnsi(thinkingSb.toString()).takeIf { it.isNotEmpty() }
             )
         }
 

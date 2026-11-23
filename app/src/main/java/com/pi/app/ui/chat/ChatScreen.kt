@@ -311,6 +311,10 @@ fun ChatScreen(
      */
     onLoadToolDefinitions: (suspend () -> Result<List<ToolDefinition>>)? = null,
     onForkFromMessage: ((ChatItem) -> Unit)? = null,
+    /** 非空时弹「目录没了，换个目录 Fork 继续」对话框（pi-web 0.18.0 的 fork `{cwd}`） */
+    forkIntoCwdOffer: ForkIntoCwdOffer? = null,
+    onForkIntoCwd: ((ForkIntoCwdOffer, String) -> Unit)? = null,
+    onDismissForkIntoCwd: () -> Unit = {},
     mediaGatewayConfig: MediaGatewayConfig = MediaGatewayConfig()
 ) {
     CompositionLocalProvider(LocalMediaGatewayConfig provides mediaGatewayConfig) {
@@ -2992,6 +2996,15 @@ fun ChatScreen(
         ExtensionUiDialogHost(dialog = dialog, onRespond = onExtensionUiRespond)
     }
 
+    // 会话目录已被删除：上游 pi 的做法是「换个目录 Fork 继续」，不用另造一套入口。
+    forkIntoCwdOffer?.let { offer ->
+        ForkIntoCwdDialog(
+            offer = offer,
+            onDismiss = onDismissForkIntoCwd,
+            onConfirm = { target -> onForkIntoCwd?.invoke(offer, target) }
+        )
+    }
+
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -4739,7 +4752,7 @@ private fun ExtensionUiDialogHost(
     when (dialog.method) {
         ExtensionUiDialog.METHOD_SELECT -> AlertDialog(
             onDismissRequest = dismiss,
-            title = { Text(dialog.title.ifBlank { "请选择" }, style = MaterialTheme.typography.titleMedium) },
+            title = { ExtensionDialogTitle(dialog.title.ifBlank { "请选择" }, dialog.expiresAt) },
             text = {
                 Column(
                     modifier = Modifier.verticalScroll(rememberScrollState()),
@@ -4763,7 +4776,7 @@ private fun ExtensionUiDialogHost(
 
         ExtensionUiDialog.METHOD_CONFIRM -> AlertDialog(
             onDismissRequest = dismiss,
-            title = { Text(dialog.title.ifBlank { "确认" }, style = MaterialTheme.typography.titleMedium) },
+            title = { ExtensionDialogTitle(dialog.title.ifBlank { "确认" }, dialog.expiresAt) },
             text = { Text(dialog.message, fontSize = 14.sp, color = theme.textSecondary) },
             confirmButton = {
                 Button(onClick = { onRespond(dialog, null, true, false) }) { Text("确定") }
@@ -4814,6 +4827,110 @@ private fun ExtensionUiDialogHost(
     }
 }
 
+/**
+ * 带截止时间的阻塞请求的标题：多一行倒计时（对齐 pi-web `ChatWindow` 的
+ * `chat.extensionExpiresIn`）。到点关闭不归这里管——服务端自己结掉请求并推
+ * `extension_ui_closed`，上层按 id 摘掉对话框。
+ */
+@Composable
+private fun ExtensionDialogTitle(title: String, expiresAt: Long?) {
+    val theme = LocalAppTheme.current
+    var remaining by remember(expiresAt) { mutableStateOf(extensionRemainingSeconds(expiresAt)) }
+    if (expiresAt != null) {
+        LaunchedEffect(expiresAt) {
+            while (true) {
+                remaining = extensionRemainingSeconds(expiresAt)
+                delay(1000)
+            }
+        }
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(title, style = MaterialTheme.typography.titleMedium)
+        remaining?.let {
+            Text("$it 秒后自动关闭", fontSize = 11.sp, color = theme.textMuted)
+        }
+    }
+}
+
+/** 剩余秒数向上取整（与 pi-web 的 `Math.ceil` 一致）；没有截止时间时为 null。 */
+private fun extensionRemainingSeconds(expiresAt: Long?): Int? = expiresAt?.let {
+    (((it - System.currentTimeMillis()) + 999) / 1000).coerceAtLeast(0).toInt()
+}
+
+/**
+ * 「会话目录已被删除」的出口：把整份历史 Fork 到另一个目录继续（pi-web 0.18.0 的
+ * `POST /api/sessions/[id]/fork` `{cwd}`，上游 `forkSessionIntoCwd()`）。
+ *
+ * 只负责收集目标目录：能不能用由服务端判定（`cwd-exists` / `cwd-invalid`）。
+ */
+@Composable
+private fun ForkIntoCwdDialog(
+    offer: ForkIntoCwdOffer,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit
+) {
+    val theme = LocalAppTheme.current
+    // 默认停在第一个已知工作区：最常见的情形就是「旧目录没了，换到现在用的那个」
+    var path by remember(offer.sessionId) {
+        mutableStateOf(offer.knownCwds.firstOrNull().orEmpty())
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = theme.surfaceContainerLow,
+        title = { Text("文件夹已不存在", style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    text = "「${offer.sessionTitle}」的工作目录已不在：",
+                    fontSize = 12.5.sp,
+                    color = theme.textSecondary
+                )
+                Text(
+                    text = offer.missingCwd,
+                    fontSize = 11.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = theme.textMuted
+                )
+                Text(
+                    text = "可以把整段历史 Fork 到另一个目录继续（原会话保持不变）；输入还会退回输入框。",
+                    fontSize = 12.sp,
+                    color = theme.textSecondary
+                )
+                OutlinedTextField(
+                    value = path,
+                    onValueChange = { path = it },
+                    singleLine = true,
+                    label = { Text("目标目录", fontSize = 11.5.sp) },
+                    placeholder = { Text("如 D:\\Projects\\my-app", fontSize = 11.5.sp) },
+                    textStyle = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 12.sp, color = theme.textPrimary),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                offer.knownCwds.take(4).forEach { cwd ->
+                    Text(
+                        text = cwd,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = if (cwd == path) theme.primary else theme.textMuted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { path = cwd }
+                            .padding(vertical = 3.dp)
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = path.isNotBlank(),
+                onClick = { onConfirm(path.trim()) }
+            ) { Text("Fork 到该目录") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
 /** `input` / `editor` 共用的「一段文本」对话框。 */
 @Composable
 private fun ExtensionUiTextDialog(
@@ -4826,7 +4943,7 @@ private fun ExtensionUiTextDialog(
     var text by remember(dialog.id) { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = { onRespond(dialog, null, null, true) },
-        title = { Text(dialog.title.ifBlank { "输入" }, style = MaterialTheme.typography.titleMedium) },
+        title = { ExtensionDialogTitle(dialog.title.ifBlank { "输入" }, dialog.expiresAt) },
         text = {
             OutlinedTextField(
                 value = text,

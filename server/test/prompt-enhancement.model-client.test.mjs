@@ -145,3 +145,15 @@ test('upstream 4xx rejections surface the upstream reason instead of a generic m
   // 普通网络抖动仍然给通用文案，不把无意义的堆栈抛给用户
   assert.equal(mapModelError(new Error('socket hang up')).message, '模型请求失败，请稍后重试');
 });
+
+import { createSdkModelClient } from '../prompt-enhancement/model-client.mjs';
+
+test('default SDK loader warms up ModelRuntime via submodules without barrel-import stall', async () => {
+  const client = createSdkModelClient();
+  const startedAt = Date.now();
+  const { runtime } = await client.warmUp();
+  const elapsedMs = Date.now() - startedAt;
+  assert.equal(typeof runtime.getModel, 'function');
+  assert.ok(Array.isArray(runtime.getModels()));
+  assert.ok(elapsedMs < 5000, `warmUp took ${elapsedMs}ms; expected < 5000ms via submodule import`);
+});

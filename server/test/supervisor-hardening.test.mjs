@@ -12,10 +12,11 @@ const {
   readLogTail,
   parseNetstatPid,
   parsePosixPortPid,
+  PIWEB_HEALTH_PATH,
   PIWEB_SETTLE_MS,
   BOOT_GRACE_MS,
 } = require('../supervisor.js');
-const { parsePiWebPort, main: launcherMain } = require('../launcher.js');
+const { parsePiWebPort, piWebHealthUrl, main: launcherMain } = require('../launcher.js');
 
 test('readSupervisorPid treats EPERM as alive and verifies node.exe on Windows', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pidroid-sup-pid-'));
@@ -178,4 +179,55 @@ test('launcher viewer mode checks gateway first and never spawns pi-web', async 
   assert.equal(launchCalled, false);
   assert.match(probedUrl, /^http:\/\/127\.0\.0\.1:30141/);
   assert.equal(bannerPiWebReady, false);
+});
+
+test('health probe targets zero-IO /api/home rather than heavy /api/models', () => {
+  assert.equal(PIWEB_HEALTH_PATH, '/api/home');
+  assert.equal(piWebHealthUrl('http://127.0.0.1:30141/'), 'http://127.0.0.1:30141/api/home');
+});
+
+test('Supervisor.tick resolves piwebPid on initial healthy and recovery, skipping portOwnerPid in steady state', async () => {
+  let pidCalls = 0;
+  let currentPid = 1001;
+  let piwebOk = true;
+  const sup = new Supervisor({
+    stackHealth: async () => [
+      piwebOk ? { ok: true, status: 200, ms: 5 } : { ok: false, reason: 'timeout', ms: 2000 },
+      { ok: true, status: 200, ms: 3 },
+    ],
+    portOwnerPid: () => {
+      pidCalls += 1;
+      return currentPid;
+    },
+    recordProbe: () => {},
+    recordDeath: () => {},
+    killTree: () => {},
+    log: () => {},
+  });
+  sup.child = { pid: 9999 };
+  sup.childStartedAt = Date.now() - BOOT_GRACE_MS - 10_000;
+
+  // 1) 首次健康：调用一次 portOwnerPid，记录 piwebPid 并设置 settle window
+  await sup.tick();
+  assert.equal(pidCalls, 1);
+  assert.equal(sup.piwebPid, 1001);
+  assert.ok(sup.piwebSettleUntil > Date.now());
+  assert.ok(sup.healthySince > 0);
+
+  // 2) 持续健康稳态：后续 tick 不再触发同步 portOwnerPid
+  await sup.tick();
+  await sup.tick();
+  assert.equal(pidCalls, 1);
+
+  // 3) 模拟 pi-web 出现一次失败后（退出 settle window）重启恢复为新 PID
+  sup.piwebSettleUntil = 0;
+  piwebOk = false;
+  await sup.tick();
+  assert.equal(sup.healthySince, 0);
+
+  currentPid = 2002;
+  piwebOk = true;
+  await sup.tick();
+  assert.equal(pidCalls, 2);
+  assert.equal(sup.piwebPid, 2002);
 });

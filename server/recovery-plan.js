@@ -15,13 +15,15 @@
 const PIWEB_ONLY_RESTARTS_BEFORE_FULL = 2;
 
 /**
- * @param {{ gatewayOk: boolean, piwebOnlyRestarts: number }} state
+ * @param {{ gatewayOk: boolean, piwebOnlyRestarts: number, hasPiWebOwner?: boolean }} state
  * @returns {'piweb' | 'stack'} `piweb` = 只 kill 监听 30141 的进程树（launcher 会自己把它拉起来，
  *   网关与 frp 隧道全程不断）；`stack` = 连 launcher 一起回收重建。
  */
-function planRecovery({ gatewayOk, piwebOnlyRestarts }) {
+function planRecovery({ gatewayOk, piwebOnlyRestarts, hasPiWebOwner = true }) {
   // 网关自己都不答了，说明问题不在 pi-web 那一层（同一份 launcher 拉起来的），整栈重来。
   if (!gatewayOk) return 'stack';
+  // 30141 上根本没有监听进程时（如 launcher 误跳过了启动），killTree(null) 只会空转浪费时间，直接重建整栈。
+  if (!hasPiWebOwner) return 'stack';
   if (piwebOnlyRestarts >= PIWEB_ONLY_RESTARTS_BEFORE_FULL) return 'stack';
   return 'piweb';
 }

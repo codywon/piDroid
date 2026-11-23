@@ -112,4 +112,28 @@ class ExtensionUiParsingTest {
 
         Assert.assertTrue(d!!.isBlocking)
     }
+
+    /**
+     * 带截止时间的请求：上游只在 `timeout` 为正且有限时才下发 `expiresAt`（pi-web
+     * `requestExtensionUi()`），手机端据此显示倒计时；到点由服务端结掉请求并推
+     * `extension_ui_closed`，不需要本地定时关闭。
+     */
+    @Test
+    fun `an expiresAt deadline is carried through`() {
+        val d = dialog(
+            """{"type":"extension_ui_request","id":"u13","method":"select","options":["a"],
+                 "timeout":60000,"expiresAt":1763000060000}"""
+        )
+
+        Assert.assertEquals(1763000060000L, d!!.expiresAt)
+    }
+
+    @Test
+    fun `a request without a deadline has no expiresAt`() {
+        Assert.assertNull(dialog("""{"type":"extension_ui_request","id":"u14","method":"confirm"}""")!!.expiresAt)
+        // 只有相对 timeout、没给绝对时刻：不自己编一个截止时间。
+        Assert.assertNull(
+            dialog("""{"type":"extension_ui_request","id":"u15","method":"confirm","timeout":5000}""")!!.expiresAt
+        )
+    }
 }

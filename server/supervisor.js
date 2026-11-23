@@ -46,6 +46,9 @@ const TOKEN_FILE = path.join(SERVER_DIR, '.token');
 
 const PIWEB_PORT = Number(process.env.PIWEB_PORT || 30141);
 const GATEWAY_PORT = Number(process.env.GATEWAY_PORT || 4100);
+// 必须探活零 I/O 的轻量路由：`/api/models` 每次会先刷 5s TTL 的会话目录扫描（65 目录/517 会话），
+// 并在 60s 过期时并发拉起几十个 git 进程且通过 jiti 全量重载扩展，探活反而把 pi-web 拖死。
+const PIWEB_HEALTH_PATH = '/api/home';
 
 // 探活参数：launcher.js 里"首次编译可能 1s 以上才应答"的坑，这里用「连续 N 次失败」而不是一次失败就判死。
 // 探活节奏：业界惯例是事件循环健康检查 5~10s 一次。2s 超时才能看见「3~4s 的整段阻塞」，
@@ -162,7 +165,7 @@ function recordProbe(piweb, gateway) {
 
 function stackHealth() {
   return Promise.all([
-    probe(`http://127.0.0.1:${PIWEB_PORT}/api/models`),
+    probe(`http://127.0.0.1:${PIWEB_PORT}${PIWEB_HEALTH_PATH}`),
     probe(`http://127.0.0.1:${GATEWAY_PORT}/api/ping`, authHeaders())
   ]);
 }
@@ -243,7 +246,13 @@ function killTree(pid, why) {
   if (!pid) return;
   log(`kill tree pid=${pid} (${why})`);
   if (process.platform === 'win32') {
-    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true });
+    const r = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', windowsHide: true });
+    if (r.error) {
+      log(`kill tree pid=${pid} spawn error: ${r.error.message}`);
+    } else if (r.status !== 0) {
+      const detail = `${r.stderr || ''}${r.stdout || ''}`.trim();
+      if (detail) log(`kill tree pid=${pid} exited=${r.status}: ${detail}`);
+    }
   } else {
     try {
       process.kill(-pid, 'SIGTERM');
@@ -251,6 +260,21 @@ function killTree(pid, why) {
       try { process.kill(pid, 'SIGTERM'); } catch {}
     }
   }
+}
+
+async function waitForPortsFree(ports, maxWaitMs = 4000, pollMs = 150) {
+  const startedAt = Date.now();
+  let retriedKill = false;
+  while (Date.now() - startedAt < maxWaitMs) {
+    const busy = ports.map((p) => ({ port: p, pid: portOwnerPid(p) })).filter((x) => x.pid);
+    if (busy.length === 0) return true;
+    if (!retriedKill && Date.now() - startedAt >= 1500) {
+      retriedKill = true;
+      for (const item of busy) killTree(item.pid, `端口 ${item.port} 仍未释放，补杀`);
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return ports.every((p) => !portOwnerPid(p));
 }
 
 class Supervisor {
@@ -318,6 +342,7 @@ class Supervisor {
       log(`stack exited code=${code} signal=${signal} uptime=${uptimeS}s`);
       recordDeath({ kind: 'stack', code, signal, uptimeS, rssPeakMb: this.rssPeakMb, tail: readLogTail() });
       this.child = null;
+      this.piwebPid = 0;
       this.rssPeakMb = 0;
       this.failures = 0;
       this.healthySince = 0;
@@ -349,7 +374,10 @@ class Supervisor {
     this.tickInFlight = true;
     try {
       const [piweb, gateway] = await this.deps.stackHealth();
-      this.detectPiWebRestart();
+      // 仅在首次就绪或重启恢复后查一次端口 PID；稳态下免掉每 10s 同步拉起 netstat 的开销。
+      if (piweb.ok && (!this.piwebPid || !this.healthySince)) {
+        this.detectPiWebRestart();
+      }
       this.deps.recordProbe(piweb, gateway);
       if (piweb.ok && gateway.ok) {
         if (this.restartTimer) {
@@ -396,7 +424,12 @@ class Supervisor {
       if (this.failures < FAILURES_BEFORE_RESTART) return;
 
       this.failures = 0;
-      const action = planRecovery({ gatewayOk: gateway.ok, piwebOnlyRestarts: this.piwebOnlyRestarts });
+      const piwebOwner = this.deps.portOwnerPid(PIWEB_PORT);
+      const action = planRecovery({
+        gatewayOk: gateway.ok,
+        piwebOnlyRestarts: this.piwebOnlyRestarts,
+        hasPiWebOwner: Boolean(piwebOwner)
+      });
       this.deps.recordDeath({
         kind: 'unresponsive',
         piweb: piweb.ok ? piweb.status : piweb.reason,
@@ -406,6 +439,7 @@ class Supervisor {
       });
       if (!this.child) {
         // 端口上挂着一份没人托管的实例（手敲的 / 上一代守护的孤儿）：清掉再起自己的。
+        this.piwebPid = 0;
         for (const port of [PIWEB_PORT, GATEWAY_PORT]) this.deps.killTree(this.deps.portOwnerPid(port), `无主实例占用 ${port}`);
         this.startChild('adopted stack unresponsive');
         return;
@@ -413,14 +447,15 @@ class Supervisor {
       if (action === 'piweb') {
         // 只换 pi-web：launcher 的 exit 钩子会在 5s 后把它重新拉起来，网关与 frp 隧道全程不断。
         this.piwebOnlyRestarts += 1;
-        const owner = this.deps.portOwnerPid(PIWEB_PORT);
+        this.piwebPid = 0;
         this.deps.log(
-          `recycling pi-web only (${this.piwebOnlyRestarts}/${PIWEB_ONLY_RESTARTS_BEFORE_FULL}) owner=${owner || 'none'} — gateway 与隧道保持不动`
+          `recycling pi-web only (${this.piwebOnlyRestarts}/${PIWEB_ONLY_RESTARTS_BEFORE_FULL}) owner=${piwebOwner || 'none'} — gateway 与隧道保持不动`
         );
-        this.deps.killTree(owner, 'unresponsive pi-web');
+        this.deps.killTree(piwebOwner, 'unresponsive pi-web');
         return;
       }
       this.piwebOnlyRestarts = 0;
+      this.piwebPid = 0;
       this.deps.killTree(this.child.pid, 'unresponsive stack');
     } finally {
       this.tickInFlight = false;
@@ -468,7 +503,7 @@ class Supervisor {
     process.on('SIGTERM', () => shutdown('SIGTERM'));
 
     // 启动时如果整栈已经健康（上一代实例还在跑），先接管观察，不制造第二份。
-    stackHealth().then(([piweb, gateway]) => {
+    stackHealth().then(async ([piweb, gateway]) => {
       if (piweb.ok && gateway.ok) {
         log('existing stack is healthy, adopting it (no new process spawned)');
         this.healthySince = Date.now();
@@ -476,6 +511,7 @@ class Supervisor {
         if (portOwnerPid(PIWEB_PORT) || portOwnerPid(GATEWAY_PORT)) {
           log('stale instance found on port but stack is unhealthy, clearing it first');
           for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), 'stale at startup');
+          await waitForPortsFree([PIWEB_PORT, GATEWAY_PORT]);
         }
         this.startChild('startup');
       }
@@ -533,18 +569,21 @@ function schtasks(args) {
 // schtasks 的 /Create 只能挂一个 /SC，第二次带 /F 会把第一个触发器整条覆盖掉。
 // 「开机 + 登录」两个触发器必须一次注册，所以这里走 Register-ScheduledTask。
 function install() {
-  const node = process.execPath;
-  const sup = path.join(SERVER_DIR, 'supervisor.js');
+  // 两个任务都通过 wscript 跑 supervisor.js：InteractiveToken 的任务直接起
+  // node.exe 必得一个控制台窗口（默认终端是 Windows Terminal 时就是一闪而过的
+  // 黑窗），而 wscript 本身不建控制台。详见 supervisor-hidden.vbs 的注释。
+  const wscriptExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wscript.exe');
+  const hiddenShim = path.join(SERVER_DIR, 'supervisor-hidden.vbs');
   const ps = `
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '"${sup.replace(/'/g, "''")}" run' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
+$action = New-ScheduledTaskAction -Execute '${wscriptExe.replace(/'/g, "''")}' -Argument '"${hiddenShim.replace(/'/g, "''")}" run' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
 $triggers = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME))
-$settings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+$settings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
 Register-ScheduledTask -TaskName '${TASKNAME}' -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null
 
-$wAction = New-ScheduledTaskAction -Execute '${node.replace(/'/g, "''")}' -Argument '"${sup.replace(/'/g, "''")}" ensure' -WorkingDirectory '${SERVER_DIR.replace(/'/g, "''")}'
+$wAction = New-ScheduledTaskAction -Execute '${wscriptExe.replace(/'/g, "''")}' -Argument '"${hiddenShim.replace(/'/g, "''")}" ensure'
 $wTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
-$wSettings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
+$wSettings = New-ScheduledTaskSettingsSet -Priority 4 -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -DontStopOnIdleEnd -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 2)
 Register-ScheduledTask -TaskName '${WATCHDOG_TASKNAME}' -Action $wAction -Trigger $wTrigger -Settings $wSettings -Force | Out-Null
 Get-ScheduledTask -TaskName '${TASKNAME}','${WATCHDOG_TASKNAME}' | Select-Object TaskName,State | Format-Table -AutoSize | Out-String
 `;
@@ -631,6 +670,7 @@ async function main() {
         const owner = portOwnerPid(port);
         if (owner) killTree(owner, `restart requested, clearing ${port}`);
       }
+      await waitForPortsFree([PIWEB_PORT, GATEWAY_PORT]);
       scheduleRun();
       console.log('supervisor respawned with a fresh stack');
       break;
@@ -653,6 +693,7 @@ async function main() {
         console.log('supervisor not running; clearing ports');
       }
       for (const port of [PIWEB_PORT, GATEWAY_PORT]) killTree(portOwnerPid(port), `manual stop ${port}`);
+      await waitForPortsFree([PIWEB_PORT, GATEWAY_PORT]);
       break;
     }
     case 'install':
@@ -681,6 +722,7 @@ module.exports = {
   portOwnerPid,
   parseNetstatPid,
   parsePosixPortPid,
+  PIWEB_HEALTH_PATH,
   PIWEB_SETTLE_MS,
   BOOT_GRACE_MS,
   FAILURES_BEFORE_RESTART

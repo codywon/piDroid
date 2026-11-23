@@ -221,6 +221,7 @@ function killProcessTree(pid) {
 // 优雅退出管理
 let isShuttingDown = false;
 function cleanupChildren() {
+  cancelPiWebColdWarmUp();
   if (piWebRestartTimer) {
     clearTimeout(piWebRestartTimer);
     piWebRestartTimer = null;
@@ -343,10 +344,45 @@ const stallRecorder = new StallRecorder({
   diagnostics: () => piWebDiagnostics(PI_WEB_PORT),
 });
 
+let piWebWarmUpTimer = null;
+
+function piWebHealthUrl(baseUrl) {
+  return `${String(baseUrl || 'http://127.0.0.1:30141').replace(/\/+$/, '')}/api/home`;
+}
+
+function cancelPiWebColdWarmUp() {
+  if (piWebWarmUpTimer) {
+    clearTimeout(piWebWarmUpTimer);
+    piWebWarmUpTimer = null;
+  }
+}
+
+/**
+ * 温和的单次冷启预热：只发一发带 summary=1 的异步 /api/sessions，把磁盘会话索引提前建好，
+ * 避免拖在正常启动链路里或用定时轮询轰炸 pi-web。
+ */
+function schedulePiWebColdWarmUp(baseUrl, delayMs = 5000) {
+  cancelPiWebColdWarmUp();
+  piWebWarmUpTimer = setTimeout(() => {
+    piWebWarmUpTimer = null;
+    if (isShuttingDown) return;
+    try {
+      const target = new URL('/api/sessions?summary=1', baseUrl);
+      const client = target.protocol === 'https:' ? https : http;
+      const req = client.get(target, { timeout: 60000 }, (res) => {
+        res.resume();
+      });
+      req.on('error', () => {});
+      req.on('timeout', () => { req.destroy(); });
+    } catch {}
+  }, delayMs);
+  if (typeof piWebWarmUpTimer.unref === 'function') piWebWarmUpTimer.unref();
+}
+
 function measurePiWebLatency() {
   return new Promise((resolve) => {
     const startedAt = Date.now();
-    const req = http.get(`${piWebUrl}/api/models`, { timeout: STALL_PROBE_TIMEOUT_MS }, (res) => {
+    const req = http.get(piWebHealthUrl(piWebUrl), { timeout: STALL_PROBE_TIMEOUT_MS }, (res) => {
       res.resume();
       resolve({ ok: res.statusCode < 500, ms: Date.now() - startedAt });
     });
@@ -361,23 +397,52 @@ function measurePiWebLatency() {
 /**
  * 现场快照：CPU 打满 = JS/GC 侧阻塞；CPU 空转 = 在等 I/O 或锁。这条判定决定下一步往哪查。
  * 用 exec（异步）而不是 execSync：网关和 pi-web 的托管都跑在这个进程里，
- * 取证时把 launcher 卡住 1s 会让手机端多等 1s。
+ * 取证时把 launcher 卡住 1s 会让手机端多等 1s。端口归属也在异步 PowerShell 内查，
+ * 不在网关主线程同步拉起 netstat。
  */
 function piWebDiagnostics(port) {
-  const pid = portOwnerPid(port);
-  if (!pid) return 'pi-web 端口无人监听（进程已退出）';
-  const script =
-    `$p=Get-Process -Id ${pid}; $c1=$p.CPU; $t=Get-Date; Start-Sleep -Milliseconds 800; ` +
-    `$p2=Get-Process -Id ${pid}; $dt=((Get-Date)-$t).TotalSeconds; ` +
-    `'pid=${pid} rss={0}MB cpu={1}% threads={2}' -f [int]($p2.WorkingSet64/1MB), [math]::Round(($p2.CPU-$c1)/$dt*100,0), $p2.Threads.Count`;
+  const portNum = Number(port);
+  if (!Number.isInteger(portNum) || portNum <= 0) return 'pi-web 端口无效';
+  if (process.platform !== 'win32') {
+    const pid = portOwnerPid(portNum);
+    return pid ? `pid=${pid}` : 'pi-web 端口无人监听（进程已退出）';
+  }
   return new Promise((resolve) => {
-    exec(
-      `powershell -NoProfile -Command "${script}"`,
-      { timeout: 5000, windowsHide: true },
-      (error, stdout) => resolve(error ? `pid=${pid}（快照失败: ${error.message}）` : String(stdout).trim())
-    );
+    exec('netstat -ano -p TCP', { timeout: 3000, windowsHide: true }, (netErr, netOut) => {
+      if (netErr && !netOut) {
+        resolve(`port=${portNum}（端口探测失败: ${netErr.message}）`);
+        return;
+      }
+      let targetPid = null;
+      for (const rawLine of String(netOut || '').split(/\r?\n/)) {
+        const parts = rawLine.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        if (parts[0].toUpperCase() !== 'TCP' || parts[3].toUpperCase() !== 'LISTENING') continue;
+        if (!parts[1].endsWith(`:${portNum}`)) continue;
+        const pid = Number(parts[parts.length - 1]);
+        if (Number.isInteger(pid) && pid > 0) {
+          targetPid = pid;
+          break;
+        }
+      }
+      if (!targetPid) {
+        resolve('pi-web 端口无人监听（进程已退出）');
+        return;
+      }
+      const script =
+        `$p = Get-Process -Id ${targetPid} -ErrorAction Stop; $c1 = $p.CPU; $t = Get-Date; Start-Sleep -Milliseconds 800; ` +
+        `$p2 = Get-Process -Id ${targetPid} -ErrorAction Stop; $dt = ((Get-Date) - $t).TotalSeconds; ` +
+        `'pid={0} rss={1}MB cpu={2}% threads={3}' -f ${targetPid}, [int]($p2.WorkingSet64 / 1MB), [math]::Round(($p2.CPU - $c1) / $dt * 100, 0), $p2.Threads.Count`;
+      exec(
+        `powershell -NoProfile -Command "${script}"`,
+        { timeout: 8000, windowsHide: true },
+        (error, stdout) => resolve(error ? `pid=${targetPid}（快照失败: ${error.message}）` : String(stdout).trim())
+      );
+    });
   });
 }
+
+let stallWatchBootTimer = null;
 
 function startStallWatch() {
   stopStallWatch();
@@ -396,6 +461,10 @@ function startStallWatch() {
 }
 
 function stopStallWatch() {
+  if (stallWatchBootTimer) {
+    clearTimeout(stallWatchBootTimer);
+    stallWatchBootTimer = null;
+  }
   if (stallWatchTimer) {
     clearInterval(stallWatchTimer);
     stallWatchTimer = null;
@@ -469,6 +538,13 @@ function spawnPiWeb(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
   piWebForensics = new CrashForensics();
   piWebForensics.markStarted();
 
+  let stallArmed = false;
+  const armStallWatchOnce = () => {
+    if (stallArmed || proc.exitCode !== null || isShuttingDown) return;
+    stallArmed = true;
+    startStallWatch();
+  };
+
   proc.on('error', (err) => {
     console.error('[pi-web 启动异常]:', err.message);
   });
@@ -480,6 +556,7 @@ function spawnPiWeb(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
     stallRecorder.noteLine(text);
     if (text.includes('Ready') || text.includes('ready') || text.includes('http://')) {
       process.stdout.write(`    [pi-web] ${text.trim()}\n`);
+      armStallWatchOnce();
     }
   });
 
@@ -493,12 +570,46 @@ function spawnPiWeb(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
   });
 
   startPiWebMemorySampling(proc);
-  startStallWatch();
+  // 兜底：若 Ready 日志未匹配到，10s 后依然启动卡顿监测（避免冷启动前几秒未监听就误报 stall）
+  stallWatchBootTimer = setTimeout(() => {
+    stallWatchBootTimer = null;
+    armStallWatchOnce();
+  }, 10_000);
+  if (typeof stallWatchBootTimer.unref === 'function') stallWatchBootTimer.unref();
 
   return proc;
 }
 
-function launchPiWeb() {
+/**
+ * 优先直接定位全局安装的 `@agegr/pi-web/bin/pi-web.js`，跳过 `execSync('where pi-web')`
+ * 的 PATH 查找（Windows 盘忙时能卡超 5s）及外层 `cmd.exe` 包装。
+ */
+function resolveDirectPiWebCli() {
+  const candidates = [];
+  if (process.env.APPDATA) {
+    candidates.push(path.join(process.env.APPDATA, 'npm', 'node_modules', '@agegr', 'pi-web', 'bin', 'pi-web.js'));
+  }
+  if (process.env.npm_config_prefix) {
+    const base = process.platform === 'win32'
+      ? path.join(process.env.npm_config_prefix, 'node_modules')
+      : path.join(process.env.npm_config_prefix, 'lib', 'node_modules');
+    candidates.push(path.join(base, '@agegr', 'pi-web', 'bin', 'pi-web.js'));
+  }
+  const nodeDir = path.dirname(process.execPath);
+  if (process.platform === 'win32') {
+    candidates.push(path.join(nodeDir, 'node_modules', '@agegr', 'pi-web', 'bin', 'pi-web.js'));
+  } else {
+    candidates.push(path.join(nodeDir, '..', 'lib', 'node_modules', '@agegr', 'pi-web', 'bin', 'pi-web.js'));
+  }
+  for (const candidate of candidates) {
+    try {
+      if (candidate && fs.existsSync(candidate)) return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function launchPiWeb(options = {}) {
   const isWindows = process.platform === 'win32';
   const checkCmd = isWindows ? 'where pi-web' : 'which pi-web';
 
@@ -515,40 +626,47 @@ function launchPiWeb() {
     cmdArgs = inspectSpec.args;
     useShell = false;
     extraEnv = inspectSpec.env;
-    return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv, inspectSpec.cwd);
+    return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv, inspectSpec.cwd, options);
   } else if (PIWEB_DEBUG_STACK) {
     console.warn('[warn] PIWEB_DEBUG_STACK=1 但定位不到 pi-web 包目录，回退到普通启动');
   }
 
-  // 检查是否全局有 pi-web 命令
-  try {
-    execSync(checkCmd, { stdio: 'ignore', timeout: PI_WEB_WHERE_TIMEOUT_MS, windowsHide: true });
-    cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
-    useShell = isWindows;
-  } catch (e) {
-    // status === null 是「被超时打断」，不是「没装」。这时候退到 npx 会去下载一份
-    // latest（断网直接起不来，且有网也要几十秒），所以仍按已安装处理。
-    if (e && e.status === null) {
-      console.warn(`[warn] ${checkCmd} 超过 ${PI_WEB_WHERE_TIMEOUT_MS / 1000}s 未返回，仍按已安装处理`);
+  const directCli = resolveDirectPiWebCli();
+  if (directCli) {
+    cmd = process.execPath;
+    cmdArgs = [directCli, '--no-open'];
+    useShell = false;
+  } else {
+    // 检查是否全局有 pi-web 命令
+    try {
+      execSync(checkCmd, { stdio: 'ignore', timeout: PI_WEB_WHERE_TIMEOUT_MS, windowsHide: true });
       cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
       useShell = isWindows;
-    } else {
-      // 若未全局安装，使用 npx 实时拉起最新版
-      cmd = isWindows ? 'npx.cmd' : 'npx';
-      cmdArgs = ['@agegr/pi-web@latest', '--no-open'];
-      useShell = isWindows;
+    } catch (e) {
+      // status === null 是「被超时打断」，不是「没装」。这时候退到 npx 会去下载一份
+      // latest（断网直接起不来，且有网也要几十秒），所以仍按已安装处理。
+      if (e && e.status === null) {
+        console.warn(`[warn] ${checkCmd} 超过 ${PI_WEB_WHERE_TIMEOUT_MS / 1000}s 未返回，仍按已安装处理`);
+        cmd = isWindows ? 'pi-web.cmd' : 'pi-web';
+        useShell = isWindows;
+      } else {
+        // 若未全局安装，使用 npx 实时拉起最新版
+        cmd = isWindows ? 'npx.cmd' : 'npx';
+        cmdArgs = ['@agegr/pi-web@latest', '--no-open'];
+        useShell = isWindows;
+      }
     }
   }
 
   console.log(`[1/3] 正在启动官方原生 pi-web 服务 (${cmd} ${cmdArgs.join(' ')})...`);
 
-  return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv);
+  return startPiWebProcess(cmd, cmdArgs, useShell, extraEnv, undefined, options);
 }
 
 /**
  * 起 pi-web 子进程并挂上取证/卡顿监测：两条启动路径（普通 / inspector 诊断）共用。
  */
-function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
+function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd, options = {}) {
   const proc = spawnPiWeb(cmd, cmdArgs, useShell, extraEnv, cwd);
 
   proc.on('exit', (code, signal) => {
@@ -568,7 +686,10 @@ function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
     piWebRestartTimer = setTimeout(() => {
       piWebRestartTimer = null;
       if (isShuttingDown) return;
-      piWebProcess = launchPiWeb();
+      piWebProcess = launchPiWeb(options);
+      if (options.warmUpPiWeb !== false) {
+        schedulePiWebColdWarmUp(piWebUrl, 8000);
+      }
     }, PI_WEB_RESTART_DELAY_MS);
   });
 
@@ -581,11 +702,13 @@ function startPiWebProcess(cmd, cmdArgs, useShell, extraEnv = {}, cwd) {
 async function main(deps = {}) {
   const checkGw = deps.checkGatewayRunning || checkGatewayRunning;
   const checkAlive = deps.checkUrlAlive || checkUrlAlive;
-  const launchPi = deps.launchPiWeb || launchPiWeb;
+  const launchPi = deps.launchPiWeb;
   const resolveHost = deps.resolveConnectHost || resolveConnectHost;
   const printBanner = deps.printBannerAndQr || gateway.printBannerAndQr;
   const probePub = deps.probePublicUrl || probePublicUrl;
   const resumeStdin = deps.resumeStdin !== false;
+  const warmUpPiWeb = deps.warmUpPiWeb !== false;
+  const healthUrl = piWebHealthUrl(piWebUrl);
 
   console.log('\n======================================================');
   console.log('    🚀  piDroid 统合启动中心 (Unified Companion)     ');
@@ -595,7 +718,7 @@ async function main(deps = {}) {
   // 步骤 A: 先检查伴侣网关是否已在运行（查看器模式只做只读探测，绝不拉起新 pi-web，以免 Ctrl+C 误杀）
   const isGatewayRunning = await checkGw(gatewayPort);
   if (isGatewayRunning) {
-    const piWebReady = await checkAlive(piWebUrl, 1200);
+    const piWebReady = await checkAlive(healthUrl, 1200);
     // 网关由其他窗口或 supervisor 托管。这里必须用与 gateway.start() 相同的解析逻辑，
     // 否则会退回到「展示局域网 IP」。
     const { mode, connectHost, configPath } = resolveHost();
@@ -627,16 +750,25 @@ async function main(deps = {}) {
 
   // 步骤 B: 检查 pi-web 是否已运行
   //
-  // 先看端口再看 HTTP：Next.js 首次编译时 `/` 可能 1 秒以上才应答，只靠一次 HTTP 探测
-  // 会把"正在跑的"判成"没在跑"，于是又拉起第二份 —— 必然 EADDRINUSE 30141 秒退，
-  // 日志里留下一串假的 "Next.js exited unexpectedly"（线上真的碰过）。
+  // 不能仅凭 TCP 握手通就跳过启动：刚收到 taskkill 正在销毁句柄的垂死进程也可能短暂完成握手，
+  // 误接入会导致 launcher 不再托管 piWebProcess。必须确认 HTTP 真正应答才算「已运行」；
+  // 若端口可连但 HTTP 连续无应答，等其释放（必要时清掉残留）再拉起受管实例。
   const piWebPort = parsePiWebPort(piWebUrl);
-  let alreadyRunning = await isPortListening(piWebPort);
-  if (!alreadyRunning) {
-    alreadyRunning = await probeWithRetry(() => checkAlive(piWebUrl, 1200), {
-      attempts: 3,
-      delayMs: 600,
-    });
+  const portListening = await isPortListening(piWebPort);
+  let alreadyRunning = await probeWithRetry(() => checkAlive(healthUrl, 1500), {
+    attempts: portListening ? 5 : 2,
+    delayMs: 500,
+  });
+  if (!alreadyRunning && portListening && !skipPiWeb) {
+    for (let i = 0; i < 10 && (await isPortListening(piWebPort)); i += 1) {
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    const stalePid = portOwnerPid(piWebPort);
+    if (stalePid) {
+      console.warn(`[1/3] 端口 ${piWebPort} 上的残留实例 (pid=${stalePid}) 无响应，清理后重新启动...`);
+      killProcessTree(stalePid);
+      await new Promise((r) => setTimeout(r, 300));
+    }
   }
 
   // 横幅里"pi-web 是否正常"必须反映当前真实状态：刚拉起的也可能还没就绪。
@@ -644,10 +776,10 @@ async function main(deps = {}) {
   if (alreadyRunning) {
     console.log(`[1/3] ✓ 检测到本地已存在运行中的 pi-web (${piWebUrl})，直接接入。`);
   } else if (!skipPiWeb) {
-    piWebProcess = await launchPi();
+    piWebProcess = launchPi ? await launchPi() : await launchPiWeb({ warmUpPiWeb });
     process.stdout.write('[2/3] 等待 pi-web 服务就绪中...');
     // 同时盯 exit：自己拉起的那份如果因为端口被抢占而秒退，就不要白等 25 秒。
-    const outcome = await waitForReadyOrExit(piWebUrl, piWebProcess);
+    const outcome = await waitForReadyOrExit(healthUrl, piWebProcess);
     if (outcome.ready) {
       piWebReady = true;
       console.log(' ✓ 服务已就绪！');
@@ -658,7 +790,7 @@ async function main(deps = {}) {
         clearTimeout(piWebRestartTimer);
         piWebRestartTimer = null;
       }
-      piWebReady = await waitForReady(piWebUrl, 8000);
+      piWebReady = await waitForReady(healthUrl, 8000);
       console.log(` ✓ 端口 ${piWebPort} 上已有其它 pi-web 实例，直接接入。`);
     } else if (outcome.exited) {
       console.log(` ⚠️ pi-web 启动失败（exit=${outcome.code}），继续启动伴侣网关。`);
@@ -675,11 +807,15 @@ async function main(deps = {}) {
     const result = await gateway.start({
       port: gatewayPort,
       target: piWebUrl,
+      targetAlive: piWebReady,
       // undefined → gateway 按默认（frp）解析；显式 flag 则照办
       tunnelMode: explicitTunnelMode
     });
     gatewayServer = result.server;
     tunnelProcess = result.tunnelProcess;
+    if (warmUpPiWeb && piWebReady) {
+      schedulePiWebColdWarmUp(piWebUrl, 5000);
+    }
   } catch (err) {
     console.error('[网关启动失败]:', err.message);
     shutdown(1);
@@ -696,5 +832,6 @@ if (require.main === module) {
 
 module.exports = {
   parsePiWebPort,
+  piWebHealthUrl,
   main
 };

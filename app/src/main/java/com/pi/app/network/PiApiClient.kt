@@ -1446,6 +1446,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                         }
                     }
 
+                    // 模型可能把终端转义写进正文/思考（#1753）：与 pi-web 的 TextBlock / ThinkingText
+                    // 同口径，入库前就剥掉，下游的渲染、复制、thinking 预览都不再需要各自处理。
+                    text = stripAnsi(text)
+                    thinking = thinking?.let { stripAnsi(it) }
+
                     val startIndexForTurn = chatItems.size
                     val errMsg = msgObj.safeString("errorMessage")
                         ?: (if (msgObj.safeString("stopReason") == "error") "上游模型异常中断" else null)
@@ -5281,7 +5286,7 @@ data class CatalogPreset(
         }
     }
 
-    suspend fun forkSession(sessionId: String): Result<ForkSessionResult> = withContext(Dispatchers.IO) {
+    suspend fun forkSession(sessionId: String, targetCwd: String? = null): Result<ForkSessionResult> = withContext(Dispatchers.IO) {
         val baseUrl = prefs.serverUrl
         if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
         if (sessionId.isBlank()) return@withContext Result.failure(Exception("会话ID不能为空"))
@@ -5289,7 +5294,7 @@ data class CatalogPreset(
             // pi-web 的 POST /api/sessions/[id]/fork 在解析 params 之前就校验
             // hasJsonContentType()，不满足直接回 415（body 本身并不读）。
             // 之前这里发的是空 body + 无 Content-Type，于是稳定吃 415。
-            val body = "{}".toRequestBody(jsonMediaType)
+            val body = forkRequestBody(targetCwd).toRequestBody(jsonMediaType)
             val req = Request.Builder()
                 .url("$baseUrl/api/sessions/${FileListParsing.encodePathSegment(sessionId)}/fork")
                 .post(body)

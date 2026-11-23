@@ -203,7 +203,34 @@ export function normalizeModelCompat(model, isCustomProvider) {
  */
 export function createSdkModelClient(options = {}) {
   const sdkPackage = options.sdkPackage ?? SDK_PACKAGE;
-  const importModule = options.importModule ?? ((specifier) => import(specifier));
+  const customImporter = typeof options.importModule === 'function' ? options.importModule : null;
+
+  /**
+   * 轻量加载：只引入真正用到的 `core/model-runtime.js` 和 `config.js`，绕开桶文件
+   * `@earendil-works/pi-coding-agent`（实测空载导入整包耗时 ~24s 并冻结事件循环，
+   * 而直引这两个子模块仅 ~0.4s）。仅用于默认 SDK 包且未注入自定义 importModule 时。
+   */
+  async function loadSdk() {
+    if (customImporter) return customImporter(sdkPackage);
+    if (sdkPackage === SDK_PACKAGE && typeof import.meta.resolve === 'function') {
+      try {
+        const entryUrl = import.meta.resolve(sdkPackage);
+        const [runtimeMod, configMod] = await Promise.all([
+          import(new URL('./core/model-runtime.js', entryUrl).href),
+          import(new URL('./config.js', entryUrl).href),
+        ]);
+        if (typeof runtimeMod?.ModelRuntime?.create === 'function') {
+          return {
+            ModelRuntime: runtimeMod.ModelRuntime,
+            getAgentDir: configMod?.getAgentDir,
+          };
+        }
+      } catch {
+        // 包内部目录布局变化时回退桶入口，保证向后兼容
+      }
+    }
+    return import(sdkPackage);
+  }
 
   /** @type {Promise<{runtime: any, resolveAgentDir: any, configSig: string}> | null} */
   let runtimePromise = null;
@@ -243,7 +270,7 @@ export function createSdkModelClient(options = {}) {
       runtimePromise = (async () => {
         let sdk;
         try {
-          sdk = await importModule(sdkPackage);
+          sdk = await loadSdk();
         } catch (error) {
           throw new EnhancementFailure(
             'ENHANCEMENT_UNAVAILABLE',

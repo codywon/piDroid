@@ -591,6 +591,8 @@ class MainActivity : ComponentActivity() {
         // 扩展的阻塞式对话框（pi-web `extension_ui_request`）：扩展在等用户回答时整个会话停住，
         // 包括 `session_start` 阶段——所以这是会话级状态，切会话时必须跟着清。
         var extensionUiDialogs by remember { mutableStateOf<List<ExtensionUiDialog>>(emptyList()) }
+        // 会话目录已被删除时给出的 Fork 机会（pi-web 0.18.0 的 fork `{cwd}`）：非空即弹框
+        var forkIntoCwdOffer by remember { mutableStateOf<ForkIntoCwdOffer?>(null) }
         // 未读标记：与 pi-web 一致，属于「本设备」状态（它存在浏览器 localStorage）
         var unreadSessionIds by remember { mutableStateOf(prefs.getUnreadSessionIds()) }
         // 追踪上一轮轻量快照中的运行中会话，用于感知后台任务何时完成以自动标为未读
@@ -3684,11 +3686,18 @@ class MainActivity : ComponentActivity() {
                                             optimisticId?.let { pendingPromptSentAt.remove(it) }
                                         }
                                         restorePromptOnFailure()
-                                        Toast.makeText(
-                                            this@MainActivity,
-                                            "文件夹已不存在，无法发送：$missingCwd",
-                                            Toast.LENGTH_LONG
-                                        ).show()
+                                        // pi-web 0.18.0：目录没了不再是死胡同——可以把整份历史 Fork 到
+                                        // 另一个目录继续（`POST /api/sessions/[id]/fork` `{cwd}`）。
+                                        // 输入已经退回输入框，这里只给出口。
+                                        forkIntoCwdOffer = ForkIntoCwdOffer(
+                                            sessionId = sid,
+                                            sessionTitle = currentSession?.displayTitle ?: "当前会话",
+                                            missingCwd = missingCwd,
+                                            knownCwds = sessions
+                                                .mapNotNull { it.cwd }
+                                                .filter { it.isNotBlank() && it != missingCwd }
+                                                .distinct()
+                                        )
                                         return@onFailure
                                     }
                                     if (PromptRecoveryPolicy.of(err) == PromptRecovery.DEFINITELY_REJECTED) {
@@ -3915,6 +3924,32 @@ class MainActivity : ComponentActivity() {
                                 }
                             } finally {
                                 pendingToolPresetChanges = (pendingToolPresetChanges - 1).coerceAtLeast(0)
+                            }
+                        }
+                    },
+                    // 会话目录已被删除：把整份历史 Fork 到另一个目录继续（pi-web 0.18.0 的
+                    // `POST /api/sessions/[id]/fork` `{cwd}`）。任务本身不自动重发：
+                    // 正文已经退回输入框，由用户确认后自己发。
+                    forkIntoCwdOffer = forkIntoCwdOffer,
+                    onDismissForkIntoCwd = { forkIntoCwdOffer = null },
+                    onForkIntoCwd = { offer, targetCwd ->
+                        forkIntoCwdOffer = null
+                        lifecycleScope.launch {
+                            Toast.makeText(this@MainActivity, "正在 Fork 到新目录…", Toast.LENGTH_SHORT).show()
+                            apiClient.forkSession(offer.sessionId, targetCwd = targetCwd).onSuccess { res ->
+                                loadSessions(silent = true)
+                                openSessionWithHistory(
+                                    Session(
+                                        id = res.sessionId,
+                                        name = res.name ?: "${offer.sessionTitle} · 分叉",
+                                        cwd = targetCwd,
+                                        project = currentProject,
+                                        active = false
+                                    )
+                                )
+                                Toast.makeText(this@MainActivity, "已 Fork 到 $targetCwd", Toast.LENGTH_SHORT).show()
+                            }.onFailure { err ->
+                                Toast.makeText(this@MainActivity, "Fork 失败：${err.message}", Toast.LENGTH_LONG).show()
                             }
                         }
                     }

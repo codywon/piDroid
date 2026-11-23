@@ -23,6 +23,11 @@ test("recycles the whole stack when the gateway is the one not answering", () =>
   assert.equal(planRecovery({ gatewayOk: false, piwebOnlyRestarts: 1 }), "stack");
 });
 
+test("escalates directly to stack when port 30141 has no owner", () => {
+  // 端口无人监听时 killTree(null) 只会空转，必须直接整栈重建拉起 pi-web。
+  assert.equal(planRecovery({ gatewayOk: true, piwebOnlyRestarts: 0, hasPiWebOwner: false }), "stack");
+});
+
 test("ignores down probes while waiting on a restart backoff timer", () => {
   // 退避期间 this.child 为空且端口必不通，不能再累计失败误判为「无主孤儿栈」强行提前拉起。
   assert.equal(
