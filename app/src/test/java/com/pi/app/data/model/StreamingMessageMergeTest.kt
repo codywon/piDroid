@@ -82,6 +82,30 @@ class StreamingMessageMergeTest {
     }
 
     @Test
+    fun `不同消息即使正文相同或前缀相同也不能覆盖上一条`() {
+        val messages = listOf(user(), agent("正在检查", messageId = "ms1"), tool())
+        for (snapshot in listOf("正在检查", "正在检查日志", "正在")) {
+            val update = StreamingMessageMerge.resolveTextUpdate(messages, "ms2", snapshot)
+            assertFalse(update.noop)
+            assertNull(update.index)
+            assertEquals(snapshot, update.content)
+        }
+    }
+
+    @Test
+    fun `思考定稿和重连始终命中同一消息且不认领其他消息`() {
+        val messages = listOf(
+            user(),
+            agent("", messageId = "ms1").copy(thinking = "第一步"),
+            tool(),
+            agent("", messageId = "ms2").copy(thinking = "第二步")
+        )
+        assertEquals(1, StreamingMessageMerge.resolveThinkingIndex(messages, "ms1"))
+        assertEquals(3, StreamingMessageMerge.resolveThinkingIndex(messages, "ms2"))
+        assertNull(StreamingMessageMerge.resolveThinkingIndex(messages, "ms3"))
+    }
+
+    @Test
     fun `本轮还没有这条消息的气泡时新建一条`() {
         val messages = listOf(user(), agent("上一条消息", messageId = "ms1"))
 

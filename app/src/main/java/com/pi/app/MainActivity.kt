@@ -496,22 +496,7 @@ class MainActivity : ComponentActivity() {
             val update = StreamingMessageMerge.resolveTextUpdate(messages, messageId, fullText)
             if (update.noop) {
                 if (cleanThinking != null) {
-                    val turnStart = StreamingMessageMerge.currentTurnStart(messages)
-                    val owned = StreamingMessageMerge.indicesOfMessage(messages, messageId)
-                    val thinkTarget = owned.firstOrNull { !messages[it].thinking.isNullOrBlank() }
-                        ?: owned.firstOrNull()
-                        ?: if (fullText.isNotBlank()) {
-                            (messages.lastIndex downTo turnStart).firstOrNull {
-                                messages[it].role == MessageRole.AGENT
-                            }
-                        } else {
-                            (messages.lastIndex downTo turnStart).firstOrNull {
-                                val m = messages[it]
-                                m.role == MessageRole.AGENT &&
-                                    m.content.isBlank() &&
-                                    (m.streamMessageId == null || m.streamMessageId == messageId)
-                            }
-                        }
+                    val thinkTarget = StreamingMessageMerge.resolveThinkingIndex(messages, messageId)
                     if (thinkTarget != null && thinkTarget in messages.indices) {
                         val existing = messages[thinkTarget]
                         if (existing.thinking.isNullOrBlank() || cleanThinking.length >= existing.thinking.length) {
@@ -1993,10 +1978,7 @@ class MainActivity : ComponentActivity() {
                             val fullThink = event.thinking ?: ""
                             if (fullThink.isNotEmpty()) {
                                 lastSseActivityAt = System.currentTimeMillis()
-                                val turnStart = StreamingMessageMerge.currentTurnStart(messages)
-                                val lastIdx = (messages.lastIndex downTo turnStart).firstOrNull {
-                                    messages[it].role == MessageRole.AGENT && messages[it].thinking != null
-                                }
+                                val lastIdx = StreamingMessageMerge.resolveThinkingIndex(messages, event.messageId ?: streamingMessageId)
                                 if (lastIdx != null) {
                                     val existing = messages[lastIdx]
                                     messages[lastIdx] = existing.copy(thinking = fullThink)

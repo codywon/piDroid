@@ -246,7 +246,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                                     } else {
                                         ame.safeString("content")
                                     }
-                                    val msgId = msgObj?.let { assistantMessageId(it) }
+                                    val msgId = msgObj?.let { assistantMessageIdentity(it) }
                                     // isStreaming 必须继续为 true：text_end 只代表「这一段正文讲完了」，
                                     // 后面往往还有工具调用 / 下一段正文，整个回合的开始与结束由
                                     // agent_end + /state 巡检判定。之前这里是 null（被上层当成 false），
@@ -567,7 +567,7 @@ class PiSseClient(private val prefs: AppPreferences) {
                         thinking = fullThinking,
                         isStreaming = true,
                         modelName = modelName,
-                        messageId = assistantMessageId(msgObj)
+                        messageId = assistantMessageIdentity(msgObj)
                     )
                 )
             }
@@ -584,24 +584,10 @@ class PiSseClient(private val prefs: AppPreferences) {
                     usageSummary = usageSummary,
                     isStreaming = hasToolCalls,
                     phaseLabel = if (hasToolCalls) "正在准备执行工具..." else "正在等待模型...",
-                    messageId = assistantMessageId(msgObj)
+                    messageId = assistantMessageIdentity(msgObj)
                 )
             )
             return events
-        }
-
-        /**
-         * pi assistant message 的身份：对齐 pi-web 的 streamingMessage 身份判定。
-         * pi 的 message 对象没有稳定的 id（协议里只保证 role/content/timestamp），
-         * 所以优先 id/responseId，最后用 timestamp 作为身份 —— 同一条消息的重连补发时间戳不变，
-         * 而新的一条消息时间戳必然不同。
-         */
-        private fun assistantMessageId(msgObj: JsonObject): String? {
-            for (key in listOf("id", "responseId", "messageId")) {
-                val s = msgObj.safeString(key)?.trim()
-                if (!s.isNullOrEmpty()) return s
-            }
-            return msgObj.safeString("timestamp")?.trim()?.takeIf { it.isNotEmpty() }
         }
 
         /** 队列类的字符串数组字段（`steering` / `followUp`）：元素可能是串，也可能是 `{message}` 对象。 */

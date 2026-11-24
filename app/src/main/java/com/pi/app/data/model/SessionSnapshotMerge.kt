@@ -115,7 +115,7 @@ object SessionSnapshotMerge {
         return if (!isSameChatContent(localItem, diskItem)) {
             val keepId = if (localItem.role == diskItem.role) localItem.id else diskItem.id
             val keepTs = if (localItem.role == diskItem.role) localItem.timestamp else diskItem.timestamp
-            // streamMessageId 是**本地在途身份**（服务端快照里没有），内容被服务端覆盖时必须带过去，
+            // streamMessageId 由 SSE 与历史共用的 message.timestamp 提取；旧快照缺少身份时也要保留，
             // 否则流式过程中一次对账就会把身份抹掉，下一次重连补发又会新开一条重复气泡。
             val keepStreamId = if (localItem.role == diskItem.role && diskItem.streamMessageId == null) {
                 localItem.streamMessageId
@@ -294,6 +294,8 @@ object SessionSnapshotMerge {
                         if (matchedLocalIndices.contains(i)) continue
                         val item = local[i]
                         if (item.role != MessageRole.AGENT || !item.entryId.isNullOrBlank()) continue
+                        // 身份明确不同时，即使正文为空或完全相同，也不能串到另一轮思考。
+                        if (diskStreamId != null && item.streamMessageId != null && diskStreamId != item.streamMessageId) continue
                         val localText = item.content.trim()
                         val compatible = localText.isEmpty() ||
                             diskText.isEmpty() ||

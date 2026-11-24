@@ -117,6 +117,24 @@ class PiSsePayloadParsingTest {
     }
 
     @Test
+    fun `thinking only completion keeps start identity when provider assigns responseId`() {
+        val start = PiSseClient.parsePiWebSsePayload(null,
+            """{"type":"message_start","message":{"role":"assistant","timestamp":1763000000000,"content":[]}}"""
+        ).single()
+        val end = PiSseClient.parsePiWebSsePayload(null,
+            """{"type":"message_end","message":{"role":"assistant","timestamp":1763000000000,"responseId":"chatcmpl-1","content":[{"type":"thinking","thinking":"Let me check."},{"type":"toolCall","id":"tc1","name":"bash","arguments":{}}]}}"""
+        ).single()
+        val replay = PiSseClient.parsePiWebSsePayload(null,
+            """{"type":"message_start","message":{"role":"assistant","timestamp":1763000000000,"responseId":"chatcmpl-1","content":[{"type":"thinking","thinking":"Let me check."}]}}"""
+        ).single()
+        assertEquals("1763000000000", start.messageId)
+        assertEquals(start.messageId, end.messageId)
+        assertEquals(start.messageId, replay.messageId)
+        assertEquals("Let me check.", end.thinking)
+        assertNull(end.content)
+    }
+
+    @Test
     fun `assistant snapshots extract thinking blocks for message_start and message_end`() {
         val msgStartPayload = """
             {

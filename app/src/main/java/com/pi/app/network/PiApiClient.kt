@@ -1473,6 +1473,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             content = fullContent,
                             thinking = thinking,
                             thinkingDurationSec = estSec,
+                            streamMessageId = assistantMessageIdentity(msgObj),
                             mediaList = assistantMedia,
                             modelName = msgModelName,
                             usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,

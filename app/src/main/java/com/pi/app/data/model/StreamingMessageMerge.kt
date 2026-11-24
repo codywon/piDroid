@@ -70,6 +70,21 @@ object StreamingMessageMerge {
         return indicesOfMessage(messages, messageId).lastOrNull() ?: -1
     }
 
+    /** 思考快照只更新所属消息；旧协议仅认领没有身份的气泡。 */
+    fun resolveThinkingIndex(messages: List<ChatItem>, messageId: String?): Int? {
+        val owned = indicesOfMessage(messages, messageId)
+        if (owned.isNotEmpty()) {
+            return owned.firstOrNull { !messages[it].thinking.isNullOrBlank() } ?: owned.first()
+        }
+        val start = currentTurnStart(messages)
+        return (messages.lastIndex downTo start).firstOrNull { i ->
+            val item = messages[i]
+            item.role == MessageRole.AGENT &&
+                (messageId == null || item.streamMessageId == null) &&
+                (item.content.isBlank() || !item.thinking.isNullOrBlank())
+        }
+    }
+
     /**
      * 整条正文快照（`message_start` 补发 / `text_end` 定稿）的落点。
      *
@@ -126,7 +141,12 @@ object StreamingMessageMerge {
     ): TextUpdate {
         val lastAgent = lastAgentIndexOfTurn(messages)
         if (lastAgent >= 0) {
-            val local = messages[lastAgent].content
+            val candidate = messages[lastAgent]
+            // 已知且不同的身份属于两条真实消息，不能因正文相同/前缀相同而认领。
+            if (messageId != null && candidate.streamMessageId != null && candidate.streamMessageId != messageId) {
+                return TextUpdate(index = null, content = snapshot, noop = false)
+            }
+            val local = candidate.content
             if (local == snapshot) return TextUpdate.NOOP
             // 本地更新（快照落后）
             if (local.isNotEmpty() && local.startsWith(snapshot)) return TextUpdate.NOOP

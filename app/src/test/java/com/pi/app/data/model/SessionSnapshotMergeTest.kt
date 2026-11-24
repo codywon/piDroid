@@ -265,6 +265,33 @@ class SessionSnapshotMergeTest {
     }
 
     @Test
+    fun `思考消息落盘后复用气泡且重复对账不会新增卡片`() {
+        val localThought = item("local-thought", MessageRole.AGENT, "")
+            .copy(thinking = "Let me check.", streamMessageId = "1763000000000", isStreaming = true)
+        val diskThought = item("disk-thought", MessageRole.AGENT, "", entryId = "entry-1")
+            .copy(thinking = "Let me check.", streamMessageId = "1763000000000")
+        val merged = SessionSnapshotMerge.reconcileList(listOf(localThought), listOf(diskThought), true)
+        val replayed = SessionSnapshotMerge.reconcileList(merged, listOf(diskThought), true)
+        assertEquals(1, replayed.size)
+        assertEquals("local-thought", replayed.single().id)
+        assertEquals("entry-1", replayed.single().entryId)
+        assertEquals("Let me check.", replayed.single().thinking)
+    }
+
+    @Test
+    fun `较早的思考快照不能认领另一条仍在途的空正文思考`() {
+        val currentThought = item("current", MessageRole.AGENT, "")
+            .copy(thinking = "新一轮推理", streamMessageId = "m2", isStreaming = true)
+        val previousThought = item("previous", MessageRole.AGENT, "", entryId = "entry-1")
+            .copy(thinking = "上一轮推理", streamMessageId = "m1")
+        val merged = SessionSnapshotMerge.reconcileList(listOf(currentThought), listOf(previousThought), true)
+        assertEquals(2, merged.size)
+        assertEquals(listOf("previous", "current"), merged.map { it.id })
+        assertEquals(listOf("上一轮推理", "新一轮推理"), merged.map { it.thinking })
+        assertNull(merged.last().entryId)
+    }
+
+    @Test
     fun `多步回合前缀兼容与 streamMessageId 精确匹配优先命中对应块`() {
         val local = listOf(
             item("u_local", MessageRole.USER, "继续排查", entryId = "u1", timestamp = 1_000L),
