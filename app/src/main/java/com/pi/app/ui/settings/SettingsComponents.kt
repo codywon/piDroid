@@ -350,3 +350,28 @@ fun SettingsSearchField(
         }
     }
 }
+
+/**
+ * pi 的排队送达模式二选一（`one-at-a-time` / `all`）。
+ *
+ * 意义对齐 pi-web 的 `settings.queueModeOneAtATime` / `settings.queueModeAll`（逐条送达 / 一次全部送达）；
+ * 胶囊里用短写，否则两个选项在 360dp 屏上会把标题挤没。
+ */
+@Composable
+fun QueueModeChips(
+    isAll: Boolean,
+    onSelect: (all: Boolean) -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        SettingsChip(
+            text = "逐条",
+            selected = !isAll,
+            onClick = { if (isAll) onSelect(false) }
+        )
+        SettingsChip(
+            text = "一次全部",
+            selected = isAll,
+            onClick = { if (!isAll) onSelect(true) }
+        )
+    }
+}

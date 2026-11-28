@@ -1268,7 +1268,9 @@ class PiApiClient(private val prefs: AppPreferences) {
             val isError: Boolean,
             val timestamp: Long,
             /** pi 把长命令输出落到临时文件时给出的路径（可用 bash-output 取全量） */
-            val fullOutputPath: String? = null
+            val fullOutputPath: String? = null,
+            /** 落盘失败的原因（pi 1.6.1 的 fullOutputError）：有它且无路径就是真取不回了 */
+            val fullOutputError: String? = null
         )
         val toolResultById = mutableMapOf<String, ParsedToolResult>()
         val consumedResultIds = mutableSetOf<String>()
@@ -1293,9 +1295,11 @@ class PiApiClient(private val prefs: AppPreferences) {
                 val fullOutPath = msgObj.safeString("fullOutputPath")
                     ?: msgObj.safeString("outputPath")
                     ?: rawObj.safeString("fullOutputPath")
+                val fullOutError = msgObj.safeString("fullOutputError")
+                    ?: rawObj.safeString("fullOutputError")
                 if (!tcId.isNullOrBlank()) {
                     toolResultById[tcId] =
-                        ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts, fullOutPath)
+                        ParsedToolResult(tcId, tName, tOut, tMedia, dur, isErr, ts, fullOutPath, fullOutError)
                 }
             }
         }
@@ -1435,7 +1439,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                                                 mediaList = combinedMedia,
                                                 durationMs = paired?.durationMs ?: 0L,
                                                 isError = paired?.isError ?: false,
-                                                fullOutputPath = paired?.fullOutputPath
+                                                fullOutputPath = paired?.fullOutputPath,
+                                                fullOutputError = paired?.fullOutputError
                                             )
                                         )
                                     }
@@ -1458,6 +1463,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                     // 自动重试换手时都会 abort 在途请求，并落一条空正文的 assistant 记录。
                     // 历史回放时不应把它渲染成刺眼的「⚠️ 模型服务异常」。
                     val isAbortLike = errMsg != null && ABORT_LIKE_ERROR_REGEX.containsMatchIn(errMsg)
+                    // pi 的提示行（缓存未命中 / 预热计费 / 摘要计费 / 推理被丢弃）：
+                    // 挂在消息自己的 `transcriptNotices` 上，由 pi 的 notices.* 设置控制（默认全关）。
+                    val notices = TranscriptNoticeParsing.of(msgObj)
 
                     if (text.isNotBlank() || !thinking.isNullOrBlank() || assistantMedia.isNotEmpty()) {
                         val estSec = thinking?.let { (it.length / 45).coerceIn(1, 90) }
@@ -1477,6 +1485,7 @@ class PiApiClient(private val prefs: AppPreferences) {
                             mediaList = assistantMedia,
                             modelName = msgModelName,
                             usageSummary = if (toolCalls.isEmpty()) turnUsageStr else null,
+                            notices = notices,
                             timestamp = timestamp
                         ))
                     } else if (!errMsg.isNullOrBlank() && toolCalls.isEmpty() && !isAbortLike) {
@@ -1506,6 +1515,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                             toolCall = tc,
                             modelName = if (isFirstItemInTurn) msgModelName else null,
                             usageSummary = if (isLastToolInTurn) turnUsageStr else null,
+                            // 正文为空、只出了工具卡时，提示行落到这一条上，避免整条消息的提示丢失
+                            notices = if (isFirstItemInTurn) notices else emptyList(),
                             timestamp = timestamp
                         ))
                     }
@@ -1524,6 +1535,8 @@ class PiApiClient(private val prefs: AppPreferences) {
                         val toolMedia = extractMediaFromContent(contentElem, toolOutput, tcId)
                         val duration = msgObj.safeLong("durationMs") ?: 0L
                         val isErr = msgObj.safeBoolean("isError") ?: false
+                        val fullOutPath = msgObj.safeString("fullOutputPath") ?: msgObj.safeString("outputPath")
+                        val fullOutError = msgObj.safeString("fullOutputError")
                         val recentIdx = chatItems.indexOfLast {
                             it.role == MessageRole.TOOL &&
                                 it.toolCall?.toolName == toolName &&
@@ -1537,7 +1550,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     output = toolOutput,
                                     mediaList = mergeMediaLists(toolMedia, prevTool.mediaList),
                                     durationMs = duration,
-                                    isError = isErr
+                                    isError = isErr,
+                                    fullOutputPath = prevTool.fullOutputPath ?: fullOutPath,
+                                    fullOutputError = fullOutError
                                 )
                             )
                         } else {
@@ -1557,7 +1572,9 @@ class PiApiClient(private val prefs: AppPreferences) {
                                     output = toolOutput,
                                     mediaList = toolMedia,
                                     durationMs = duration,
-                                    isError = isErr
+                                    isError = isErr,
+                                    fullOutputPath = fullOutPath,
+                                    fullOutputError = fullOutError
                                 ),
                                 timestamp = timestamp
                             ))
@@ -4844,6 +4861,77 @@ data class CatalogPreset(
                     JsonParser.parseString(resp.body?.string() ?: "{}").asSafeObject()
                 }.getOrNull() ?: return@withContext Result.failure(IOException("读取工具设置失败：响应不是 JSON"))
                 Result.success(parseToolSettings(json))
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 读 pi 的排队送达模式（GET /api/queue-modes，pi-web 0.19.0 / pi 1.6.1 新增）。
+     *
+     * 旧版 pi-web 没有这条路由：404/405 按「不支持」处理，返回 null，
+     * 不让设置页因为一个可选开关而报错。
+     */
+    suspend fun getQueueModes(): Result<QueueModes?> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        try {
+            val req = Request.Builder().url("$baseUrl/api/queue-modes").get().build()
+            client.newCall(req).execute().use { resp ->
+                if (resp.code == 404 || resp.code == 405) return@withContext Result.success(null)
+                if (!resp.isSuccessful) {
+                    return@withContext Result.failure(IOException("读取排队模式失败 (HTTP ${resp.code})"))
+                }
+                val json = runCatching {
+                    JsonParser.parseString(resp.body?.string() ?: "{}").asSafeObject()
+                }.getOrNull() ?: return@withContext Result.failure(IOException("读取排队模式失败：响应不是 JSON"))
+                Result.success(
+                    QueueModes(
+                        steeringMode = json.safeString("steeringMode") ?: QueueModes.MODE_ONE_AT_A_TIME,
+                        followUpMode = json.safeString("followUpMode") ?: QueueModes.MODE_ONE_AT_A_TIME
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    /**
+     * 写排队送达模式（PUT /api/queue-modes）。只传要改的那一项，与上游一致。
+     *
+     * 设置写的是 pi 的全局 settings.json：开了“一次全部送达”后，本轮会把排队的消息一次性送进模型。
+     */
+    suspend fun setQueueModes(
+        steeringMode: String? = null,
+        followUpMode: String? = null
+    ): Result<QueueModes> = withContext(Dispatchers.IO) {
+        val baseUrl = prefs.serverUrl
+        if (baseUrl.isBlank()) return@withContext Result.failure(Exception("未配置网关地址"))
+        if (steeringMode == null && followUpMode == null) {
+            return@withContext Result.failure(IllegalArgumentException("没有要修改的排队模式"))
+        }
+        try {
+            val payload = mutableMapOf<String, Any>()
+            steeringMode?.let { payload["steeringMode"] = it }
+            followUpMode?.let { payload["followUpMode"] = it }
+            val body = gson.toJson(payload).toRequestBody(jsonMediaType)
+            val req = Request.Builder().url("$baseUrl/api/queue-modes").put(body).build()
+            client.newCall(req).execute().use { resp ->
+                val raw = resp.body?.string() ?: "{}"
+                val json = runCatching { JsonParser.parseString(raw).asSafeObject() }.getOrNull()
+                if (!resp.isSuccessful) {
+                    val err = json?.safeString("error") ?: "HTTP ${resp.code}"
+                    return@withContext Result.failure(IOException("修改排队模式失败：$err"))
+                }
+                if (json == null) return@withContext Result.failure(IOException("修改排队模式失败：响应不是 JSON"))
+                Result.success(
+                    QueueModes(
+                        steeringMode = json.safeString("steeringMode") ?: QueueModes.MODE_ONE_AT_A_TIME,
+                        followUpMode = json.safeString("followUpMode") ?: QueueModes.MODE_ONE_AT_A_TIME
+                    )
+                )
             }
         } catch (e: Exception) {
             Result.failure(e)

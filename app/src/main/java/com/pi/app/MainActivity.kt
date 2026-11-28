@@ -680,6 +680,8 @@ class MainActivity : ComponentActivity() {
                 apiClient.getMcpServers(cwd).onSuccess { mcpServers = it }
                 // 代码模式三个旋钮在 /api/tools/settings（上游 GET），不再从 /api/mcp 里猜测
                 apiClient.getToolSettings().onSuccess { mcpConfig = it.toCodeModeConfig() }
+                // 排队送达模式（pi 1.6.1）：旧网关 404 → null，设置页不渲染那一节
+                apiClient.getQueueModes().onSuccess { queueModes = it }
             }
         }
 
@@ -2891,6 +2893,23 @@ class MainActivity : ComponentActivity() {
                     // MCP 测试连通后服务端会重连失败的那条（pi-web #1684），重拉能力列表跟上运行态
                     onRefreshMcp = {
                         loadCapabilitiesAndModels()
+                    },
+                    queueModes = queueModes,
+                    onSetQueueModes = { steering, followUp ->
+                        lifecycleScope.launch {
+                            apiClient.setQueueModes(steeringMode = steering, followUpMode = followUp)
+                                .onSuccess {
+                                    // 以服务端回包为准：它会把 pi 的默认值也回填成具体字符串
+                                    queueModes = it
+                                }
+                                .onFailure { err ->
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "修改排队模式失败：${err.message ?: "未知错误"}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                        }
                     },
                     onUpdateSkillAlias = { name, alias ->
                         prefs.saveSkillAlias(name, alias)

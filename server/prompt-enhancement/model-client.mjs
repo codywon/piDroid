@@ -211,7 +211,7 @@ export function createSdkModelClient(options = {}) {
    * 而直引这两个子模块仅 ~0.4s）。仅用于默认 SDK 包且未注入自定义 importModule 时。
    */
   async function loadSdk() {
-    if (customImporter) return customImporter(sdkPackage);
+    if (customImporter) return { ...(await customImporter(sdkPackage)), sdkSource: 'custom' };
     if (sdkPackage === SDK_PACKAGE && typeof import.meta.resolve === 'function') {
       try {
         const entryUrl = import.meta.resolve(sdkPackage);
@@ -223,13 +223,15 @@ export function createSdkModelClient(options = {}) {
           return {
             ModelRuntime: runtimeMod.ModelRuntime,
             getAgentDir: configMod?.getAgentDir,
+            // 报告走的哪条路：桶入口会让首帧卡 ~24s，测试按这个值断言，不依赖耗时
+            sdkSource: 'submodules',
           };
         }
       } catch {
         // 包内部目录布局变化时回退桶入口，保证向后兼容
       }
     }
-    return import(sdkPackage);
+    return { ...(await import(sdkPackage)), sdkSource: 'barrel' };
   }
 
   /** @type {Promise<{runtime: any, resolveAgentDir: any, configSig: string}> | null} */
@@ -292,7 +294,13 @@ export function createSdkModelClient(options = {}) {
           throw new EnhancementFailure('ENHANCEMENT_UNAVAILABLE', `模型配置加载失败: ${loadError}`);
         }
         const resolveAgentDir = typeof sdk.getAgentDir === 'function' ? sdk.getAgentDir : null;
-        return { runtime, resolveAgentDir, configSig: computeConfigSig(resolveAgentDir) };
+        return {
+          runtime,
+          resolveAgentDir,
+          configSig: computeConfigSig(resolveAgentDir),
+          /** `submodules` | `barrel` | `custom`：SDK 走的是哪条加载路径（给测试/诊断用） */
+          sdkSource: sdk.sdkSource,
+        };
       })().catch((error) => {
         // 失败不缓存：用户装好依赖 / 修好配置后无需重启网关
         runtimePromise = null;

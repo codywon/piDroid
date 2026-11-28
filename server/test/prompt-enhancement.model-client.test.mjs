@@ -149,11 +149,12 @@ test('upstream 4xx rejections surface the upstream reason instead of a generic m
 import { createSdkModelClient } from '../prompt-enhancement/model-client.mjs';
 
 test('default SDK loader warms up ModelRuntime via submodules without barrel-import stall', async () => {
+  // 这里断言的是「走的哪条加载路径」，而不是耗时：桶入口实测 ~24s（并冻结事件循环），
+  // 子模块 ~0.4s——但刚 `npm install` 完的冷磁盘可以把子模块路径抬到 25s，
+  // 于是按毫秒判断会变成「冷盘必红、桶入口回归也可能绿」的反向指示器。
   const client = createSdkModelClient();
-  const startedAt = Date.now();
-  const { runtime } = await client.warmUp();
-  const elapsedMs = Date.now() - startedAt;
+  const { runtime, sdkSource } = await client.warmUp();
+  assert.equal(sdkSource, 'submodules', 'warmUp must import the SDK submodules, not the barrel (≈24s stall)');
   assert.equal(typeof runtime.getModel, 'function');
   assert.ok(Array.isArray(runtime.getModels()));
-  assert.ok(elapsedMs < 5000, `warmUp took ${elapsedMs}ms; expected < 5000ms via submodule import`);
 });

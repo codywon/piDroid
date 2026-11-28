@@ -93,6 +93,9 @@ import com.pi.app.ui.components.LocalMediaGatewayConfig
 import com.pi.app.ui.components.LocalMediaViewport
 import com.pi.app.ui.components.MediaViewportState
 import com.pi.app.ui.components.MarkdownRenderer
+import com.pi.app.ui.components.MessageSegment
+import com.pi.app.ui.components.QuotedSession
+import com.pi.app.ui.components.SessionReferenceBlocks
 import com.pi.app.ui.components.MediaAttachmentGallery
 import com.pi.app.ui.components.MediaGatewayConfig
 import com.pi.app.ui.components.SvgWebViewCanvas
@@ -3170,11 +3173,27 @@ fun ChatMessageItem(
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 if (item.content.isNotBlank()) {
-                                    MarkdownRenderer(
-                                        content = item.content,
-                                        isUser = true,
-                                        onOpenLink = onOpenLink
-                                    )
+                                    // 被引用的会话（pi-web 的 `#` 引用）在服务端展开成 `<session-reference>` 块，
+                                    // 整段丢给 Markdown 会变成「html 代码卡 + 裸正文」；这里按片段渲染。
+                                    val segments = remember(item.content) { SessionReferenceBlocks.split(item.content) }
+                                    segments.forEachIndexed { index, segment ->
+                                        // key：片段数变化时给每个片段稳定的身份，避免内部 remember 错位
+                                        key(index, segment) {
+                                            when (segment) {
+                                                is MessageSegment.Markdown -> if (segment.text.isNotBlank()) {
+                                                    MarkdownRenderer(
+                                                        content = segment.text.trim(),
+                                                        isUser = true,
+                                                        onOpenLink = onOpenLink
+                                                    )
+                                                }
+                                                is MessageSegment.Reference -> QuotedSessionCard(
+                                                    quote = segment.quote,
+                                                    onOpenLink = onOpenLink
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 if (item.mediaList.isNotEmpty()) {
                                     MediaAttachmentGallery(mediaList = item.mediaList)
@@ -3453,6 +3472,18 @@ fun ChatMessageItem(
                     }
                 }
             }
+        }
+
+        // pi 的提示行（缓存未命中 / 预热计费 / 摘要计费 / 推理被丢弃），一行一条，
+        // 位置对齐 pi-web 的 TranscriptNoticeLines：挂在它们所属的那条消息下面。
+        item.notices.forEach { line ->
+            Text(
+                text = line,
+                fontSize = 11.sp,
+                color = theme.warning,
+                lineHeight = 15.sp,
+                modifier = Modifier.padding(top = 2.dp)
+            )
         }
 
         // 对标 pi-web MessageView.tsx：每回合底部展示 Token 与成本明细 (如 34,938 in · 635 out · $0.0021)
@@ -3863,6 +3894,19 @@ fun PiWebToolCallCard(
                                         color = theme.primary,
                                         modifier = Modifier.clickable { open() }
                                     )
+                                }
+                                // 截断且拿不回完整输出时，把原因说出来（pi 1.6.1 的 fullOutputError）；
+                                // 否则用户只知道少了一段，分不清是已截断还是没存下来。
+                                if (onOpenFullOutput == null) {
+                                    tool.fullOutputError?.takeIf { it.isNotBlank() }?.let { reason ->
+                                        Text(
+                                            text = "未保存完整输出：$reason",
+                                            fontSize = 10.5.sp,
+                                            color = theme.warning,
+                                            maxLines = 2,
+                                            modifier = Modifier.widthIn(max = 150.dp)
+                                        )
+                                    }
                                 }
                                 Text(
                                     text = "复制输出",
@@ -4964,4 +5008,79 @@ private fun ExtensionUiTextDialog(
             TextButton(onClick = { onRespond(dialog, null, null, true) }) { Text("取消") }
         }
     )
+}
+
+/**
+ * 一张被引用会话的折叠卡（pi-web `#` 引用展开出的 `<session-reference>` 块）。
+ *
+ * 网页端把它折成一行并给出链接；手机上同样只显示一行标题，点开才渲染那段被引用的正文。
+ * 正文可能很长（上游上限 60k 字符），所以**收起时不解析 Markdown**，避免每次重组都重排一遍。
+ */
+@Composable
+private fun QuotedSessionCard(
+    quote: QuotedSession,
+    onOpenLink: ((String) -> Unit)?
+) {
+    val theme = LocalAppTheme.current
+    var expanded by remember(quote.id, quote.path) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .border(
+                width = 1.dp,
+                color = theme.primary.copy(alpha = if (theme.isDark) 0.34f else 0.26f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                imageVector = Icons.Default.Chat,
+                contentDescription = null,
+                modifier = Modifier.size(12.dp),
+                tint = theme.primary
+            )
+            Spacer(modifier = Modifier.width(5.dp))
+            Text(
+                text = "引用了会话《${quote.displayTitle}》",
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.Medium,
+                color = theme.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            quote.messageCount?.let { count ->
+                Text(
+                    text = "$count 条",
+                    fontSize = 10.5.sp,
+                    color = theme.textMuted
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+            }
+            Text(
+                text = if (expanded) "收起" else "展开",
+                fontSize = 10.5.sp,
+                color = theme.primary
+            )
+        }
+        if (expanded) {
+            if (quote.body.isBlank()) {
+                Text(
+                    text = "（引用内容为空）",
+                    fontSize = 11.sp,
+                    color = theme.textMuted
+                )
+            } else {
+                MarkdownRenderer(
+                    content = quote.body,
+                    isUser = true,
+                    onOpenLink = onOpenLink
+                )
+            }
+        }
+    }
 }

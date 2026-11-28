@@ -116,6 +116,14 @@ fun GlobalSettingsScreen(
      * 服务端的运行态变了，界面还拿着测试前那份状态就会显示「失败」。
      */
     onRefreshMcp: () -> Unit = {},
+    /**
+     * pi 自己的排队送达模式（`GET/PUT /api/queue-modes`）。
+     *
+     * null = 旧网关没有这条路由，整节不渲染 —— 不给一个调不通的开关。
+     */
+    queueModes: QueueModes? = null,
+    /** 改一项排队模式：`steeringMode` / `followUpMode` 二选一传，另一个传 null */
+    onSetQueueModes: (String?, String?) -> Unit = { _, _ -> },
     /** 技能列表上次加载失败的原因（null = 正常） */
     skillsLoadError: String? = null,
     plugins: List<PluginPackage>,
@@ -360,6 +368,8 @@ fun GlobalSettingsScreen(
                     enhanceModelProvider = enhanceModelProvider,
                     enhanceModelId = enhanceModelId,
                     onOpenEnhanceModelPicker = { showEnhanceModelPicker = true },
+                    queueModes = queueModes,
+                    onSetQueueModes = onSetQueueModes,
                     serverUrl = serverUrl,
                     authToken = authToken,
                     deviceName = deviceName,
@@ -3320,6 +3330,9 @@ fun GlobalSystemSettingsTab(
     enhanceModelProvider: String = "",
     enhanceModelId: String = "",
     onOpenEnhanceModelPicker: () -> Unit = {},
+    /** pi 的排队送达模式；null = 旧网关不支持，整节不渲染 */
+    queueModes: QueueModes? = null,
+    onSetQueueModes: (String?, String?) -> Unit = { _, _ -> },
     serverUrl: String,
     authToken: String,
     deviceName: String,
@@ -3432,6 +3445,49 @@ fun GlobalSystemSettingsTab(
                             )
                         }
                     )
+                }
+            }
+        }
+
+        // ── 对话与排队 ────────────────────────────────────────────────
+        // pi 自己的 steeringMode / followUpMode（pi-web 0.19.0 的 Settings › General）。
+        // 旧网关没有这条路由 → queueModes 为 null，整节不渲染。
+        if (queueModes != null) {
+            item(key = "queue-modes") {
+                Column {
+                    // 说明放在分组标题上（docs/DESIGN-labels.md：一项一行，不靠 subtitle 再解释一遍）
+                    SettingsGroupLabel(text = "对话与排队 · 送达方式")
+                    SettingsGroup {
+                        SettingsRow(
+                            title = "引导消息送达",
+                            trailing = {
+                                QueueModeChips(
+                                    isAll = QueueModes.isAll(queueModes.steeringMode),
+                                    onSelect = { all ->
+                                        onSetQueueModes(
+                                            if (all) QueueModes.MODE_ALL else QueueModes.MODE_ONE_AT_A_TIME,
+                                            null
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                        SettingsRow(
+                            title = "后续消息送达",
+                            topDivider = true,
+                            trailing = {
+                                QueueModeChips(
+                                    isAll = QueueModes.isAll(queueModes.followUpMode),
+                                    onSelect = { all ->
+                                        onSetQueueModes(
+                                            null,
+                                            if (all) QueueModes.MODE_ALL else QueueModes.MODE_ONE_AT_A_TIME
+                                        )
+                                    }
+                                )
+                            }
+                        )
+                    }
                 }
             }
         }

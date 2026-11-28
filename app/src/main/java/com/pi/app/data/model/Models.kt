@@ -866,6 +866,25 @@ data class McpCodeModeConfig(
 )
 
 /**
+ * pi 自己的排队送达模式（pi-web `GET/PUT /api/queue-modes`，pi 1.6.1 的 #1771）。
+ *
+ * 控制一轮对话吃掉几条排队中的消息：`one-at-a-time` 是 pi 的默认值（逐条送达），
+ * `all` 表示本轮就把排队的全部送进去。手机端的 STEER / FOLLOW_UP 两种发送方式都受它影响，
+ * 但真正执行的是服务端，这里只负责读写这项设置。
+ */
+data class QueueModes(
+    val steeringMode: String = MODE_ONE_AT_A_TIME,
+    val followUpMode: String = MODE_ONE_AT_A_TIME
+) {
+    companion object {
+        const val MODE_ONE_AT_A_TIME = "one-at-a-time"
+        const val MODE_ALL = "all"
+
+        fun isAll(mode: String?): Boolean = mode == MODE_ALL
+    }
+}
+
+/**
  * pi-web `GET /api/tools/settings` 的响应：工具层面真正的全局开关（代码模式 + PowerShell）。
  * 代码模式以前是到 `/api/mcp` 里找的，那里从来没有这组字段。
  */
@@ -1025,6 +1044,13 @@ data class ChatItem(
     val mediaList: List<MediaAttachment> = emptyList(),
     val modelName: String? = null,
     val usageSummary: String? = null,
+    /**
+     * pi 的会话提示行（缓存未命中 / 预热计费 / 摘要计费 / 推理被丢弃）。
+     *
+     * 来自服务端消息上的 `transcriptNotices`，由 pi 自己的 `notices.*` 设置控制（默认全关），
+     * 所以绝大多数会话这里是空的。文案已在 `TranscriptNoticeParsing` 里定稿。
+     */
+    val notices: List<String> = emptyList(),
     val timestamp: Long = System.currentTimeMillis(),
     val isStreaming: Boolean = false,
     /**
@@ -1070,7 +1096,14 @@ data class ToolCallInfo(
     val isError: Boolean = false,
     val isRunning: Boolean = false,
     /** 长输出的临时文件路径（pi 的 fullOutputPath），可用它取完整输出 */
-    val fullOutputPath: String? = null
+    val fullOutputPath: String? = null,
+    /**
+     * 长输出没能落盘的**原因**（pi 1.6.1 的 `fullOutputError`）。
+     *
+     * 有它且没有 `fullOutputPath` 时，截断的输出就是真拿不回来了；
+     * 以前这种情况界面上只会默默少一段，看不出是「没截取」还是「取不到」。
+     */
+    val fullOutputError: String? = null
 ) {
     /**
      * 从工具入参里认出「这次操作的文件绝对路径」，用于手机端一键预览。
