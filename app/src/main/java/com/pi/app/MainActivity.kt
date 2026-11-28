@@ -448,6 +448,8 @@ class MainActivity : ComponentActivity() {
         var activeWorktreesResult by remember { mutableStateOf<WorktreesResult?>(null) }
         var isOperatingWorktree by remember { mutableStateOf(false) }
         var mcpConfig by remember { mutableStateOf(McpCodeModeConfig()) }
+        // pi 的排队送达模式（GET /api/queue-modes）：null = 旧网关没有这条路由，设置页那一节不渲染
+        var queueModes by remember { mutableStateOf<QueueModes?>(null) }
         var mcpServers by remember { mutableStateOf<List<McpServerInfo>>(emptyList()) }
 
         var persistentNotifyEnabled by remember { mutableStateOf(prefs.persistentNotifyEnabled) }
